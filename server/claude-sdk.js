@@ -711,9 +711,25 @@ async function queryClaudeSDK(command, options = {}, ws) {
 
     // Check if Claude CLI is installed for a clearer error message
     const installed = await providerAuthService.isProviderInstalled('claude');
-    const errorContent = !installed
-      ? 'Claude Code is not installed. Please install it first: https://docs.anthropic.com/en/docs/claude-code'
-      : error.message;
+    let errorContent;
+    if (!installed) {
+      errorContent = 'Claude Code is not installed. Please install it first: https://docs.anthropic.com/en/docs/claude-code';
+    } else if (/Prompt is too long/i.test(String(error?.message || ''))) {
+      // The saved JSONL has grown past the model input limit. Resubmitting the
+      // same prompt will fail every time with the same error — the session is
+      // wedged until the user compacts or branches out. Make that visible.
+      errorContent = [
+        '**Context too large**: this session\'s history exceeds the model\'s input limit.',
+        '',
+        'Resending the same prompt will keep hitting this error. Choose one:',
+        '- Run `/compact` to summarize the conversation in place.',
+        '- Start a fresh session in the same project to continue work.',
+        '',
+        '_(original error: ' + error.message + ')_',
+      ].join('\n');
+    } else {
+      errorContent = error.message;
+    }
 
     // Send error to WebSocket, then the terminal complete
     ws.send(createNormalizedMessage({ kind: 'error', content: errorContent, sessionId: capturedSessionId || sessionId || null, provider: 'claude' }));
