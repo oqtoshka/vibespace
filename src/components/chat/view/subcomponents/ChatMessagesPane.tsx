@@ -1,5 +1,6 @@
 import { useTranslation } from 'react-i18next';
-import { memo, useCallback, useMemo } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef } from 'react';
+import { dbg } from '../../../../utils/debugLog';
 import type { Dispatch, RefObject, SetStateAction } from 'react';
 
 import type { ChatMessage } from '../../types/types';
@@ -119,6 +120,30 @@ function ChatMessagesPane({
     () => groupConsecutiveTools(visibleMessages, Boolean(showThinking)),
     [visibleMessages, showThinking],
   );
+
+  const renderCountRef = useRef(0);
+  renderCountRef.current += 1;
+  useEffect(() => {
+    dbg('messagesPane.render', {
+      n: renderCountRef.current,
+      loading: isLoadingSessionMessages,
+      visibleCount: visibleMessages.length,
+      chatCount: chatMessages.length,
+      sessionId: selectedSession?.id ?? null,
+    });
+  });
+  useEffect(() => {
+    if (!visibleMessages.length) return;
+    let bytes = 0;
+    for (const m of visibleMessages) {
+      bytes += (m.content || '').length;
+      const tr = (m as any).toolResult;
+      if (tr?.content) bytes += String(tr.content).length;
+      const ti = (m as any).toolInput;
+      if (ti) bytes += (typeof ti === 'string' ? ti.length : JSON.stringify(ti).length);
+    }
+    dbg('messagesPane.payloadSummary', { msgs: visibleMessages.length, totalContentChars: bytes });
+  }, [visibleMessages]);
 
   // Stable, deterministic keys for the messages rendered this pass.
   //

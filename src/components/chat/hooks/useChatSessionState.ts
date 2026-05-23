@@ -9,6 +9,7 @@ import type { ChatMessage } from '../types/types';
 import { createCachedDiffCalculator, type DiffCalculator } from '../utils/messageTransforms';
 
 import { normalizedToChatMessages } from './useChatMessages';
+import { dbg } from '../../../utils/debugLog';
 
 const MESSAGES_PER_PAGE = 20;
 const INITIAL_VISIBLE_MESSAGES = 100;
@@ -270,7 +271,9 @@ export function useChatSessionState({
   }
 
   const chatMessages = useMemo(() => {
+    const tNorm = performance.now();
     const all = normalizedToChatMessages(storeMessages);
+    dbg('chatMessages.normalized', { dur_ms: Math.round(performance.now() - tNorm), inCount: storeMessages.length, outCount: all.length });
     // Show pending user message when no session data exists yet (new session, pre-backend-response)
     if (pendingUserMessage && all.length === 0) {
       return [pendingUserMessage];
@@ -556,6 +559,7 @@ export function useChatSessionState({
 
     // Fetch from server → store updates → chatMessages re-derives automatically
     setIsLoadingSessionMessages(true);
+    dbg('chat.session.select', { sessionId: selectedSessionId, limit: MESSAGES_PER_PAGE });
     sessionStore.fetchFromServer(selectedSessionId, {
       limit: MESSAGES_PER_PAGE,
       offset: 0,
@@ -566,8 +570,10 @@ export function useChatSessionState({
         if (slot.tokenUsage) setTokenBudget(slot.tokenUsage as Record<string, unknown>);
       }
       setIsLoadingSessionMessages(false);
-    }).catch(() => {
+      dbg('chat.session.loaded', { sessionId: selectedSession.id, msgCount: slot?.merged?.length ?? 0, total: slot?.total ?? null });
+    }).catch((err) => {
       setIsLoadingSessionMessages(false);
+      dbg('chat.session.loadError', { sessionId: selectedSession.id, message: (err as Error)?.message });
     });
   }, [
     resetStreamingState,
