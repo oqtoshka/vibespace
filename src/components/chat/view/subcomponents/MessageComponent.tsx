@@ -1,4 +1,4 @@
-import { memo, useMemo, useRef } from 'react';
+import { memo, useEffect, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import SessionProviderLogo from '../../../llm-logo-provider/SessionProviderLogo';
@@ -17,6 +17,7 @@ import ChatMessageImages from './ChatMessageImages';
 import { Markdown } from './Markdown';
 import MessageCopyControl from './MessageCopyControl';
 import MessageSpeakControl from './MessageSpeakControl';
+import { dbg } from '../../../../utils/debugLog';
 
 type DiffLine = {
   type: string;
@@ -46,6 +47,21 @@ type InteractiveOption = {
 const COPY_HIDDEN_TOOL_NAMES = new Set(['Bash', 'Edit', 'Write', 'ApplyPatch']);
 
 const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, showRawParameters, showThinking, selectedProject, provider }: MessageComponentProps) => {
+  const renderStart = performance.now();
+  const contentLen = String(message.content || '').length;
+  const toolResultLen = (message as any).toolResult?.content ? String((message as any).toolResult.content).length : 0;
+  const toolInputLen = (message as any).toolInput ? (typeof (message as any).toolInput === 'string' ? (message as any).toolInput.length : JSON.stringify((message as any).toolInput).length) : 0;
+  dbg('msg.renderBegin', {
+    type: message.type,
+    isToolUse: Boolean(message.isToolUse),
+    toolName: message.toolName ?? null,
+    contentLen,
+    toolResultLen,
+    toolInputLen,
+  });
+  useEffect(() => {
+    dbg('msg.renderCommit', { type: message.type, toolName: message.toolName ?? null, dur_ms: Math.round(performance.now() - renderStart) });
+  });
   const { t } = useTranslation('chat');
   const isGrouped = prevMessage && prevMessage.type === message.type &&
     ((prevMessage.type === 'assistant') ||
