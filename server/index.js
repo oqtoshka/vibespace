@@ -220,6 +220,20 @@ app.use('/api/agent', agentRoutes);
 
 app.use('/api/voice', authenticateToken, voiceRoutes);
 
+// Debug log sink — unauthenticated, fire-and-forget client telemetry for
+// reproducing iOS bugs without Web Inspector. Body is `{ events: [...] }`.
+app.post('/api/debug-log', express.json({ limit: '256kb' }), (req, res) => {
+    const events = Array.isArray(req.body?.events) ? req.body.events : [req.body];
+    for (const ev of events) {
+        try {
+            console.log('[DBG]', JSON.stringify(ev));
+        } catch {
+            console.log('[DBG] <unserializable>');
+        }
+    }
+    res.status(204).end();
+});
+
 // Serve public files (like api-docs.html)
 app.use(express.static(path.join(APP_ROOT, 'public')));
 

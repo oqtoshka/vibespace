@@ -11,6 +11,7 @@ import { useCallback, useMemo, useRef, useState } from 'react';
 
 import { authenticatedFetch } from '../utils/api';
 import type { LLMProvider } from '../types/app';
+import { dbg } from '../utils/debugLog';
 
 // ─── NormalizedMessage (mirrors server/adapters/types.js) ────────────────────
 
@@ -474,6 +475,7 @@ export function useSessionStore() {
     const fetchTicket = ++slot._fetchSeq;
     slot.status = 'loading';
     notify(sessionId);
+    dbg('fetchFromServer.start', { sessionId, limit: opts.limit ?? null, offset: opts.offset ?? 0 });
 
     try {
       const params = new URLSearchParams();
@@ -484,15 +486,19 @@ export function useSessionStore() {
 
       const qs = params.toString();
       const url = `/api/providers/sessions/${encodeURIComponent(sessionId)}/messages${qs ? `?${qs}` : ''}`;
+      const tFetch = performance.now();
       const response = await authenticatedFetch(url);
+      dbg('fetchFromServer.headers', { sessionId, status: response.status, dur_ms: Math.round(performance.now() - tFetch), contentLength: response.headers.get('content-length') });
 
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}`);
       }
 
+      const tParse = performance.now();
       const body = await response.json();
       const data = body?.data ?? body;
       const messages: NormalizedMessage[] = data.messages || [];
+      dbg('fetchFromServer.parsed', { sessionId, dur_ms: Math.round(performance.now() - tParse), msgCount: messages.length, total: data.total, hasMore: data.hasMore });
 
       // A later-started fetch already applied: this response is stale.
       if (fetchTicket <= slot._appliedFetchSeq) {
@@ -506,14 +512,18 @@ export function useSessionStore() {
       slot.offset = (opts.offset ?? 0) + messages.length;
       slot.fetchedAt = Date.now();
       slot.status = 'idle';
+      const tMerge = performance.now();
       recomputeMergedIfNeeded(slot);
+      dbg('fetchFromServer.merged', { sessionId, dur_ms: Math.round(performance.now() - tMerge), mergedCount: slot.merged?.length ?? 0 });
       if (data.tokenUsage) {
         slot.tokenUsage = data.tokenUsage;
       }
 
       notify(sessionId);
+      dbg('fetchFromServer.done', { sessionId });
       return slot;
     } catch (error) {
+      dbg('fetchFromServer.error', { sessionId, message: (error as Error)?.message, stack: (error as Error)?.stack });
       console.error(`[SessionStore] fetch failed for ${sessionId}:`, error);
       // Don't clobber a newer fetch's result with a stale failure.
       if (fetchTicket > slot._appliedFetchSeq) {
