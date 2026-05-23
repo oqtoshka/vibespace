@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from '../../../../shared/view/ui';
 import { cn } from '../../../../lib/utils';
 
@@ -14,7 +14,12 @@ interface CollapsibleSectionProps {
 }
 
 /**
- * Reusable collapsible section with consistent styling
+ * Reusable collapsible section with consistent styling.
+ *
+ * Children are lazy-mounted: nothing is rendered into the DOM until the user
+ * opens the section. iOS Safari blocks for minutes when committing huge inline
+ * tool-result text nodes (e.g. 277 KB Playwright screenshots), so eager-mount
+ * via Radix Collapsible is unsafe for arbitrary tool outputs.
  */
 export const CollapsibleSection: React.FC<CollapsibleSectionProps> = ({
   title,
@@ -26,8 +31,13 @@ export const CollapsibleSection: React.FC<CollapsibleSectionProps> = ({
   children,
   className = '',
 }) => {
+  const [hasBeenOpen, setHasBeenOpen] = useState(open);
   return (
-    <Collapsible defaultOpen={open} className={cn('group/section', className)}>
+    <Collapsible
+      defaultOpen={open}
+      onOpenChange={(o) => { if (o) setHasBeenOpen(true); }}
+      className={cn('group/section', className)}
+    >
       {/* When there's a clickable title (Edit/Write), only the chevron toggles collapse */}
       {onTitleClick ? (
         <div className="flex cursor-default select-none items-center gap-1.5 py-0.5 text-xs group-data-[state=open]/section:sticky group-data-[state=open]/section:top-0 group-data-[state=open]/section:z-10 group-data-[state=open]/section:-mx-1 group-data-[state=open]/section:bg-background group-data-[state=open]/section:px-1">
@@ -80,7 +90,7 @@ export const CollapsibleSection: React.FC<CollapsibleSectionProps> = ({
 
       <CollapsibleContent>
         <div className="mt-1.5 pl-[18px]">
-          {children}
+          {hasBeenOpen ? children : null}
         </div>
       </CollapsibleContent>
     </Collapsible>
