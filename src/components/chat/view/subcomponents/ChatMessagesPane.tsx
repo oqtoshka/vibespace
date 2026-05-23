@@ -1,5 +1,6 @@
 import { useTranslation } from 'react-i18next';
-import { useCallback, useRef } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
+import { dbg } from '../../../../utils/debugLog';
 import type { Dispatch, RefObject, SetStateAction } from 'react';
 
 import type { ChatMessage } from '../../types/types';
@@ -113,6 +114,30 @@ export default function ChatMessagesPane({
 }: ChatMessagesPaneProps) {
   const { t } = useTranslation('chat');
   const messageKeyMapRef = useRef<WeakMap<ChatMessage, string>>(new WeakMap());
+
+  const renderCountRef = useRef(0);
+  renderCountRef.current += 1;
+  useEffect(() => {
+    dbg('messagesPane.render', {
+      n: renderCountRef.current,
+      loading: isLoadingSessionMessages,
+      visibleCount: visibleMessages.length,
+      chatCount: chatMessages.length,
+      sessionId: selectedSession?.id ?? null,
+    });
+  });
+  useEffect(() => {
+    if (!visibleMessages.length) return;
+    let bytes = 0;
+    for (const m of visibleMessages) {
+      bytes += (m.content || '').length;
+      const tr = (m as any).toolResult;
+      if (tr?.content) bytes += String(tr.content).length;
+      const ti = (m as any).toolInput;
+      if (ti) bytes += (typeof ti === 'string' ? ti.length : JSON.stringify(ti).length);
+    }
+    dbg('messagesPane.payloadSummary', { msgs: visibleMessages.length, totalContentChars: bytes });
+  }, [visibleMessages]);
   const allocatedKeysRef = useRef<Set<string>>(new Set());
   const generatedMessageKeyCounterRef = useRef(0);
 

@@ -11,6 +11,7 @@ import { useCallback, useMemo, useRef, useState } from 'react';
 
 import { authenticatedFetch } from '../utils/api';
 import type { LLMProvider } from '../types/app';
+import { dbg } from '../utils/debugLog';
 
 // ─── NormalizedMessage (mirrors server/adapters/types.js) ────────────────────
 
@@ -337,6 +338,7 @@ export function useSessionStore() {
     const slot = getSlot(resolvedSessionId);
     slot.status = 'loading';
     notify(resolvedSessionId);
+    dbg('fetchFromServer.start', { sessionId: resolvedSessionId, limit: opts.limit ?? null, offset: opts.offset ?? 0 });
 
     try {
       const params = new URLSearchParams();
@@ -347,14 +349,18 @@ export function useSessionStore() {
 
       const qs = params.toString();
       const url = `/api/providers/sessions/${encodeURIComponent(resolvedSessionId)}/messages${qs ? `?${qs}` : ''}`;
+      const tFetch = performance.now();
       const response = await authenticatedFetch(url);
+      dbg('fetchFromServer.headers', { sessionId: resolvedSessionId, status: response.status, dur_ms: Math.round(performance.now() - tFetch), contentLength: response.headers.get('content-length') });
 
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}`);
       }
 
+      const tParse = performance.now();
       const data = await response.json();
       const messages: NormalizedMessage[] = data.messages || [];
+      dbg('fetchFromServer.parsed', { sessionId: resolvedSessionId, dur_ms: Math.round(performance.now() - tParse), msgCount: messages.length, total: data.total, hasMore: data.hasMore });
 
       slot.serverMessages = messages;
       slot.total = data.total ?? messages.length;
@@ -362,14 +368,18 @@ export function useSessionStore() {
       slot.offset = (opts.offset ?? 0) + messages.length;
       slot.fetchedAt = Date.now();
       slot.status = 'idle';
+      const tMerge = performance.now();
       recomputeMergedIfNeeded(slot);
+      dbg('fetchFromServer.merged', { sessionId: resolvedSessionId, dur_ms: Math.round(performance.now() - tMerge), mergedCount: slot.merged?.length ?? 0 });
       if (data.tokenUsage) {
         slot.tokenUsage = data.tokenUsage;
       }
 
       notify(resolvedSessionId);
+      dbg('fetchFromServer.done', { sessionId: resolvedSessionId });
       return slot;
     } catch (error) {
+      dbg('fetchFromServer.error', { sessionId: resolvedSessionId, message: (error as Error)?.message, stack: (error as Error)?.stack });
       console.error(`[SessionStore] fetch failed for ${resolvedSessionId}:`, error);
       slot.status = 'error';
       notify(resolvedSessionId);
