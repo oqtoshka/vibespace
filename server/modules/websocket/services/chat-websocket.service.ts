@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import type { WebSocket } from 'ws';
 
 import { connectedClients } from '@/modules/websocket/services/websocket-state.service.js';
@@ -21,6 +23,24 @@ type ChatIncomingMessage = AnyRecord & {
   message?: unknown;
   rememberEntry?: unknown;
 };
+
+const COMMAND_DEDUP_WINDOW_MS = 2000;
+const DEDUPED_COMMAND_TYPES = new Set([
+  'claude-command',
+  'cursor-command',
+  'codex-command',
+  'gemini-command',
+]);
+
+function hashCommandPayload(data: ChatIncomingMessage): string {
+  const json = JSON.stringify({
+    type: data.type,
+    command: data.command ?? '',
+    options: data.options ?? null,
+    sessionId: data.sessionId ?? null,
+  });
+  return createHash('sha1').update(json).digest('hex');
+}
 
 const DEFAULT_PROVIDER: LLMProvider = 'claude';
 
@@ -104,6 +124,11 @@ export function handleChatConnection(
   connectedClients.add(ws);
 
   const writer = new WebSocketWriter(ws, readRequestUserId(request));
+  // Per-connection dedup window — same payload arriving twice within
+  // COMMAND_DEDUP_WINDOW_MS is treated as an accidental re-dispatch.
+  // Symptom we are catching: one user submit producing 3 .jsonl files /
+  // 3 copies of the user message in the transcript, ~130–250ms apart.
+  const recentCommandHashes = new Map<string, number>();
 
   ws.on('message', async (rawMessage) => {
     try {
@@ -116,6 +141,22 @@ export function handleChatConnection(
       const messageType = data.type;
       if (!messageType) {
         throw new Error('Message type is required');
+      }
+
+      if (DEDUPED_COMMAND_TYPES.has(messageType)) {
+        const now = Date.now();
+        for (const [k, ts] of recentCommandHashes) {
+          if (now - ts > COMMAND_DEDUP_WINDOW_MS) recentCommandHashes.delete(k);
+        }
+        const hash = hashCommandPayload(data);
+        const prev = recentCommandHashes.get(hash);
+        recentCommandHashes.set(hash, now);
+        if (prev !== undefined && now - prev < COMMAND_DEDUP_WINDOW_MS) {
+          console.warn(
+            `[WS DEDUP] dropped duplicate ${messageType} (hash=${hash.slice(0, 8)}, gap=${now - prev}ms)`
+          );
+          return;
+        }
       }
 
       if (messageType === 'claude-command') {
