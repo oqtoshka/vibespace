@@ -5,10 +5,12 @@ import { api } from '../../../utils/api';
 import { usePaletteOps } from '../../../contexts/PaletteOpsContext';
 import type { Project, ProjectSession, LLMProvider } from '../../../types/app';
 import type {
+  ActivitySessionItem,
   ArchivedProjectListItem,
   ArchivedSessionListItem,
   DeleteProjectConfirmation,
   ProjectSortOrder,
+  ProjectViewMode,
   SidebarSearchMode,
   SessionDeleteConfirmation,
   SessionWithProvider,
@@ -17,10 +19,17 @@ import {
   clearLegacyStarredProjectIds,
   filterProjects,
   getAllSessions,
+  getSessionDate,
+  getSessionName,
   readLegacyStarredProjectIds,
   readProjectSortOrder,
+  readProjectViewMode,
   sortProjects,
+  writeProjectViewMode,
 } from '../utils/utils';
+import { isSessionUnread } from '../utils/sessionReadState';
+
+import { useSessionReadState } from './useSessionReadState';
 
 type SnippetHighlight = {
   start: number;
@@ -91,6 +100,7 @@ type UseSidebarControllerArgs = {
   onLoadMoreSessions?: (projectId: string) => Promise<void> | void;
   // `projectId` is the DB-assigned identifier; callbacks use that post-migration.
   onProjectDelete?: (projectId: string) => void;
+  processingSessions?: Set<string>;
   setCurrentProject: (project: Project) => void;
   setSidebarVisible: (visible: boolean) => void;
   sidebarVisible: boolean;
@@ -109,6 +119,7 @@ export function useSidebarController({
   onSessionDelete,
   onLoadMoreSessions,
   onProjectDelete,
+  processingSessions,
   setCurrentProject,
   setSidebarVisible,
   sidebarVisible,
@@ -121,6 +132,8 @@ export function useSidebarController({
   const [initialSessionsLoaded, setInitialSessionsLoaded] = useState<Set<string>>(new Set());
   const [currentTime, setCurrentTime] = useState(new Date());
   const [projectSortOrder, setProjectSortOrder] = useState<ProjectSortOrder>('name');
+  const [projectViewMode, setProjectViewModeState] = useState<ProjectViewMode>('grouped');
+  const { readMap, markRead } = useSessionReadState();
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [editingSession, setEditingSession] = useState<string | null>(null);
   const [editingSessionName, setEditingSessionName] = useState('');
@@ -193,6 +206,7 @@ export function useSidebarController({
   useEffect(() => {
     const loadSortOrder = () => {
       setProjectSortOrder(readProjectSortOrder());
+      setProjectViewModeState(readProjectViewMode());
     };
 
     loadSortOrder();
@@ -437,12 +451,29 @@ export function useSidebarController({
 
   const handleSessionClick = useCallback(
     (session: SessionWithProvider, projectId: string) => {
+      // Opening a session clears its unread flag in the activity view.
+      markRead(session.id);
       // Tag the session with its owning projectId so downstream handlers
       // can correlate it with the selectedProject in the app state.
       onSessionSelect({ ...session, __projectId: projectId });
     },
-    [onSessionSelect],
+    [markRead, onSessionSelect],
   );
+
+  const setProjectViewMode = useCallback((mode: ProjectViewMode) => {
+    setProjectViewModeState(mode);
+    writeProjectViewMode(mode);
+  }, []);
+
+  // Keep the active session marked read as it accrues activity while open, so it
+  // doesn't flip back to unread the moment new output streams in.
+  const selectedSessionId = _selectedSession?.id ?? null;
+  const selectedSessionActivity = _selectedSession?.lastActivity ?? null;
+  useEffect(() => {
+    if (selectedSessionId) {
+      markRead(selectedSessionId);
+    }
+  }, [selectedSessionId, selectedSessionActivity, markRead]);
 
   const resolveProjectStarState = useCallback(
     (projectId: string): boolean => {
@@ -586,6 +617,48 @@ export function useSidebarController({
     () => filterProjects(sortedProjects, debouncedSearchQuery),
     [debouncedSearchQuery, sortedProjects],
   );
+
+  // Flat "by activity" view: every session across all projects, with sessions
+  // that have stopped and remain unread floated to the top, then everything
+  // else ordered by most recent activity.
+  const activitySessions = useMemo<ActivitySessionItem[]>(() => {
+    const normalizedSearch = debouncedSearchQuery.trim().toLowerCase();
+    const items: ActivitySessionItem[] = [];
+
+    for (const project of projectsWithResolvedStarState) {
+      const projectLabel = (project.displayName || project.projectId).toLowerCase();
+
+      for (const session of getAllSessions(project)) {
+        if (normalizedSearch) {
+          const matchesSession = getSessionName(session, t).toLowerCase().includes(normalizedSearch);
+          const matchesProject = projectLabel.includes(normalizedSearch);
+          if (!matchesSession && !matchesProject) {
+            continue;
+          }
+        }
+
+        items.push({
+          session,
+          project,
+          isUnread: isSessionUnread(session, readMap, selectedSessionId),
+          isRunning: Boolean(processingSessions?.has(session.id)),
+        });
+      }
+    }
+
+    items.sort((a, b) => {
+      // Stopped + unread = "done, waiting for you" → highest priority.
+      const aPriority = !a.isRunning && a.isUnread ? 0 : 1;
+      const bPriority = !b.isRunning && b.isUnread ? 0 : 1;
+      if (aPriority !== bPriority) {
+        return aPriority - bPriority;
+      }
+
+      return getSessionDate(b.session).getTime() - getSessionDate(a.session).getTime();
+    });
+
+    return items;
+  }, [debouncedSearchQuery, processingSessions, projectsWithResolvedStarState, readMap, selectedSessionId, t]);
 
   const filteredArchivedSessions = useMemo(() => {
     const normalizedSearch = debouncedSearchQuery.trim().toLowerCase();
@@ -904,6 +977,9 @@ export function useSidebarController({
     initialSessionsLoaded,
     currentTime,
     projectSortOrder,
+    projectViewMode,
+    setProjectViewMode,
+    activitySessions,
     isRefreshing,
     editingSession,
     editingSessionName,
