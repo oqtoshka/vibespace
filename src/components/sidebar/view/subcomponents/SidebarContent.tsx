@@ -1,16 +1,20 @@
 import { type ReactNode } from 'react';
-import { Archive, Folder, MessageSquare, RotateCcw, Search, Trash2 } from 'lucide-react';
+import { Archive, Folder, ListOrdered, MessageSquare, RotateCcw, Search, Trash2 } from 'lucide-react';
 import type { TFunction } from 'i18next';
+
 import { ScrollArea } from '../../../../shared/view/ui';
+import { cn } from '../../../../lib/utils';
 import type { Project } from '../../../../types/app';
 import type { ReleaseInfo } from '../../../../types/sharedTypes';
 import type { ConversationSearchResults, SearchProgress } from '../../hooks/useSidebarController';
-import type { ArchivedProjectListItem, ArchivedSessionListItem, SidebarSearchMode } from '../../types/types';
+import type { ArchivedProjectListItem, ArchivedSessionListItem, ProjectViewMode, SidebarSearchMode } from '../../types/types';
 import SessionProviderLogo from '../../../llm-logo-provider/SessionProviderLogo';
+import { getAllSessions } from '../../utils/utils';
+
+import SidebarActivityList, { type SidebarActivityListProps } from './SidebarActivityList';
 import SidebarFooter from './SidebarFooter';
 import SidebarHeader from './SidebarHeader';
 import SidebarProjectList, { type SidebarProjectListProps } from './SidebarProjectList';
-import { getAllSessions } from '../../utils/utils';
 
 function HighlightedSnippet({ snippet, highlights }: { snippet: string; highlights: { start: number; end: number }[] }) {
   const parts: ReactNode[] = [];
@@ -144,6 +148,9 @@ type SidebarContentProps = {
   onShowVersionModal: () => void;
   onShowSettings: () => void;
   projectListProps: SidebarProjectListProps;
+  projectViewMode: ProjectViewMode;
+  onProjectViewModeChange: (mode: ProjectViewMode) => void;
+  activityListProps: SidebarActivityListProps;
   t: TFunction;
 };
 
@@ -180,6 +187,9 @@ export default function SidebarContent({
   onShowVersionModal,
   onShowSettings,
   projectListProps,
+  projectViewMode,
+  onProjectViewModeChange,
+  activityListProps,
   t,
 }: SidebarContentProps) {
   const showConversationSearch = searchMode === 'conversations' && searchFilter.trim().length >= 2;
@@ -358,7 +368,7 @@ export default function SidebarContent({
                           <span className="truncate text-sm font-medium text-foreground">
                             {project.displayName}
                           </span>
-                          <span className="inline-flex items-center justify-center rounded-full bg-muted px-1 py-px text-[7px] font-medium uppercase leading-none tracking-[0.02em] text-center text-muted-foreground">
+                          <span className="inline-flex items-center justify-center rounded-full bg-muted px-1 py-px text-center text-[7px] font-medium uppercase leading-none tracking-[0.02em] text-muted-foreground">
                             {t('archived.projectArchived', 'Project archived')}
                           </span>
                         </div>
@@ -448,7 +458,7 @@ export default function SidebarContent({
                           {group.projectDisplayName}
                         </span>
                         {group.isProjectArchived && (
-                          <span className="inline-flex items-center justify-center rounded-full bg-muted px-1 py-px text-[7px] font-medium uppercase leading-none tracking-[0.02em] text-center text-muted-foreground">
+                          <span className="inline-flex items-center justify-center rounded-full bg-muted px-1 py-px text-center text-[7px] font-medium uppercase leading-none tracking-[0.02em] text-muted-foreground">
                             {t('archived.projectArchived', 'Project archived')}
                           </span>
                         )}
@@ -509,7 +519,43 @@ export default function SidebarContent({
             </div>
           )
         ) : (
-          <SidebarProjectList {...projectListProps} />
+          <div className="md:space-y-1.5">
+            {!isLoading && projects.length > 0 && (
+              <div className="flex rounded-lg bg-muted/50 p-0.5 md:mx-1.5">
+                <button
+                  onClick={() => onProjectViewModeChange('grouped')}
+                  aria-pressed={projectViewMode === 'grouped'}
+                  className={cn(
+                    'flex flex-1 items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium transition-all',
+                    projectViewMode === 'grouped'
+                      ? 'bg-background text-foreground shadow-sm'
+                      : 'text-muted-foreground hover:text-foreground',
+                  )}
+                >
+                  <Folder className="h-3 w-3" />
+                  {t('activity.byProject', 'By project')}
+                </button>
+                <button
+                  onClick={() => onProjectViewModeChange('activity')}
+                  aria-pressed={projectViewMode === 'activity'}
+                  className={cn(
+                    'flex flex-1 items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium transition-all',
+                    projectViewMode === 'activity'
+                      ? 'bg-background text-foreground shadow-sm'
+                      : 'text-muted-foreground hover:text-foreground',
+                  )}
+                >
+                  <ListOrdered className="h-3 w-3" />
+                  {t('activity.byActivity', 'By activity')}
+                </button>
+              </div>
+            )}
+            {projectViewMode === 'activity' && !isLoading && projects.length > 0 ? (
+              <SidebarActivityList {...activityListProps} />
+            ) : (
+              <SidebarProjectList {...projectListProps} />
+            )}
+          </div>
         )}
       </ScrollArea>
 
