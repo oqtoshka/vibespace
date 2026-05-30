@@ -3,6 +3,7 @@ import type { MainContentHeaderProps } from '../../types/types';
 import MobileMenuButton from './MobileMenuButton';
 import MainContentTabSwitcher from './MainContentTabSwitcher';
 import MainContentTitle from './MainContentTitle';
+import OpenInTerminalButton from './OpenInTerminalButton';
 
 export default function MainContentHeader({
   activeTab,
@@ -47,7 +48,12 @@ export default function MainContentHeader({
           />
         </div>
 
-        <div className="relative min-w-0 flex-shrink overflow-hidden sm:flex-shrink-0">
+        <div className="flex flex-shrink-0 items-center gap-2">
+          <OpenInTerminalButton
+            selectedProject={selectedProject}
+            selectedSession={selectedSession}
+          />
+          <div className="relative min-w-0 flex-shrink overflow-hidden sm:flex-shrink-0">
           {canScrollLeft && (
             <div className="pointer-events-none absolute inset-y-0 left-0 z-10 w-6 bg-gradient-to-r from-background to-transparent" />
           )}
@@ -66,6 +72,7 @@ export default function MainContentHeader({
           {canScrollRight && (
             <div className="pointer-events-none absolute inset-y-0 right-0 z-10 w-6 bg-gradient-to-l from-background to-transparent" />
           )}
+          </div>
         </div>
       </div>
     </div>
