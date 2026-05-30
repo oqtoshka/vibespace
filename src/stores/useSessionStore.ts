@@ -535,15 +535,18 @@ export function useSessionStore() {
     const resolvedSessionId = resolveSessionId(sessionId) ?? sessionId;
     const slot = getSlot(resolvedSessionId);
     const streamId = `__streaming_${resolvedSessionId}`;
+    const idx = slot.realtimeMessages.findIndex(m => m.id === streamId);
     const msg: NormalizedMessage = {
       id: streamId,
       sessionId: resolvedSessionId,
-      timestamp: new Date().toISOString(),
+      // Pin the timestamp to when the stream first appeared. Regenerating it on
+      // every delta flush kept changing the row's identity (and the React key
+      // derived from it), remounting the bubble ~10x/sec mid-stream.
+      timestamp: idx >= 0 ? slot.realtimeMessages[idx].timestamp : new Date().toISOString(),
       provider: msgProvider,
       kind: 'stream_delta',
       content: accumulatedText,
     };
-    const idx = slot.realtimeMessages.findIndex(m => m.id === streamId);
     if (idx >= 0) {
       slot.realtimeMessages = [...slot.realtimeMessages];
       slot.realtimeMessages[idx] = msg;
