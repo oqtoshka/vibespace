@@ -5,6 +5,19 @@
 
 type DebugEvent = Record<string, unknown> & { tag: string };
 
+// Telemetry is OFF by default — the heartbeat alone fired a POST to
+// /api/debug-log every 200ms, flooding the network tab. Opt in at runtime with
+// `localStorage.setItem('cloudcli-debug', '1')` and reload; no rebuild needed.
+const DEBUG_ENABLED =
+  typeof window !== 'undefined' &&
+  (() => {
+    try {
+      return window.localStorage.getItem('cloudcli-debug') === '1';
+    } catch {
+      return false;
+    }
+  })();
+
 let seq = 0;
 const sessionTag = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 
@@ -27,6 +40,7 @@ function send(events: DebugEvent[]): void {
 }
 
 export function dbg(tag: string, extra?: Record<string, unknown>): void {
+  if (!DEBUG_ENABLED) return;
   const ev: DebugEvent = {
     tag,
     seq: ++seq,
@@ -44,7 +58,7 @@ export function dbgMark(tag: string): () => void {
   return () => dbg(`${tag}.end`, { dur_ms: Math.round(performance.now() - start) });
 }
 
-if (typeof window !== 'undefined') {
+if (DEBUG_ENABLED) {
   try {
     if ('PerformanceObserver' in window && PerformanceObserver.supportedEntryTypes?.includes('longtask')) {
       const obs = new PerformanceObserver((list) => {

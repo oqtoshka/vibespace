@@ -331,6 +331,27 @@ const removeSessionFromProject = (project: Project, sessionIdToDelete: string): 
   return updatedProject;
 };
 
+const PROJECTS_CACHE_KEY = 'projects-cache-v1';
+
+const readProjectsCache = (): Project[] | null => {
+  try {
+    const raw = localStorage.getItem(PROJECTS_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as Project[]) : null;
+  } catch {
+    return null;
+  }
+};
+
+const writeProjectsCache = (projects: Project[]) => {
+  try {
+    localStorage.setItem(PROJECTS_CACHE_KEY, JSON.stringify(projects));
+  } catch {
+    // Quota exceeded or storage unavailable — ignore silently.
+  }
+};
+
 const VALID_TABS: Set<string> = new Set(['chat', 'files', 'shell', 'git', 'tasks', 'browser']);
 
 const isValidTab = (tab: string): tab is AppTab => {
@@ -356,7 +377,11 @@ export function useProjectsState({
   isMobile,
   activeSessions,
 }: UseProjectsStateArgs) {
-  const [projects, setProjects] = useState<Project[]>([]);
+  // Seed projects from localStorage so the shell paints instantly on iOS
+  // Safari resume (which otherwise blanks until /api/projects round-trips).
+  // The fetch below refreshes in the background.
+  const [hadCachedProjectsOnMount] = useState<boolean>(() => readProjectsCache() !== null);
+  const [projects, setProjects] = useState<Project[]>(() => readProjectsCache() ?? []);
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
   const [selectedSession, setSelectedSession] = useState<ProjectSession | null>(null);
   const [attentionSessionIds, setAttentionSessionIds] = useState<Set<string>>(new Set());
@@ -371,7 +396,7 @@ export function useProjectsState({
   }, [activeTab]);
 
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [isLoadingProjects, setIsLoadingProjects] = useState(true);
+  const [isLoadingProjects, setIsLoadingProjects] = useState(!hadCachedProjectsOnMount);
   const [loadingProgress, setLoadingProgress] = useState<LoadingProgress | null>(null);
   const [isInputFocused, setIsInputFocused] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
@@ -601,8 +626,15 @@ export function useProjectsState({
   }, []);
 
   useEffect(() => {
-    void fetchProjects();
-  }, [fetchProjects]);
+    // If we already painted from the localStorage cache, refresh quietly —
+    // showing the spinner here would flash over a usable UI.
+    void fetchProjects({ showLoadingState: !hadCachedProjectsOnMount });
+  }, [fetchProjects, hadCachedProjectsOnMount]);
+
+  useEffect(() => {
+    if (projects.length === 0) return;
+    writeProjectsCache(projects);
+  }, [projects]);
 
   useEffect(() => {
     if (!selectedProject?.projectId) {
