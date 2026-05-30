@@ -243,10 +243,11 @@ app.use(express.static(path.join(APP_ROOT, 'public')));
 app.use(express.static(path.join(APP_ROOT, 'dist'), {
     setHeaders: (res, filePath) => {
         if (filePath.endsWith('.html')) {
-            // Prevent HTML caching to avoid service worker issues after builds
-            res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
-            res.setHeader('Pragma', 'no-cache');
-            res.setHeader('Expires', '0');
+            // `no-cache` (revalidate every request) avoids stale HTML after a
+            // build. We avoid `no-store` because that hard-disqualifies iOS
+            // Safari's bfcache, which is the main lever we have against the
+            // multi-second white screen on background→foreground.
+            res.setHeader('Cache-Control', 'no-cache, must-revalidate');
         } else if (filePath.match(/\.(js|css|woff2?|ttf|eot|svg|png|jpg|jpeg|gif|ico)$/)) {
             // Cache static assets for 1 year (they have hashed names)
             res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
