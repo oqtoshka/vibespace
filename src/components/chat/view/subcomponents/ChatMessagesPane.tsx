@@ -1,5 +1,5 @@
 import { useTranslation } from 'react-i18next';
-import { useCallback, useEffect, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { dbg } from '../../../../utils/debugLog';
 import type { Dispatch, RefObject, SetStateAction } from 'react';
 
@@ -113,7 +113,6 @@ export default function ChatMessagesPane({
   selectedProject,
 }: ChatMessagesPaneProps) {
   const { t } = useTranslation('chat');
-  const messageKeyMapRef = useRef<WeakMap<ChatMessage, string>>(new WeakMap());
 
   const renderCountRef = useRef(0);
   renderCountRef.current += 1;
@@ -138,32 +137,20 @@ export default function ChatMessagesPane({
     }
     dbg('messagesPane.payloadSummary', { msgs: visibleMessages.length, totalContentChars: bytes });
   }, [visibleMessages]);
-  const allocatedKeysRef = useRef<Set<string>>(new Set());
-  const generatedMessageKeyCounterRef = useRef(0);
 
-  // Keep keys stable across prepends so existing MessageComponent instances retain local state.
-  const getMessageKey = useCallback((message: ChatMessage) => {
-    const existingKey = messageKeyMapRef.current.get(message);
-    if (existingKey) {
-      return existingKey;
-    }
-
-    const intrinsicKey = getIntrinsicMessageKey(message);
-    let candidateKey = intrinsicKey;
-
-    if (!candidateKey || allocatedKeysRef.current.has(candidateKey)) {
-      do {
-        generatedMessageKeyCounterRef.current += 1;
-        candidateKey = intrinsicKey
-          ? `${intrinsicKey}-${generatedMessageKeyCounterRef.current}`
-          : `message-generated-${generatedMessageKeyCounterRef.current}`;
-      } while (allocatedKeysRef.current.has(candidateKey));
-    }
-
-    allocatedKeysRef.current.add(candidateKey);
-    messageKeyMapRef.current.set(message, candidateKey);
-    return candidateKey;
-  }, []);
+  // Keys are intrinsic (id / timestamp+content) so the same logical message keeps the
+  // same key across re-renders, even when `normalizedToChatMessages` rebuilds the
+  // ChatMessage objects on every store update. Duplicates within a single render get
+  // a positional suffix; the dedup tracker resets per render so it never drifts.
+  const messageKeys = useMemo(() => {
+    const seen = new Map<string, number>();
+    return visibleMessages.map((m, i) => {
+      const intrinsic = getIntrinsicMessageKey(m) ?? `message-fallback-${i}`;
+      const count = seen.get(intrinsic) ?? 0;
+      seen.set(intrinsic, count + 1);
+      return count === 0 ? intrinsic : `${intrinsic}#${count}`;
+    });
+  }, [visibleMessages]);
 
   return (
     <div
@@ -278,7 +265,7 @@ export default function ChatMessagesPane({
             const prevMessage = index > 0 ? visibleMessages[index - 1] : null;
             return (
               <MessageComponent
-                key={getMessageKey(message)}
+                key={messageKeys[index]}
                 message={message}
                 prevMessage={prevMessage}
                 createDiff={createDiff}
