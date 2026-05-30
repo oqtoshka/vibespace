@@ -31,6 +31,7 @@ function Sidebar({
   onSessionDelete,
   onLoadMoreSessions,
   onProjectDelete,
+  processingSessions,
   isLoading,
   loadingProgress,
   onRefresh,
@@ -66,6 +67,9 @@ function Sidebar({
     searchFilter,
     searchMode,
     setSearchMode,
+    projectViewMode,
+    setProjectViewMode,
+    activitySessions,
     conversationResults,
     isSearching,
     searchProgress,
@@ -122,6 +126,7 @@ function Sidebar({
     onSessionDelete,
     onLoadMoreSessions,
     onProjectDelete,
+    processingSessions,
     setCurrentProject,
     setSidebarVisible: (visible) => setPreference('sidebarVisible', visible),
     sidebarVisible,
@@ -185,6 +190,17 @@ function Sidebar({
     },
     onSaveEditingSession: (projectName: string, sessionId: string, summary: string, provider: LLMProvider) => {
       void updateSessionSummary(projectName, sessionId, summary, provider);
+    },
+    t,
+  };
+
+  const activityListProps = {
+    items: activitySessions,
+    selectedSession,
+    currentTime,
+    onSelectSession: ({ session, project }: (typeof activitySessions)[number]) => {
+      handleProjectSelect(project);
+      handleSessionClick(session, project.projectId);
     },
     t,
   };
@@ -296,6 +312,9 @@ function Sidebar({
             onShowVersionModal={() => setShowVersionModal(true)}
             onShowSettings={onShowSettings}
             projectListProps={projectListProps}
+            projectViewMode={projectViewMode}
+            onProjectViewModeChange={setProjectViewMode}
+            activityListProps={activityListProps}
             t={t}
           />
         </>
