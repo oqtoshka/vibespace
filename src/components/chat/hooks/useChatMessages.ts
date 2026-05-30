@@ -81,6 +81,11 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
 
   for (const msg of messages) {
     const sharedMetadata = {
+      // Carry the source id through so the UI can derive a stable React key
+      // (getIntrinsicMessageKey prefers `id`). Without it, text/thinking rows
+      // fall back to timestamp+content — and the streaming row's timestamp is
+      // rewritten on every delta flush, churning the key and remounting bubbles.
+      id: msg.id,
       displayText: msg.displayText,
       commandName: msg.commandName,
       commandMessage: msg.commandMessage,
