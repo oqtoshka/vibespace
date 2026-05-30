@@ -23,6 +23,9 @@ const persistToken = (token: string) => {
 
 const clearStoredToken = () => {
   localStorage.removeItem(AUTH_TOKEN_STORAGE_KEY);
+  // Drop the projects-list cache too; otherwise a different user logging in on
+  // the same browser would briefly see the previous user's projects.
+  localStorage.removeItem('projects-cache-v1');
 };
 
 export function useAuth(): AuthContextValue {

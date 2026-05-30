@@ -211,6 +211,7 @@ export function useChatComposerState({
     ((event: FormEvent<HTMLFormElement> | MouseEvent | TouchEvent | KeyboardEvent<HTMLTextAreaElement>) => Promise<void>) | null
   >(null);
   const inputValueRef = useRef(input);
+  const lastSubmitAtRef = useRef(0);
   const selectedProjectId = selectedProject?.projectId;
 
   const handleBuiltInCommand = useCallback(
@@ -535,6 +536,14 @@ export function useChatComposerState({
       event: FormEvent<HTMLFormElement> | MouseEvent | TouchEvent | KeyboardEvent<HTMLTextAreaElement>,
     ) => {
       event.preventDefault();
+      // Re-entry guard: a single tap on the submit button can fire onTouchStart,
+      // onMouseDown, and the form's onSubmit in sequence (~100-250ms apart on
+      // iOS Safari), each calling this handler. Suppress duplicates within 500ms.
+      const now = Date.now();
+      if (now - lastSubmitAtRef.current < 500) {
+        return;
+      }
+      lastSubmitAtRef.current = now;
       const currentInput = inputValueRef.current;
       if (!currentInput.trim() || isLoading || !selectedProject) {
         return;
