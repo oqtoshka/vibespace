@@ -257,6 +257,13 @@ export const api = {
       }),
   },
 
+  // Open a session in the host machine's desktop Terminal (macOS host only).
+  openInTerminal: ({ projectPath, sessionId, provider }) =>
+    authenticatedFetch('/api/open-in-terminal', {
+      method: 'POST',
+      body: JSON.stringify({ projectPath, sessionId, provider }),
+    }),
+
   // Generic GET method for any endpoint
   get: (endpoint) => authenticatedFetch(`/api${endpoint}`),
 

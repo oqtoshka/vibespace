@@ -5,6 +5,7 @@ import fs, { promises as fsPromises } from 'fs';
 import path from 'path';
 import os from 'os';
 import http from 'http';
+import { execFile } from 'child_process';
 
 // cross-spawn is a drop-in for child_process.spawn that resolves .cmd
 // shims/PATHEXT on Windows and delegates to the native spawn elsewhere.
@@ -329,6 +330,79 @@ app.post('/api/system/update', authenticateToken, async (req, res) => {
             error: error.message
         });
     }
+});
+
+// Open a session in the host machine's desktop Terminal (macOS only).
+// The cloudcli server runs on the user's Mac; this launches Terminal.app on
+// that host and resumes the given provider session via its CLI. The client
+// only shows the button when it detects it is itself running on macOS, but we
+// re-check `process.platform` here since the host is the source of truth.
+app.post('/api/open-in-terminal', authenticateToken, async (req, res) => {
+    if (process.platform !== 'darwin') {
+        return res.status(400).json({
+            success: false,
+            error: 'Opening a desktop terminal is only supported on macOS hosts',
+        });
+    }
+
+    const { projectPath, sessionId, provider = 'claude' } = req.body || {};
+
+    if (typeof projectPath !== 'string' || !projectPath.trim()) {
+        return res.status(400).json({ success: false, error: 'projectPath is required' });
+    }
+
+    const resolvedProjectPath = path.resolve(projectPath);
+    try {
+        if (!fs.statSync(resolvedProjectPath).isDirectory()) {
+            throw new Error('Not a directory');
+        }
+    } catch {
+        return res.status(400).json({ success: false, error: 'Invalid project path' });
+    }
+
+    // Same constraint the shell websocket enforces on session ids.
+    const safeSessionIdPattern = /^[a-zA-Z0-9_.\-:]+$/;
+    if (sessionId != null && (typeof sessionId !== 'string' || !safeSessionIdPattern.test(sessionId))) {
+        return res.status(400).json({ success: false, error: 'Invalid session ID' });
+    }
+    const hasSession = typeof sessionId === 'string' && sessionId.length > 0;
+
+    // Mirror the resume commands used by the in-app shell (unix variants).
+    let resumeCommand;
+    if (provider === 'cursor') {
+        resumeCommand = hasSession ? `cursor-agent --resume="${sessionId}"` : 'cursor-agent';
+    } else if (provider === 'codex') {
+        resumeCommand = hasSession ? `codex resume "${sessionId}" || codex` : 'codex';
+    } else if (provider === 'gemini') {
+        resumeCommand = hasSession ? `gemini --resume "${sessionId}"` : 'gemini';
+    } else {
+        resumeCommand = hasSession ? `claude --resume "${sessionId}" || claude` : 'claude';
+    }
+
+    // Command Terminal.app will run. Single-quote the cwd so spaces are safe;
+    // escape any embedded single quotes.
+    const safeCwd = resolvedProjectPath.replace(/'/g, `'\\''`);
+    const shellCommand = `cd '${safeCwd}' && ${resumeCommand}`;
+
+    // Embed inside an AppleScript string literal — escape backslashes and
+    // double quotes for AppleScript. execFile passes each -e arg verbatim
+    // (no shell), so there is no second shell-escaping layer to worry about.
+    const appleScriptArg = shellCommand.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+
+    execFile(
+        'osascript',
+        [
+            '-e', 'tell application "Terminal" to activate',
+            '-e', `tell application "Terminal" to do script "${appleScriptArg}"`,
+        ],
+        (error, _stdout, stderr) => {
+            if (error) {
+                console.error('open-in-terminal osascript error:', error, stderr);
+                return res.status(500).json({ success: false, error: error.message });
+            }
+            res.json({ success: true });
+        }
+    );
 });
 
 const expandWorkspacePath = (inputPath) => {
