@@ -3,10 +3,22 @@ import type { SessionActivityMap } from '../../../hooks/useSessionProtection';
 
 export type ProjectSortOrder = 'name' | 'date';
 export type SidebarSearchMode = 'projects' | 'conversations' | 'running' | 'archived';
+// How the Projects tab lays out its content: the classic project-grouped tree,
+// or a flat list of every session ordered by recent activity.
+export type ProjectViewMode = 'grouped' | 'activity';
 export type ArchivedProjectListItem = Project & { isArchived: true };
 
 export type SessionWithProvider = ProjectSession & {
   __provider: LLMProvider;
+};
+
+// A single row in the activity (flat) view: a session plus the context the
+// row needs to render and the attention flags used for ordering.
+export type ActivitySessionItem = {
+  session: SessionWithProvider;
+  project: Project;
+  isUnread: boolean;
+  isRunning: boolean;
 };
 
 export type ArchivedSessionListItem = {
@@ -51,6 +63,9 @@ export type SidebarProps = {
   // `projectId` is the DB identifier; the sidebar hands it back to the parent
   // when the delete flow completes.
   onProjectDelete?: (projectId: string) => void;
+  // Sessions currently mid-run; used by the activity view to tell "stopped"
+  // sessions (done, may need your attention) from ones still working.
+  processingSessions?: Set<string>;
   isLoading: boolean;
   loadingProgress: LoadingProgress | null;
   onRefresh: () => Promise<void> | void;
