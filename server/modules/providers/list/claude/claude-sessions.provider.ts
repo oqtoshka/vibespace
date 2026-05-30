@@ -297,6 +297,43 @@ export class ClaudeSessionsProvider implements IProviderSessions {
       return [];
     }
 
+    // Claude CLI surfaces API failures as synthetic assistant messages
+    // (`isApiErrorMessage: true`, `message.model: "<synthetic>"`). The default
+    // assistant-text branch would render them as a normal model reply, which
+    // hides the failure and — for "Prompt is too long" — leaves the session
+    // wedged with no signal to /compact or branch out.
+    if (raw.isApiErrorMessage === true) {
+      const rawContent = raw.message?.content;
+      const rawText = Array.isArray(rawContent)
+        ? rawContent
+            .filter((part: AnyRecord) => part?.type === 'text' && typeof part.text === 'string')
+            .map((part: AnyRecord) => part.text)
+            .join('\n')
+        : (typeof rawContent === 'string' ? rawContent : '');
+      const errorText = rawText.trim() || 'Claude API error';
+
+      const content = /prompt is too long/i.test(errorText)
+        ? [
+            '**Context too large**: this session\'s history exceeds the model\'s input limit.',
+            '',
+            'Resending the same prompt will keep hitting this error. Choose one:',
+            '- Run `/compact` to summarize the conversation in place.',
+            '- Start a fresh session in the same project to continue work.',
+            '',
+            `_(original error: ${errorText})_`,
+          ].join('\n')
+        : errorText;
+
+      return [createNormalizedMessage({
+        id: raw.uuid || generateMessageId('claude'),
+        sessionId,
+        timestamp: raw.timestamp || new Date().toISOString(),
+        provider: PROVIDER,
+        kind: 'error',
+        content,
+      })];
+    }
+
     if (raw.type === 'content_block_delta' && raw.delta?.text) {
       return [createNormalizedMessage({ kind: 'stream_delta', content: raw.delta.text, sessionId, provider: PROVIDER })];
     }
