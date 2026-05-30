@@ -1,7 +1,7 @@
 import type { TFunction } from 'i18next';
 
 import type { LLMProvider, Project, ProjectSession } from '../../../types/app';
-import type { ProjectSortOrder, SettingsProject, SessionViewModel, SessionWithProvider } from '../types/types';
+import type { ProjectSortOrder, ProjectViewMode, SettingsProject, SessionViewModel, SessionWithProvider } from '../types/types';
 
 export const readProjectSortOrder = (): ProjectSortOrder => {
   try {
@@ -14,6 +14,31 @@ export const readProjectSortOrder = (): ProjectSortOrder => {
     return settings.projectSortOrder === 'date' ? 'date' : 'name';
   } catch {
     return 'name';
+  }
+};
+
+export const readProjectViewMode = (): ProjectViewMode => {
+  try {
+    const rawSettings = localStorage.getItem('claude-settings');
+    if (!rawSettings) {
+      return 'grouped';
+    }
+
+    const settings = JSON.parse(rawSettings) as { projectViewMode?: ProjectViewMode };
+    return settings.projectViewMode === 'activity' ? 'activity' : 'grouped';
+  } catch {
+    return 'grouped';
+  }
+};
+
+export const writeProjectViewMode = (mode: ProjectViewMode): void => {
+  try {
+    const rawSettings = localStorage.getItem('claude-settings');
+    const settings = rawSettings ? (JSON.parse(rawSettings) as Record<string, unknown>) : {};
+    settings.projectViewMode = mode;
+    localStorage.setItem('claude-settings', JSON.stringify(settings));
+  } catch {
+    // Persisting the toggle is best-effort; the in-memory state still applies.
   }
 };
 
