@@ -209,6 +209,7 @@ function Sidebar({
       handleProjectSelect(project);
       handleSessionClick(session, project.projectId);
     },
+    onDeleteSession: showDeleteSessionConfirmation,
     t,
   };
 
