@@ -7,13 +7,14 @@ export const readProjectSortOrder = (): ProjectSortOrder => {
   try {
     const rawSettings = localStorage.getItem('claude-settings');
     if (!rawSettings) {
-      return 'name';
+      return 'date';
     }
 
     const settings = JSON.parse(rawSettings) as { projectSortOrder?: ProjectSortOrder };
-    return settings.projectSortOrder === 'date' ? 'date' : 'name';
+    // Default to last-activity order; only honour an explicit 'name' choice.
+    return settings.projectSortOrder === 'name' ? 'name' : 'date';
   } catch {
-    return 'name';
+    return 'date';
   }
 };
 
