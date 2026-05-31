@@ -157,7 +157,7 @@ export default function ChatMessagesPane({
       ref={scrollContainerRef}
       onWheel={onWheel}
       onTouchMove={onTouchMove}
-      className="relative flex-1 space-y-3 overflow-y-auto overflow-x-hidden px-0 py-3 sm:space-y-4 sm:p-4"
+      className="relative flex flex-1 flex-col overflow-y-auto overflow-x-hidden px-0 py-3 sm:p-4"
     >
       {isLoadingSessionMessages && chatMessages.length === 0 ? (
         <div className="mt-8 text-center text-gray-500 dark:text-gray-400">
@@ -191,7 +191,9 @@ export default function ChatMessagesPane({
           setInput={setInput}
         />
       ) : (
-        <>
+        // mt-auto pushes a short conversation down so it hugs the composer
+        // (Telegram-style), while a long one overflows and scrolls normally.
+        <div className="mt-auto space-y-3 sm:space-y-4">
           {/* Loading indicator for older messages (hide when load-all is active) */}
           {isLoadingMoreMessages && !isLoadingAllMessages && !allMessagesLoaded && (
             <div className="py-3 text-center text-gray-500 dark:text-gray-400">
@@ -280,7 +282,7 @@ export default function ChatMessagesPane({
               />
             );
           })}
-        </>
+        </div>
       )}
     </div>
   );
