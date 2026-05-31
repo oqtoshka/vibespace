@@ -96,7 +96,7 @@ export function getClaudeSettings(): ClaudeSettings {
       allowedTools: [],
       disallowedTools: [],
       skipPermissions: false,
-      projectSortOrder: 'name',
+      projectSortOrder: 'date',
     };
   }
 
@@ -107,14 +107,14 @@ export function getClaudeSettings(): ClaudeSettings {
       allowedTools: Array.isArray(parsed.allowedTools) ? parsed.allowedTools : [],
       disallowedTools: Array.isArray(parsed.disallowedTools) ? parsed.disallowedTools : [],
       skipPermissions: Boolean(parsed.skipPermissions),
-      projectSortOrder: parsed.projectSortOrder || 'name',
+      projectSortOrder: parsed.projectSortOrder || 'date',
     };
   } catch {
     return {
       allowedTools: [],
       disallowedTools: [],
       skipPermissions: false,
-      projectSortOrder: 'name',
+      projectSortOrder: 'date',
     };
   }
 }
