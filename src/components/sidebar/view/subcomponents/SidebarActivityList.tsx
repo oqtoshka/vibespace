@@ -1,8 +1,8 @@
-import { Loader2 } from 'lucide-react';
+import { Loader2, Trash2 } from 'lucide-react';
 import type { TFunction } from 'i18next';
 
 import { cn } from '../../../../lib/utils';
-import type { ProjectSession } from '../../../../types/app';
+import type { ProjectSession, LLMProvider } from '../../../../types/app';
 import type { ActivitySessionItem } from '../../types/types';
 import { getSessionName, getSessionTime } from '../../utils/utils';
 import SessionProviderLogo from '../../../llm-logo-provider/SessionProviderLogo';
@@ -12,6 +12,12 @@ export type SidebarActivityListProps = {
   selectedSession: ProjectSession | null;
   currentTime: Date;
   onSelectSession: (item: ActivitySessionItem) => void;
+  onDeleteSession: (
+    projectId: string,
+    sessionId: string,
+    sessionTitle: string,
+    provider: LLMProvider,
+  ) => void;
   t: TFunction;
 };
 
@@ -45,6 +51,7 @@ export default function SidebarActivityList({
   selectedSession,
   currentTime,
   onSelectSession,
+  onDeleteSession,
   t,
 }: SidebarActivityListProps) {
   if (items.length === 0) {
@@ -64,11 +71,16 @@ export default function SidebarActivityList({
         const sessionName = getSessionName(session, t);
         const compactAge = formatCompactAge(getSessionTime(session), currentTime);
 
+        const canDelete = session.__provider !== 'cursor';
+
         return (
-          <button
+          <div
             key={`${project.projectId}-${session.__provider}-${session.id}`}
+            className="group relative"
+          >
+          <button
             className={cn(
-              'group relative flex w-full items-start gap-2 rounded-md px-2 py-2 text-left transition-colors hover:bg-accent/50',
+              'flex w-full items-start gap-2 rounded-md px-2 py-2 text-left transition-colors hover:bg-accent/50',
               isSelected && 'bg-accent text-accent-foreground',
             )}
             onClick={() => onSelectSession({ session, project, isUnread, isRunning })}
@@ -105,6 +117,22 @@ export default function SidebarActivityList({
               </div>
             </div>
           </button>
+
+          {canDelete && (
+            <button
+              type="button"
+              className="touch:opacity-100 absolute right-1.5 top-1.5 flex h-6 w-6 items-center justify-center rounded opacity-0 transition-opacity hover:bg-red-50 group-hover:opacity-100 dark:hover:bg-red-900/20"
+              onClick={(event) => {
+                event.stopPropagation();
+                onDeleteSession(project.projectId, session.id, sessionName, session.__provider);
+              }}
+              title={t('tooltips.deleteSessionOptions', 'Archive or permanently delete this session')}
+              aria-label={t('tooltips.deleteSessionOptions', 'Archive or permanently delete this session')}
+            >
+              <Trash2 className="h-3 w-3 text-red-600 dark:text-red-400" />
+            </button>
+          )}
+          </div>
         );
       })}
     </div>
