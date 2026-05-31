@@ -198,6 +198,20 @@ function Sidebar({
     items: activitySessions,
     selectedSession,
     currentTime,
+    editingSession,
+    editingSessionName,
+    onEditingSessionNameChange: setEditingSessionName,
+    onStartEditingSession: (sessionId: string, initialName: string) => {
+      setEditingSession(sessionId);
+      setEditingSessionName(initialName);
+    },
+    onCancelEditingSession: () => {
+      setEditingSession(null);
+      setEditingSessionName('');
+    },
+    onSaveEditingSession: (projectName: string, sessionId: string, summary: string, provider: LLMProvider) => {
+      void updateSessionSummary(projectName, sessionId, summary, provider);
+    },
     onSelectSession: ({ session, project }: (typeof activitySessions)[number]) => {
       handleProjectSelect(project);
       handleSessionClick(session, project.projectId);
