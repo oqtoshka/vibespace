@@ -40,7 +40,7 @@ export const SETTINGS_MAIN_TABS: SettingsMainTabMeta[] = [
 export const AGENT_PROVIDERS: AgentProvider[] = ['claude', 'cursor', 'codex', 'gemini', 'opencode'];
 export const AGENT_CATEGORIES: AgentCategory[] = ['account', 'permissions', 'mcp'];
 
-export const DEFAULT_PROJECT_SORT_ORDER: ProjectSortOrder = 'name';
+export const DEFAULT_PROJECT_SORT_ORDER: ProjectSortOrder = 'date';
 export const DEFAULT_SAVE_STATUS = null;
 export const DEFAULT_CODE_EDITOR_SETTINGS: CodeEditorSettingsState = {
   theme: 'dark',

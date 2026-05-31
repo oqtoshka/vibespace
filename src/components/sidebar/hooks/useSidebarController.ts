@@ -131,7 +131,7 @@ export function useSidebarController({
   const [editingName, setEditingName] = useState('');
   const [initialSessionsLoaded, setInitialSessionsLoaded] = useState<Set<string>>(new Set());
   const [currentTime, setCurrentTime] = useState(new Date());
-  const [projectSortOrder, setProjectSortOrder] = useState<ProjectSortOrder>('name');
+  const [projectSortOrder, setProjectSortOrder] = useState<ProjectSortOrder>('date');
   const [projectViewMode, setProjectViewModeState] = useState<ProjectViewMode>('grouped');
   const { readMap, markRead } = useSessionReadState();
   const [isRefreshing, setIsRefreshing] = useState(false);
