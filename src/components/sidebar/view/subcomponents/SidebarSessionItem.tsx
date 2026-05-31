@@ -156,7 +156,7 @@ export default function SidebarSessionItem({
               ? 'border-green-500/30 bg-green-50/5 dark:bg-green-900/5'
               : 'border-border/30',
           )}
-          onClick={selectMobileSession}
+          onClick={editingSession === session.id ? undefined : selectMobileSession}
         >
           <div className="flex items-center gap-2">
             <div
@@ -168,40 +168,93 @@ export default function SidebarSessionItem({
               <SessionProviderLogo provider={session.__provider} className="h-3 w-3" />
             </div>
 
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-2">
-                <div className="min-w-0 flex-1 truncate text-sm font-normal text-foreground">{sessionView.sessionName}</div>
-                {isProcessing ? (
-                  <span className="ml-auto flex-shrink-0">
-                    <Tooltip content={t('tooltips.processingSessionIndicator', 'Processing session')} position="top">
-                      <span className="flex h-5 w-5 items-center justify-center rounded-md text-muted-foreground">
-                        <Loader2 className="h-3 w-3 animate-spin" />
+            {editingSession === session.id ? (
+              <>
+                <input
+                  type="text"
+                  value={editingSessionName}
+                  onChange={(event) => onEditingSessionNameChange(event.target.value)}
+                  onKeyDown={(event) => {
+                    event.stopPropagation();
+                    if (event.key === 'Enter') {
+                      saveEditedSession();
+                    } else if (event.key === 'Escape') {
+                      onCancelEditingSession();
+                    }
+                  }}
+                  onClick={(event) => event.stopPropagation()}
+                  className="min-w-0 flex-1 rounded border border-border bg-background px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-primary"
+                  style={{ fontSize: '16px' }}
+                  autoFocus
+                />
+                <button
+                  className="flex h-5 w-5 items-center justify-center rounded-md bg-green-50 transition-transform active:scale-95 dark:bg-green-900/20"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    saveEditedSession();
+                  }}
+                >
+                  <Check className="h-2.5 w-2.5 text-green-600 dark:text-green-400" />
+                </button>
+                <button
+                  className="flex h-5 w-5 items-center justify-center rounded-md bg-gray-50 transition-transform active:scale-95 dark:bg-gray-900/20"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onCancelEditingSession();
+                  }}
+                >
+                  <X className="h-2.5 w-2.5 text-gray-600 dark:text-gray-400" />
+                </button>
+              </>
+            ) : (
+              <>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <div className="min-w-0 flex-1 truncate text-sm font-normal text-foreground">{sessionView.sessionName}</div>
+                    {isProcessing ? (
+                      <span className="ml-auto flex-shrink-0">
+                        <Tooltip content={t('tooltips.processingSessionIndicator', 'Processing session')} position="top">
+                          <span className="flex h-5 w-5 items-center justify-center rounded-md text-muted-foreground">
+                            <Loader2 className="h-3 w-3 animate-spin" />
+                          </span>
+                        </Tooltip>
                       </span>
-                    </Tooltip>
-                  </span>
-                ) : compactSessionAge && (
-                  <span className="ml-auto flex-shrink-0 text-[11px] text-muted-foreground">{compactSessionAge}</span>
-                )}
-              </div>
-              <div className="mt-0.5 flex items-center">
-                {sessionView.messageCount > 0 && (
-                  <Badge variant="secondary" className="px-1 py-0 text-xs">
-                    {sessionView.messageCount}
-                  </Badge>
-                )}
-              </div>
-            </div>
+                    ) : compactSessionAge && (
+                      <span className="ml-auto flex-shrink-0 text-[11px] text-muted-foreground">{compactSessionAge}</span>
+                    )}
+                  </div>
+                  <div className="mt-0.5 flex items-center">
+                    {sessionView.messageCount > 0 && (
+                      <Badge variant="secondary" className="px-1 py-0 text-xs">
+                        {sessionView.messageCount}
+                      </Badge>
+                    )}
+                  </div>
+                </div>
 
-            {!isProcessing && (
-              <button
-                className="ml-1 flex h-5 w-5 items-center justify-center rounded-md bg-red-50 opacity-70 transition-transform active:scale-95 dark:bg-red-900/20"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  requestDeleteSession();
-                }}
-              >
-                <Trash2 className="h-2.5 w-2.5 text-red-600 dark:text-red-400" />
-              </button>
+                {!isProcessing && (
+                  <>
+                    <button
+                      className="ml-1 flex h-5 w-5 items-center justify-center rounded-md bg-gray-50 opacity-70 transition-transform active:scale-95 dark:bg-gray-900/20"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onStartEditingSession(session.id, sessionView.sessionName);
+                      }}
+                    >
+                      <Edit2 className="h-2.5 w-2.5 text-gray-600 dark:text-gray-400" />
+                    </button>
+                    <button
+                      className="flex h-5 w-5 items-center justify-center rounded-md bg-red-50 opacity-70 transition-transform active:scale-95 dark:bg-red-900/20"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        requestDeleteSession();
+                      }}
+                    >
+                      <Trash2 className="h-2.5 w-2.5 text-red-600 dark:text-red-400" />
+                    </button>
+                  </>
+                )}
+              </>
             )}
           </div>
         </div>
