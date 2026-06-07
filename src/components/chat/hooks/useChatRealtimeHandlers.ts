@@ -39,6 +39,8 @@ interface UseChatRealtimeHandlersArgs {
   onSessionProcessing?: MarkSessionProcessing;
   onSessionIdle?: MarkSessionIdle;
   onWebSocketReconnect?: () => void;
+  onSendFailed?: () => void;
+  onSendSucceeded?: () => void;
   sessionStore: SessionStore;
 }
 
@@ -70,6 +72,8 @@ export function useChatRealtimeHandlers({
   onSessionProcessing,
   onSessionIdle,
   onWebSocketReconnect,
+  onSendFailed,
+  onSendSucceeded,
   sessionStore,
 }: UseChatRealtimeHandlersArgs) {
   // Session switches can send `chat.subscribe` before this effect has a chance
@@ -343,6 +347,8 @@ export function useChatRealtimeHandlers({
     onSessionProcessing,
     onSessionIdle,
     onWebSocketReconnect,
+    onSendFailed,
+    onSendSucceeded,
     sessionStore,
   ]);
 }

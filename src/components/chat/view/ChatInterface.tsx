@@ -191,6 +191,10 @@ function ChatInterface({
     commandModalPayload,
     closeCommandModal,
     showCostModal,
+    queuedMessages,
+    removeQueuedMessage,
+    restoreFailedSend,
+    clearFailedSendBackup,
   } = useChatComposerState({
     selectedProject,
     selectedSession,
@@ -252,6 +256,8 @@ function ChatInterface({
     onSessionProcessing,
     onSessionIdle,
     onWebSocketReconnect: handleWebSocketReconnect,
+    onSendFailed: restoreFailedSend,
+    onSendSucceeded: clearFailedSendBackup,
     sessionStore,
   });
 

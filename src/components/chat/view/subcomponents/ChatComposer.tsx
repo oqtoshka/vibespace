@@ -357,6 +357,28 @@ export default function ChatComposer({
           frequentCommands={frequentCommands}
         />
 
+        {queuedMessages.length > 0 && (
+          <div className="mb-2 flex flex-col gap-1">
+            {queuedMessages.map((message) => (
+              <div
+                key={message.id}
+                className="flex items-center gap-2 rounded-lg border border-border/50 bg-muted/40 px-3 py-1.5 text-xs text-muted-foreground"
+              >
+                <ClockIcon className="h-3.5 w-3.5 shrink-0 opacity-60" />
+                <span className="min-w-0 flex-1 truncate">{message.content}</span>
+                <button
+                  type="button"
+                  onClick={() => onRemoveQueuedMessage(message.id)}
+                  className="shrink-0 rounded p-0.5 transition-colors hover:bg-muted hover:text-foreground"
+                  title={t('input.removeQueued', { defaultValue: 'Remove from queue' })}
+                >
+                  <XIcon className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
         <PromptInput
           onSubmit={onSubmit as (event: FormEvent<HTMLFormElement>) => void}
           status={isLoading ? 'streaming' : 'ready'}
