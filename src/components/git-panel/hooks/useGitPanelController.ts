@@ -8,11 +8,13 @@ import type {
   GitCommitsResponse,
   GitDiffMap,
   GitDiffResponse,
+  GitDiscoveredRepo,
   GitFileWithDiffResponse,
   GitGenerateMessageResponse,
   GitOperationResponse,
   GitPanelController,
   GitRemoteStatus,
+  GitReposResponse,
   GitStatusResponse,
   UseGitPanelControllerOptions,
 } from '../types/types';
@@ -40,6 +42,25 @@ async function readJson<T>(response: Response, signal?: AbortSignal): Promise<T>
   return data;
 }
 
+// Remembers which sub-repo was selected per project across reloads.
+const repoStorageKey = (projectId: string) => `git-selected-repo:${projectId}`;
+
+function readStoredRepoPath(projectId: string): string | null {
+  try {
+    return localStorage.getItem(repoStorageKey(projectId));
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredRepoPath(projectId: string, relPath: string): void {
+  try {
+    localStorage.setItem(repoStorageKey(projectId), relPath);
+  } catch {
+    // Silently ignore storage errors
+  }
+}
+
 export function useGitPanelController({
   selectedProject,
   activeView,
@@ -62,6 +83,13 @@ export function useGitPanelController({
   const [isPublishing, setIsPublishing] = useState(false);
   const [isCreatingInitialCommit, setIsCreatingInitialCommit] = useState(false);
   const [operationError, setOperationError] = useState<string | null>(null);
+  // Sub-repo discovery: when the project root isn't a git repo, the panel can
+  // operate on a repository nested in a subfolder. `selectedRepoPath` is the
+  // project-relative path of that repo ('' = project root, null = discovery
+  // still pending).
+  const [discoveredRepos, setDiscoveredRepos] = useState<GitDiscoveredRepo[]>([]);
+  const [selectedRepoPath, setSelectedRepoPath] = useState<string | null>(null);
+  const [rootIsRepo, setRootIsRepo] = useState(true);
 
   const clearOperationError = useCallback(() => setOperationError(null), []);
   // Tracks the DB projectId so async requests can detect stale responses when
@@ -74,6 +102,18 @@ export function useGitPanelController({
 
   const provider = useSelectedProvider();
 
+  // Centralized repoPath threading: every git API call goes through one of
+  // these so the whole panel transparently targets the selected sub-repo.
+  const withRepoParam = useCallback(
+    (url: string) => (selectedRepoPath ? `${url}&repoPath=${encodeURIComponent(selectedRepoPath)}` : url),
+    [selectedRepoPath],
+  );
+
+  const repoBody = useCallback(
+    () => (selectedRepoPath ? { repoPath: selectedRepoPath } : {}),
+    [selectedRepoPath],
+  );
+
   const fetchFileDiff = useCallback(
     async (filePath: string, signal?: AbortSignal) => {
       if (!selectedProject) {
@@ -85,7 +125,7 @@ export function useGitPanelController({
 
       try {
         const response = await fetchWithAuth(
-          `/api/git/diff?project=${encodeURIComponent(projectId)}&file=${encodeURIComponent(filePath)}`,
+          withRepoParam(`/api/git/diff?project=${encodeURIComponent(projectId)}&file=${encodeURIComponent(filePath)}`),
           { signal },
         );
         const data = await readJson<GitDiffResponse>(response, signal);
@@ -111,7 +151,7 @@ export function useGitPanelController({
         console.error('Error fetching file diff:', error);
       }
     },
-    [selectedProject],
+    [selectedProject, withRepoParam],
   );
 
   const fetchGitStatus = useCallback(async (signal?: AbortSignal) => {
@@ -124,7 +164,7 @@ export function useGitPanelController({
 
     setIsLoading(true);
     try {
-      const response = await fetchWithAuth(`/api/git/status?project=${encodeURIComponent(projectId)}`, { signal });
+      const response = await fetchWithAuth(withRepoParam(`/api/git/status?project=${encodeURIComponent(projectId)}`), { signal });
       const data = await readJson<GitStatusResponse>(response, signal);
 
       if (
@@ -165,7 +205,7 @@ export function useGitPanelController({
     } finally {
       setIsLoading(false);
     }
-  }, [fetchFileDiff, selectedProject]);
+  }, [fetchFileDiff, selectedProject, withRepoParam]);
 
   const fetchBranches = useCallback(async () => {
     if (!selectedProject) {
@@ -173,7 +213,7 @@ export function useGitPanelController({
     }
 
     try {
-      const response = await fetchWithAuth(`/api/git/branches?project=${encodeURIComponent(selectedProject.projectId)}`);
+      const response = await fetchWithAuth(withRepoParam(`/api/git/branches?project=${encodeURIComponent(selectedProject.projectId)}`));
       const data = await readJson<GitBranchesResponse>(response);
 
       if (!data.error && data.branches) {
@@ -192,7 +232,7 @@ export function useGitPanelController({
       setLocalBranches([]);
       setRemoteBranches([]);
     }
-  }, [selectedProject]);
+  }, [selectedProject, withRepoParam]);
 
   const fetchRemoteStatus = useCallback(async () => {
     if (!selectedProject) {
@@ -200,7 +240,7 @@ export function useGitPanelController({
     }
 
     try {
-      const response = await fetchWithAuth(`/api/git/remote-status?project=${encodeURIComponent(selectedProject.projectId)}`);
+      const response = await fetchWithAuth(withRepoParam(`/api/git/remote-status?project=${encodeURIComponent(selectedProject.projectId)}`));
       const data = await readJson<GitRemoteStatus | GitApiErrorResponse>(response);
 
       if (!data.error) {
@@ -213,7 +253,7 @@ export function useGitPanelController({
       console.error('Error fetching remote status:', error);
       setRemoteStatus(null);
     }
-  }, [selectedProject]);
+  }, [selectedProject, withRepoParam]);
 
   const switchBranch = useCallback(
     async (branchName: string) => {
@@ -228,6 +268,7 @@ export function useGitPanelController({
           body: JSON.stringify({
             project: selectedProject.projectId,
             branch: branchName,
+            ...repoBody(),
           }),
         });
 
@@ -245,7 +286,7 @@ export function useGitPanelController({
         return false;
       }
     },
-    [fetchGitStatus, selectedProject],
+    [fetchGitStatus, repoBody, selectedProject],
   );
 
   const createBranch = useCallback(
@@ -263,6 +304,7 @@ export function useGitPanelController({
           body: JSON.stringify({
             project: selectedProject.projectId,
             branch: trimmedBranchName,
+            ...repoBody(),
           }),
         });
 
@@ -283,7 +325,7 @@ export function useGitPanelController({
         setIsCreatingBranch(false);
       }
     },
-    [fetchBranches, fetchGitStatus, selectedProject],
+    [fetchBranches, fetchGitStatus, repoBody, selectedProject],
   );
 
   const deleteBranch = useCallback(
@@ -294,7 +336,7 @@ export function useGitPanelController({
         const response = await fetchWithAuth('/api/git/delete-branch', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ project: selectedProject.projectId, branch: branchName }),
+          body: JSON.stringify({ project: selectedProject.projectId, branch: branchName, ...repoBody() }),
         });
 
         const data = await readJson<GitOperationResponse>(response);
@@ -310,7 +352,7 @@ export function useGitPanelController({
         return false;
       }
     },
-    [fetchBranches, selectedProject],
+    [fetchBranches, repoBody, selectedProject],
   );
 
   const handleFetch = useCallback(async () => {
@@ -325,6 +367,7 @@ export function useGitPanelController({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           project: selectedProject.projectId,
+          ...repoBody(),
         }),
       });
 
@@ -342,7 +385,7 @@ export function useGitPanelController({
     } finally {
       setIsFetching(false);
     }
-  }, [fetchBranches, fetchGitStatus, fetchRemoteStatus, selectedProject]);
+  }, [fetchBranches, fetchGitStatus, fetchRemoteStatus, repoBody, selectedProject]);
 
   const handlePull = useCallback(async () => {
     if (!selectedProject) {
@@ -356,6 +399,7 @@ export function useGitPanelController({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           project: selectedProject.projectId,
+          ...repoBody(),
         }),
       });
 
@@ -372,7 +416,7 @@ export function useGitPanelController({
     } finally {
       setIsPulling(false);
     }
-  }, [fetchGitStatus, fetchRemoteStatus, selectedProject]);
+  }, [fetchGitStatus, fetchRemoteStatus, repoBody, selectedProject]);
 
   const handlePush = useCallback(async () => {
     if (!selectedProject) {
@@ -386,6 +430,7 @@ export function useGitPanelController({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           project: selectedProject.projectId,
+          ...repoBody(),
         }),
       });
 
@@ -402,7 +447,7 @@ export function useGitPanelController({
     } finally {
       setIsPushing(false);
     }
-  }, [fetchGitStatus, fetchRemoteStatus, selectedProject]);
+  }, [fetchGitStatus, fetchRemoteStatus, repoBody, selectedProject]);
 
   const handlePublish = useCallback(async () => {
     if (!selectedProject) {
@@ -417,6 +462,7 @@ export function useGitPanelController({
         body: JSON.stringify({
           project: selectedProject.projectId,
           branch: currentBranch,
+          ...repoBody(),
         }),
       });
 
@@ -433,7 +479,7 @@ export function useGitPanelController({
     } finally {
       setIsPublishing(false);
     }
-  }, [currentBranch, fetchGitStatus, fetchRemoteStatus, selectedProject]);
+  }, [currentBranch, fetchGitStatus, fetchRemoteStatus, repoBody, selectedProject]);
 
   const discardChanges = useCallback(
     async (filePath: string) => {
@@ -448,6 +494,7 @@ export function useGitPanelController({
           body: JSON.stringify({
             project: selectedProject.projectId,
             file: filePath,
+            ...repoBody(),
           }),
         });
 
@@ -462,7 +509,7 @@ export function useGitPanelController({
         console.error('Error discarding changes:', error);
       }
     },
-    [fetchGitStatus, selectedProject],
+    [fetchGitStatus, repoBody, selectedProject],
   );
 
   const deleteUntrackedFile = useCallback(
@@ -478,6 +525,7 @@ export function useGitPanelController({
           body: JSON.stringify({
             project: selectedProject.projectId,
             file: filePath,
+            ...repoBody(),
           }),
         });
 
@@ -492,7 +540,7 @@ export function useGitPanelController({
         console.error('Error deleting untracked file:', error);
       }
     },
-    [fetchGitStatus, selectedProject],
+    [fetchGitStatus, repoBody, selectedProject],
   );
 
   const stageFiles = useCallback(
@@ -567,7 +615,7 @@ export function useGitPanelController({
 
     try {
       const response = await fetchWithAuth(
-        `/api/git/commits?project=${encodeURIComponent(selectedProject.projectId)}&limit=${RECENT_COMMITS_LIMIT}`,
+        withRepoParam(`/api/git/commits?project=${encodeURIComponent(selectedProject.projectId)}&limit=${RECENT_COMMITS_LIMIT}`),
       );
       const data = await readJson<GitCommitsResponse>(response);
 
@@ -577,7 +625,7 @@ export function useGitPanelController({
     } catch (error) {
       console.error('Error fetching commits:', error);
     }
-  }, [selectedProject]);
+  }, [selectedProject, withRepoParam]);
 
   const fetchCommitDiff = useCallback(
     async (commitHash: string) => {
@@ -587,7 +635,7 @@ export function useGitPanelController({
 
       try {
         const response = await fetchWithAuth(
-          `/api/git/commit-diff?project=${encodeURIComponent(selectedProject.projectId)}&commit=${commitHash}`,
+          withRepoParam(`/api/git/commit-diff?project=${encodeURIComponent(selectedProject.projectId)}&commit=${commitHash}`),
         );
         const data = await readJson<GitDiffResponse>(response);
 
@@ -601,7 +649,7 @@ export function useGitPanelController({
         console.error('Error fetching commit diff:', error);
       }
     },
-    [selectedProject],
+    [selectedProject, withRepoParam],
   );
 
   const generateCommitMessage = useCallback(
@@ -618,6 +666,7 @@ export function useGitPanelController({
             project: selectedProject.projectId,
             files,
             provider,
+            ...repoBody(),
           }),
         });
 
@@ -633,7 +682,7 @@ export function useGitPanelController({
         return null;
       }
     },
-    [provider, selectedProject],
+    [provider, repoBody, selectedProject],
   );
 
   const commitChanges = useCallback(
@@ -650,6 +699,7 @@ export function useGitPanelController({
             project: selectedProject.projectId,
             message,
             files,
+            ...repoBody(),
           }),
         });
 
@@ -667,7 +717,7 @@ export function useGitPanelController({
         return false;
       }
     },
-    [fetchGitStatus, fetchRemoteStatus, selectedProject],
+    [fetchGitStatus, fetchRemoteStatus, repoBody, selectedProject],
   );
 
   const createInitialCommit = useCallback(async () => {
@@ -682,6 +732,7 @@ export function useGitPanelController({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           project: selectedProject.projectId,
+          ...repoBody(),
         }),
       });
 
@@ -699,7 +750,7 @@ export function useGitPanelController({
     } finally {
       setIsCreatingInitialCommit(false);
     }
-  }, [fetchGitStatus, fetchRemoteStatus, selectedProject]);
+  }, [fetchGitStatus, fetchRemoteStatus, repoBody, selectedProject]);
 
   const openFile = useCallback(
     async (filePath: string) => {
@@ -714,7 +765,7 @@ export function useGitPanelController({
 
       try {
         const response = await fetchWithAuth(
-          `/api/git/file-with-diff?project=${encodeURIComponent(selectedProject.projectId)}&file=${encodeURIComponent(filePath)}`,
+          withRepoParam(`/api/git/file-with-diff?project=${encodeURIComponent(selectedProject.projectId)}&file=${encodeURIComponent(filePath)}`),
         );
         const data = await readJson<GitFileWithDiffResponse>(response);
 
@@ -733,7 +784,7 @@ export function useGitPanelController({
         onFileOpen(filePath);
       }
     },
-    [onFileOpen, selectedProject],
+    [onFileOpen, selectedProject, withRepoParam],
   );
 
   const refreshAll = useCallback(() => {
@@ -742,6 +793,66 @@ export function useGitPanelController({
     void fetchRemoteStatus();
   }, [fetchBranches, fetchGitStatus, fetchRemoteStatus]);
 
+  // Discover git repositories for the project: the root itself and/or repos
+  // nested in subfolders. Resolves `selectedRepoPath`, which then unblocks the
+  // status/branches/remote fetch effect below.
+  const discoverRepos = useCallback(async (signal?: AbortSignal) => {
+    if (!selectedProject) {
+      return;
+    }
+
+    const projectId = selectedProject.projectId;
+    let isRepo = true;
+    let repos: GitDiscoveredRepo[] = [];
+
+    try {
+      const response = await fetchWithAuth(`/api/git/repos?project=${encodeURIComponent(projectId)}`, { signal });
+      const data = await readJson<GitReposResponse>(response, signal);
+      if (!data.error) {
+        isRepo = Boolean(data.isRepo);
+        repos = data.repos ?? [];
+      }
+    } catch (error) {
+      if (signal?.aborted || isAbortError(error)) {
+        return;
+      }
+      // Discovery failures fall back to root-repo behavior: the status fetch
+      // surfaces whatever error there is, exactly like before this feature.
+      console.error('Error discovering git repos:', error);
+    }
+
+    if (signal?.aborted || selectedProjectIdRef.current !== projectId) {
+      return;
+    }
+
+    const stored = readStoredRepoPath(projectId);
+    const storedIsValid = stored !== null
+      && ((stored === '' && isRepo) || repos.some((repo) => repo.relPath === stored));
+
+    let nextRepoPath = '';
+    if (storedIsValid) {
+      nextRepoPath = stored;
+    } else if (!isRepo && repos.length > 0) {
+      nextRepoPath = repos[0].relPath;
+    }
+
+    setRootIsRepo(isRepo);
+    setDiscoveredRepos(repos);
+    setSelectedRepoPath(nextRepoPath);
+  }, [selectedProject]);
+
+  const selectRepo = useCallback(
+    (relPath: string) => {
+      if (!selectedProject || relPath === selectedRepoPath) {
+        return;
+      }
+      writeStoredRepoPath(selectedProject.projectId, relPath);
+      setSelectedRepoPath(relPath);
+    },
+    [selectedProject, selectedRepoPath],
+  );
+
+  // Project change: reset everything and kick off repo discovery.
   useEffect(() => {
     const controller = new AbortController();
 
@@ -757,12 +868,35 @@ export function useGitPanelController({
     setCommitDiffs({});
     setIsLoading(false);
     setOperationError(null);
+    setDiscoveredRepos([]);
+    setSelectedRepoPath(null);
+    setRootIsRepo(true);
 
     if (!selectedProject) {
       return () => {
         controller.abort();
       };
     }
+
+    void discoverRepos(controller.signal);
+
+    return () => {
+      controller.abort();
+    };
+  }, [discoverRepos, selectedProject]);
+
+  // Repo resolved (initially or via the picker): clear repo-scoped data and
+  // load the panel. `null` means discovery hasn't completed yet.
+  useEffect(() => {
+    if (!selectedProject || selectedRepoPath === null) {
+      return;
+    }
+
+    const controller = new AbortController();
+
+    setGitDiff({});
+    setRecentCommits([]);
+    setCommitDiffs({});
 
     void fetchGitStatus(controller.signal);
     void fetchBranches();
@@ -771,7 +905,7 @@ export function useGitPanelController({
     return () => {
       controller.abort();
     };
-  }, [fetchBranches, fetchGitStatus, fetchRemoteStatus, selectedProject]);
+  }, [fetchBranches, fetchGitStatus, fetchRemoteStatus, selectedProject, selectedRepoPath]);
 
   useEffect(() => {
     if (!selectedProject || activeView !== 'history') {
@@ -784,6 +918,10 @@ export function useGitPanelController({
     gitStatus,
     gitDiff,
     isLoading,
+    discoveredRepos,
+    selectedRepoPath,
+    rootIsRepo,
+    selectRepo,
     currentBranch,
     branches,
     localBranches,
