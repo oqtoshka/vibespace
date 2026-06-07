@@ -71,6 +71,9 @@ interface UseChatRealtimeHandlersArgs {
   onWebSocketReconnect?: () => void;
   onSendFailed?: () => void;
   onSendSucceeded?: () => void;
+  /** An error arrived before any session exists (e.g. rejected cwd) — there is
+   *  no store slot to append to, so the caller must surface it some other way. */
+  onSessionlessError?: (content: string) => void;
   sessionStore: SessionStore;
 }
 
@@ -100,6 +103,7 @@ export function useChatRealtimeHandlers({
   onWebSocketReconnect,
   onSendFailed,
   onSendSucceeded,
+  onSessionlessError,
   sessionStore,
 }: UseChatRealtimeHandlersArgs) {
   const paletteOps = usePaletteOps();
@@ -334,6 +338,11 @@ export function useChatRealtimeHandlers({
         onSessionInactive?.(sid);
         onSessionNotProcessing?.(sid);
         pendingViewSessionRef.current = null;
+        // No session id means the store append above was skipped — without
+        // this hand-off the failure would be completely invisible.
+        if (!sid) {
+          onSessionlessError?.(msg.content || 'Unknown error');
+        }
         // Offer the failed message back to the composer, but only for the
         // session the user is actually looking at.
         if (!sid || sid === activeViewSessionId) {
@@ -410,6 +419,7 @@ export function useChatRealtimeHandlers({
     onWebSocketReconnect,
     onSendFailed,
     onSendSucceeded,
+    onSessionlessError,
     sessionStore,
     paletteOps,
   ]);

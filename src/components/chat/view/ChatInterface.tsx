@@ -230,6 +230,15 @@ function ChatInterface({
     setCanAbortSession(false);
   }, [selectedProject, selectedSession, sessionStore, setIsLoading, setCanAbortSession]);
 
+  // Errors that arrive before a session id exists (e.g. rejected cwd) have no
+  // store slot — buffer them through addMessage so the user sees the failure.
+  const handleSessionlessError = useCallback(
+    (content: string) => {
+      addMessage({ type: 'error', content, timestamp: new Date() });
+    },
+    [addMessage],
+  );
+
   useChatRealtimeHandlers({
     latestMessage,
     provider,
@@ -252,6 +261,7 @@ function ChatInterface({
     onWebSocketReconnect: handleWebSocketReconnect,
     onSendFailed: restoreFailedSend,
     onSendSucceeded: clearFailedSendBackup,
+    onSessionlessError: handleSessionlessError,
     sessionStore,
   });
 
