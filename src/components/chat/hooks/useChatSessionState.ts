@@ -161,7 +161,7 @@ export function useChatSessionState({
      *
      * Why this is essential:
      * - Chat keeps local state that is not fully derived from `selectedSession`:
-     *   `currentSessionId`, `pendingUserMessage`, streaming/status flags, message
+     *   `currentSessionId`, `pendingMessages`, streaming/status flags, message
      *   pagination/scroll bookkeeping, and provider-specific sessionStorage keys.
      * - If the user clicks New Session while already on the same route with no
      *   selected session, parent state updates can be idempotent and this local
@@ -238,8 +238,8 @@ export function useChatSessionState({
   }
 
   useEffect(() => {
-    if (!pendingUserMessage) {
-      flushedPendingUserMessageRef.current = null;
+    if (pendingMessages.length === 0) {
+      flushedPendingMessagesRef.current = null;
       return;
     }
 
@@ -247,19 +247,21 @@ export function useChatSessionState({
       return;
     }
 
-    if (flushedPendingUserMessageRef.current === pendingUserMessage) {
+    if (flushedPendingMessagesRef.current === pendingMessages) {
       return;
     }
 
     const prov = (localStorage.getItem('selected-provider') as LLMProvider) || 'claude';
-    const normalized = chatMessageToNormalized(pendingUserMessage, activeSessionId, prov);
-    if (normalized) {
-      sessionStore.appendRealtime(activeSessionId, normalized);
+    for (const pending of pendingMessages) {
+      const normalized = chatMessageToNormalized(pending, activeSessionId, prov);
+      if (normalized) {
+        sessionStore.appendRealtime(activeSessionId, normalized);
+      }
     }
 
-    flushedPendingUserMessageRef.current = pendingUserMessage;
-    setPendingUserMessage(null);
-  }, [activeSessionId, pendingUserMessage, sessionStore]);
+    flushedPendingMessagesRef.current = pendingMessages;
+    setPendingMessages([]);
+  }, [activeSessionId, pendingMessages, sessionStore]);
 
   const storeMessages = activeSessionId ? sessionStore.getMessages(activeSessionId) : [];
 
@@ -274,13 +276,14 @@ export function useChatSessionState({
     const tNorm = performance.now();
     const all = normalizedToChatMessages(storeMessages);
     dbg('chatMessages.normalized', { dur_ms: Math.round(performance.now() - tNorm), inCount: storeMessages.length, outCount: all.length });
-    // Show pending user message when no session data exists yet (new session, pre-backend-response)
-    if (pendingUserMessage && all.length === 0) {
-      return [pendingUserMessage];
+    // Show pending messages when no session data exists yet (new session,
+    // pre-backend-response): the just-sent user message and any early errors.
+    if (pendingMessages.length > 0 && all.length === 0) {
+      return pendingMessages;
     }
     if (viewHiddenCount > 0 && viewHiddenCount < all.length) return all.slice(0, -viewHiddenCount);
     return all;
-  }, [storeMessages, viewHiddenCount, pendingUserMessage]);
+  }, [storeMessages, viewHiddenCount, pendingMessages]);
 
   /* ---------------------------------------------------------------- */
   /*  addMessage / clearMessages / rewindMessages                     */
@@ -288,8 +291,8 @@ export function useChatSessionState({
 
   const addMessage = useCallback((msg: ChatMessage) => {
     if (!activeSessionId) {
-      // No session yet — show as pending until the backend creates one
-      setPendingUserMessage(msg);
+      // No session yet — buffer as pending until the backend creates one
+      setPendingMessages((previous) => [...previous, msg]);
       return;
     }
     const prov = (localStorage.getItem('selected-provider') as LLMProvider) || 'claude';
