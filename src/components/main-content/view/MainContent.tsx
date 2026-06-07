@@ -150,11 +150,16 @@ function MainContent({
             </ErrorBoundary>
           </div>
 
-          {activeTab === 'files' && (
-            <div className="h-full overflow-hidden">
-              <FileTree selectedProject={selectedProject} onFileOpen={handleFileOpen} />
-            </div>
-          )}
+          {/* Keep the file tree mounted so expanded folders, search and scroll
+              survive tab switches; key by project so state resets on project change. */}
+          <div className={`h-full overflow-hidden ${activeTab === 'files' ? 'block' : 'hidden'}`}>
+            <FileTree
+              key={selectedProject.projectId}
+              selectedProject={selectedProject}
+              isActive={activeTab === 'files'}
+              onFileOpen={handleFileOpen}
+            />
+          </div>
 
           {activeTab === 'shell' && (
             <div className="h-full w-full overflow-hidden">
