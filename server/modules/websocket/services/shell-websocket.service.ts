@@ -19,6 +19,7 @@ type ShellIncomingMessage = {
   initialCommand?: string;
   isPlainShell?: boolean;
   forceRestart?: boolean;
+  skipPermissions?: boolean;
 };
 
 type PtySessionEntry = {
@@ -144,12 +145,15 @@ function buildShellCommand(
     return initialCommand || 'opencode';
   }
 
-  const command = initialCommand || 'claude';
+  // Mirror the user's bypass-permissions setting when launching the claude CLI.
+  const skipPermissions = readBoolean(message.skipPermissions);
+  const claudeFlags = skipPermissions ? ' --dangerously-skip-permissions' : '';
+  const command = initialCommand || `claude${claudeFlags}`;
   if (hasSession && sessionId) {
     if (os.platform() === 'win32') {
-      return `claude --resume "${sessionId}"; if ($LASTEXITCODE -ne 0) { claude }`;
+      return `claude --resume "${sessionId}"${claudeFlags}; if ($LASTEXITCODE -ne 0) { claude${claudeFlags} }`;
     }
-    return `claude --resume "${sessionId}" || claude`;
+    return `claude --resume "${sessionId}"${claudeFlags} || claude${claudeFlags}`;
   }
   return command;
 }
