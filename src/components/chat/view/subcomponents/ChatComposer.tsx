@@ -9,9 +9,10 @@ import type {
   RefObject,
   TouchEvent,
 } from 'react';
-import { ImageIcon, MessageSquareIcon, XIcon, ArrowDownIcon } from 'lucide-react';
+import { ImageIcon, MessageSquareIcon, XIcon, ArrowDownIcon, ClockIcon } from 'lucide-react';
 
 import type { PendingPermissionRequest, PermissionMode, Provider } from '../../types/types';
+import type { QueuedMessage } from '../../hooks/useChatComposerState';
 import {
   PromptInput,
   PromptInputHeader,
@@ -54,6 +55,8 @@ interface ChatComposerProps {
   claudeStatus: { text: string; tokens: number; can_interrupt: boolean } | null;
   isLoading: boolean;
   onAbortSession: () => void;
+  queuedMessages: QueuedMessage[];
+  onRemoveQueuedMessage: (id: string) => void;
   provider: Provider | string;
   permissionMode: PermissionMode | string;
   onModeSwitch: () => void;
@@ -108,6 +111,8 @@ export default function ChatComposer({
   claudeStatus,
   isLoading,
   onAbortSession,
+  queuedMessages,
+  onRemoveQueuedMessage,
   provider,
   permissionMode,
   onModeSwitch,
@@ -240,6 +245,28 @@ export default function ChatComposer({
           isOpen={isCommandMenuOpen}
           frequentCommands={frequentCommands}
         />
+
+        {queuedMessages.length > 0 && (
+          <div className="mb-2 flex flex-col gap-1">
+            {queuedMessages.map((message) => (
+              <div
+                key={message.id}
+                className="flex items-center gap-2 rounded-lg border border-border/50 bg-muted/40 px-3 py-1.5 text-xs text-muted-foreground"
+              >
+                <ClockIcon className="h-3.5 w-3.5 shrink-0 opacity-60" />
+                <span className="min-w-0 flex-1 truncate">{message.content}</span>
+                <button
+                  type="button"
+                  onClick={() => onRemoveQueuedMessage(message.id)}
+                  className="shrink-0 rounded p-0.5 transition-colors hover:bg-muted hover:text-foreground"
+                  title={t('input.removeQueued', { defaultValue: 'Remove from queue' })}
+                >
+                  <XIcon className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
 
         <PromptInput
           onSubmit={onSubmit as (event: FormEvent<HTMLFormElement>) => void}
@@ -392,11 +419,38 @@ export default function ChatComposer({
             >
               {sendByCtrlEnter ? t('input.hintText.ctrlEnter') : t('input.hintText.enter')}
             </div>
-            <PromptInputSubmit
-              onClick={isLoading ? onAbortSession : undefined}
-              disabled={!isLoading && !input.trim()}
-              className="h-10 w-10 sm:h-10 sm:w-10"
-            />
+            {isLoading && !input.trim() ? (
+              // Busy with nothing queued to type: show a real STOP button.
+              <PromptInputSubmit
+                status="streaming"
+                title={t('input.stop', { defaultValue: 'Stop' })}
+                className="h-10 w-10 sm:h-10 sm:w-10"
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                  onAbortSession();
+                }}
+                onTouchStart={(event) => {
+                  event.preventDefault();
+                  onAbortSession();
+                }}
+              />
+            ) : (
+              // Idle, or busy with text to queue: show a send button.
+              <PromptInputSubmit
+                status="ready"
+                disabled={!input.trim()}
+                title={isLoading ? t('input.queue', { defaultValue: 'Send when ready' }) : undefined}
+                className="h-10 w-10 sm:h-10 sm:w-10"
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                  onSubmit(event as unknown as MouseEvent<HTMLButtonElement>);
+                }}
+                onTouchStart={(event) => {
+                  event.preventDefault();
+                  onSubmit(event as unknown as TouchEvent<HTMLButtonElement>);
+                }}
+              />
+            )}
           </div>
         </PromptInputFooter>
       </PromptInput>
