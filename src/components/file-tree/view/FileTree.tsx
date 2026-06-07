@@ -25,10 +25,12 @@ import ImageViewer from './ImageViewer';
 
 type FileTreeProps = {
   selectedProject: Project | null;
+  /** Whether the Files tab is currently visible. Defaults to true for standalone usage. */
+  isActive?: boolean;
   onFileOpen?: (filePath: string) => void;
 };
 
-export default function FileTree({ selectedProject, onFileOpen }: FileTreeProps) {
+export default function FileTree({ selectedProject, isActive = true, onFileOpen }: FileTreeProps) {
   const { t } = useTranslation();
   const [selectedImage, setSelectedImage] = useState<FileTreeImageSelection | null>(null);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
@@ -49,6 +51,17 @@ export default function FileTree({ selectedProject, onFileOpen }: FileTreeProps)
   }, [toast]);
 
   const { files, loading, refreshFiles } = useFileTreeData(selectedProject);
+
+  // The tree stays mounted while other tabs are active; refresh silently when
+  // the user returns so the listing is fresh without collapsing expanded dirs.
+  const wasActiveRef = useRef(isActive);
+  useEffect(() => {
+    if (isActive && !wasActiveRef.current) {
+      refreshFiles();
+    }
+    wasActiveRef.current = isActive;
+  }, [isActive, refreshFiles]);
+
   const { viewMode, changeViewMode } = useFileTreeViewMode();
   const { expandedDirs, toggleDirectory, expandDirectories, collapseAll } = useExpandedDirectories();
   const { searchQuery, setSearchQuery, filteredFiles } = useFileTreeSearch({
@@ -122,7 +135,9 @@ export default function FileTree({ selectedProject, onFileOpen }: FileTreeProps)
     [t],
   );
 
-  if (loading) {
+  // Only blank the view on the initial load; background refreshes keep the
+  // current tree visible until fresh data lands.
+  if (loading && files.length === 0) {
     return <FileTreeLoadingState />;
   }
 
