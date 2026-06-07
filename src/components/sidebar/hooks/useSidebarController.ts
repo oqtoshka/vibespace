@@ -808,7 +808,10 @@ export function useSidebarController({
     try {
       const response = await api.deleteSession(sessionId, hardDelete);
 
-      if (response.ok) {
+      if (response.ok || response.status === 404) {
+        // 404 means the row is already gone server-side (deleted from another
+        // tab/device or only surviving in stale client state) — removing it
+        // from the local lists is exactly what the user asked for.
         onSessionDelete?.(sessionId);
         await fetchArchivedSessions();
       } else {
