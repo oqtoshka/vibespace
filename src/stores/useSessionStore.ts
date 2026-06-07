@@ -498,8 +498,11 @@ export function useSessionStore() {
       slot.total = data.total ?? slot.serverMessages.length;
       slot.hasMore = Boolean(data.hasMore);
       slot.fetchedAt = Date.now();
-      // drop realtime messages that the server has caught up with to prevent unbounded growth.
-      slot.realtimeMessages = [];
+      // Drop realtime messages that the server has caught up with to prevent
+      // unbounded growth — except synthetic errors (SDK/resume failures): those
+      // are never persisted to the provider jsonl, so a refresh would silently
+      // wipe them and the user would never learn why their message vanished.
+      slot.realtimeMessages = slot.realtimeMessages.filter((msg) => msg.kind === 'error');
       recomputeMergedIfNeeded(slot);
       notify(resolvedSessionId);
     } catch (error) {
