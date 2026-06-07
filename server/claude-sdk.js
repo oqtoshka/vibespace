@@ -816,6 +816,17 @@ async function abortClaudeSDKSession(sessionId) {
     return false;
   }
 
+  // Phantom-abort guard. Racy clients (e.g. a send-tap whose compatibility
+  // mousedown lands on the swapped-in STOP button, or a stale bundle without
+  // the composer-side guard) fire abort within ~300ms of the query starting,
+  // killing every send instantly. A human pressing stop needs time to see
+  // output first, so an abort this early is never intentional — ignore it.
+  const sessionAgeMs = Date.now() - session.startTime;
+  if (sessionAgeMs < 1000) {
+    console.log(`Ignoring abort for session ${sessionId} — query started ${sessionAgeMs}ms ago`);
+    return false;
+  }
+
   try {
     console.log(`Aborting SDK session: ${sessionId}`);
 
