@@ -66,6 +66,12 @@ interface MentionableFile {
   path: string;
 }
 
+export interface QueuedMessage {
+  id: string;
+  content: string;
+  images: File[];
+}
+
 interface CommandExecutionResult {
   type: 'builtin' | 'custom';
   action?: string;
@@ -204,6 +210,7 @@ export function useChatComposerState({
   const [imageErrors, setImageErrors] = useState<Map<string, string>>(new Map());
   const [isTextareaExpanded, setIsTextareaExpanded] = useState(false);
   const [commandModalPayload, setCommandModalPayload] = useState<CommandModalPayload | null>(null);
+  const [queuedMessages, setQueuedMessages] = useState<QueuedMessage[]>([]);
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const inputHighlightRef = useRef<HTMLDivElement>(null);
@@ -212,6 +219,8 @@ export function useChatComposerState({
   >(null);
   const inputValueRef = useRef(input);
   const lastSubmitAtRef = useRef(0);
+  const queueIdRef = useRef(0);
+  const lastSentRef = useRef<{ content: string; images: File[] } | null>(null);
   const selectedProjectId = selectedProject?.projectId;
 
   const handleBuiltInCommand = useCallback(
@@ -531,27 +540,19 @@ export function useChatComposerState({
     noKeyboard: true,
   });
 
-  const handleSubmit = useCallback(
-    async (
-      event: FormEvent<HTMLFormElement> | MouseEvent | TouchEvent | KeyboardEvent<HTMLTextAreaElement>,
-    ) => {
-      event.preventDefault();
-      // Re-entry guard: a single tap on the submit button can fire onTouchStart,
-      // onMouseDown, and the form's onSubmit in sequence (~100-250ms apart on
-      // iOS Safari), each calling this handler. Suppress duplicates within 500ms.
-      const now = Date.now();
-      if (now - lastSubmitAtRef.current < 500) {
-        return;
-      }
-      lastSubmitAtRef.current = now;
-      const currentInput = inputValueRef.current;
-      if (!currentInput.trim() || isLoading || !selectedProject) {
+  // Core send pipeline, parameterized so it can run either an immediate submit
+  // or a previously queued message. It intentionally does NOT touch the live
+  // composer fields (input/attachments) — the caller owns those.
+  const runSubmit = useCallback(
+    async (payload: { content: string; images: File[] }) => {
+      const { content: rawContent, images } = payload;
+      if (!rawContent.trim() || !selectedProject) {
         return;
       }
 
       // Intercept slash commands only when "/" is the first input character.
       // Also accept exact "help" as a convenience alias for users who expect CLI-style help.
-      const commandInput = currentInput.trimEnd();
+      const commandInput = rawContent.trimEnd();
       const isHelpAlias = commandInput.trim().toLowerCase() === 'help';
       if (commandInput.startsWith('/') || isHelpAlias) {
         const firstSpace = commandInput.indexOf(' ');
@@ -570,26 +571,20 @@ export function useChatComposerState({
             : undefined);
         if (matchedCommand && matchedCommand.type !== 'skill') {
           executeCommand(matchedCommand, isHelpAlias ? '/help' : commandInput);
-          setInput('');
-          inputValueRef.current = '';
-          setAttachedImages([]);
-          setUploadingImages(new Map());
-          setImageErrors(new Map());
-          resetCommandMenuState();
-          setIsTextareaExpanded(false);
-          if (textareaRef.current) {
-            textareaRef.current.style.height = 'auto';
-          }
           return;
         }
       }
 
-      const messageContent = currentInput;
+      // Remember what we're sending so a failed send can restore it to the
+      // composer instead of silently losing the user's text.
+      lastSentRef.current = { content: rawContent, images };
+
+      const messageContent = rawContent;
 
       let uploadedImages: unknown[] = [];
-      if (attachedImages.length > 0) {
+      if (images.length > 0) {
         const formData = new FormData();
-        attachedImages.forEach((file) => {
+        images.forEach((file) => {
           formData.append('images', file);
         });
 
@@ -623,7 +618,7 @@ export function useChatComposerState({
 
       const userMessage: ChatMessage = {
         type: 'user',
-        content: currentInput,
+        content: rawContent,
         images: uploadedImages as any,
         timestamp: new Date(),
       };
@@ -679,7 +674,7 @@ export function useChatComposerState({
 
       const toolsSettings = getToolsSettings();
       const resolvedProjectPath = selectedProject.fullPath || selectedProject.path || '';
-      const sessionSummary = getNotificationSessionSummary(selectedSession, currentInput);
+      const sessionSummary = getNotificationSessionSummary(selectedSession, rawContent);
 
       if (provider === 'cursor') {
         sendMessage({
@@ -759,24 +754,9 @@ export function useChatComposerState({
           },
         });
       }
-
-      setInput('');
-      inputValueRef.current = '';
-      resetCommandMenuState();
-      setAttachedImages([]);
-      setUploadingImages(new Map());
-      setImageErrors(new Map());
-      setIsTextareaExpanded(false);
-
-      if (textareaRef.current) {
-        textareaRef.current.style.height = 'auto';
-      }
-
-      safeLocalStorage.removeItem(`draft_input_${selectedProject.projectId}`);
     },
     [
       selectedSession,
-      attachedImages,
       claudeModel,
       codexModel,
       currentSessionId,
@@ -784,13 +764,11 @@ export function useChatComposerState({
       executeCommand,
       geminiModel,
       opencodeModel,
-      isLoading,
       onSessionActive,
       onSessionProcessing,
       pendingViewSessionRef,
       permissionMode,
       provider,
-      resetCommandMenuState,
       scrollToBottom,
       selectedProject,
       sendMessage,
@@ -802,6 +780,104 @@ export function useChatComposerState({
       slashCommands,
     ],
   );
+
+  // Reset the composer fields after a message is captured for sending/queueing.
+  const clearComposer = useCallback(() => {
+    setInput('');
+    inputValueRef.current = '';
+    resetCommandMenuState();
+    setAttachedImages([]);
+    setUploadingImages(new Map());
+    setImageErrors(new Map());
+    setIsTextareaExpanded(false);
+    if (textareaRef.current) {
+      textareaRef.current.style.height = 'auto';
+    }
+    if (selectedProjectId) {
+      safeLocalStorage.removeItem(`draft_input_${selectedProjectId}`);
+    }
+  }, [resetCommandMenuState, selectedProjectId]);
+
+  const handleSubmit = useCallback(
+    async (
+      event: FormEvent<HTMLFormElement> | MouseEvent | TouchEvent | KeyboardEvent<HTMLTextAreaElement>,
+    ) => {
+      event.preventDefault();
+      // Re-entry guard: a single tap on the submit button can fire onTouchStart,
+      // onMouseDown, and the form's onSubmit in sequence (~100-250ms apart on
+      // iOS Safari), each calling this handler. Suppress duplicates within 500ms.
+      const now = Date.now();
+      if (now - lastSubmitAtRef.current < 500) {
+        return;
+      }
+      lastSubmitAtRef.current = now;
+      const currentInput = inputValueRef.current;
+      if (!currentInput.trim() || !selectedProject) {
+        return;
+      }
+
+      // Capture the live composer contents, then reset it immediately so the
+      // user can keep typing the next message without waiting.
+      const captured = {
+        content: currentInput,
+        images: attachedImages,
+      };
+      clearComposer();
+
+      // While the assistant is busy, queue the message instead of dropping it.
+      // The queue flushes one message each time the session goes idle.
+      if (isLoading) {
+        queueIdRef.current += 1;
+        const id = `q_${queueIdRef.current}`;
+        setQueuedMessages((previous) => [...previous, { id, ...captured }]);
+        return;
+      }
+
+      await runSubmit(captured);
+    },
+    [attachedImages, clearComposer, isLoading, runSubmit, selectedProject],
+  );
+
+  // Flush the next queued message when the session transitions to idle.
+  const prevIsLoadingRef = useRef(isLoading);
+  useEffect(() => {
+    const wasLoading = prevIsLoadingRef.current;
+    prevIsLoadingRef.current = isLoading;
+    if (wasLoading && !isLoading && queuedMessages.length > 0) {
+      const [next, ...rest] = queuedMessages;
+      setQueuedMessages(rest);
+      void runSubmit({ content: next.content, images: next.images });
+    }
+  }, [isLoading, queuedMessages, runSubmit]);
+
+  const removeQueuedMessage = useCallback((id: string) => {
+    setQueuedMessages((previous) => previous.filter((message) => message.id !== id));
+  }, []);
+
+  // Called when the send failed (an error arrived instead of a reply): put the
+  // message back into the composer so the user can retry without retyping.
+  const restoreFailedSend = useCallback(() => {
+    const lastSent = lastSentRef.current;
+    if (!lastSent) {
+      return;
+    }
+    lastSentRef.current = null;
+    // Don't clobber anything the user typed since.
+    if (inputValueRef.current.trim()) {
+      return;
+    }
+    setInput(lastSent.content);
+    inputValueRef.current = lastSent.content;
+    if (lastSent.images.length > 0) {
+      setAttachedImages((previous) => (previous.length > 0 ? previous : lastSent.images));
+    }
+  }, []);
+
+  // Called when a send completed successfully: the message is part of the
+  // conversation now, so there is nothing left to restore.
+  const clearFailedSendBackup = useCallback(() => {
+    lastSentRef.current = null;
+  }, []);
 
   useEffect(() => {
     handleSubmitRef.current = handleSubmit;
@@ -821,6 +897,9 @@ export function useChatComposerState({
       inputValueRef.current = next;
       return next;
     });
+    // Queued messages belong to the project they were drafted in; drop them
+    // when switching projects so they can't be dispatched to the wrong one.
+    setQueuedMessages([]);
   }, [selectedProjectId]);
 
   useEffect(() => {
@@ -1074,5 +1153,9 @@ export function useChatComposerState({
     commandModalPayload,
     closeCommandModal,
     showCostModal,
+    queuedMessages,
+    removeQueuedMessage,
+    restoreFailedSend,
+    clearFailedSendBackup,
   };
 }
