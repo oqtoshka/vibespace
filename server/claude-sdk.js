@@ -753,6 +753,22 @@ async function queryClaudeSDK(command, options = {}, ws) {
     // Clean up temporary image files on error
     await cleanupTempFiles(tempImagePaths, tempDir);
 
+    // A session jsonl that holds only bridge/system metadata (e.g. /remote-control
+    // reconnect droppings) has no conversation Claude can resume — the SDK fails
+    // with "No conversation found". Retry once as a brand-new session in the same
+    // cwd so the user's message isn't silently dropped.
+    const notResumable = /No conversation found with session ID/i.test(String(error?.message || ''));
+    if (notResumable && sessionId && !options._resumeFallback) {
+      console.warn(`Session ${sessionId} is not resumable, starting a new session instead`);
+      ws.send(createNormalizedMessage({
+        kind: 'error',
+        content: 'This session has no resumable conversation — sending your message to a new session instead.',
+        sessionId,
+        provider: 'claude'
+      }));
+      return queryClaudeSDK(command, { ...options, sessionId: undefined, resume: false, _resumeFallback: true }, ws);
+    }
+
     // Check if Claude CLI is installed for a clearer error message
     const installed = await providerAuthService.isProviderInstalled('claude');
     let errorContent;
