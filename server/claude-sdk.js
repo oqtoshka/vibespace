@@ -524,6 +524,20 @@ async function queryClaudeSDK(command, options = {}, ws) {
   };
 
   try {
+    // Fail fast on a missing working directory (e.g. a project on an unmounted
+    // volume). Otherwise the SDK spawn hangs silently: no error, no session
+    // file, and the chat spinner runs forever.
+    if (options.cwd) {
+      try {
+        await fs.access(options.cwd);
+      } catch {
+        const message = `Project directory does not exist: ${options.cwd} — is the volume mounted?`;
+        console.error(`Claude query rejected: ${message}`);
+        ws.send(createNormalizedMessage({ kind: 'error', content: message, sessionId: sessionId || null, provider: 'claude' }));
+        return;
+      }
+    }
+
     const resolvedModel = await providerModelsService.resolveResumeModel(
       'claude',
       sessionId,
