@@ -44,6 +44,17 @@ export type GitRemoteStatus = {
   error?: string;
 };
 
+export type GitDiscoveredRepo = {
+  /** Project-relative POSIX path of the repo ('' = project root). */
+  relPath: string;
+  name: string;
+};
+
+export type GitReposResponse = GitApiErrorResponse & {
+  isRepo?: boolean;
+  repos?: GitDiscoveredRepo[];
+};
+
 export type GitCommitSummary = {
   hash: string;
   author: string;
@@ -80,6 +91,10 @@ export type GitPanelController = {
   gitStatus: GitStatusResponse | null;
   gitDiff: GitDiffMap;
   isLoading: boolean;
+  discoveredRepos: GitDiscoveredRepo[];
+  selectedRepoPath: string | null;
+  rootIsRepo: boolean;
+  selectRepo: (relPath: string) => void;
   currentBranch: string;
   branches: string[];
   localBranches: string[];

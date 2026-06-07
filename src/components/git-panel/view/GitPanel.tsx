@@ -10,6 +10,7 @@ import GitPanelHeader from '../view/GitPanelHeader';
 import GitRepositoryErrorState from '../view/GitRepositoryErrorState';
 import GitViewTabs from '../view/GitViewTabs';
 import ConfirmActionModal from '../view/modals/ConfirmActionModal';
+import RepoPicker from '../view/RepoPicker';
 
 export default function GitPanel({ selectedProject, isMobile = false, onFileOpen }: GitPanelProps) {
   const [activeView, setActiveView] = useState<GitPanelView>('changes');
@@ -21,6 +22,10 @@ export default function GitPanel({ selectedProject, isMobile = false, onFileOpen
     gitStatus,
     gitDiff,
     isLoading,
+    discoveredRepos,
+    selectedRepoPath,
+    rootIsRepo,
+    selectRepo,
     currentBranch,
     branches,
     localBranches,
@@ -63,6 +68,7 @@ export default function GitPanel({ selectedProject, isMobile = false, onFileOpen
     // `projectId` (DB primary key) is forwarded to the revert API which uses it
     // as the `project` body param.
     projectId: selectedProject?.projectId ?? null,
+    repoPath: selectedRepoPath,
     onSuccess: refreshAll,
   });
 
@@ -78,6 +84,14 @@ export default function GitPanel({ selectedProject, isMobile = false, onFileOpen
   }, [confirmAction]);
 
   const changeCount = getChangedFileCount(gitStatus);
+  // Surface the picker whenever there's an actual choice to make: the root
+  // isn't a repo (sub-repos drive the panel) or several repos were found.
+  const showRepoPicker = !rootIsRepo || discoveredRepos.length > 1;
+  // Scopes per-repo UI state (changes view, commit message draft) to the
+  // selected repository.
+  const repoScopePath = selectedRepoPath
+    ? `${selectedProject?.fullPath ?? ''}/${selectedRepoPath}`
+    : selectedProject?.fullPath ?? '';
 
   if (!selectedProject) {
     return (
@@ -89,6 +103,15 @@ export default function GitPanel({ selectedProject, isMobile = false, onFileOpen
 
   return (
     <div className="flex h-full flex-col bg-background">
+      {showRepoPicker && (
+        <RepoPicker
+          isMobile={isMobile}
+          repos={discoveredRepos}
+          selectedRepoPath={selectedRepoPath}
+          onSelectRepo={selectRepo}
+        />
+      )}
+
       <GitPanelHeader
         isMobile={isMobile}
         currentBranch={currentBranch}
@@ -127,9 +150,9 @@ export default function GitPanel({ selectedProject, isMobile = false, onFileOpen
 
           {activeView === 'changes' && (
             <ChangesView
-              key={selectedProject.fullPath}
+              key={repoScopePath}
               isMobile={isMobile}
-              projectPath={selectedProject.fullPath}
+              projectPath={repoScopePath}
               gitStatus={gitStatus}
               gitDiff={gitDiff}
               isLoading={isLoading}
