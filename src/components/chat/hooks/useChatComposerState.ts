@@ -1032,6 +1032,15 @@ export function useChatComposerState({
       return;
     }
 
+    // A tap on the send button fires onTouchStart (submit), then a compatibility
+    // mousedown ~100-250ms later. The submit clears the input and flips
+    // isLoading, so the same DOM node has become the STOP button by the time the
+    // mousedown lands — and the tap that sent the message aborts it. Ignore
+    // aborts in the tail of a submit, mirroring handleSubmit's re-entry guard.
+    if (Date.now() - lastSubmitAtRef.current < 500) {
+      return;
+    }
+
     const cursorSessionId =
       typeof window !== 'undefined' ? sessionStorage.getItem('cursorSessionId') : null;
 
