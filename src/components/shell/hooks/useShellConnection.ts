@@ -4,6 +4,7 @@ import type { FitAddon } from '@xterm/addon-fit';
 import type { Terminal } from '@xterm/xterm';
 
 import type { Project, ProjectSession } from '../../../types/app';
+import { getClaudeSettings } from '../../chat/utils/chatStorage';
 import { TERMINAL_INIT_DELAY_MS } from '../constants/constants';
 import { getShellWebSocketUrl, parseShellMessage, sendSocketMessage } from '../utils/socket';
 
@@ -158,6 +159,9 @@ export function useShellConnection({
               initialCommand: initialCommandRef.current,
               isPlainShell: isPlainShellRef.current,
               forceRestart,
+              // Let the server start `claude` with --dangerously-skip-permissions
+              // when the user has bypass enabled in Settings → Agents → Permissions.
+              skipPermissions: getClaudeSettings().skipPermissions,
             });
           }, TERMINAL_INIT_DELAY_MS);
         };
