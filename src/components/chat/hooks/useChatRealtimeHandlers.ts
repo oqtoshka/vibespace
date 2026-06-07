@@ -69,6 +69,8 @@ interface UseChatRealtimeHandlersArgs {
   onSessionNotProcessing?: (sessionId?: string | null) => void;
   onNavigateToSession?: (sessionId: string, options?: SessionNavigationOptions) => void;
   onWebSocketReconnect?: () => void;
+  onSendFailed?: () => void;
+  onSendSucceeded?: () => void;
   sessionStore: SessionStore;
 }
 
@@ -96,6 +98,8 @@ export function useChatRealtimeHandlers({
   onSessionNotProcessing,
   onNavigateToSession,
   onWebSocketReconnect,
+  onSendFailed,
+  onSendSucceeded,
   sessionStore,
 }: UseChatRealtimeHandlersArgs) {
   const paletteOps = usePaletteOps();
@@ -290,6 +294,12 @@ export function useChatRealtimeHandlers({
         showCompletionTitleIndicator();
         void playChatCompletionSound();
 
+        // The turn finished normally — the sent message is part of the
+        // conversation, drop the failed-send backup.
+        if (!sid || sid === activeViewSessionId) {
+          onSendSucceeded?.();
+        }
+
         const actualSessionId =
           typeof msg.actualSessionId === 'string' && msg.actualSessionId.trim().length > 0
             ? msg.actualSessionId
@@ -324,6 +334,11 @@ export function useChatRealtimeHandlers({
         onSessionInactive?.(sid);
         onSessionNotProcessing?.(sid);
         pendingViewSessionRef.current = null;
+        // Offer the failed message back to the composer, but only for the
+        // session the user is actually looking at.
+        if (!sid || sid === activeViewSessionId) {
+          onSendFailed?.();
+        }
         break;
       }
 
@@ -393,6 +408,8 @@ export function useChatRealtimeHandlers({
     onSessionNotProcessing,
     onNavigateToSession,
     onWebSocketReconnect,
+    onSendFailed,
+    onSendSucceeded,
     sessionStore,
     paletteOps,
   ]);

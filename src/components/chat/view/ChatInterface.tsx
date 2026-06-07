@@ -179,6 +179,10 @@ function ChatInterface({
     commandModalPayload,
     closeCommandModal,
     showCostModal,
+    queuedMessages,
+    removeQueuedMessage,
+    restoreFailedSend,
+    clearFailedSendBackup,
   } = useChatComposerState({
     selectedProject,
     selectedSession,
@@ -246,6 +250,8 @@ function ChatInterface({
     onSessionNotProcessing,
     onNavigateToSession,
     onWebSocketReconnect: handleWebSocketReconnect,
+    onSendFailed: restoreFailedSend,
+    onSendSucceeded: clearFailedSendBackup,
     sessionStore,
   });
 
@@ -365,6 +371,8 @@ function ChatInterface({
           claudeStatus={claudeStatus}
           isLoading={isLoading}
           onAbortSession={handleAbortSession}
+          queuedMessages={queuedMessages}
+          onRemoveQueuedMessage={removeQueuedMessage}
           provider={provider}
           permissionMode={permissionMode}
           onModeSwitch={cyclePermissionMode}
