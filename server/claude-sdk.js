@@ -879,17 +879,19 @@ function getPendingApprovalsForSession(sessionId) {
 }
 
 /**
- * Reconnect a session's WebSocketWriter to a new raw WebSocket.
- * Called when client reconnects (e.g. page refresh) while SDK is still running.
+ * Attach a (re)connecting client's raw WebSocket to a session's writer.
+ * Called when a client opens the session (e.g. page refresh, second tab/device)
+ * while the SDK is still running. The writer fans out to every attached socket,
+ * so concurrent viewers all receive the full stream.
  * @param {string} sessionId - The session ID
  * @param {Object} newRawWs - The new raw WebSocket connection
- * @returns {boolean} True if writer was successfully reconnected
+ * @returns {boolean} True if the socket was attached to the writer
  */
 function reconnectSessionWriter(sessionId, newRawWs) {
   const session = getSession(sessionId);
   if (!session?.writer?.updateWebSocket) return false;
   session.writer.updateWebSocket(newRawWs);
-  console.log(`[RECONNECT] Writer swapped for session ${sessionId}`);
+  console.log(`[RECONNECT] Client attached to session ${sessionId}`);
   return true;
 }
 
