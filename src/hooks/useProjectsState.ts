@@ -122,6 +122,12 @@ const mergeSessionProviderLists = (baseSessions: ProjectSession[], additionalSes
   return merged;
 };
 
+const getSessionActivityTime = (session: ProjectSession): number => {
+  const raw = session.lastActivity ?? session.updated_at ?? session.created_at ?? session.createdAt;
+  const parsed = raw ? Date.parse(String(raw)) : Number.NaN;
+  return Number.isNaN(parsed) ? 0 : parsed;
+};
+
 const mergeExpandedSessionPages = (previousProjects: Project[], incomingProjects: Project[]): Project[] => {
   if (previousProjects.length === 0) {
     return incomingProjects;
@@ -141,13 +147,33 @@ const mergeExpandedSessionPages = (previousProjects: Project[], incomingProjects
       return incomingProject;
     }
 
+    // When the server reports no further pages, the incoming payload is the
+    // complete session list — re-adding anything from the previous state would
+    // resurrect sessions deleted or archived elsewhere (another tab, the
+    // localStorage cache from a prior visit).
+    if (!incomingProject.sessionMeta?.hasMore) {
+      return incomingProject;
+    }
+
+    // The incoming payload only carries the newest session page (ordered by
+    // recency across providers). A previously loaded session can only still be
+    // valid if it falls strictly below that page window: anything at least as
+    // recent as the oldest incoming session would have been included in the
+    // page if it still existed, so a missing one was deleted — drop it.
+    const incomingSessions = getProjectSessions(incomingProject);
+    const pageBoundary = incomingSessions.length > 0
+      ? Math.min(...incomingSessions.map(getSessionActivityTime))
+      : Number.POSITIVE_INFINITY;
+    const keepPagedOutSessions = (sessions: ProjectSession[] | undefined) =>
+      (sessions ?? []).filter((session) => getSessionActivityTime(session) < pageBoundary);
+
     const mergedProject: Project = {
       ...incomingProject,
-      sessions: mergeSessionProviderLists(incomingProject.sessions ?? [], previousProject.sessions ?? []),
-      cursorSessions: mergeSessionProviderLists(incomingProject.cursorSessions ?? [], previousProject.cursorSessions ?? []),
-      codexSessions: mergeSessionProviderLists(incomingProject.codexSessions ?? [], previousProject.codexSessions ?? []),
-      geminiSessions: mergeSessionProviderLists(incomingProject.geminiSessions ?? [], previousProject.geminiSessions ?? []),
-      opencodeSessions: mergeSessionProviderLists(incomingProject.opencodeSessions ?? [], previousProject.opencodeSessions ?? []),
+      sessions: mergeSessionProviderLists(incomingProject.sessions ?? [], keepPagedOutSessions(previousProject.sessions)),
+      cursorSessions: mergeSessionProviderLists(incomingProject.cursorSessions ?? [], keepPagedOutSessions(previousProject.cursorSessions)),
+      codexSessions: mergeSessionProviderLists(incomingProject.codexSessions ?? [], keepPagedOutSessions(previousProject.codexSessions)),
+      geminiSessions: mergeSessionProviderLists(incomingProject.geminiSessions ?? [], keepPagedOutSessions(previousProject.geminiSessions)),
+      opencodeSessions: mergeSessionProviderLists(incomingProject.opencodeSessions ?? [], keepPagedOutSessions(previousProject.opencodeSessions)),
     };
 
     const totalSessions = Number(incomingProject.sessionMeta?.total ?? previousLoadedCount);
