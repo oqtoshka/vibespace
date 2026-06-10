@@ -22,11 +22,11 @@ import type { Plugin } from '../../../contexts/PluginsContext';
 
 import PluginIcon from './PluginIcon';
 
-const STARTER_PLUGIN_URL = 'https://github.com/cloudcli-ai/cloudcli-plugin-starter';
-const TERMINAL_PLUGIN_URL = 'https://github.com/cloudcli-ai/cloudcli-plugin-terminal';
-const SCHEDULED_PROMPT_PLUGIN_URL = 'https://github.com/grostim/cloudcli-cron';
-const CLAUDE_WATCH_PLUGIN_URL = 'https://github.com/satsuki19980613/cloudcli-claude-watch';
-const PRISM_CLOUDCLI_PLUGIN_URL = 'https://github.com/jakeefr/cloudcli-plugin-prism';
+const STARTER_PLUGIN_URL = 'https://github.com/vibespace-ai/vibespace-plugin-starter';
+const TERMINAL_PLUGIN_URL = 'https://github.com/vibespace-ai/vibespace-plugin-terminal';
+const SCHEDULED_PROMPT_PLUGIN_URL = 'https://github.com/grostim/vibespace-cron';
+const CLAUDE_WATCH_PLUGIN_URL = 'https://github.com/satsuki19980613/vibespace-claude-watch';
+const PRISM_VIBESPACE_PLUGIN_URL = 'https://github.com/jakeefr/vibespace-plugin-prism';
 
 type PluginRecommendation = {
   id: string;
@@ -58,10 +58,10 @@ const OFFICIAL_PLUGIN_RECOMMENDATIONS: PluginRecommendation[] = [
 
 const UNOFFICIAL_PLUGIN_RECOMMENDATIONS: PluginRecommendation[] = [
   {
-    id: 'cloudcli-claude-watch',
+    id: 'vibespace-claude-watch',
     translationKey: 'claudeWatchPlugin',
     repoUrl: CLAUDE_WATCH_PLUGIN_URL,
-    installedNames: ['cloudcli-claude-watch'],
+    installedNames: ['vibespace-claude-watch'],
     icon: Activity,
     source: 'unofficial',
   },
@@ -75,8 +75,8 @@ const UNOFFICIAL_PLUGIN_RECOMMENDATIONS: PluginRecommendation[] = [
   },
   {
     id: 'prism',
-    translationKey: 'prismCloudCLI',
-    repoUrl: PRISM_CLOUDCLI_PLUGIN_URL,
+    translationKey: 'prismVibeSpace',
+    repoUrl: PRISM_VIBESPACE_PLUGIN_URL,
     installedNames: ['prism'],
     icon: Activity,
     source: 'unofficial'
@@ -622,7 +622,7 @@ export default function PluginSettingsTab() {
         </a>
         <span className="text-muted-foreground/20">·</span>
         <a
-          href="https://cloudcli.ai/docs/plugin-overview"
+          href="https://vibespace.ai/docs/plugin-overview"
           target="_blank"
           rel="noopener noreferrer"
           className="inline-flex items-center gap-1 text-xs text-muted-foreground/60 transition-colors hover:text-foreground"

@@ -1,15 +1,15 @@
 <div align="center">
-  <img src="public/logo.svg" alt="CloudCLI UI" width="64" height="64">
-  <h1>Cloud CLI（又名 Claude Code UI）</h1>
+  <img src="public/logo.svg" alt="VibeSpace UI" width="64" height="64">
+  <h1>VibeSpace（又名 Claude Code UI）</h1>
   <p><a href="https://docs.anthropic.com/en/docs/claude-code">Claude Code</a>、<a href="https://docs.cursor.com/en/cli/overview">Cursor CLI</a>、<a href="https://developers.openai.com/codex">Codex</a> 和 <a href="https://geminicli.com/">Gemini-CLI</a> 的桌面和行動裝置 UI。可在本機或遠端使用，從任何地方查看您的專案與工作階段。</p>
 </div>
 
 <p align="center">
-  <a href="https://cloudcli.ai">CloudCLI Cloud</a> · <a href="https://cloudcli.ai/docs">文件</a> · <a href="https://discord.gg/buxwujPNRE">Discord</a> · <a href="https://github.com/siteboon/claudecodeui/issues">Bug 回報</a> · <a href="CONTRIBUTING.md">貢獻指南</a>
+  <a href="https://vibespace.ai">VibeSpace Cloud</a> · <a href="https://vibespace.ai/docs">文件</a> · <a href="https://discord.gg/buxwujPNRE">Discord</a> · <a href="https://github.com/siteboon/claudecodeui/issues">Bug 回報</a> · <a href="CONTRIBUTING.md">貢獻指南</a>
 </p>
 
 <p align="center">
-  <a href="https://cloudcli.ai"><img src="https://img.shields.io/badge/☁️_CloudCLI_Cloud-Try_Now-0066FF?style=for-the-badge" alt="CloudCLI Cloud"></a>
+  <a href="https://vibespace.ai"><img src="https://img.shields.io/badge/☁️_VibeSpace_Cloud-Try_Now-0066FF?style=for-the-badge" alt="VibeSpace Cloud"></a>
   <a href="https://discord.gg/buxwujPNRE"><img src="https://img.shields.io/badge/Discord-Join%20Community-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="加入 Discord 社群"></a>
   <br><br>
   <a href="https://trendshift.io/repositories/15586" target="_blank"><img src="https://trendshift.io/api/badge/repositories/15586" alt="siteboon%2Fclaudecodeui | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
@@ -58,45 +58,45 @@
 - **檔案瀏覽器** — 互動式檔案樹，支援語法醒目提示與即時編輯
 - **Git 瀏覽器** — 檢視、暫存並提交變更，還可切換分支
 - **工作階段管理** — 恢復對話、管理多個工作階段並追蹤歷史紀錄
-- **外掛系統** — 透過自訂分頁、後端服務與整合來擴充 CloudCLI。[開始建構 →](https://github.com/cloudcli-ai/cloudcli-plugin-starter)
+- **外掛系統** — 透過自訂分頁、後端服務與整合來擴充 VibeSpace。[開始建構 →](https://github.com/vibespace-ai/vibespace-plugin-starter)
 - **TaskMaster AI 整合** *(選用)* — 結合 AI 任務規劃、PRD 分析與工作流程自動化，實現進階專案管理
 - **模型相容性** — 支援 Claude、GPT、Gemini 模型家族（完整支援列表可透過 `GET /api/providers/:provider/models` 介面取得）
 
 ## 快速開始
 
-### CloudCLI Cloud（推薦）
+### VibeSpace Cloud（推薦）
 
 無需本機設定即可快速啟動。提供可透過網路瀏覽器、行動應用程式、API 或慣用的 IDE 存取的完全容器化託管開發環境。
 
-**[立即開始 CloudCLI Cloud](https://cloudcli.ai)**
+**[立即開始 VibeSpace Cloud](https://vibespace.ai)**
 
 ### 自架（開源）
 
 #### npm
 
-啟動 CloudCLI UI，只需一行 `npx`（需要 Node.js v22+）：
+啟動 VibeSpace UI，只需一行 `npx`（需要 Node.js v22+）：
 
 ```bash
-npx @cloudcli-ai/cloudcli
+npx @vibespace-ai/vibespace
 ```
 
 或進行全域安裝，便於日常使用：
 
 ```bash
-npm install -g @cloudcli-ai/cloudcli
-cloudcli
+npm install -g @vibespace-ai/vibespace
+vibespace
 ```
 
 開啟 `http://localhost:3001`，系統會自動發現所有現有工作階段。
 
-更多設定選項、PM2、遠端伺服器設定等，請參閱 **[文件 →](https://cloudcli.ai/docs)**。
+更多設定選項、PM2、遠端伺服器設定等，請參閱 **[文件 →](https://vibespace.ai/docs)**。
 
 #### Docker Sandboxes（實驗性）
 
 在隔離的沙箱中執行代理，具有虛擬機管理程式等級的隔離。預設啟動 Claude Code。需要 [`sbx` CLI](https://docs.docker.com/ai/sandboxes/get-started/)。
 
 ```bash
-npx @cloudcli-ai/cloudcli@latest sandbox ~/my-project
+npx @vibespace-ai/vibespace@latest sandbox ~/my-project
 ```
 
 支援 Claude Code、Codex 和 Gemini CLI。詳情請參閱[沙箱文件](docker/)。
@@ -105,13 +105,13 @@ npx @cloudcli-ai/cloudcli@latest sandbox ~/my-project
 
 ## 哪個選項更適合你？
 
-CloudCLI UI 是 CloudCLI Cloud 的開源 UI 層。你可以在本機上自架它，也可以使用提供團隊功能與深入整合的 CloudCLI Cloud。
+VibeSpace UI 是 VibeSpace Cloud 的開源 UI 層。你可以在本機上自架它，也可以使用提供團隊功能與深入整合的 VibeSpace Cloud。
 
-| | CloudCLI UI（自架） | CloudCLI Cloud |
+| | VibeSpace UI（自架） | VibeSpace Cloud |
 |---|---|---|
 | **適合對象** | 需要為本機代理工作階段提供完整 UI 的開發者 | 需要部署在雲端，隨時從任何地方存取代理的團隊與開發者 |
 | **存取方式** | 透過 `[yourip]:port` 在瀏覽器中存取 | 瀏覽器、任意 IDE、REST API、n8n |
-| **設定** | `npx @cloudcli-ai/cloudcli` | 無需設定 |
+| **設定** | `npx @vibespace-ai/vibespace` | 無需設定 |
 | **機器需保持開機嗎** | 是 | 否 |
 | **行動裝置存取** | 網路內任意瀏覽器 | 任意裝置（原生應用程式即將推出） |
 | **可用工作階段** | 自動發現 `~/.claude` 中的所有工作階段 | 雲端環境內的工作階段 |
@@ -124,7 +124,7 @@ CloudCLI UI 是 CloudCLI Cloud 的開源 UI 層。你可以在本機上自架它
 | **團隊共享** | 否 | 是 |
 | **平台費用** | 免費開源 | 起價 $7/月 |
 
-> 兩種方式都使用你自己的 AI 訂閱（Claude、Cursor 等）— CloudCLI 提供環境，而非 AI。
+> 兩種方式都使用你自己的 AI 訂閱（Claude、Cursor 等）— VibeSpace 提供環境，而非 AI。
 
 ---
 
@@ -151,19 +151,19 @@ CloudCLI UI 是 CloudCLI Cloud 的開源 UI 層。你可以在本機上自架它
 
 ## 外掛
 
-CloudCLI 配備外掛系統，允許你新增帶有自訂前端 UI 和選用 Node.js 後端的分頁。在 Settings > Plugins 中直接從 Git 儲存庫安裝外掛，或自行開發。
+VibeSpace 配備外掛系統，允許你新增帶有自訂前端 UI 和選用 Node.js 後端的分頁。在 Settings > Plugins 中直接從 Git 儲存庫安裝外掛，或自行開發。
 
 ### 可用外掛
 
 | 外掛 | 描述 |
 |---|---|
-| **[Project Stats](https://github.com/cloudcli-ai/cloudcli-plugin-starter)** | 展示目前專案的檔案數、程式碼行數、檔案類型分佈、最大檔案以及最近修改的檔案 |
+| **[Project Stats](https://github.com/vibespace-ai/vibespace-plugin-starter)** | 展示目前專案的檔案數、程式碼行數、檔案類型分佈、最大檔案以及最近修改的檔案 |
 
 ### 自行建構
 
-**[Plugin Starter Template →](https://github.com/cloudcli-ai/cloudcli-plugin-starter)** — Fork 該儲存庫以建構自己的外掛。範例包括前端渲染、即時上下文更新和 RPC 通訊。
+**[Plugin Starter Template →](https://github.com/vibespace-ai/vibespace-plugin-starter)** — Fork 該儲存庫以建構自己的外掛。範例包括前端渲染、即時上下文更新和 RPC 通訊。
 
-**[外掛文件 →](https://cloudcli.ai/docs/plugin-overview)** — 提供外掛 API、清單格式、安全模型等完整指南。
+**[外掛文件 →](https://vibespace.ai/docs/plugin-overview)** — 提供外掛 API、清單格式、安全模型等完整指南。
 
 ---
 
@@ -174,34 +174,34 @@ CloudCLI 配備外掛系統，允許你新增帶有自訂前端 UI 和選用 Nod
 
 Claude Code Remote Control 讓你傳送訊息到本機終端機中已經執行的工作階段。該方式要求你的機器保持開機，終端機保持開啟，中斷網路後約 10 分鐘工作階段會逾時。
 
-CloudCLI UI 與 CloudCLI Cloud 是對 Claude Code 的擴充，而非旁觀 — MCP 伺服器、權限、設定、工作階段與 Claude Code 完全一致。
+VibeSpace UI 與 VibeSpace Cloud 是對 Claude Code 的擴充，而非旁觀 — MCP 伺服器、權限、設定、工作階段與 Claude Code 完全一致。
 
-- **涵蓋全部工作階段** — CloudCLI UI 會自動掃描 `~/.claude` 資料夾中的每個工作階段。Remote Control 只暴露目前活動的工作階段。
-- **設定統一** — 在 CloudCLI UI 中修改的 MCP、工具權限等設定會立即寫入 Claude Code。
+- **涵蓋全部工作階段** — VibeSpace UI 會自動掃描 `~/.claude` 資料夾中的每個工作階段。Remote Control 只暴露目前活動的工作階段。
+- **設定統一** — 在 VibeSpace UI 中修改的 MCP、工具權限等設定會立即寫入 Claude Code。
 - **支援更多 Agents** — Claude Code、Cursor CLI、Codex、Gemini CLI。
 - **完整 UI** — 除了聊天介面，還包括檔案瀏覽器、Git 整合、MCP 管理和 Shell 終端機。
-- **CloudCLI Cloud 持續運作於雲端** — 關閉本機裝置也不會中斷代理執行，無需監控終端機。
+- **VibeSpace Cloud 持續運作於雲端** — 關閉本機裝置也不會中斷代理執行，無需監控終端機。
 
 </details>
 
 <details>
 <summary>需要額外購買 AI 訂閱嗎？</summary>
 
-需要。CloudCLI 只提供環境。你仍需自行取得 Claude、Cursor、Codex 或 Gemini 訂閱。CloudCLI Cloud 從 $7/月起提供託管環境。
+需要。VibeSpace 只提供環境。你仍需自行取得 Claude、Cursor、Codex 或 Gemini 訂閱。VibeSpace Cloud 從 $7/月起提供託管環境。
 
 </details>
 
 <details>
-<summary>能在手機上使用 CloudCLI UI 嗎？</summary>
+<summary>能在手機上使用 VibeSpace UI 嗎？</summary>
 
-可以。自架時，在你的裝置上執行伺服器，然後在網路中的任意瀏覽器開啟 `[yourip]:port`。CloudCLI Cloud 可從任意裝置存取，內建原生應用程式也在開發中。
+可以。自架時，在你的裝置上執行伺服器，然後在網路中的任意瀏覽器開啟 `[yourip]:port`。VibeSpace Cloud 可從任意裝置存取，內建原生應用程式也在開發中。
 
 </details>
 
 <details>
 <summary>UI 中的變更會影響本機 Claude Code 設定嗎？</summary>
 
-會的。自架模式下，CloudCLI UI 讀取並寫入 Claude Code 使用的 `~/.claude` 設定。透過 UI 新增的 MCP 伺服器會立即在 Claude Code 中可見。
+會的。自架模式下，VibeSpace UI 讀取並寫入 Claude Code 使用的 `~/.claude` 設定。透過 UI 新增的 MCP 伺服器會立即在 Claude Code 中可見。
 
 </details>
 
@@ -209,7 +209,7 @@ CloudCLI UI 與 CloudCLI Cloud 是對 Claude Code 的擴充，而非旁觀 — M
 
 ## 社群與支援
 
-- **[文件](https://cloudcli.ai/docs)** — 安裝、設定、功能與疑難排解指南
+- **[文件](https://vibespace.ai/docs)** — 安裝、設定、功能與疑難排解指南
 - **[Discord](https://discord.gg/buxwujPNRE)** — 取得協助並與社群交流
 - **[GitHub Issues](https://github.com/siteboon/claudecodeui/issues)** — 回報 Bug 與建議功能
 - **[貢獻指南](CONTRIBUTING.md)** — 如何參與專案貢獻
