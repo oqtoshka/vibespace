@@ -1,7 +1,7 @@
 import { Archive, Folder, FolderPlus, MessageSquare, Plus, RefreshCw, Search, X, PanelLeftClose } from 'lucide-react';
 import type { TFunction } from 'i18next';
 import { Button, Input, Tooltip } from '../../../../shared/view/ui';
-import { IS_PLATFORM } from '../../../../constants/config';
+import { IS_PLATFORM, APP_TITLE } from '../../../../constants/config';
 import { cn } from '../../../../lib/utils';
 import type { SidebarSearchMode } from '../../types/types';
 
@@ -59,7 +59,7 @@ export default function SidebarHeader({
           <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
         </svg>
       </div>
-      <h1 className="truncate text-sm font-semibold tracking-tight text-foreground">{t('app.title')}</h1>
+      <h1 className="truncate text-sm font-semibold tracking-tight text-foreground">{APP_TITLE}</h1>
     </div>
   );
 
@@ -73,7 +73,7 @@ export default function SidebarHeader({
         <div className="flex items-center justify-between gap-2">
           {IS_PLATFORM ? (
             <a
-              href="https://cloudcli.ai/dashboard"
+              href="https://vibespace.ai/dashboard"
               className="flex min-w-0 items-center gap-2.5 transition-opacity hover:opacity-80"
               title={t('tooltips.viewEnvironments')}
             >
@@ -210,7 +210,7 @@ export default function SidebarHeader({
         <div className="flex items-center justify-between">
           {IS_PLATFORM ? (
             <a
-              href="https://cloudcli.ai/dashboard"
+              href="https://vibespace.ai/dashboard"
               className="flex min-w-0 items-center gap-2.5 transition-opacity active:opacity-70"
               title={t('tooltips.viewEnvironments')}
             >

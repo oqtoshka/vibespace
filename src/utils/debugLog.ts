@@ -7,12 +7,12 @@ type DebugEvent = Record<string, unknown> & { tag: string };
 
 // Telemetry is OFF by default — the heartbeat alone fired a POST to
 // /api/debug-log every 200ms, flooding the network tab. Opt in at runtime with
-// `localStorage.setItem('cloudcli-debug', '1')` and reload; no rebuild needed.
+// `localStorage.setItem('vibespace-debug', '1')` and reload; no rebuild needed.
 const DEBUG_ENABLED =
   typeof window !== 'undefined' &&
   (() => {
     try {
-      return window.localStorage.getItem('cloudcli-debug') === '1';
+      return window.localStorage.getItem('vibespace-debug') === '1';
     } catch {
       return false;
     }

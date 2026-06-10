@@ -1,15 +1,15 @@
 <div align="center">
-  <img src="public/logo.svg" alt="CloudCLI UI" width="64" height="64">
-  <h1>Cloud CLI (일명 Claude Code UI)</h1>
+  <img src="public/logo.svg" alt="VibeSpace UI" width="64" height="64">
+  <h1>VibeSpace (일명 Claude Code UI)</h1>
   <p><a href="https://docs.anthropic.com/en/docs/claude-code">Claude Code</a>, <a href="https://docs.cursor.com/en/cli/overview">Cursor CLI</a>, <a href="https://developers.openai.com/codex">Codex</a>, <a href="https://geminicli.com/">Gemini-CLI</a> 용 데스크톱 및 모바일 UI입니다.<br>로컬 또는 원격에서 실행하여 어디서나 활성 프로젝트와 세션을 확인하세요.</p>
 </div>
 
 <p align="center">
-  <a href="https://cloudcli.ai">CloudCLI Cloud</a> · <a href="https://cloudcli.ai/docs">문서</a> · <a href="https://discord.gg/buxwujPNRE">Discord</a> · <a href="https://github.com/siteboon/claudecodeui/issues">버그 신고</a> · <a href="CONTRIBUTING.md">기여 안내</a>
+  <a href="https://vibespace.ai">VibeSpace Cloud</a> · <a href="https://vibespace.ai/docs">문서</a> · <a href="https://discord.gg/buxwujPNRE">Discord</a> · <a href="https://github.com/siteboon/claudecodeui/issues">버그 신고</a> · <a href="CONTRIBUTING.md">기여 안내</a>
 </p>
 
 <p align="center">
-  <a href="https://cloudcli.ai"><img src="https://img.shields.io/badge/☁️_CloudCLI_Cloud-Try_Now-0066FF?style=for-the-badge" alt="CloudCLI Cloud"></a>
+  <a href="https://vibespace.ai"><img src="https://img.shields.io/badge/☁️_VibeSpace_Cloud-Try_Now-0066FF?style=for-the-badge" alt="VibeSpace Cloud"></a>
   <a href="https://discord.gg/buxwujPNRE"><img src="https://img.shields.io/badge/Discord-Join%20Community-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord 커뮤니티"></a>
   <br><br>
   <a href="https://trendshift.io/repositories/15586" target="_blank"><img src="https://trendshift.io/api/badge/repositories/15586" alt="siteboon%2Fclaudecodeui | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
@@ -58,45 +58,45 @@
 - **파일 탐색기** - 구문 강조 및 실시간 편집을 갖춘 인터랙티브 파일 트리
 - **Git 탐색기** - 변경 사항 보기, 스테이징 및 커밋. 브랜치 전환 기능 포함
 - **세션 관리** - 대화를 재개하고, 여러 세션을 관리하며 기록을 추적
-- **플러그인 시스템** - 커스텀 탭, 백엔드 서비스, 통합을 추가하여 CloudCLI 확장. [직접 빌드 →](https://github.com/cloudcli-ai/cloudcli-plugin-starter)
+- **플러그인 시스템** - 커스텀 탭, 백엔드 서비스, 통합을 추가하여 VibeSpace 확장. [직접 빌드 →](https://github.com/vibespace-ai/vibespace-plugin-starter)
 - **TaskMaster AI 통합** *(선택사항)* - AI 중심의 작업 계획, PRD 파싱, 워크플로 자동화를 통한 고급 프로젝트 관리
 - **모델 호환성** - Claude, GPT, Gemini 모델 계열에서 작동 (`GET /api/providers/:provider/models` API에서 전체 지원 모델 확인)
 
 ## 빠른 시작
 
-### CloudCLI Cloud (추천)
+### VibeSpace Cloud (추천)
 
 가장 빠르게 시작하는 방법 — 로컬 설정 없이도 가능합니다. 웹, 모바일 앱, API 또는 선호하는 IDE에서 이용할 수 있는 완전 관리형 컨테이너화된 개발 환경을 제공합니다.
 
-**[CloudCLI Cloud 시작하기](https://cloudcli.ai)**
+**[VibeSpace Cloud 시작하기](https://vibespace.ai)**
 
 ### 셀프 호스트 (오픈 소스)
 
 #### npm
 
-**npx**로 즉시 CloudCLI UI를 실행하세요 (Node.js v22+ 필요):
+**npx**로 즉시 VibeSpace UI를 실행하세요 (Node.js v22+ 필요):
 
 ```bash
-npx @cloudcli-ai/cloudcli
+npx @vibespace-ai/vibespace
 ```
 
 **정기적으로 사용한다면 전역 설치:**
 
 ```bash
-npm install -g @cloudcli-ai/cloudcli
-cloudcli
+npm install -g @vibespace-ai/vibespace
+vibespace
 ```
 
 `http://localhost:3001`을 열면 기존 세션이 자동으로 발견됩니다.
 
-자세한 구성 옵션, PM2, 원격 서버 설정 등은 **[문서 →](https://cloudcli.ai/docs)**를 참고하세요.
+자세한 구성 옵션, PM2, 원격 서버 설정 등은 **[문서 →](https://vibespace.ai/docs)**를 참고하세요.
 
 #### Docker Sandboxes (실험적)
 
 하이퍼바이저 수준 격리로 에이전트를 샌드박스에서 실행합니다. 기본 에이전트는 Claude Code입니다. [`sbx` CLI](https://docs.docker.com/ai/sandboxes/get-started/)가 필요합니다.
 
 ```
-npx @cloudcli-ai/cloudcli@latest sandbox ~/my-project
+npx @vibespace-ai/vibespace@latest sandbox ~/my-project
 ```
 
 Claude Code, Codex, Gemini CLI를 지원합니다. 자세한 내용은 [샌드박스 문서](docker/)를 참고하세요.
@@ -105,13 +105,13 @@ Claude Code, Codex, Gemini CLI를 지원합니다. 자세한 내용은 [샌드�
 
 ## 어느 옵션이 적합한가요?
 
-CloudCLI UI는 CloudCLI Cloud를 구동하는 오픈 소스 UI 계층입니다. 로컬 머신에서 직접 셀프 호스트하거나, CloudCLI Cloud(완전 관리형 클라우드 환경, 팀 기능, 심화 통합 제공)를 사용할 수 있습니다.
+VibeSpace UI는 VibeSpace Cloud를 구동하는 오픈 소스 UI 계층입니다. 로컬 머신에서 직접 셀프 호스트하거나, VibeSpace Cloud(완전 관리형 클라우드 환경, 팀 기능, 심화 통합 제공)를 사용할 수 있습니다.
 
-| | CloudCLI UI (셀프 호스트) | CloudCLI Cloud |
+| | VibeSpace UI (셀프 호스트) | VibeSpace Cloud |
 |---|---|---|
 | **적합한 대상** | 로컬 에이전트 세션을 위한 전체 UI가 필요한 개발자 | 어디서든 접근 가능한 클라우드에서 에이전트를 운영하고자 하는 팀 및 개발자 |
 | **접근 방법** | `[yourip]:port`를 통해 브라우저 접속 | 브라우저, IDE, REST API, n8n |
-| **설정** | `npx @cloudcli-ai/cloudcli` | 설정 불필요 |
+| **설정** | `npx @vibespace-ai/vibespace` | 설정 불필요 |
 | **기기 유지 필요 여부** | 예 (머신 켜둬야 함) | 아니오 |
 | **모바일 접근** | 네트워크 내 브라우저 | 모든 기기 (네이티브 앱 예정) |
 | **세션 접근** | `~/.claude`에서 자동 발견 | 클라우드 환경 내 세션 |
@@ -124,7 +124,7 @@ CloudCLI UI는 CloudCLI Cloud를 구동하는 오픈 소스 UI 계층입니다. 
 | **팀 공유** | 아니오 | 예 |
 | **플랫폼 비용** | 무료, 오픈 소스 | 월 $7부터 |
 
-> 둘 다 자체 AI 구독(Claude, Cursor 등)을 그대로 사용합니다 — CloudCLI는 환경만 제공합니다.
+> 둘 다 자체 AI 구독(Claude, Cursor 등)을 그대로 사용합니다 — VibeSpace는 환경만 제공합니다.
 
 ---
 
@@ -151,19 +151,19 @@ CloudCLI UI는 CloudCLI Cloud를 구동하는 오픈 소스 UI 계층입니다. 
 
 ## 플러그인
 
-CloudCLI는 커스텀 탭과 선택적 Node.js 백엔드가 포함된 플러그인 시스템을 제공합니다. Settings > Plugins에서 Git 저장소에서 플러그인을 설치하거나 직접 빌드할 수 있습니다.
+VibeSpace는 커스텀 탭과 선택적 Node.js 백엔드가 포함된 플러그인 시스템을 제공합니다. Settings > Plugins에서 Git 저장소에서 플러그인을 설치하거나 직접 빌드할 수 있습니다.
 
 ### 이용 가능한 플러그인
 
 | 플러그인 | 설명 |
 |---|---|
-| **[Project Stats](https://github.com/cloudcli-ai/cloudcli-plugin-starter)** | 현재 프로젝트의 파일 수, 코드 줄 수, 파일 유형 분포, 가장 큰 파일, 최근 수정 파일을 표시 |
+| **[Project Stats](https://github.com/vibespace-ai/vibespace-plugin-starter)** | 현재 프로젝트의 파일 수, 코드 줄 수, 파일 유형 분포, 가장 큰 파일, 최근 수정 파일을 표시 |
 
 ### 직접 만들기
 
-**[Plugin Starter Template →](https://github.com/cloudcli-ai/cloudcli-plugin-starter)** — 이 저장소를 포크하여 플러그인 구축. 프런트엔드 렌더링, 실시간 컨텍스트 업데이트, RPC 통신 예제 포함.
+**[Plugin Starter Template →](https://github.com/vibespace-ai/vibespace-plugin-starter)** — 이 저장소를 포크하여 플러그인 구축. 프런트엔드 렌더링, 실시간 컨텍스트 업데이트, RPC 통신 예제 포함.
 
-**[플러그인 문서 →](https://cloudcli.ai/docs/plugin-overview)** — 플러그인 API, 매니페스트 포맷, 보안 모델 등을 설명.
+**[플러그인 문서 →](https://vibespace.ai/docs/plugin-overview)** — 플러그인 API, 매니페스트 포맷, 보안 모델 등을 설명.
 
 ---
 
@@ -174,34 +174,34 @@ CloudCLI는 커스텀 탭과 선택적 Node.js 백엔드가 포함된 플러그�
 
 Claude Code Remote Control은 이미 로컬 터미널에서 실행 중인 세션으로 메시지를 전송합니다. 이 경우 기계가 켜져 있어야 하고 터미널을 열어 둬야 하며, 네트워크 연결 없이 약 10분 후 타임아웃됩니다.
 
-CloudCLI UI와 CloudCLI Cloud는 Claude Code를 확장하며 별도로 존재하지 않습니다 — MCP 서버, 권한, 설정, 세션은 Claude Code에서 그대로 사용됩니다.
+VibeSpace UI와 VibeSpace Cloud는 Claude Code를 확장하며 별도로 존재하지 않습니다 — MCP 서버, 권한, 설정, 세션은 Claude Code에서 그대로 사용됩니다.
 
-- **모든 세션을 다룬다** — CloudCLI UI는 `~/.claude` 폴더에서 모든 세션을 자동 발견합니다. Remote Control은 단일 활성 세션만 노출합니다.
-- **설정은 그대로** — CloudCLI UI에서 변경한 MCP, 도구 권한, 프로젝트 설정은 Claude Code에 즉시 반영됩니다.
+- **모든 세션을 다룬다** — VibeSpace UI는 `~/.claude` 폴더에서 모든 세션을 자동 발견합니다. Remote Control은 단일 활성 세션만 노출합니다.
+- **설정은 그대로** — VibeSpace UI에서 변경한 MCP, 도구 권한, 프로젝트 설정은 Claude Code에 즉시 반영됩니다.
 - **지원 에이전트가 더 많음** — Claude Code, Cursor CLI, Codex, Gemini CLI 지원.
 - **전체 UI 제공** — 단일 채팅 창이 아닌 파일 탐색기, Git 통합, MCP 관리 및 셸 터미널 포함.
-- **CloudCLI Cloud는 클라우드에서 실행** — 노트북을 닫아도 에이전트가 실행됩니다. 터미널을 계속 확인할 필요 없음.
+- **VibeSpace Cloud는 클라우드에서 실행** — 노트북을 닫아도 에이전트가 실행됩니다. 터미널을 계속 확인할 필요 없음.
 
 </details>
 
 <details>
 <summary>AI 구독을 별도로 결제해야 하나요?</summary>
 
-네. CloudCLI는 환경만 제공합니다. Claude, Cursor, Codex, Gemini 구독 비용은 별도로 부과됩니다. CloudCLI Cloud는 관리형 환경을 월 $7부터 제공합니다.
+네. VibeSpace는 환경만 제공합니다. Claude, Cursor, Codex, Gemini 구독 비용은 별도로 부과됩니다. VibeSpace Cloud는 관리형 환경을 월 $7부터 제공합니다.
 
 </details>
 
 <details>
-<summary>CloudCLI UI를 휴대폰에서 사용할 수 있나요?</summary>
+<summary>VibeSpace UI를 휴대폰에서 사용할 수 있나요?</summary>
 
-네. 셀프 호스트인 경우 기계에서 서버를 실행하고 네트워크의 아무 브라우저에서 `[yourip]:port`를 열면 됩니다. CloudCLI Cloud는 어떤 기기에서도 열 수 있으며, 네이티브 앱도 준비 중입니다.
+네. 셀프 호스트인 경우 기계에서 서버를 실행하고 네트워크의 아무 브라우저에서 `[yourip]:port`를 열면 됩니다. VibeSpace Cloud는 어떤 기기에서도 열 수 있으며, 네이티브 앱도 준비 중입니다.
 
 </details>
 
 <details>
 <summary>UI에서 변경하면 로컬 Claude Code 설정에 영향을 주나요?</summary>
 
-네, 셀프 호스트에서는 그렇습니다. CloudCLI UI는 Claude Code가 사용하는 동일한 `~/.claude` 설정을 읽고 씁니다. UI에서 추가한 MCP 서버가 Claude Code에 즉시 나타납니다.
+네, 셀프 호스트에서는 그렇습니다. VibeSpace UI는 Claude Code가 사용하는 동일한 `~/.claude` 설정을 읽고 씁니다. UI에서 추가한 MCP 서버가 Claude Code에 즉시 나타납니다.
 
 </details>
 
@@ -209,7 +209,7 @@ CloudCLI UI와 CloudCLI Cloud는 Claude Code를 확장하며 별도로 존재하
 
 ## 커뮤니티 및 지원
 
-- **[문서](https://cloudcli.ai/docs)** — 설치, 구성, 기능, 문제 해결 안내
+- **[문서](https://vibespace.ai/docs)** — 설치, 구성, 기능, 문제 해결 안내
 - **[Discord](https://discord.gg/buxwujPNRE)** — 도움 및 커뮤니티 참여
 - **[GitHub Issues](https://github.com/siteboon/claudecodeui/issues)** — 버그 보고 및 기능 요청
 - **[기여 안내](CONTRIBUTING.md)** — 프로젝트 참여 방법

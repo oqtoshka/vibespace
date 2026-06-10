@@ -1,6 +1,6 @@
-# Contributing to CloudCLI UI
+# Contributing to VibeSpace UI
 
-Thanks for your interest in contributing to CloudCLI UI! Before you start, please take a moment to read through this guide.
+Thanks for your interest in contributing to VibeSpace UI! Before you start, please take a moment to read through this guide.
 
 ## Before You Start
 
