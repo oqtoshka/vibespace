@@ -153,3 +153,7 @@ cloudcli-sidebar.html
 electron/*.tar.gz
 # Playwright MCP scratch artifacts
 .playwright-mcp/
+
+# Local-only project docs (not published)
+AGENTS.md
+CLAUDE.md
