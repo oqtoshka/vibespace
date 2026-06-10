@@ -143,3 +143,6 @@ tasks/
 
 # Git worktrees
 .worktrees/
+
+# Playwright MCP scratch artifacts
+.playwright-mcp/

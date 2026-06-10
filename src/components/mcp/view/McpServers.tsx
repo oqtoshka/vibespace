@@ -81,12 +81,12 @@ function TeamMcpFeatureCard() {
             Share MCP server configurations across your team. Everyone stays in sync automatically.
           </p>
           <a
-            href="https://cloudcli.ai"
+            href="https://vibespace.ai"
             target="_blank"
             rel="noopener noreferrer"
             className="mt-3 inline-flex items-center gap-1 text-xs font-medium text-primary transition-colors hover:underline"
           >
-            Available with CloudCLI Pro
+            Available with VibeSpace Pro
             <ExternalLink className="h-3 w-3" />
           </a>
         </div>

@@ -1,2 +1,2 @@
-export * from '@cloudcli-ai/cloudcli';
-export { default } from '@cloudcli-ai/cloudcli';
+export * from '@vibespace-ai/vibespace';
+export { default } from '@vibespace-ai/vibespace';

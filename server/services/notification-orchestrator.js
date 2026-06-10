@@ -126,7 +126,7 @@ function buildPushBody(event) {
   const message = CODE_MAP[event.code] || 'You have a new notification';
 
   return {
-    title: sessionName || 'CloudCLI',
+    title: sessionName || 'VibeSpace',
     body: `${providerLabel}: ${message}`,
     data: {
       sessionId: event.sessionId || null,

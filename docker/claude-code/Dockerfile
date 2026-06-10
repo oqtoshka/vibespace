@@ -1,11 +1,11 @@
 FROM docker/sandbox-templates:claude-code
 
 USER root
-COPY shared/install-cloudcli.sh /tmp/install-cloudcli.sh
-RUN chmod +x /tmp/install-cloudcli.sh && /tmp/install-cloudcli.sh
+COPY shared/install-vibespace.sh /tmp/install-vibespace.sh
+RUN chmod +x /tmp/install-vibespace.sh && /tmp/install-vibespace.sh
 
 USER agent
-RUN npm install -g @cloudcli-ai/cloudcli && cloudcli --version
+RUN npm install -g @vibespace-ai/vibespace && vibespace --version
 
-COPY --chown=agent:agent shared/start-cloudcli.sh /home/agent/.cloudcli-start.sh
-RUN echo '. ~/.cloudcli-start.sh' >> /home/agent/.bashrc
+COPY --chown=agent:agent shared/start-vibespace.sh /home/agent/.vibespace-start.sh
+RUN echo '. ~/.vibespace-start.sh' >> /home/agent/.bashrc

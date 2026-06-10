@@ -5,6 +5,16 @@
 export const IS_PLATFORM = import.meta.env.VITE_IS_PLATFORM === 'true';
 
 /**
+ * Configurable application title / brand name.
+ *
+ * Shown in the sidebar header, the browser tab, and the PWA. Override it
+ * per-deployment with the build-time env var `VITE_APP_TITLE` (e.g. the local
+ * cloud.dudin.net build sets it to "VibeSpace Home"). Falls back to the
+ * product name when unset.
+ */
+export const APP_TITLE = import.meta.env.VITE_APP_TITLE?.trim() || 'VibeSpace';
+
+/**
  * For empty shell instances where no project is provided,
  * we use a default project object to ensure the shell can still function.
  * This prevents errors related to missing project data.
