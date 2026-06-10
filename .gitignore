@@ -145,3 +145,7 @@ tasks/
 
 # Playwright MCP scratch artifacts
 .playwright-mcp/
+
+# Local-only project docs (not published)
+AGENTS.md
+CLAUDE.md
