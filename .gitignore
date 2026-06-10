@@ -151,3 +151,5 @@ tasks/
 cloudcli-sidebar-app-source.tar.gz
 cloudcli-sidebar.html
 electron/*.tar.gz
+# Playwright MCP scratch artifacts
+.playwright-mcp/

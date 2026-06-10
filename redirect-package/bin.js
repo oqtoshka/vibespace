@@ -1,2 +1,2 @@
 #!/usr/bin/env node
-import('@cloudcli-ai/cloudcli/dist-server/server/cli.js');
+import('@vibespace-ai/vibespace/dist-server/server/cli.js');

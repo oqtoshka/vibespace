@@ -37,9 +37,9 @@ jobs:
       - name: Compute tags
         id: tags
         run: |
-          TAGS="docker.io/cloudcliai/sandbox:${{ matrix.template }}"
+          TAGS="docker.io/vibespaceai/sandbox:${{ matrix.template }}"
           if [ -n "${{ inputs.extra_tag }}" ]; then
-            TAGS="$TAGS,docker.io/cloudcliai/sandbox:${{ matrix.template }}-${{ inputs.extra_tag }}"
+            TAGS="$TAGS,docker.io/vibespaceai/sandbox:${{ matrix.template }}-${{ inputs.extra_tag }}"
           fi
           echo "tags=$TAGS" >> "$GITHUB_OUTPUT"
 

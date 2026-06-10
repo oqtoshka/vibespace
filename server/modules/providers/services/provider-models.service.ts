@@ -43,7 +43,7 @@ type ProviderModelsCacheFile = {
 
 const getProviderModelsCachePath = (): string => path.join(
   os.homedir(),
-  '.cloudcli',
+  '.vibespace',
   'provider-models-cache.json',
 );
 
