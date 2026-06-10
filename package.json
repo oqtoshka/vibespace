@@ -1,12 +1,12 @@
 {
-  "name": "@cloudcli-ai/cloudcli",
+  "name": "@vibespace-ai/vibespace",
   "version": "1.36.3",
-  "productName": "CloudCLI",
+  "productName": "VibeSpace",
   "description": "A web-based UI for Claude Code CLI",
   "type": "module",
   "main": "dist-server/server/index.js",
   "bin": {
-    "cloudcli": "dist-server/server/cli.js"
+    "vibespace": "dist-server/server/cli.js"
   },
   "files": [
     "electron/",
@@ -18,7 +18,7 @@
     "scripts/",
     "README.md"
   ],
-  "homepage": "https://cloudcli.ai",
+  "homepage": "https://vibespace.ai",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/siteboon/claudecodeui.git"
@@ -56,10 +56,10 @@
     "update:platform": "./update-platform.sh"
   },
   "build": {
-    "appId": "ai.cloudcli.desktop",
-    "productName": "CloudCLI",
+    "appId": "ai.vibespace.desktop",
+    "productName": "VibeSpace",
     "asar": false,
-    "artifactName": "cloudcli-desktop-${version}-${os}-${arch}.${ext}",
+    "artifactName": "vibespace-desktop-${version}-${os}-${arch}.${ext}",
     "directories": {
       "output": "release/desktop"
     },
@@ -78,9 +78,9 @@
     ],
     "protocols": [
       {
-        "name": "CloudCLI",
+        "name": "VibeSpace",
         "schemes": [
-          "cloudcli"
+          "vibespace"
         ]
       }
     ],
@@ -92,13 +92,13 @@
         "dmg"
       ],
       "extendInfo": {
-        "CFBundleName": "CloudCLI",
-        "CFBundleDisplayName": "CloudCLI",
+        "CFBundleName": "VibeSpace",
+        "CFBundleDisplayName": "VibeSpace",
         "CFBundleURLTypes": [
           {
-            "CFBundleURLName": "CloudCLI",
+            "CFBundleURLName": "VibeSpace",
             "CFBundleURLSchemes": [
-              "cloudcli"
+              "vibespace"
             ]
           }
         ]
@@ -119,7 +119,7 @@
     "claude code",
     "claude-code",
     "claude-code-ui",
-    "cloudcli",
+    "vibespace",
     "codex",
     "cursor",
     "cursor-cli",
@@ -131,7 +131,7 @@
     "ui",
     "mobile IDE"
   ],
-  "author": "CloudCLI UI Contributors",
+  "author": "VibeSpace UI Contributors",
   "license": "AGPL-3.0-or-later",
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.168",

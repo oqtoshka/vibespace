@@ -273,7 +273,7 @@ app.post('/api/system/update', authenticateToken, async (req, res) => {
             ? 'npm run update:platform'
             : installMode === 'git'
                 ? 'git checkout main && git pull && npm install'
-                : 'npm install -g @cloudcli-ai/cloudcli@latest';
+                : 'npm install -g @vibespace-ai/vibespace@latest';
 
         const updateCwd = IS_PLATFORM || installMode === 'git'
             ? projectRoot
@@ -334,7 +334,7 @@ app.post('/api/system/update', authenticateToken, async (req, res) => {
 });
 
 // Open a session in the host machine's desktop Terminal (macOS only).
-// The cloudcli server runs on the user's Mac; this launches Terminal.app on
+// The vibespace server runs on the user's Mac; this launches Terminal.app on
 // that host and resumes the given provider session via its CLI. The client
 // only shows the button when it detects it is itself running on macOS, but we
 // re-check `process.platform` here since the host is the source of truth.
@@ -1692,12 +1692,12 @@ async function startServer() {
 
             console.log('');
             console.log(c.dim('═'.repeat(63)));
-            console.log(`  ${c.bright('CloudCLI Server - Ready')}`);
+            console.log(`  ${c.bright('VibeSpace Server - Ready')}`);
             console.log(c.dim('═'.repeat(63)));
             console.log('');
             console.log(`${c.info('[INFO]')} Server URL:  ${c.bright('http://' + DISPLAY_HOST + ':' + SERVER_PORT)}`);
             console.log(`${c.info('[INFO]')} Installed at: ${c.dim(appInstallPath)}`);
-            console.log(`${c.tip('[TIP]')}  Run "cloudcli status" for full configuration details`);
+            console.log(`${c.tip('[TIP]')}  Run "vibespace status" for full configuration details`);
             console.log('');
 
             // Start watching the projects folder for changes
