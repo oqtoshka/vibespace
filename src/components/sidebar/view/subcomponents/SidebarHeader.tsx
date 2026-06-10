@@ -2,7 +2,7 @@ import { Activity, Archive, Folder, FolderPlus, MessageSquare, Plus, RefreshCw, 
 import type { TFunction } from 'i18next';
 
 import { Button, Input, Tooltip } from '../../../../shared/view/ui';
-import { CLOUDCLI_WORDMARK_FONT_FAMILY } from '../../../../constants/branding';
+import { VIBESPACE_WORDMARK_FONT_FAMILY } from '../../../../constants/branding';
 import { IS_PLATFORM } from '../../../../constants/config';
 import { cn } from '../../../../lib/utils';
 import type { SidebarSearchMode } from '../../types/types';
@@ -68,7 +68,7 @@ export default function SidebarHeader({
       </div>
       <h1
         className="truncate text-sm font-bold tracking-tight text-foreground"
-        style={{ fontFamily: CLOUDCLI_WORDMARK_FONT_FAMILY }}
+        style={{ fontFamily: VIBESPACE_WORDMARK_FONT_FAMILY }}
       >
         {t('app.title')}
       </h1>
@@ -85,7 +85,7 @@ export default function SidebarHeader({
         <div className="flex items-center justify-between gap-2">
           {IS_PLATFORM ? (
             <a
-              href="https://cloudcli.ai/dashboard"
+              href="https://vibespace.ai/dashboard"
               className="flex min-w-0 items-center gap-2.5 transition-opacity hover:opacity-80"
               title={t('tooltips.viewEnvironments')}
             >
@@ -245,7 +245,7 @@ export default function SidebarHeader({
         <div className="flex items-center justify-between">
           {IS_PLATFORM ? (
             <a
-              href="https://cloudcli.ai/dashboard"
+              href="https://vibespace.ai/dashboard"
               className="flex min-w-0 items-center gap-2.5 transition-opacity active:opacity-70"
               title={t('tooltips.viewEnvironments')}
             >
