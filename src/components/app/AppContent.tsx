@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { PointerEvent as ReactPointerEvent } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 
@@ -22,6 +23,19 @@ function readPersistedSidebarView(): SidebarView {
     return localStorage.getItem(SIDEBAR_VIEW_KEY) === 'files' ? 'files' : 'sessions';
   } catch {
     return 'sessions';
+  }
+}
+
+const MOBILE_DRAWER_WIDTH_KEY = 'mobile-drawer-width';
+const DRAWER_MIN_WIDTH = 260;
+
+/** User-adjusted drawer width in px; null keeps the 85vw default. */
+function readPersistedDrawerWidth(): number | null {
+  try {
+    const stored = Number(localStorage.getItem(MOBILE_DRAWER_WIDTH_KEY));
+    return Number.isFinite(stored) && stored >= DRAWER_MIN_WIDTH ? stored : null;
+  } catch {
+    return null;
   }
 }
 
@@ -94,6 +108,51 @@ function AppContentInner() {
     } catch {
       // Ignore storage errors.
     }
+  }, []);
+
+  // Mobile drawer width: default 85vw, drag-adjustable up to full width via
+  // the grabber on the drawer's right edge. Persisted across sessions.
+  const [drawerWidth, setDrawerWidth] = useState<number | null>(readPersistedDrawerWidth);
+  const drawerRef = useRef<HTMLDivElement | null>(null);
+  const drawerDragRef = useRef<{ startX: number; startWidth: number } | null>(null);
+
+  useEffect(() => {
+    if (drawerWidth === null) {
+      return;
+    }
+    try {
+      localStorage.setItem(MOBILE_DRAWER_WIDTH_KEY, String(Math.round(drawerWidth)));
+    } catch {
+      // Ignore storage errors.
+    }
+  }, [drawerWidth]);
+
+  const handleDrawerResizeStart = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    } catch {
+      // Capture is best-effort; move events still target the grabber.
+    }
+    drawerDragRef.current = {
+      startX: event.clientX,
+      startWidth: drawerRef.current?.getBoundingClientRect().width ?? 0,
+    };
+  }, []);
+
+  const handleDrawerResizeMove = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = drawerDragRef.current;
+    if (!drag) {
+      return;
+    }
+    const next = Math.min(
+      window.innerWidth,
+      Math.max(DRAWER_MIN_WIDTH, drag.startWidth + (event.clientX - drag.startX)),
+    );
+    setDrawerWidth(next);
+  }, []);
+
+  const handleDrawerResizeEnd = useCallback(() => {
+    drawerDragRef.current = null;
   }, []);
 
   const showFilesSidebar = useCallback(() => {
@@ -378,12 +437,26 @@ function AppContentInner() {
             aria-label={t('versionUpdate.ariaLabels.closeSidebar')}
           />
           <div
-            className={`relative h-full w-[85vw] max-w-sm transform border-r border-border/40 bg-card transition-transform duration-150 ease-out sm:w-80 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'
+            ref={drawerRef}
+            className={`relative h-full w-[85vw] transform border-r border-border/40 bg-card transition-transform duration-150 ease-out sm:w-80 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'
               }`}
+            style={drawerWidth !== null ? { width: `${Math.min(drawerWidth, window.innerWidth)}px` } : undefined}
             onClick={(event) => event.stopPropagation()}
             onTouchStart={(event) => event.stopPropagation()}
           >
             <Sidebar {...sidebarProps} />
+
+            {/* Drag grabber: widens the drawer up to full screen.
+                touch-none is required so pointermove fires instead of scroll. */}
+            <div
+              className="absolute inset-y-0 right-0 z-10 flex w-5 cursor-col-resize touch-none items-center justify-center"
+              onPointerDown={handleDrawerResizeStart}
+              onPointerMove={handleDrawerResizeMove}
+              onPointerUp={handleDrawerResizeEnd}
+              onPointerCancel={handleDrawerResizeEnd}
+            >
+              <div className="h-12 w-1 rounded-full bg-muted-foreground/40" />
+            </div>
           </div>
         </div>
       )}
