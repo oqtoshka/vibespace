@@ -446,16 +446,20 @@ function AppContentInner() {
           >
             <Sidebar {...sidebarProps} />
 
-            {/* Drag grabber: widens the drawer up to full screen.
-                touch-none is required so pointermove fires instead of scroll. */}
+            {/* Drag grabber: widens the drawer up to full screen. The touch
+                target straddles the drawer border (40px wide) so grabbing the
+                edge itself works; touch-none is required so pointermove fires
+                instead of scrolling. */}
             <div
-              className="absolute inset-y-0 right-0 z-10 flex w-5 cursor-col-resize touch-none items-center justify-center"
+              className="absolute inset-y-0 -right-4 z-10 flex w-10 cursor-col-resize touch-none items-center justify-center"
               onPointerDown={handleDrawerResizeStart}
               onPointerMove={handleDrawerResizeMove}
               onPointerUp={handleDrawerResizeEnd}
               onPointerCancel={handleDrawerResizeEnd}
             >
-              <div className="h-12 w-1 rounded-full bg-muted-foreground/40" />
+              <div className="flex h-20 w-5 items-center justify-center rounded-full border border-border/60 bg-background/95 shadow-md">
+                <div className="h-10 w-1 rounded-full bg-muted-foreground/70" />
+              </div>
             </div>
           </div>
         </div>
