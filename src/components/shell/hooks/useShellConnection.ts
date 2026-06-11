@@ -20,6 +20,7 @@ type UseShellConnectionOptions = {
   selectedSessionRef: MutableRefObject<ProjectSession | null | undefined>;
   initialCommandRef: MutableRefObject<string | null | undefined>;
   isPlainShellRef: MutableRefObject<boolean>;
+  shellIdRef: MutableRefObject<string | null | undefined>;
   onProcessCompleteRef: MutableRefObject<((exitCode: number) => void) | null | undefined>;
   isInitialized: boolean;
   autoConnect: boolean;
@@ -44,6 +45,7 @@ export function useShellConnection({
   selectedSessionRef,
   initialCommandRef,
   isPlainShellRef,
+  shellIdRef,
   onProcessCompleteRef,
   isInitialized,
   autoConnect,
@@ -149,6 +151,7 @@ export function useShellConnection({
               rows: currentTerminal.rows,
               initialCommand: initialCommandRef.current,
               isPlainShell: isPlainShellRef.current,
+              shellId: shellIdRef.current ?? null,
               forceRestart,
               // Let the server start `claude` with --dangerously-skip-permissions
               // when the user has bypass enabled in Settings → Agents → Permissions.
@@ -191,6 +194,8 @@ export function useShellConnection({
       isPlainShellRef,
       selectedProjectRef,
       selectedSessionRef,
+      setAuthUrl,
+      shellIdRef,
       terminalRef,
       wsRef,
     ],
