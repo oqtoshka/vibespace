@@ -1,6 +1,6 @@
 import { useCallback, useState } from 'react';
 import type { Project, ProjectSession } from '../../../types/app';
-import Shell from '../../shell/view/Shell';
+import Shell, { type ShellController } from '../../shell/view/Shell';
 import StandaloneShellEmptyState from './subcomponents/StandaloneShellEmptyState';
 import StandaloneShellHeader from './subcomponents/StandaloneShellHeader';
 
@@ -18,6 +18,10 @@ type StandaloneShellProps = {
   showHeader?: boolean;
   compact?: boolean;
   minimal?: boolean;
+  /** Workspace shell-tab id; differentiates this shell's server PTY key. */
+  shellId?: string | null;
+  /** Lets the parent imperatively control the shell (kill-on-tab-close). */
+  onRegisterController?: ((controller: ShellController | null) => void) | null;
 };
 
 export default function StandaloneShell({
@@ -34,6 +38,8 @@ export default function StandaloneShell({
   showHeader = true,
   compact = false,
   minimal = false,
+  shellId = null,
+  onRegisterController = null,
 }: StandaloneShellProps) {
   const [isCompleted, setIsCompleted] = useState(false);
 
@@ -70,6 +76,8 @@ export default function StandaloneShell({
           onProcessComplete={handleProcessComplete}
           minimal={minimal}
           autoConnect={minimal ? true : autoConnect}
+          shellId={shellId}
+          onRegisterController={onRegisterController}
         />
       </div>
     </div>

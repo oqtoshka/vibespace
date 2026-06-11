@@ -3,6 +3,7 @@ import type { FitAddon } from '@xterm/addon-fit';
 import type { Terminal } from '@xterm/xterm';
 import type { UseShellRuntimeOptions, UseShellRuntimeResult } from '../types/types';
 import { copyTextToClipboard } from '../../../utils/clipboard';
+import { sendSocketMessage } from '../utils/socket';
 import { useShellConnection } from './useShellConnection';
 import { useShellTerminal } from './useShellTerminal';
 
@@ -14,6 +15,7 @@ export function useShellRuntime({
   minimal,
   autoConnect,
   isRestarting,
+  shellId = null,
   onProcessComplete,
   onOutputRef,
 }: UseShellRuntimeOptions): UseShellRuntimeResult {
@@ -29,6 +31,7 @@ export function useShellRuntime({
   const selectedSessionRef = useRef(selectedSession);
   const initialCommandRef = useRef(initialCommand);
   const isPlainShellRef = useRef(isPlainShell);
+  const shellIdRef = useRef(shellId);
   const onProcessCompleteRef = useRef(onProcessComplete);
   const authUrlRef = useRef('');
   const lastSessionIdRef = useRef<string | null>(selectedSession?.id ?? null);
@@ -39,8 +42,9 @@ export function useShellRuntime({
     selectedSessionRef.current = selectedSession;
     initialCommandRef.current = initialCommand;
     isPlainShellRef.current = isPlainShell;
+    shellIdRef.current = shellId;
     onProcessCompleteRef.current = onProcessComplete;
-  }, [selectedProject, selectedSession, initialCommand, isPlainShell, onProcessComplete]);
+  }, [selectedProject, selectedSession, initialCommand, isPlainShell, shellId, onProcessComplete]);
 
   const setCurrentAuthUrl = useCallback((nextAuthUrl: string) => {
     authUrlRef.current = nextAuthUrl;
@@ -90,7 +94,7 @@ export function useShellRuntime({
     return copyTextToClipboard(url);
   }, []);
 
-  const { isInitialized, clearTerminalScreen, disposeTerminal } = useShellTerminal({
+  const { isInitialized, clearTerminalScreen, disposeTerminal, refit } = useShellTerminal({
     terminalContainerRef,
     terminalRef,
     fitAddonRef,
@@ -113,6 +117,7 @@ export function useShellRuntime({
     selectedSessionRef,
     initialCommandRef,
     isPlainShellRef,
+    shellIdRef,
     onProcessCompleteRef,
     isInitialized,
     autoConnect,
@@ -149,6 +154,13 @@ export function useShellRuntime({
     lastSessionIdRef.current = currentSessionId;
   }, [disconnectFromShell, isInitialized, selectedSession?.id]);
 
+  // Tears down the server PTY (used when a workspace shell tab is closed),
+  // then disconnects without letting auto-connect resurrect the shell.
+  const killShell = useCallback(() => {
+    sendSocketMessage(wsRef.current, { type: 'kill' });
+    disconnectFromShell({ suppressAutoConnect: true });
+  }, [disconnectFromShell]);
+
   return {
     terminalContainerRef,
     terminalRef,
@@ -162,5 +174,7 @@ export function useShellRuntime({
     disconnectFromShell,
     openAuthUrlInBrowser,
     copyAuthUrlToClipboard,
+    refit,
+    killShell,
   };
 }
