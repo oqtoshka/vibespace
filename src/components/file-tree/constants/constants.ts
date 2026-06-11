@@ -2,7 +2,7 @@ import type { FileTreeViewMode } from '../types/types';
 
 export const FILE_TREE_VIEW_MODE_STORAGE_KEY = 'file-tree-view-mode';
 
-export const FILE_TREE_DEFAULT_VIEW_MODE: FileTreeViewMode = 'detailed';
+export const FILE_TREE_DEFAULT_VIEW_MODE: FileTreeViewMode = 'simple';
 
 export const FILE_TREE_VIEW_MODES: FileTreeViewMode[] = ['simple', 'compact', 'detailed'];
 
