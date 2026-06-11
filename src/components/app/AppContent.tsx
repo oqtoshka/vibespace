@@ -493,8 +493,6 @@ function AppContentInner() {
           selectedProject={selectedProject}
           selectedSession={selectedSession}
           workspace={workspace}
-          filesSidebarActive={sidebarView === 'files'}
-          onShowFilesSidebar={showFilesSidebar}
           ws={ws}
           sendMessage={sendMessage}
           latestMessage={latestMessage}

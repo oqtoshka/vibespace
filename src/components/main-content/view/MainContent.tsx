@@ -34,8 +34,6 @@ function MainContent({
   selectedProject,
   selectedSession,
   workspace,
-  filesSidebarActive,
-  onShowFilesSidebar,
   ws,
   sendMessage,
   latestMessage,
@@ -163,8 +161,6 @@ function MainContent({
         onMenuClick={onMenuClick}
         onCloseTab={handleCloseTab}
         onNewShell={handleNewShell}
-        filesSidebarActive={filesSidebarActive}
-        onShowFilesSidebar={onShowFilesSidebar}
       />
 
       <div className="flex min-h-0 flex-1 overflow-hidden">
