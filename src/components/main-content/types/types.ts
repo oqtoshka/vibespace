@@ -3,7 +3,6 @@ import type { WorkspacePanel, WorkspaceTab } from '../../../types/workspace';
 import type { OpenShellTabOptions } from '../../../hooks/useWorkspaceTabs';
 import type { CodeEditorDiffInfo } from '../../code-editor/types/types';
 import type { SessionNavigationOptions } from '../../chat/types/types';
-import type { ExplorerPane } from '../hooks/useExplorerPane';
 
 /**
  * Workspace tab surface threaded from AppContent (which owns
@@ -56,7 +55,9 @@ export type MainContentProps = {
   selectedProject: Project | null;
   selectedSession: ProjectSession | null;
   workspace: WorkspaceApi;
-  explorer: ExplorerPane;
+  // The file tree lives in the main sidebar; these reflect/drive its view.
+  filesSidebarActive: boolean;
+  onShowFilesSidebar: () => void;
   ws: WebSocket | null;
   sendMessage: (message: unknown) => void;
   latestMessage: unknown;
@@ -84,8 +85,8 @@ export type MainContentHeaderProps = {
   onMenuClick: () => void;
   onCloseTab: (id: string) => void;
   onNewShell: () => void;
-  explorerVisible: boolean;
-  onToggleExplorer: () => void;
+  filesSidebarActive: boolean;
+  onShowFilesSidebar: () => void;
 };
 
 export type MainContentStateViewProps = {
