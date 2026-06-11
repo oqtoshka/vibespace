@@ -6,12 +6,12 @@ import type {
   MarkSessionProcessing,
   SessionActivityMap,
 } from '../../../hooks/useSessionProtection';
-import type { SessionEstablishedContext, SessionNavigationOptions } from '../../chat/types/types';
+import type { SessionEstablishedContext } from '../../chat/types/types';
 import type { SettingsMainTab } from '../../settings/types/types';
 import type { WorkspacePanel, WorkspaceTab } from '../../../types/workspace';
 import type { OpenShellTabOptions } from '../../../hooks/useWorkspaceTabs';
 import type { CodeEditorDiffInfo } from '../../code-editor/types/types';
-import type { ExplorerPane } from '../hooks/useExplorerPane';
+import type { SessionNavigationOptions } from '../../chat/types/types';
 
 /**
  * Workspace tab surface threaded from AppContent (which owns
@@ -64,7 +64,9 @@ export type MainContentProps = {
   selectedProject: Project | null;
   selectedSession: ProjectSession | null;
   workspace: WorkspaceApi;
-  explorer: ExplorerPane;
+  // The file tree lives in the main sidebar; these reflect/drive its view.
+  filesSidebarActive: boolean;
+  onShowFilesSidebar: () => void;
   ws: WebSocket | null;
   sendMessage: (message: unknown) => void;
   isMobile: boolean;
@@ -91,8 +93,8 @@ export type MainContentHeaderProps = {
   onMenuClick: () => void;
   onCloseTab: (id: string) => void;
   onNewShell: () => void;
-  explorerVisible: boolean;
-  onToggleExplorer: () => void;
+  filesSidebarActive: boolean;
+  onShowFilesSidebar: () => void;
 };
 
 export type MainContentStateViewProps = {

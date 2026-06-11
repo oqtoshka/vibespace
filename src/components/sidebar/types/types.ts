@@ -2,7 +2,12 @@ import type { LoadingProgress, Project, ProjectSession, LLMProvider } from '../.
 import type { SessionActivityMap } from '../../../hooks/useSessionProtection';
 
 export type ProjectSortOrder = 'name' | 'date';
-export type SidebarSearchMode = 'projects' | 'conversations' | 'running' | 'archived';
+// 'projects' is the regular sessions list (search unifies name + content
+// matches); 'archived' shows the archive. The old 'conversations' mode was
+// folded into the unified search.
+export type SidebarSearchMode = 'projects' | 'archived';
+// Top-level sidebar view: the sessions/projects list or the project file tree.
+export type SidebarView = 'sessions' | 'files';
 // How the Projects tab lays out its content: the classic project-grouped tree,
 // or a flat list of every session ordered by recent activity.
 export type ProjectViewMode = 'grouped' | 'activity';
@@ -74,6 +79,12 @@ export type SidebarProps = {
   settingsInitialTab: string;
   onCloseSettings: () => void;
   isMobile: boolean;
+  // Sessions list vs project file tree (controlled by AppContent so the
+  // header's files button and the command palette can switch it).
+  view: SidebarView;
+  onViewChange: (view: SidebarView) => void;
+  // Opens a file from the sidebar file tree as a workspace tab.
+  onFileOpen: (filePath: string) => void;
 };
 
 export type SessionViewModel = {
