@@ -40,6 +40,7 @@ const parseStartedAt = (value: unknown): number | undefined => {
 };
 
 import { useWorkspaceTabs } from '../../hooks/useWorkspaceTabs';
+import { useExplorerPane } from '../main-content/hooks/useExplorerPane';
 import type { WorkspaceApi } from '../main-content/types/types';
 import type { AppTab, Project, ProjectSession } from '../../types/app';
 
@@ -151,6 +152,7 @@ function AppContentInner() {
   }, [refreshRunningSessions]);
 
   const tabs = useWorkspaceTabs({ projectId: selectedProject?.projectId ?? null });
+  const explorer = useExplorerPane({ isMobile });
   const {
     tabs: workspaceTabs,
     activeId,
@@ -284,9 +286,13 @@ function AppContentInner() {
         });
         return;
       }
+      if (tab === 'files') {
+        explorer.toggle();
+        return;
+      }
       setActive(tab);
     },
-    [openChatTab, openShellTab, selectedSession?.__provider, selectedSession?.id, setActive],
+    [explorer, openChatTab, openShellTab, selectedSession?.__provider, selectedSession?.id, setActive],
   );
 
   const workspace: WorkspaceApi = useMemo(
@@ -411,6 +417,7 @@ function AppContentInner() {
           selectedProject={selectedProject}
           selectedSession={selectedSession}
           workspace={workspace}
+          explorer={explorer}
           ws={ws}
           sendMessage={sendMessage}
           isMobile={isMobile}

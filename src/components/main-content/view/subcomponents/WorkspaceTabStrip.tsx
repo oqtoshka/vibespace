@@ -1,7 +1,6 @@
 import {
   ClipboardCheck,
   FileText,
-  Folder,
   GitBranch,
   MessageSquare,
   Plus,
@@ -30,7 +29,6 @@ type PanelDefinition =
   | { kind: 'plugin'; id: WorkspacePanel; label: string; pluginName: string; iconFile: string };
 
 const BASE_PANELS: PanelDefinition[] = [
-  { kind: 'builtin', id: 'files', labelKey: 'tabs.files', icon: Folder },
   { kind: 'builtin', id: 'git', labelKey: 'tabs.git', icon: GitBranch },
 ];
 

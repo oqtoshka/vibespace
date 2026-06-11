@@ -18,10 +18,6 @@ function getPanelTitle(panel: WorkspacePanel, shouldShowTasksTab: boolean, t: (k
     return pluginDisplayName;
   }
 
-  if (panel === 'files') {
-    return t('mainContent.projectFiles');
-  }
-
   if (panel === 'git') {
     return t('tabs.git');
   }

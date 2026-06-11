@@ -11,6 +11,7 @@ import type { SettingsMainTab } from '../../settings/types/types';
 import type { WorkspacePanel, WorkspaceTab } from '../../../types/workspace';
 import type { OpenShellTabOptions } from '../../../hooks/useWorkspaceTabs';
 import type { CodeEditorDiffInfo } from '../../code-editor/types/types';
+import type { ExplorerPane } from '../hooks/useExplorerPane';
 
 /**
  * Workspace tab surface threaded from AppContent (which owns
@@ -63,6 +64,7 @@ export type MainContentProps = {
   selectedProject: Project | null;
   selectedSession: ProjectSession | null;
   workspace: WorkspaceApi;
+  explorer: ExplorerPane;
   ws: WebSocket | null;
   sendMessage: (message: unknown) => void;
   isMobile: boolean;
@@ -89,6 +91,8 @@ export type MainContentHeaderProps = {
   onMenuClick: () => void;
   onCloseTab: (id: string) => void;
   onNewShell: () => void;
+  explorerVisible: boolean;
+  onToggleExplorer: () => void;
 };
 
 export type MainContentStateViewProps = {
