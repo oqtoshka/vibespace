@@ -1,10 +1,8 @@
 import { useCallback, useRef, useState, useEffect } from 'react';
-import { Folder } from 'lucide-react';
-import { useTranslation } from 'react-i18next';
-import { Tooltip, Pill } from '../../../../shared/view/ui';
 import type { MainContentHeaderProps } from '../../types/types';
 import MobileMenuButton from './MobileMenuButton';
 import WorkspaceTabStrip from './WorkspaceTabStrip';
+import WorkspacePanelBar from './WorkspacePanelBar';
 import OpenInTerminalButton from './OpenInTerminalButton';
 
 export default function MainContentHeader({
@@ -16,10 +14,7 @@ export default function MainContentHeader({
   onMenuClick,
   onCloseTab,
   onNewShell,
-  filesSidebarActive,
-  onShowFilesSidebar,
 }: MainContentHeaderProps) {
-  const { t } = useTranslation();
   const scrollRef = useRef<HTMLDivElement>(null);
   const [canScrollLeft, setCanScrollLeft] = useState(false);
   const [canScrollRight, setCanScrollRight] = useState(false);
@@ -41,7 +36,7 @@ export default function MainContentHeader({
   }, [updateScrollState]);
 
   // VSCode-style: tabs flow left-to-right from the leading edge; fixed
-  // actions (files sidebar toggle, terminal) sit at the trailing edge.
+  // actions (panel toggles, new shell, terminal) sit at the trailing edge.
   return (
     <div className="pwa-header-safe flex-shrink-0 border-b border-border/60 bg-background px-2 py-1.5 sm:px-3 sm:py-2">
       <div className="flex items-center gap-2">
@@ -59,9 +54,7 @@ export default function MainContentHeader({
             <WorkspaceTabStrip
               workspace={workspace}
               selectedProject={selectedProject}
-              shouldShowTasksTab={shouldShowTasksTab}
               onCloseTab={onCloseTab}
-              onNewShell={onNewShell}
             />
           </div>
           {canScrollRight && (
@@ -70,11 +63,11 @@ export default function MainContentHeader({
         </div>
 
         <div className="flex flex-shrink-0 items-center gap-2">
-          <Tooltip content={t('tabs.files')} position="bottom">
-            <Pill isActive={filesSidebarActive} onClick={onShowFilesSidebar} className="px-2.5 py-[5px]">
-              <Folder className="h-3.5 w-3.5" strokeWidth={filesSidebarActive ? 2.2 : 1.8} />
-            </Pill>
-          </Tooltip>
+          <WorkspacePanelBar
+            workspace={workspace}
+            shouldShowTasksTab={shouldShowTasksTab}
+            onNewShell={onNewShell}
+          />
           <OpenInTerminalButton
             selectedProject={selectedProject}
             selectedSession={selectedSession}
