@@ -55,9 +55,6 @@ export type MainContentProps = {
   selectedProject: Project | null;
   selectedSession: ProjectSession | null;
   workspace: WorkspaceApi;
-  // The file tree lives in the main sidebar; these reflect/drive its view.
-  filesSidebarActive: boolean;
-  onShowFilesSidebar: () => void;
   ws: WebSocket | null;
   sendMessage: (message: unknown) => void;
   latestMessage: unknown;
@@ -85,8 +82,6 @@ export type MainContentHeaderProps = {
   onMenuClick: () => void;
   onCloseTab: (id: string) => void;
   onNewShell: () => void;
-  filesSidebarActive: boolean;
-  onShowFilesSidebar: () => void;
 };
 
 export type MainContentStateViewProps = {

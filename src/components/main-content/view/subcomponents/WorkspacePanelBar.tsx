@@ -1,0 +1,94 @@
+import {
+  ClipboardCheck,
+  GitBranch,
+  Plus,
+  Terminal,
+  type LucideIcon,
+} from 'lucide-react';
+import { useTranslation } from 'react-i18next';
+import { Tooltip, Pill } from '../../../../shared/view/ui';
+import type { WorkspacePanel } from '../../../../types/workspace';
+import type { WorkspaceApi } from '../../types/types';
+import { usePlugins } from '../../../../contexts/PluginsContext';
+import PluginIcon from '../../../plugins/view/PluginIcon';
+
+type WorkspacePanelBarProps = {
+  workspace: WorkspaceApi;
+  shouldShowTasksTab: boolean;
+  onNewShell: () => void;
+};
+
+type PanelDefinition =
+  | { kind: 'builtin'; id: WorkspacePanel; labelKey: string; icon: LucideIcon }
+  | { kind: 'plugin'; id: WorkspacePanel; label: string; pluginName: string; iconFile: string };
+
+const BASE_PANELS: PanelDefinition[] = [
+  { kind: 'builtin', id: 'git', labelKey: 'tabs.git', icon: GitBranch },
+];
+
+const TASKS_PANEL: PanelDefinition = {
+  kind: 'builtin',
+  id: 'tasks',
+  labelKey: 'tabs.tasks',
+  icon: ClipboardCheck,
+};
+
+/** Fixed actions in the header's trailing corner: panel toggles (git, tasks,
+ * plugins) plus the new-shell button. Icon-only — these don't scroll with the
+ * workspace tabs. */
+export default function WorkspacePanelBar({
+  workspace,
+  shouldShowTasksTab,
+  onNewShell,
+}: WorkspacePanelBarProps) {
+  const { t } = useTranslation();
+  const { plugins } = usePlugins();
+
+  const builtInPanels = shouldShowTasksTab ? [...BASE_PANELS, TASKS_PANEL] : BASE_PANELS;
+  const pluginPanels: PanelDefinition[] = plugins
+    .filter((plugin) => plugin.enabled)
+    .map((plugin) => ({
+      kind: 'plugin',
+      id: `plugin:${plugin.name}` as WorkspacePanel,
+      label: plugin.displayName,
+      pluginName: plugin.name,
+      iconFile: plugin.icon,
+    }));
+  const panels = [...builtInPanels, ...pluginPanels];
+
+  return (
+    <div className="flex items-center gap-1">
+      <Tooltip content={t('mainContent.newShell', { defaultValue: 'New shell' })} position="bottom">
+        <Pill isActive={false} onClick={onNewShell} className="px-2 py-[5px]">
+          <Terminal className="h-3.5 w-3.5" strokeWidth={1.8} />
+          <Plus className="-ml-1 h-3 w-3" strokeWidth={2.2} />
+        </Pill>
+      </Tooltip>
+
+      {panels.map((panel) => {
+        const isActive = panel.id === workspace.activeId;
+        const displayLabel = panel.kind === 'builtin' ? t(panel.labelKey) : panel.label;
+
+        return (
+          <Tooltip key={panel.id} content={displayLabel} position="bottom">
+            <Pill
+              isActive={isActive}
+              onClick={() => workspace.activateTab(panel.id)}
+              className="px-2.5 py-[5px]"
+            >
+              {panel.kind === 'builtin' ? (
+                <panel.icon className="h-3.5 w-3.5" strokeWidth={isActive ? 2.2 : 1.8} />
+              ) : (
+                <PluginIcon
+                  pluginName={panel.pluginName}
+                  iconFile={panel.iconFile}
+                  className="flex h-3.5 w-3.5 items-center justify-center [&>svg]:h-full [&>svg]:w-full"
+                />
+              )}
+            </Pill>
+          </Tooltip>
+        );
+      })}
+    </div>
+  );
+}
