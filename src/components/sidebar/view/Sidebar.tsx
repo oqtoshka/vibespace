@@ -11,6 +11,7 @@ import { useTasksSettings } from '../../../contexts/TasksSettingsContext';
 import type { Project, LLMProvider } from '../../../types/app';
 import type { MCPServerStatus, SidebarProps } from '../types/types';
 
+import FileTree from '../../file-tree/view/FileTree';
 import SidebarCollapsed from './subcomponents/SidebarCollapsed';
 import SidebarContent from './subcomponents/SidebarContent';
 import SidebarModals from './subcomponents/SidebarModals';
@@ -42,6 +43,9 @@ function Sidebar({
   settingsInitialTab,
   onCloseSettings,
   isMobile,
+  view,
+  onViewChange,
+  onFileOpen,
 }: SidebarProps) {
   const { t } = useTranslation(['sidebar', 'common']);
   const { isPWA } = useDeviceSettings({ trackMobile: false });
@@ -279,8 +283,20 @@ function Sidebar({
             searchMode={searchMode}
             onSearchModeChange={(mode) => {
               setSearchMode(mode);
-              if (mode === 'projects') clearConversationResults();
+              if (mode !== 'projects') clearConversationResults();
             }}
+            view={view}
+            onViewChange={onViewChange}
+            fileTree={
+              selectedProject ? (
+                <FileTree
+                  key={selectedProject.projectId}
+                  selectedProject={selectedProject}
+                  isActive={view === 'files'}
+                  onFileOpen={onFileOpen}
+                />
+              ) : null
+            }
             conversationResults={conversationResults}
             isSearching={isSearching}
             searchProgress={searchProgress}
