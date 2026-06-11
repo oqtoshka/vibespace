@@ -356,7 +356,9 @@ export function useSidebarController({
     }
 
     const query = debouncedSearchQuery;
-    if (searchMode !== 'conversations' || query.length < 2) {
+    // Unified search: the regular sessions list streams conversation-content
+    // matches alongside name filtering whenever the query is long enough.
+    if (searchMode !== 'projects' || query.length < 2) {
       searchSeqRef.current += 1;
       setConversationResults(null);
       setSearchProgress(null);

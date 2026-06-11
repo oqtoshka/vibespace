@@ -7,7 +7,7 @@ import { cn } from '../../../../lib/utils';
 import type { Project } from '../../../../types/app';
 import type { ReleaseInfo } from '../../../../types/sharedTypes';
 import type { ConversationSearchResults, SearchProgress } from '../../hooks/useSidebarController';
-import type { ArchivedProjectListItem, ArchivedSessionListItem, ProjectViewMode, SidebarSearchMode } from '../../types/types';
+import type { ArchivedProjectListItem, ArchivedSessionListItem, ProjectViewMode, SidebarSearchMode, SidebarView } from '../../types/types';
 import SessionProviderLogo from '../../../llm-logo-provider/SessionProviderLogo';
 import { getAllSessions } from '../../utils/utils';
 
@@ -127,6 +127,10 @@ type SidebarContentProps = {
   onClearSearchFilter: () => void;
   searchMode: SidebarSearchMode;
   onSearchModeChange: (mode: SidebarSearchMode) => void;
+  view: SidebarView;
+  onViewChange: (view: SidebarView) => void;
+  // Pre-rendered file tree (sidebar files view); null when no project selected.
+  fileTree: ReactNode | null;
   conversationResults: ConversationSearchResults | null;
   isSearching: boolean;
   searchProgress: SearchProgress | null;
@@ -168,6 +172,9 @@ export default function SidebarContent({
   onClearSearchFilter,
   searchMode,
   onSearchModeChange,
+  view,
+  onViewChange,
+  fileTree,
   conversationResults,
   isSearching,
   searchProgress,
@@ -192,7 +199,9 @@ export default function SidebarContent({
   activityListProps,
   t,
 }: SidebarContentProps) {
-  const showConversationSearch = searchMode === 'conversations' && searchFilter.trim().length >= 2;
+  // Unified search: conversation-content matches stream in below the
+  // name-filtered sessions list whenever the query is long enough.
+  const showConversationSection = searchMode === 'projects' && searchFilter.trim().length >= 2;
   const hasPartialResults = conversationResults && conversationResults.results.length > 0;
   const groupedArchivedSessions = groupArchivedSessionsByProject(archivedSessions);
 
@@ -213,6 +222,8 @@ export default function SidebarContent({
         onClearSearchFilter={onClearSearchFilter}
         searchMode={searchMode}
         onSearchModeChange={onSearchModeChange}
+        view={view}
+        onViewChange={onViewChange}
         onRefresh={onRefresh}
         isRefreshing={isRefreshing}
         onCreateProject={onCreateProject}
@@ -220,8 +231,23 @@ export default function SidebarContent({
         t={t}
       />
 
+      {view === 'files' ? (
+        <div className="min-h-0 flex-1 overflow-hidden">
+          {fileTree ?? (
+            <div className="px-4 py-12 text-center md:py-8">
+              <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-lg bg-muted md:mb-3">
+                <Folder className="h-6 w-6 text-muted-foreground" />
+              </div>
+              <p className="text-sm text-muted-foreground">
+                {t('files.selectProject', 'Select a project to browse its files')}
+              </p>
+            </div>
+          )}
+        </div>
+      ) : (
       <ScrollArea className="flex-1 overflow-y-auto overscroll-contain md:px-1.5 md:py-2">
-        {showConversationSearch ? (
+        {(() => {
+          const conversationSection = showConversationSection ? (
           isSearching && !hasPartialResults ? (
             <div className="px-4 py-12 text-center md:py-8">
               <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-lg bg-muted md:mb-3">
@@ -317,7 +343,9 @@ export default function SidebarContent({
               ))}
             </div>
           ) : null
-        ) : searchMode === 'archived' ? (
+          ) : null;
+
+          return searchMode === 'archived' ? (
           isArchivedSessionsLoading ? (
             <div className="px-4 py-12 text-center md:py-8">
               <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-lg bg-muted md:mb-3">
@@ -555,9 +583,22 @@ export default function SidebarContent({
             ) : (
               <SidebarProjectList {...projectListProps} />
             )}
+            {conversationSection && (
+              <div className="mt-3 border-t border-border/60 pt-2">
+                <div className="flex items-center gap-1.5 px-2 pb-1">
+                  <MessageSquare className="h-3 w-3 text-muted-foreground" />
+                  <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                    {t('search.inConversations', 'In conversations')}
+                  </span>
+                </div>
+                {conversationSection}
+              </div>
+            )}
           </div>
-        )}
+        );
+        })()}
       </ScrollArea>
+      )}
 
       <SidebarFooter
         updateAvailable={updateAvailable}
