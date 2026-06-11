@@ -4,23 +4,25 @@ import ReactMarkdown from 'react-markdown';
 import rehypeKatex from 'rehype-katex';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
+import { resolveMarkdownLinkPath } from '../../../../../utils/markdownLinks';
 import MarkdownCodeBlock from './MarkdownCodeBlock';
 
 type MarkdownPreviewProps = {
   content: string;
+  /** Path of the previewed file; relative links resolve against its directory. */
+  currentFilePath?: string | null;
+  /** Opens an in-project file when a relative/root-relative link is clicked. */
+  onFileOpen?: ((filePath: string) => void) | null;
 };
 
-const markdownPreviewComponents: Components = {
+const ANCHOR_CLASS_NAME = 'text-blue-600 hover:underline dark:text-blue-400';
+
+const staticMarkdownPreviewComponents: Components = {
   code: MarkdownCodeBlock,
   blockquote: ({ children }) => (
     <blockquote className="my-2 border-l-4 border-gray-300 pl-4 italic text-gray-600 dark:border-gray-600 dark:text-gray-400">
       {children}
     </blockquote>
-  ),
-  a: ({ href, children }) => (
-    <a href={href} className="text-blue-600 hover:underline dark:text-blue-400" target="_blank" rel="noopener noreferrer">
-      {children}
-    </a>
   ),
   table: ({ children }) => (
     <div className="my-2 overflow-x-auto">
@@ -36,15 +38,56 @@ const markdownPreviewComponents: Components = {
   ),
 };
 
-export default function MarkdownPreview({ content }: MarkdownPreviewProps) {
+export default function MarkdownPreview({ content, currentFilePath = null, onFileOpen = null }: MarkdownPreviewProps) {
   const remarkPlugins = useMemo(() => [remarkGfm, remarkMath], []);
   const rehypePlugins = useMemo(() => [rehypeKatex], []);
+
+  const components: Components = useMemo(
+    () => ({
+      ...staticMarkdownPreviewComponents,
+      a: ({ href, children }) => {
+        // In-project link → open the target file instead of navigating the SPA
+        // to a route that doesn't exist (404).
+        const internalPath = onFileOpen ? resolveMarkdownLinkPath(href, currentFilePath) : null;
+        if (internalPath) {
+          return (
+            <a
+              href={href}
+              className={ANCHOR_CLASS_NAME}
+              onClick={(event) => {
+                event.preventDefault();
+                onFileOpen?.(internalPath);
+              }}
+            >
+              {children}
+            </a>
+          );
+        }
+
+        // Same-document fragment: keep it in this tab.
+        if (href?.startsWith('#')) {
+          return (
+            <a href={href} className={ANCHOR_CLASS_NAME}>
+              {children}
+            </a>
+          );
+        }
+
+        return (
+          <a href={href} className={ANCHOR_CLASS_NAME} target="_blank" rel="noopener noreferrer">
+            {children}
+          </a>
+        );
+      },
+    }),
+    [currentFilePath, onFileOpen],
+  );
 
   return (
     <ReactMarkdown
       remarkPlugins={remarkPlugins}
       rehypePlugins={rehypePlugins}
-      components={markdownPreviewComponents}
+      components={components}
     >
       {content}
     </ReactMarkdown>
