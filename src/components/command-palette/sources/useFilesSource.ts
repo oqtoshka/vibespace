@@ -31,7 +31,8 @@ export function useFilesSource(projectId: string | undefined, enabled: boolean) 
   return useApiSource<FileResult, unknown>({
     enabled: enabled && !!projectId,
     deps: [projectId],
-    fetcher: (signal) => api.getFiles(projectId!, { signal }),
+    // Only paths/names are used — skip stat metadata for a faster walk.
+    fetcher: (signal) => api.getFiles(projectId!, { signal, meta: 0 }),
     parse: (data) => {
       const tree: FileNode[] = Array.isArray(data) ? (data as FileNode[]) : [];
       const flat: FileResult[] = [];

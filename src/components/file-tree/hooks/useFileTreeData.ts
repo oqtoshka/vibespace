@@ -7,22 +7,73 @@ type UseFileTreeDataResult = {
   files: FileTreeNode[];
   loading: boolean;
   refreshFiles: () => void;
+  /** Fetches children for a directory whose subtree hasn't been loaded yet
+   * (`children === undefined`). No-ops while a fetch is already in flight. */
+  loadDirectory: (dirPath: string) => void;
+  /** Loads the whole deep tree once (search needs it); idempotent until the
+   * next refresh or project switch. */
+  ensureFullTree: () => void;
+  isFullTreeLoading: boolean;
 };
 
-export function useFileTreeData(selectedProject: Project | null): UseFileTreeDataResult {
+// Each fetch returns the directory's children plus one prefetched level below
+// them, so expanding an already-visible directory is instant and only every
+// other expand hits the network.
+const LAZY_FETCH_DEPTH = 1;
+
+/** Immutably replaces the children of the node at `dirPath`. Returns the tree
+ * unchanged when the path is no longer present (e.g. deleted between fetches). */
+function withChildrenAt(
+  nodes: FileTreeNode[],
+  dirPath: string,
+  children: FileTreeNode[],
+): FileTreeNode[] {
+  return nodes.map((node) => {
+    if (node.type !== 'directory') {
+      return node;
+    }
+    if (node.path === dirPath) {
+      return { ...node, children };
+    }
+    if (node.children && dirPath.startsWith(`${node.path}/`)) {
+      return { ...node, children: withChildrenAt(node.children, dirPath, children) };
+    }
+    return node;
+  });
+}
+
+function isAbortError(error: unknown): boolean {
+  return (error as { name?: string })?.name === 'AbortError';
+}
+
+export function useFileTreeData(
+  selectedProject: Project | null,
+  expandedDirs: Set<string>,
+): UseFileTreeDataResult {
   const [files, setFiles] = useState<FileTreeNode[]>([]);
   const [loading, setLoading] = useState(false);
+  const [isFullTreeLoading, setIsFullTreeLoading] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
   const abortControllerRef = useRef<AbortController | null>(null);
+  // Read through a ref so refreshes see the current expansion state without
+  // re-running the fetch effect on every expand/collapse.
+  const expandedDirsRef = useRef(expandedDirs);
+  expandedDirsRef.current = expandedDirs;
+  // Directories with an in-flight children fetch (dedupes repeated expands).
+  const pendingDirsRef = useRef(new Set<string>());
+  const fullTreeRequestedRef = useRef(false);
+
+  // File-tree requests use the DB projectId; the backend resolves it to the
+  // project's absolute path through the projects table.
+  const projectId = selectedProject?.projectId;
 
   const refreshFiles = useCallback(() => {
     setRefreshKey((prev) => prev + 1);
   }, []);
 
   useEffect(() => {
-    // File-tree requests use the DB projectId; the backend resolves it to the
-    // project's absolute path through the projects table.
-    const projectId = selectedProject?.projectId;
+    fullTreeRequestedRef.current = false;
+    pendingDirsRef.current = new Set();
 
     if (!projectId) {
       setFiles([]);
@@ -31,39 +82,64 @@ export function useFileTreeData(selectedProject: Project | null): UseFileTreeDat
     }
 
     // Abort previous request
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-    }
-    abortControllerRef.current = new AbortController();
+    abortControllerRef.current?.abort();
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
 
     // Track mount state so aborted or late responses do not enqueue stale state updates.
     let isActive = true;
 
-    const fetchFiles = async () => {
-      if (isActive) {
-        setLoading(true);
+    const fetchJson = async (options: {
+      dir?: string;
+      depth?: number;
+    }): Promise<FileTreeNode[] | null> => {
+      const response = await api.getFiles(projectId, { ...options, signal: controller.signal });
+      if (!response.ok) {
+        console.error('File fetch failed:', response.status, await response.text());
+        return null;
       }
+      return (await response.json()) as FileTreeNode[];
+    };
+
+    const fetchTree = async () => {
+      setLoading(true);
       try {
-        const response = await api.getFiles(projectId, { signal: abortControllerRef.current!.signal });
+        // Refetch the root plus every expanded directory so a refresh doesn't
+        // collapse what the user already drilled into. Shallow-first ordering
+        // lets each merge find its parent already in place.
+        const expanded = [...expandedDirsRef.current].sort((a, b) => a.length - b.length);
+        const [rootData, ...dirData] = await Promise.all([
+          fetchJson({ depth: LAZY_FETCH_DEPTH }),
+          ...expanded.map((dir) =>
+            fetchJson({ dir, depth: LAZY_FETCH_DEPTH }).catch((error) => {
+              if (!isAbortError(error)) {
+                console.error('Error refreshing directory:', dir, error);
+              }
+              return null;
+            }),
+          ),
+        ]);
 
-        if (!response.ok) {
-          const errorText = await response.text();
-          console.error('File fetch failed:', response.status, errorText);
-          if (isActive) {
-            setFiles([]);
+        if (!isActive) {
+          return;
+        }
+        if (!rootData) {
+          setFiles([]);
+          return;
+        }
+
+        let tree = rootData;
+        expanded.forEach((dir, index) => {
+          const children = dirData[index];
+          if (children) {
+            tree = withChildrenAt(tree, dir, children);
           }
-          return;
-        }
-
-        const data = (await response.json()) as FileTreeNode[];
-        if (isActive) {
-          setFiles(data);
-        }
+        });
+        setFiles(tree);
       } catch (error) {
-        if ((error as { name?: string }).name === 'AbortError') {
+        if (isAbortError(error)) {
           return;
         }
-
         console.error('Error fetching files:', error);
         if (isActive) {
           setFiles([]);
@@ -75,17 +151,87 @@ export function useFileTreeData(selectedProject: Project | null): UseFileTreeDat
       }
     };
 
-    void fetchFiles();
+    void fetchTree();
 
     return () => {
       isActive = false;
-      abortControllerRef.current?.abort();
+      controller.abort();
     };
-  }, [selectedProject?.projectId, refreshKey]);
+  }, [projectId, refreshKey]);
+
+  const loadDirectory = useCallback(
+    (dirPath: string) => {
+      if (!projectId || pendingDirsRef.current.has(dirPath)) {
+        return;
+      }
+      pendingDirsRef.current.add(dirPath);
+      const signal = abortControllerRef.current?.signal;
+
+      void (async () => {
+        try {
+          const response = await api.getFiles(projectId, {
+            dir: dirPath,
+            depth: LAZY_FETCH_DEPTH,
+            signal,
+          });
+          if (signal?.aborted) {
+            return;
+          }
+          const children = response.ok ? ((await response.json()) as FileTreeNode[]) : [];
+          setFiles((prev) => withChildrenAt(prev, dirPath, children));
+        } catch (error) {
+          if (isAbortError(error)) {
+            return;
+          }
+          console.error('Error loading directory:', dirPath, error);
+          // Mark as loaded-empty so the row doesn't show a spinner forever.
+          setFiles((prev) => withChildrenAt(prev, dirPath, []));
+        } finally {
+          pendingDirsRef.current.delete(dirPath);
+        }
+      })();
+    },
+    [projectId],
+  );
+
+  const ensureFullTree = useCallback(() => {
+    if (!projectId || fullTreeRequestedRef.current) {
+      return;
+    }
+    fullTreeRequestedRef.current = true;
+    const signal = abortControllerRef.current?.signal;
+    setIsFullTreeLoading(true);
+
+    void (async () => {
+      try {
+        const response = await api.getFiles(projectId, { signal });
+        if (!response.ok) {
+          fullTreeRequestedRef.current = false;
+          console.error('Full tree fetch failed:', response.status, await response.text());
+          return;
+        }
+        const data = (await response.json()) as FileTreeNode[];
+        if (signal?.aborted) {
+          return;
+        }
+        setFiles(data);
+      } catch (error) {
+        fullTreeRequestedRef.current = false;
+        if (!isAbortError(error)) {
+          console.error('Error fetching full file tree:', error);
+        }
+      } finally {
+        setIsFullTreeLoading(false);
+      }
+    })();
+  }, [projectId]);
 
   return {
     files,
     loading,
     refreshFiles,
+    loadDirectory,
+    ensureFullTree,
+    isFullTreeLoading,
   };
 }
