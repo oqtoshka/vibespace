@@ -10,10 +10,13 @@ import { normalizeInlineCodeFences } from '../../utils/chatFormatting';
 import { copyTextToClipboard } from '../../../../utils/clipboard';
 import { usePaletteOps } from '../../../../contexts/PaletteOpsContext';
 import { useTheme } from '../../../../contexts/ThemeContext';
+import { resolveMarkdownLinkPath } from '../../../../utils/markdownLinks';
 
 type MarkdownProps = {
   children: React.ReactNode;
   className?: string;
+  /** Opens an in-project file when a relative link is clicked (resolves against project root). */
+  onFileOpen?: ((filePath: string) => void) | null;
 };
 
 // Links to the wider web (or in-page anchors) keep normal browser navigation;
@@ -183,7 +186,7 @@ const markdownComponents = {
   ),
 };
 
-export function Markdown({ children, className }: MarkdownProps) {
+export function Markdown({ children, className, onFileOpen = null }: MarkdownProps) {
   const content = normalizeInlineCodeFences(String(children ?? ''));
   const remarkPlugins = useMemo(() => [remarkGfm, remarkMath], []);
   const rehypePlugins = useMemo(() => [rehypeKatex], []);
@@ -226,6 +229,38 @@ export function Markdown({ children, className }: MarkdownProps) {
       },
     }),
     [openFileInEditor],
+  );
+
+  const components = useMemo(
+    () => ({
+      ...markdownComponents,
+      a: ({ href, children: linkChildren }: { href?: string; children?: React.ReactNode }) => {
+        // Chat messages have no source file, so relative links resolve against
+        // the project root (the server resolves non-absolute paths there).
+        const internalPath = onFileOpen ? resolveMarkdownLinkPath(href, null) : null;
+        if (internalPath) {
+          return (
+            <a
+              href={href}
+              className="text-blue-600 hover:underline dark:text-blue-400"
+              onClick={(event) => {
+                event.preventDefault();
+                onFileOpen?.(internalPath);
+              }}
+            >
+              {linkChildren}
+            </a>
+          );
+        }
+
+        return (
+          <a href={href} className="text-blue-600 hover:underline dark:text-blue-400" target="_blank" rel="noopener noreferrer">
+            {linkChildren}
+          </a>
+        );
+      },
+    }),
+    [onFileOpen],
   );
 
   return (
