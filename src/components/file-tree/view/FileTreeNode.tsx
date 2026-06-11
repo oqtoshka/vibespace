@@ -1,5 +1,5 @@
 import type { ReactNode, RefObject } from 'react';
-import { ChevronRight, Folder, FolderOpen } from 'lucide-react';
+import { ChevronRight, Folder, FolderOpen, Loader2 } from 'lucide-react';
 import { cn } from '../../../lib/utils';
 import type { FileTreeNode as FileTreeNodeType, FileTreeViewMode } from '../types/types';
 import { Input } from '../../../shared/view/ui';
@@ -39,14 +39,21 @@ type TreeItemIconProps = {
 
 function TreeItemIcon({ item, isOpen, renderFileIcon }: TreeItemIconProps) {
   if (item.type === 'directory') {
+    // Children load lazily on first expand; `undefined` while open means the
+    // fetch is still in flight.
+    const isLoadingChildren = isOpen && item.children === undefined;
     return (
       <span className="flex flex-shrink-0 items-center gap-0.5">
-        <ChevronRight
-          className={cn(
-            'w-3.5 h-3.5 text-muted-foreground/70 transition-transform duration-150',
-            isOpen && 'rotate-90',
-          )}
-        />
+        {isLoadingChildren ? (
+          <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground/70" />
+        ) : (
+          <ChevronRight
+            className={cn(
+              'w-3.5 h-3.5 text-muted-foreground/70 transition-transform duration-150',
+              isOpen && 'rotate-90',
+            )}
+          />
+        )}
         {isOpen ? (
           <FolderOpen className="h-4 w-4 flex-shrink-0 text-blue-500" />
         ) : (

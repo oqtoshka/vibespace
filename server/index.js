@@ -687,14 +687,46 @@ app.get('/api/projects/:projectId/files', authenticateToken, async (req, res) =>
             return res.status(404).json({ error: 'Project not found' });
         }
 
-        // Check if path exists
-        try {
-            await fsPromises.access(actualPath);
-        } catch (e) {
-            return res.status(404).json({ error: `Project path not found: ${actualPath}` });
+        // Optional subtree root for lazy loading; must stay within the project.
+        let rootPath = actualPath;
+        if (typeof req.query.dir === 'string' && req.query.dir) {
+            const validation = validatePathInProject(actualPath, req.query.dir);
+            if (!validation.valid) {
+                return res.status(400).json({ error: validation.error });
+            }
+            rootPath = validation.resolved;
         }
 
-        const files = await getFileTree(actualPath, 10, 0, true);
+        // Check if path exists
+        try {
+            await fsPromises.access(rootPath);
+        } catch (e) {
+            return res.status(404).json({ error: `Path not found: ${rootPath}` });
+        }
+
+        // depth=0 lists just the directory, depth=1 prefetches one level below
+        // it, etc. Default keeps the historical deep walk for consumers that
+        // need the whole tree (palette file search, @-mentions, tree search).
+        const parsedDepth = Number.parseInt(req.query.depth, 10);
+        const maxDepth = Number.isFinite(parsedDepth) ? Math.max(0, Math.min(parsedDepth, 10)) : 10;
+        // meta=0 skips the per-entry lstat (size/mtime/permissions) — names
+        // and types alone are enough for path-only consumers and cut both the
+        // walk time and the payload roughly in half.
+        const includeMeta = req.query.meta !== '0';
+
+        // Stop walking when the client gives up (project switches abort the
+        // fetch); without this, orphaned walks keep consuming fs permits and
+        // starve the request the user is actually waiting on.
+        let clientGone = false;
+        res.on('close', () => { clientGone = true; });
+
+        const files = await getFileTree(rootPath, maxDepth, 0, true, {
+            includeMeta,
+            isCancelled: () => clientGone,
+        });
+        if (clientGone) {
+            return;
+        }
         res.json(files);
     } catch (error) {
         console.error('[ERROR] File tree error:', error.message);
@@ -1641,7 +1673,11 @@ function release() {
     activeFsOperations = Math.max(0, activeFsOperations - 1);
 }
 
-async function getFileTree(dirPath, maxDepth = 3, currentDepth = 0, showHidden = true) {
+async function getFileTree(dirPath, maxDepth = 3, currentDepth = 0, showHidden = true, options = {}) {
+    const { includeMeta = true, isCancelled = null } = options;
+    if (isCancelled?.()) {
+        return [];
+    }
     // Using fsPromises from import
     let entries;
     try {
@@ -1673,40 +1709,42 @@ async function getFileTree(dirPath, maxDepth = 3, currentDepth = 0, showHidden =
         };
 
         // Get file stats for additional metadata
-        try {
-            await acquire();
+        if (includeMeta) {
             try {
-              const stats = await fsPromises.lstat(itemPath);
-              item.size = stats.size;
-              item.modified = stats.mtime.toISOString();
+                await acquire();
+                try {
+                  const stats = await fsPromises.lstat(itemPath);
+                  item.size = stats.size;
+                  item.modified = stats.mtime.toISOString();
 
-              // Mark symlinks so UI can distinguish them
-              if (stats.isSymbolicLink()) {
-                item.isSymlink = true;
-              }
+                  // Mark symlinks so UI can distinguish them
+                  if (stats.isSymbolicLink()) {
+                    item.isSymlink = true;
+                  }
 
-              // Convert permissions to rwx format
-              const mode = stats.mode;
-              const ownerPerm = (mode >> 6) & 7;
-              const groupPerm = (mode >> 3) & 7;
-              const otherPerm = mode & 7;
-              item.permissions =
-                ((mode >> 6) & 7).toString() +
-                ((mode >> 3) & 7).toString() +
-                (mode & 7).toString();
-              item.permissionsRwx =
-                permToRwx(ownerPerm) +
-                permToRwx(groupPerm) +
-                permToRwx(otherPerm);
-            } finally {
-                release();
+                  // Convert permissions to rwx format
+                  const mode = stats.mode;
+                  const ownerPerm = (mode >> 6) & 7;
+                  const groupPerm = (mode >> 3) & 7;
+                  const otherPerm = mode & 7;
+                  item.permissions =
+                    ((mode >> 6) & 7).toString() +
+                    ((mode >> 3) & 7).toString() +
+                    (mode & 7).toString();
+                  item.permissionsRwx =
+                    permToRwx(ownerPerm) +
+                    permToRwx(groupPerm) +
+                    permToRwx(otherPerm);
+                } finally {
+                    release();
+                }
+            } catch (statError) {
+                // If stat fails, provide default values
+                item.size = 0;
+                item.modified = null;
+                item.permissions = '000';
+                item.permissionsRwx = '---------';
             }
-        } catch (statError) {
-            // If stat fails, provide default values
-            item.size = 0;
-            item.modified = null;
-            item.permissions = '000';
-            item.permissionsRwx = '---------';
         }
 
         if (entry.isDirectory() && currentDepth < maxDepth) {
@@ -1716,7 +1754,7 @@ async function getFileTree(dirPath, maxDepth = 3, currentDepth = 0, showHidden =
             // The recursive call starts with a bounded readdir; holding a permit
             // for the whole subtree can deadlock when sibling directories are
             // waiting on their own children.
-            item.children = await getFileTree(itemPath, maxDepth, currentDepth + 1, showHidden);
+            item.children = await getFileTree(itemPath, maxDepth, currentDepth + 1, showHidden, options);
         }
 
         return item;
