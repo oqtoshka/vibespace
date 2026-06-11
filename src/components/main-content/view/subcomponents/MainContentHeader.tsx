@@ -1,4 +1,7 @@
 import { useCallback, useRef, useState, useEffect } from 'react';
+import { Folder } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
+import { Tooltip, Pill } from '../../../../shared/view/ui';
 import type { MainContentHeaderProps } from '../../types/types';
 import MobileMenuButton from './MobileMenuButton';
 import WorkspaceTabStrip from './WorkspaceTabStrip';
@@ -15,7 +18,10 @@ export default function MainContentHeader({
   onMenuClick,
   onCloseTab,
   onNewShell,
+  explorerVisible,
+  onToggleExplorer,
 }: MainContentHeaderProps) {
+  const { t } = useTranslation();
   const scrollRef = useRef<HTMLDivElement>(null);
   const [canScrollLeft, setCanScrollLeft] = useState(false);
   const [canScrollRight, setCanScrollRight] = useState(false);
@@ -56,6 +62,13 @@ export default function MainContentHeader({
             selectedProject={selectedProject}
             selectedSession={selectedSession}
           />
+          {/* Explorer toggle stays outside the scrollable strip so it never
+              scrolls out of reach (VSCode-style docked file tree). */}
+          <Tooltip content={t('tabs.files')} position="bottom">
+            <Pill isActive={explorerVisible} onClick={onToggleExplorer} className="px-2.5 py-[5px]">
+              <Folder className="h-3.5 w-3.5" strokeWidth={explorerVisible ? 2.2 : 1.8} />
+            </Pill>
+          </Tooltip>
           <div className="relative min-w-0 flex-shrink overflow-hidden">
           {canScrollLeft && (
             <div className="pointer-events-none absolute inset-y-0 left-0 z-10 w-6 bg-gradient-to-r from-background to-transparent" />
