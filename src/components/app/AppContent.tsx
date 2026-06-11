@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 
@@ -11,9 +11,19 @@ import { useDeviceSettings } from '../../hooks/useDeviceSettings';
 import { useSessionProtection } from '../../hooks/useSessionProtection';
 import { useProjectsState } from '../../hooks/useProjectsState';
 import { useWorkspaceTabs } from '../../hooks/useWorkspaceTabs';
-import { useExplorerPane } from '../main-content/hooks/useExplorerPane';
 import type { WorkspaceApi } from '../main-content/types/types';
+import type { SidebarView } from '../sidebar/types/types';
 import type { AppTab, Project, ProjectSession } from '../../types/app';
+
+const SIDEBAR_VIEW_KEY = 'sidebar-view';
+
+function readPersistedSidebarView(): SidebarView {
+  try {
+    return localStorage.getItem(SIDEBAR_VIEW_KEY) === 'files' ? 'files' : 'sessions';
+  } catch {
+    return 'sessions';
+  }
+}
 
 export default function AppContent() {
   return (
@@ -72,7 +82,30 @@ function AppContentInner() {
   });
 
   const tabs = useWorkspaceTabs({ projectId: selectedProject?.projectId ?? null });
-  const explorer = useExplorerPane({ isMobile });
+
+  // The main sidebar switches between the sessions list and the project file
+  // tree (VSCode-style); the header's files button and the command palette
+  // drive it from outside the sidebar.
+  const [sidebarView, setSidebarViewState] = useState<SidebarView>(readPersistedSidebarView);
+  const setSidebarView = useCallback((next: SidebarView) => {
+    setSidebarViewState(next);
+    try {
+      localStorage.setItem(SIDEBAR_VIEW_KEY, next);
+    } catch {
+      // Ignore storage errors.
+    }
+  }, []);
+
+  const showFilesSidebar = useCallback(() => {
+    if (isMobile) {
+      // On mobile always open the drawer in files view.
+      setSidebarView('files');
+      setSidebarOpen(true);
+      return;
+    }
+    // On desktop the button toggles between the two views.
+    setSidebarView(sidebarView === 'files' ? 'sessions' : 'files');
+  }, [isMobile, setSidebarOpen, setSidebarView, sidebarView]);
   const {
     tabs: workspaceTabs,
     activeId,
@@ -207,12 +240,12 @@ function AppContentInner() {
         return;
       }
       if (tab === 'files') {
-        explorer.toggle();
+        showFilesSidebar();
         return;
       }
       setActive(tab);
     },
-    [explorer, openChatTab, openShellTab, selectedSession?.__provider, selectedSession?.id, setActive],
+    [openChatTab, openShellTab, selectedSession?.__provider, selectedSession?.id, setActive, showFilesSidebar],
   );
 
   const workspace: WorkspaceApi = useMemo(
@@ -309,6 +342,15 @@ function AppContentInner() {
     onNewSession: startNewChat,
     onSessionDelete: handleSessionDeleteWithTabs,
     processingSessions,
+    view: sidebarView,
+    onViewChange: setSidebarView,
+    onFileOpen: (filePath: string) => {
+      openFileTab(filePath);
+      // The drawer covers the content on mobile — reveal the opened tab.
+      if (isMobile) {
+        setSidebarOpen(false);
+      }
+    },
   };
 
   return (
@@ -351,7 +393,8 @@ function AppContentInner() {
           selectedProject={selectedProject}
           selectedSession={selectedSession}
           workspace={workspace}
-          explorer={explorer}
+          filesSidebarActive={sidebarView === 'files'}
+          onShowFilesSidebar={showFilesSidebar}
           ws={ws}
           sendMessage={sendMessage}
           latestMessage={latestMessage}
