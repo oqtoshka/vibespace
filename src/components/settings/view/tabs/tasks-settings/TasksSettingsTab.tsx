@@ -33,6 +33,19 @@ export default function TasksSettingsTab() {
           </SettingsCard>
         ) : (
           <>
+            <SettingsCard>
+              <SettingsRow
+                label={t('tasks.settings.enableLabel')}
+                description={t('tasks.settings.enableDescription')}
+              >
+                <SettingsToggle
+                  checked={tasksEnabled}
+                  onChange={setTasksEnabled}
+                  ariaLabel={t('tasks.settings.enableLabel')}
+                />
+              </SettingsRow>
+            </SettingsCard>
+
             {!isTaskMasterInstalled && (
               <div className="rounded-xl border border-orange-200 bg-orange-50 p-4 dark:border-orange-800/50 dark:bg-orange-950/30">
                 <div className="flex items-start gap-3">
@@ -83,20 +96,6 @@ export default function TasksSettingsTab() {
               </div>
             )}
 
-            {isTaskMasterInstalled && (
-              <SettingsCard>
-                <SettingsRow
-                  label={t('tasks.settings.enableLabel')}
-                  description={t('tasks.settings.enableDescription')}
-                >
-                  <SettingsToggle
-                    checked={tasksEnabled}
-                    onChange={setTasksEnabled}
-                    ariaLabel={t('tasks.settings.enableLabel')}
-                  />
-                </SettingsRow>
-              </SettingsCard>
-            )}
           </>
         )}
       </SettingsSection>
