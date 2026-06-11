@@ -10,6 +10,7 @@ import { useWebSocket } from '../../contexts/WebSocketContext';
 import { PaletteOpsProvider, usePaletteOpsRegister } from '../../contexts/PaletteOpsContext';
 import { useDeviceSettings } from '../../hooks/useDeviceSettings';
 import { useSessionProtection } from '../../hooks/useSessionProtection';
+import { useUiPreferences } from '../../hooks/useUiPreferences';
 import { useProjectsState } from '../../hooks/useProjectsState';
 import { useQueuedMessageAutoSend } from '../../hooks/useQueuedMessageAutoSend';
 import { api } from '../../utils/api';
@@ -55,17 +56,84 @@ function readPersistedSidebarView(): SidebarView {
   }
 }
 
-const MOBILE_DRAWER_WIDTH_KEY = 'mobile-drawer-width';
-const DRAWER_MIN_WIDTH = 260;
+/**
+ * Drag-adjustable width shared by the mobile drawer and the desktop sidebar.
+ * Pointer-events based so it works with touch (tablets) and mouse; the width
+ * persists per storage key. `width` is null until the user adjusts it (CSS
+ * defaults apply).
+ */
+function useAdjustableWidth(storageKey: string, minWidth: number, maxWidthRatio: number) {
+  const [width, setWidth] = useState<number | null>(() => {
+    try {
+      const stored = Number(localStorage.getItem(storageKey));
+      return Number.isFinite(stored) && stored >= minWidth ? stored : null;
+    } catch {
+      return null;
+    }
+  });
+  const targetRef = useRef<HTMLDivElement | null>(null);
+  const dragRef = useRef<{ startX: number; startWidth: number } | null>(null);
 
-/** User-adjusted drawer width in px; null keeps the 85vw default. */
-function readPersistedDrawerWidth(): number | null {
-  try {
-    const stored = Number(localStorage.getItem(MOBILE_DRAWER_WIDTH_KEY));
-    return Number.isFinite(stored) && stored >= DRAWER_MIN_WIDTH ? stored : null;
-  } catch {
-    return null;
-  }
+  useEffect(() => {
+    if (width === null) {
+      return;
+    }
+    try {
+      localStorage.setItem(storageKey, String(Math.round(width)));
+    } catch {
+      // Ignore storage errors.
+    }
+  }, [storageKey, width]);
+
+  const onPointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    } catch {
+      // Capture is best-effort; move events still target the grabber.
+    }
+    dragRef.current = {
+      startX: event.clientX,
+      startWidth: targetRef.current?.getBoundingClientRect().width ?? 0,
+    };
+  }, []);
+
+  const onPointerMove = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      const drag = dragRef.current;
+      if (!drag) {
+        return;
+      }
+      const maxWidth = Math.round(window.innerWidth * maxWidthRatio);
+      setWidth(Math.min(maxWidth, Math.max(minWidth, drag.startWidth + (event.clientX - drag.startX))));
+    },
+    [maxWidthRatio, minWidth],
+  );
+
+  const onPointerEnd = useCallback(() => {
+    dragRef.current = null;
+  }, []);
+
+  return { width, targetRef, onPointerDown, onPointerMove, onPointerEnd };
+}
+
+type AdjustableWidth = ReturnType<typeof useAdjustableWidth>;
+
+/** Visible capsule handle on the pane's right edge; 40px touch target
+ * straddling the border. touch-none so pointermove fires instead of scroll. */
+function WidthGrabber({ control }: { control: AdjustableWidth }) {
+  return (
+    <div
+      className="absolute inset-y-0 -right-4 z-30 flex w-10 cursor-col-resize touch-none items-center justify-center"
+      onPointerDown={control.onPointerDown}
+      onPointerMove={control.onPointerMove}
+      onPointerUp={control.onPointerEnd}
+      onPointerCancel={control.onPointerEnd}
+    >
+      <div className="flex h-20 w-5 items-center justify-center rounded-full border border-border/60 bg-background/95 shadow-md">
+        <div className="h-10 w-1 rounded-full bg-muted-foreground/70" />
+      </div>
+    </div>
+  );
 }
 
 export default function AppContent() {
@@ -190,50 +258,13 @@ function AppContentInner() {
     }
   }, []);
 
-  // Mobile drawer width: default 85vw, drag-adjustable up to full width via
-  // the grabber on the drawer's right edge. Persisted across sessions.
-  const [drawerWidth, setDrawerWidth] = useState<number | null>(readPersistedDrawerWidth);
-  const drawerRef = useRef<HTMLDivElement | null>(null);
-  const drawerDragRef = useRef<{ startX: number; startWidth: number } | null>(null);
-
-  useEffect(() => {
-    if (drawerWidth === null) {
-      return;
-    }
-    try {
-      localStorage.setItem(MOBILE_DRAWER_WIDTH_KEY, String(Math.round(drawerWidth)));
-    } catch {
-      // Ignore storage errors.
-    }
-  }, [drawerWidth]);
-
-  const handleDrawerResizeStart = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
-    try {
-      event.currentTarget.setPointerCapture(event.pointerId);
-    } catch {
-      // Capture is best-effort; move events still target the grabber.
-    }
-    drawerDragRef.current = {
-      startX: event.clientX,
-      startWidth: drawerRef.current?.getBoundingClientRect().width ?? 0,
-    };
-  }, []);
-
-  const handleDrawerResizeMove = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
-    const drag = drawerDragRef.current;
-    if (!drag) {
-      return;
-    }
-    const next = Math.min(
-      window.innerWidth,
-      Math.max(DRAWER_MIN_WIDTH, drag.startWidth + (event.clientX - drag.startX)),
-    );
-    setDrawerWidth(next);
-  }, []);
-
-  const handleDrawerResizeEnd = useCallback(() => {
-    drawerDragRef.current = null;
-  }, []);
+  // Mobile drawer: default 85vw, drag-adjustable up to full width.
+  // Desktop/tablet sidebar: default 288px, drag-adjustable up to 60vw.
+  const drawer = useAdjustableWidth('mobile-drawer-width', 260, 1);
+  const desktopSidebar = useAdjustableWidth('desktop-sidebar-width', 220, 0.6);
+  // The collapsed rail sizes itself; only apply widths when expanded.
+  const { preferences: uiPreferences } = useUiPreferences();
+  const sidebarExpanded = uiPreferences.sidebarVisible;
 
   const showFilesSidebar = useCallback(() => {
     if (isMobile) {
@@ -481,8 +512,15 @@ function AppContentInner() {
   return (
     <div className="fixed inset-0 flex bg-background" style={{ bottom: 'var(--keyboard-height, 0px)' }}>
       {!isMobile ? (
-        <div className="h-full flex-shrink-0 border-r border-border/50">
+        <div
+          ref={desktopSidebar.targetRef}
+          className={`relative h-full flex-shrink-0 border-r border-border/50 ${sidebarExpanded ? 'w-72' : ''}`}
+          style={sidebarExpanded && desktopSidebar.width !== null
+            ? { width: `${Math.min(desktopSidebar.width, window.innerWidth * 0.6)}px` }
+            : undefined}
+        >
           <Sidebar {...sidebarProps} />
+          {sidebarExpanded && <WidthGrabber control={desktopSidebar} />}
         </div>
       ) : (
         <div
@@ -503,30 +541,15 @@ function AppContentInner() {
             aria-label={t('versionUpdate.ariaLabels.closeSidebar')}
           />
           <div
-            ref={drawerRef}
+            ref={drawer.targetRef}
             className={`relative h-full w-[85vw] transform border-r border-border/40 bg-card transition-transform duration-150 ease-out sm:w-80 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'
               }`}
-            style={drawerWidth !== null ? { width: `${Math.min(drawerWidth, window.innerWidth)}px` } : undefined}
+            style={drawer.width !== null ? { width: `${Math.min(drawer.width, window.innerWidth)}px` } : undefined}
             onClick={(event) => event.stopPropagation()}
             onTouchStart={(event) => event.stopPropagation()}
           >
             <Sidebar {...sidebarProps} />
-
-            {/* Drag grabber: widens the drawer up to full screen. The touch
-                target straddles the drawer border (40px wide) so grabbing the
-                edge itself works; touch-none is required so pointermove fires
-                instead of scrolling. */}
-            <div
-              className="absolute inset-y-0 -right-4 z-10 flex w-10 cursor-col-resize touch-none items-center justify-center"
-              onPointerDown={handleDrawerResizeStart}
-              onPointerMove={handleDrawerResizeMove}
-              onPointerUp={handleDrawerResizeEnd}
-              onPointerCancel={handleDrawerResizeEnd}
-            >
-              <div className="flex h-20 w-5 items-center justify-center rounded-full border border-border/60 bg-background/95 shadow-md">
-                <div className="h-10 w-1 rounded-full bg-muted-foreground/70" />
-              </div>
-            </div>
+            <WidthGrabber control={drawer} />
           </div>
         </div>
       )}
