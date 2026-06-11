@@ -35,6 +35,7 @@ function MainContent({
   selectedProject,
   selectedSession,
   workspace,
+  explorer,
   ws,
   sendMessage,
   latestMessage,
@@ -78,8 +79,12 @@ function MainContent({
   const handleFileOpen = useCallback(
     (filePath: string, diffInfo: CodeEditorDiffInfo | null = null) => {
       workspace.openFileTab(filePath, undefined, diffInfo);
+      // The mobile explorer covers the whole pane — reveal the opened tab.
+      if (isMobile) {
+        explorer.hide();
+      }
     },
-    [workspace],
+    [explorer, isMobile, workspace],
   );
 
   const handleCloseTab = useCallback(
@@ -132,14 +137,15 @@ function MainContent({
 
   useEffect(() => {
     if (!shouldShowTasksTab && activePanel === 'tasks') {
-      workspace.activateTab(workspace.tabs[0]?.id ?? 'files');
+      const firstTab = workspace.tabs[0];
+      if (firstTab) {
+        workspace.activateTab(firstTab.id);
+      }
     }
   }, [shouldShowTasksTab, activePanel, workspace]);
 
   usePaletteOpsRegister({
-    openFile: (filePath: string) => {
-      workspace.openFileTab(filePath);
-    },
+    openFile: handleFileOpen,
   });
 
   if (isLoading) {
@@ -161,9 +167,44 @@ function MainContent({
         onMenuClick={onMenuClick}
         onCloseTab={handleCloseTab}
         onNewShell={handleNewShell}
+        explorerVisible={explorer.visible}
+        onToggleExplorer={explorer.toggle}
       />
 
-      <div className="flex min-h-0 flex-1 overflow-hidden">
+      <div className="relative flex min-h-0 flex-1 overflow-hidden">
+        {/* Docked file explorer (VSCode-style): resizable pane on desktop,
+            full-pane overlay on mobile. Kept mounted so expanded folders,
+            search and scroll survive toggling; keyed by project. */}
+        <div
+          ref={explorer.paneRef}
+          className={
+            explorer.visible
+              ? isMobile
+                ? 'absolute inset-0 z-20 bg-background'
+                : 'relative h-full flex-shrink-0 border-r border-border/60'
+              : 'hidden'
+          }
+          style={explorer.visible && !isMobile ? { width: `${explorer.width}px` } : undefined}
+        >
+          <FileTree
+            key={selectedProject.projectId}
+            selectedProject={selectedProject}
+            isActive={explorer.visible}
+            onFileOpen={handleFileOpen}
+          />
+          {!isMobile && (
+            <div
+              onMouseDown={explorer.startResize}
+              className="group absolute inset-y-0 right-0 z-10 w-1 cursor-col-resize"
+              title="Drag to resize"
+            >
+              <div
+                className={`absolute inset-y-0 right-0 w-0.5 bg-blue-500 transition-opacity ${explorer.isResizing ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`}
+              />
+            </div>
+          )}
+        </div>
+
         <div className="flex min-h-0 min-w-[200px] flex-1 flex-col overflow-hidden">
           {/* Single chat surface: every chat tab points into this instance,
               driven by selectedSession. Kept mounted so chat state survives
@@ -195,17 +236,6 @@ function MainContent({
                 onShowAllTasks={tasksEnabled ? () => workspace.activateTab('tasks') : null}
               />
             </ErrorBoundary>
-          </div>
-
-          {/* Keep the file tree mounted so expanded folders, search and scroll
-              survive tab switches; key by project so state resets on project change. */}
-          <div className={`h-full overflow-hidden ${activePanel === 'files' ? 'block' : 'hidden'}`}>
-            <FileTree
-              key={selectedProject.projectId}
-              selectedProject={selectedProject}
-              isActive={activePanel === 'files'}
-              onFileOpen={handleFileOpen}
-            />
           </div>
 
           {/* All shell tabs stay mounted (live PTYs); only the active one is
