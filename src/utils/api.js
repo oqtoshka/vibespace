@@ -158,8 +158,18 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ filePath, content }),
     }),
-  getFiles: (projectId, options = {}) =>
-    authenticatedFetch(`/api/projects/${projectId}/files`, options),
+  // `dir` scopes the listing to a subdirectory (lazy tree loading), `depth`
+  // bounds the walk (omit for the full deep tree), `meta: 0` skips per-entry
+  // stat metadata for path-only consumers.
+  getFiles: (projectId, options = {}) => {
+    const { dir, depth, meta, ...fetchOptions } = options;
+    const params = new URLSearchParams();
+    if (dir !== undefined) params.set('dir', dir);
+    if (depth !== undefined) params.set('depth', String(depth));
+    if (meta !== undefined) params.set('meta', String(meta));
+    const query = params.toString();
+    return authenticatedFetch(`/api/projects/${projectId}/files${query ? `?${query}` : ''}`, fetchOptions);
+  },
 
   // File operations
   createFile: (projectId, { path, type, name }) =>

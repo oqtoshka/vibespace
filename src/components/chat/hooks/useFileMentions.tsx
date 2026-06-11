@@ -70,7 +70,8 @@ export function useFileMentions({ selectedProject, input, setInput, textareaRef 
 
 
       try {
-        const response = await api.getFiles(projectId, { signal: abortController.signal });
+        // Mentions only need paths/names — skip stat metadata for a faster walk.
+        const response = await api.getFiles(projectId, { signal: abortController.signal, meta: 0 });
         if (!response.ok) {
           return;
         }

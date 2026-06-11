@@ -50,7 +50,9 @@ export default function FileTree({ selectedProject, isActive = true, onFileOpen 
     }
   }, [toast]);
 
-  const { files, loading, refreshFiles } = useFileTreeData(selectedProject);
+  const { expandedDirs, toggleDirectory, expandDirectories, collapseAll } = useExpandedDirectories();
+  const { files, loading, refreshFiles, loadDirectory, ensureFullTree, isFullTreeLoading } =
+    useFileTreeData(selectedProject, expandedDirs);
 
   // The tree stays mounted while other tabs are active; refresh silently when
   // the user returns so the listing is fresh without collapsing expanded dirs.
@@ -63,10 +65,10 @@ export default function FileTree({ selectedProject, isActive = true, onFileOpen 
   }, [isActive, refreshFiles]);
 
   const { viewMode, changeViewMode } = useFileTreeViewMode();
-  const { expandedDirs, toggleDirectory, expandDirectories, collapseAll } = useExpandedDirectories();
   const { searchQuery, setSearchQuery, filteredFiles } = useFileTreeSearch({
     files,
     expandDirectories,
+    ensureFullTree,
   });
 
   // File operations
@@ -109,6 +111,11 @@ export default function FileTree({ selectedProject, isActive = true, onFileOpen 
   const handleItemClick = useCallback(
     (item: FileTreeNode) => {
       if (item.type === 'directory') {
+        // Lazily fetch children the first time a directory is expanded
+        // (`children === undefined` means the subtree was never loaded).
+        if (!expandedDirs.has(item.path) && item.children === undefined) {
+          loadDirectory(item.path);
+        }
         toggleDirectory(item.path);
         return;
       }
@@ -127,7 +134,7 @@ export default function FileTree({ selectedProject, isActive = true, onFileOpen 
 
       onFileOpen?.(item.path);
     },
-    [onFileOpen, selectedProject, toggleDirectory],
+    [expandedDirs, loadDirectory, onFileOpen, selectedProject, toggleDirectory],
   );
 
   const formatRelativeTimeLabel = useCallback(
@@ -170,7 +177,7 @@ export default function FileTree({ selectedProject, isActive = true, onFileOpen 
         onNewFolder={() => operations.handleStartCreate('', 'directory')}
         onRefresh={refreshFiles}
         onCollapseAll={collapseAll}
-        loading={loading}
+        loading={loading || isFullTreeLoading}
         operationLoading={operationLoading}
         isUploading={upload.uploadProgress?.status === 'uploading'}
         uploadProgress={upload.uploadProgress?.progress ?? null}
