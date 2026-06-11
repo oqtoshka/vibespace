@@ -205,6 +205,7 @@ function MainContent({
           onToggleEditorExpand={handleToggleEditorExpand}
           projectPath={selectedProject.path}
           fillSpace={activeTab === 'files'}
+          onFileOpen={handleFileOpen}
         />
       </div>
     </div>
