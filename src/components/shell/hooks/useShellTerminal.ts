@@ -35,6 +35,8 @@ type UseShellTerminalResult = {
   isInitialized: boolean;
   clearTerminalScreen: () => void;
   disposeTerminal: () => void;
+  /** Refits the terminal to its container (no-op while hidden / 0×0). */
+  refit: () => void;
 };
 
 export function useShellTerminal({
@@ -78,6 +80,27 @@ export function useShellTerminal({
     fitAddonRef.current = null;
     setIsInitialized(false);
   }, [fitAddonRef, terminalRef]);
+
+  // Hidden workspace tabs render display:none (0×0); fitting then would
+  // compute garbage cols/rows and emit a bogus resize to the PTY.
+  const refit = useCallback(() => {
+    const container = terminalContainerRef.current;
+    const currentFitAddon = fitAddonRef.current;
+    const currentTerminal = terminalRef.current;
+    if (!container || !currentFitAddon || !currentTerminal) {
+      return;
+    }
+    if (container.offsetWidth === 0 || container.offsetHeight === 0) {
+      return;
+    }
+
+    currentFitAddon.fit();
+    sendSocketMessage(wsRef.current, {
+      type: 'resize',
+      cols: currentTerminal.cols,
+      rows: currentTerminal.rows,
+    });
+  }, [fitAddonRef, terminalContainerRef, terminalRef, wsRef]);
 
   useEffect(() => {
     if (!terminalContainerRef.current || !hasSelectedProject || isRestarting || terminalRef.current) {
@@ -198,7 +221,12 @@ export function useShellTerminal({
     window.setTimeout(() => {
       const currentFitAddon = fitAddonRef.current;
       const currentTerminal = terminalRef.current;
+      const container = terminalContainerRef.current;
       if (!currentFitAddon || !currentTerminal) {
+        return;
+      }
+      // Skip while hidden (0×0) — refit() runs when the tab activates.
+      if (!container || container.offsetWidth === 0 || container.offsetHeight === 0) {
         return;
       }
 
@@ -227,7 +255,12 @@ export function useShellTerminal({
       resizeTimeoutRef.current = window.setTimeout(() => {
         const currentFitAddon = fitAddonRef.current;
         const currentTerminal = terminalRef.current;
+        const container = terminalContainerRef.current;
         if (!currentFitAddon || !currentTerminal) {
+          return;
+        }
+        // display:none containers observe a 0×0 resize — ignore it.
+        if (!container || container.offsetWidth === 0 || container.offsetHeight === 0) {
           return;
         }
 
@@ -274,5 +307,6 @@ export function useShellTerminal({
     isInitialized,
     clearTerminalScreen,
     disposeTerminal,
+    refit,
   };
 }

@@ -18,6 +18,14 @@ export type ShellInitMessage = {
   isPlainShell: boolean;
   forceRestart?: boolean;
   skipPermissions?: boolean;
+  // Workspace shell-tab id; differentiates the server PTY key so several
+  // shells for the same project/session coexist. Absent for login/minimal
+  // shells (keeps their keys unchanged).
+  shellId?: string | null;
+};
+
+export type ShellKillMessage = {
+  type: 'kill';
 };
 
 export type ShellResizeMessage = {
@@ -31,7 +39,7 @@ export type ShellInputMessage = {
   data: string;
 };
 
-export type ShellOutgoingMessage = ShellInitMessage | ShellResizeMessage | ShellInputMessage;
+export type ShellOutgoingMessage = ShellInitMessage | ShellResizeMessage | ShellInputMessage | ShellKillMessage;
 
 export type ShellIncomingMessage =
   | { type: 'output'; data: string }
@@ -47,6 +55,7 @@ export type UseShellRuntimeOptions = {
   minimal: boolean;
   autoConnect: boolean;
   isRestarting: boolean;
+  shellId?: string | null;
   onProcessComplete?: ((exitCode: number) => void) | null;
   onOutputRef?: MutableRefObject<(() => void) | null>;
 };
@@ -76,4 +85,8 @@ export type UseShellRuntimeResult = {
   disconnectFromShell: (options?: { suppressAutoConnect?: boolean }) => void;
   openAuthUrlInBrowser: (url?: string) => boolean;
   copyAuthUrlToClipboard: (url?: string) => Promise<boolean>;
+  /** Refits the terminal to its container (no-op while hidden). */
+  refit: () => void;
+  /** Kills the server PTY (workspace shell-tab close) and disconnects. */
+  killShell: () => void;
 };

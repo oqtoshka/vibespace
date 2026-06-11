@@ -1,7 +1,24 @@
-import type { Dispatch, SetStateAction } from 'react';
-
-import type { AppTab, Project, ProjectSession } from '../../../types/app';
+import type { Project, ProjectSession } from '../../../types/app';
+import type { WorkspacePanel, WorkspaceTab } from '../../../types/workspace';
+import type { OpenShellTabOptions } from '../../../hooks/useWorkspaceTabs';
+import type { CodeEditorDiffInfo } from '../../code-editor/types/types';
 import type { SessionNavigationOptions } from '../../chat/types/types';
+
+/**
+ * Workspace tab surface threaded from AppContent (which owns
+ * useWorkspaceTabs + the tab↔session coordination) into MainContent.
+ * `activateTab` also drives session selection for chat tabs.
+ */
+export type WorkspaceApi = {
+  tabs: WorkspaceTab[];
+  activeId: string | null;
+  activeTab: WorkspaceTab | null;
+  activePanel: WorkspacePanel | null;
+  activateTab: (id: string) => void;
+  closeTab: (id: string) => void;
+  openShellTab: (opts?: OpenShellTabOptions) => string;
+  openFileTab: (path: string, name?: string, diffInfo?: CodeEditorDiffInfo | null) => string;
+};
 
 export type SessionLifecycleHandler = (sessionId?: string | null) => void;
 
@@ -37,8 +54,7 @@ export type PrdFile = {
 export type MainContentProps = {
   selectedProject: Project | null;
   selectedSession: ProjectSession | null;
-  activeTab: AppTab;
-  setActiveTab: Dispatch<SetStateAction<AppTab>>;
+  workspace: WorkspaceApi;
   ws: WebSocket | null;
   sendMessage: (message: unknown) => void;
   latestMessage: unknown;
@@ -58,13 +74,14 @@ export type MainContentProps = {
 };
 
 export type MainContentHeaderProps = {
-  activeTab: AppTab;
-  setActiveTab: Dispatch<SetStateAction<AppTab>>;
+  workspace: WorkspaceApi;
   selectedProject: Project;
   selectedSession: ProjectSession | null;
   shouldShowTasksTab: boolean;
   isMobile: boolean;
   onMenuClick: () => void;
+  onCloseTab: (id: string) => void;
+  onNewShell: () => void;
 };
 
 export type MainContentStateViewProps = {
