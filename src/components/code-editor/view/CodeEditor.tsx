@@ -29,6 +29,8 @@ type CodeEditorProps = {
   isExpanded?: boolean;
   onToggleExpand?: (() => void) | null;
   onPopOut?: (() => void) | null;
+  /** Opens another in-project file (markdown preview relative-link jumps). */
+  onFileOpen?: ((filePath: string) => void) | null;
 };
 
 export default function CodeEditor({
@@ -39,6 +41,7 @@ export default function CodeEditor({
   isExpanded = false,
   onToggleExpand = null,
   onPopOut = null,
+  onFileOpen = null,
 }: CodeEditorProps) {
   const { t } = useTranslation('codeEditor');
   const paletteOps = usePaletteOps();
@@ -295,6 +298,8 @@ export default function CodeEditor({
               fontSize={fontSize}
               showLineNumbers={showLineNumbers}
               extensions={extensions}
+              currentFilePath={file.path}
+              onFileOpen={onFileOpen}
             />
           </div>
 
