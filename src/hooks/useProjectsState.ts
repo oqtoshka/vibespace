@@ -378,24 +378,6 @@ const writeProjectsCache = (projects: Project[]) => {
   }
 };
 
-const VALID_TABS: Set<string> = new Set(['chat', 'files', 'shell', 'git', 'tasks', 'browser']);
-
-const isValidTab = (tab: string): tab is AppTab => {
-  return VALID_TABS.has(tab) || tab.startsWith('plugin:');
-};
-
-const readPersistedTab = (): AppTab => {
-  try {
-    const stored = localStorage.getItem('activeTab');
-    if (stored && isValidTab(stored)) {
-      return stored as AppTab;
-    }
-  } catch {
-    // localStorage unavailable
-  }
-  return 'chat';
-};
-
 export function useProjectsState({
   sessionId,
   navigate,
@@ -410,16 +392,8 @@ export function useProjectsState({
   const [projects, setProjects] = useState<Project[]>(() => readProjectsCache() ?? []);
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
   const [selectedSession, setSelectedSession] = useState<ProjectSession | null>(null);
-  const [attentionSessionIds, setAttentionSessionIds] = useState<Set<string>>(new Set());
-  const [activeTab, setActiveTab] = useState<AppTab>(readPersistedTab);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem('activeTab', activeTab);
-    } catch {
-      // Silently ignore storage errors
-    }
-  }, [activeTab]);
+  // Tab/panel selection moved to useWorkspaceTabs (per-project workspace
+  // tabs); this hook only owns project/session selection now.
 
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [isLoadingProjects, setIsLoadingProjects] = useState(!hadCachedProjectsOnMount);
@@ -909,8 +883,9 @@ export function useProjectsState({
       clearSessionAttention(session.id);
       setSelectedSession(session);
 
-      if (activeTab === 'tasks' || activeTab === 'browser') {
-        setActiveTab('chat');
+      const provider = localStorage.getItem('selected-provider') || 'claude';
+      if (provider === 'cursor') {
+        sessionStorage.setItem('cursorSessionId', session.id);
       }
 
       if (isMobile) {
@@ -928,14 +903,13 @@ export function useProjectsState({
 
       navigate(`/session/${session.id}`);
     },
-    [activeTab, clearSessionAttention, isMobile, navigate, selectedProject?.projectId],
+    [isMobile, navigate, selectedProject?.projectId],
   );
 
   const handleNewSession = useCallback(
     (project: Project) => {
       setSelectedProject(project);
       setSelectedSession(null);
-      setActiveTab('chat');
       setNewSessionTrigger((previous) => previous + 1);
       navigate('/');
 
@@ -1121,7 +1095,6 @@ export function useProjectsState({
     projects,
     selectedProject,
     selectedSession,
-    activeTab,
     sidebarOpen,
     isLoadingProjects,
     loadingProgress,
@@ -1130,7 +1103,6 @@ export function useProjectsState({
     settingsInitialTab,
     externalMessageUpdate,
     newSessionTrigger,
-    setActiveTab,
     setSidebarOpen,
     setIsInputFocused,
     setShowSettings,

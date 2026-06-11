@@ -8,6 +8,27 @@ import type {
 } from '../../../hooks/useSessionProtection';
 import type { SessionEstablishedContext, SessionNavigationOptions } from '../../chat/types/types';
 import type { SettingsMainTab } from '../../settings/types/types';
+import type { WorkspacePanel, WorkspaceTab } from '../../../types/workspace';
+import type { OpenShellTabOptions } from '../../../hooks/useWorkspaceTabs';
+import type { CodeEditorDiffInfo } from '../../code-editor/types/types';
+
+/**
+ * Workspace tab surface threaded from AppContent (which owns
+ * useWorkspaceTabs + the tab↔session coordination) into MainContent.
+ * `activateTab` also drives session selection for chat tabs.
+ */
+export type WorkspaceApi = {
+  tabs: WorkspaceTab[];
+  activeId: string | null;
+  activeTab: WorkspaceTab | null;
+  activePanel: WorkspacePanel | null;
+  activateTab: (id: string) => void;
+  closeTab: (id: string) => void;
+  openShellTab: (opts?: OpenShellTabOptions) => string;
+  openFileTab: (path: string, name?: string, diffInfo?: CodeEditorDiffInfo | null) => string;
+};
+
+export type SessionLifecycleHandler = (sessionId?: string | null) => void;
 
 export type TaskMasterTask = {
   id: string | number;
@@ -41,8 +62,7 @@ export type PrdFile = {
 export type MainContentProps = {
   selectedProject: Project | null;
   selectedSession: ProjectSession | null;
-  activeTab: AppTab;
-  setActiveTab: Dispatch<SetStateAction<AppTab>>;
+  workspace: WorkspaceApi;
   ws: WebSocket | null;
   sendMessage: (message: unknown) => void;
   isMobile: boolean;
@@ -60,14 +80,15 @@ export type MainContentProps = {
 };
 
 export type MainContentHeaderProps = {
-  activeTab: AppTab;
-  setActiveTab: Dispatch<SetStateAction<AppTab>>;
+  workspace: WorkspaceApi;
   selectedProject: Project;
   selectedSession: ProjectSession | null;
   shouldShowTasksTab: boolean;
   shouldShowBrowserTab: boolean;
   isMobile: boolean;
   onMenuClick: () => void;
+  onCloseTab: (id: string) => void;
+  onNewShell: () => void;
 };
 
 export type MainContentStateViewProps = {

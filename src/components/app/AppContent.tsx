@@ -1,4 +1,4 @@
-import { useCallback, useEffect } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 
@@ -39,12 +39,23 @@ const parseStartedAt = (value: unknown): number | undefined => {
   return Number.isFinite(parsed) ? parsed : undefined;
 };
 
+import { useWorkspaceTabs } from '../../hooks/useWorkspaceTabs';
+import type { WorkspaceApi } from '../main-content/types/types';
+import type { AppTab, Project, ProjectSession } from '../../types/app';
+
 export default function AppContent() {
   return (
     <PaletteOpsProvider>
       <AppContentInner />
     </PaletteOpsProvider>
   );
+}
+
+function getSessionTitle(session: ProjectSession): string {
+  if (session.__provider === 'cursor') {
+    return (session.name as string) || 'Untitled Session';
+  }
+  return (session.summary as string) || 'New Session';
 }
 
 function AppContentInner() {
@@ -64,19 +75,19 @@ function AppContentInner() {
   const {
     selectedProject,
     selectedSession,
-    activeTab,
     sidebarOpen,
     isLoadingProjects,
     externalMessageUpdate,
     newSessionTrigger,
-    setActiveTab,
     setSidebarOpen,
     setIsInputFocused,
     openSettings,
     refreshProjectsSilently,
     registerOptimisticSession,
     sidebarSharedProps,
+    handleSessionSelect,
     handleNewSession,
+    handleSessionDelete,
   } = useProjectsState({
     sessionId,
     navigate,
@@ -139,10 +150,158 @@ function AppContentInner() {
     return () => window.clearInterval(interval);
   }, [refreshRunningSessions]);
 
+  const tabs = useWorkspaceTabs({ projectId: selectedProject?.projectId ?? null });
+  const {
+    tabs: workspaceTabs,
+    activeId,
+    activeTab,
+    activePanel,
+    openChatTab,
+    openShellTab,
+    openFileTab,
+    setActive,
+    closeTab,
+    adoptPendingSession,
+    findChatTabBySession,
+    closeTabsForSession,
+  } = tabs;
+
   usePaletteOpsRegister({
     openSettings,
     refreshProjects: refreshProjectsSilently,
   });
+
+  /**
+   * Imperative tab activation — the single user-driven path that keeps tab
+   * and session selection in sync without reactive ping-pong. Activating a
+   * chat tab navigates to its session (URL hydration then sets
+   * selectedSession); activating the pending chat tab resets to the
+   * new-session state.
+   */
+  const activateTab = useCallback(
+    (id: string) => {
+      setActive(id);
+      const tab = workspaceTabs.find((candidate) => candidate.id === id);
+      if (tab?.kind !== 'chat') {
+        return;
+      }
+      if (tab.sessionId) {
+        if (tab.sessionId !== selectedSession?.id) {
+          navigate(`/session/${tab.sessionId}`);
+        }
+        return;
+      }
+      // Pending "New session" tab: clear the current session.
+      if ((selectedSession || sessionId) && selectedProject) {
+        handleNewSession(selectedProject);
+      }
+    },
+    [handleNewSession, navigate, selectedProject, selectedSession, sessionId, setActive, workspaceTabs],
+  );
+
+  /** Sidebar session click: select + navigate, then open/focus its chat tab. */
+  const handleSidebarSessionSelect = useCallback(
+    (session: ProjectSession) => {
+      handleSessionSelect(session);
+      openChatTab(session.id, {
+        provider: session.__provider,
+        title: getSessionTitle(session),
+        activate: true,
+      });
+    },
+    [handleSessionSelect, openChatTab],
+  );
+
+  /** New-session actions (sidebar/palette): reset chat + focus a pending tab. */
+  const startNewChat = useCallback(
+    (project: Project) => {
+      handleNewSession(project);
+      openChatTab(null, { activate: true });
+    },
+    [handleNewSession, openChatTab],
+  );
+
+  /** Session deletion also closes any tabs pointing at the session. */
+  const handleSessionDeleteWithTabs = useCallback(
+    (sessionIdToDelete: string) => {
+      closeTabsForSession(sessionIdToDelete);
+      handleSessionDelete(sessionIdToDelete);
+    },
+    [closeTabsForSession, handleSessionDelete],
+  );
+
+  /**
+   * Reactive sync (tab → session) for non-user-driven activations: restored
+   * workspaces (reload / project switch) where the active chat tab points at
+   * a session that isn't selected yet.
+   */
+  useEffect(() => {
+    if (activeTab?.kind !== 'chat' || !activeTab.sessionId) {
+      return;
+    }
+    if (activeTab.sessionId === selectedSession?.id || activeTab.sessionId === sessionId) {
+      return;
+    }
+    navigate(`/session/${activeTab.sessionId}`);
+  }, [activeTab, navigate, selectedSession?.id, sessionId]);
+
+  /**
+   * Reactive sync (session → tab): deep links and first-message adoption.
+   * When a session becomes selected with no chat tab owning it, either adopt
+   * the active pending tab (new-session flow) or open a tab for it.
+   */
+  useEffect(() => {
+    const sid = selectedSession?.id;
+    if (!sid) {
+      return;
+    }
+    if (findChatTabBySession(sid)) {
+      return;
+    }
+    const pending = workspaceTabs.find((tab) => tab.kind === 'chat' && tab.sessionId === null);
+    if (pending && activeId === pending.id) {
+      adoptPendingSession(sid, selectedSession.__provider, getSessionTitle(selectedSession));
+      return;
+    }
+    openChatTab(sid, {
+      provider: selectedSession.__provider,
+      title: getSessionTitle(selectedSession),
+      activate: true,
+    });
+  }, [activeId, adoptPendingSession, findChatTabBySession, openChatTab, selectedSession, workspaceTabs]);
+
+  /** Command palette tab navigation mapped onto the workspace model. */
+  const handleShowTab = useCallback(
+    (tab: AppTab) => {
+      if (tab === 'chat') {
+        openChatTab(selectedSession?.id ?? null, { activate: true });
+        return;
+      }
+      if (tab === 'shell') {
+        openShellTab({
+          sessionId: selectedSession?.id ?? null,
+          provider: selectedSession?.__provider,
+        });
+        return;
+      }
+      setActive(tab);
+    },
+    [openChatTab, openShellTab, selectedSession?.__provider, selectedSession?.id, setActive],
+  );
+
+  const workspace: WorkspaceApi = useMemo(
+    () => ({
+      tabs: workspaceTabs,
+      activeId,
+      activeTab,
+      activePanel,
+      activateTab,
+      closeTab,
+      openShellTab,
+      openFileTab,
+    }),
+    [activateTab, activeId, activePanel, activeTab, closeTab, openFileTab, openShellTab, workspaceTabs],
+  );
 
   useEffect(() => {
     if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) {
@@ -159,15 +318,17 @@ function AppContentInner() {
         localStorage.setItem('selected-provider', message.provider);
       }
 
-      setActiveTab('chat');
       setSidebarOpen(false);
       void refreshProjectsSilently();
 
       if (typeof message.sessionId === 'string' && message.sessionId) {
+        // Focus (or create) the chat tab for the notified session.
+        openChatTab(message.sessionId, { activate: true });
         navigate(`/session/${message.sessionId}`);
         return;
       }
 
+      openChatTab(null, { activate: true });
       navigate('/');
     };
 
@@ -176,7 +337,7 @@ function AppContentInner() {
     return () => {
       navigator.serviceWorker.removeEventListener('message', handleServiceWorkerMessage);
     };
-  }, [navigate, refreshProjectsSilently, setActiveTab, setSidebarOpen]);
+  }, [navigate, openChatTab, refreshProjectsSilently, setSidebarOpen]);
 
   // Pending tool permissions are recovered through the `chat.subscribe` flow:
   // the `chat_subscribed` ack carries them on session open and on reconnect,
@@ -202,11 +363,19 @@ function AppContentInner() {
     return () => vv.removeEventListener('resize', update);
   }, []);
 
+  const sidebarProps = {
+    ...sidebarSharedProps,
+    onSessionSelect: handleSidebarSessionSelect,
+    onNewSession: startNewChat,
+    onSessionDelete: handleSessionDeleteWithTabs,
+    processingSessions,
+  };
+
   return (
     <div className="fixed inset-0 flex bg-background" style={{ bottom: 'var(--keyboard-height, 0px)' }}>
       {!isMobile ? (
         <div className="h-full flex-shrink-0 border-r border-border/50">
-          <Sidebar {...sidebarSharedProps} processingSessions={processingSessions} />
+          <Sidebar {...sidebarProps} />
         </div>
       ) : (
         <div
@@ -232,7 +401,7 @@ function AppContentInner() {
             onClick={(event) => event.stopPropagation()}
             onTouchStart={(event) => event.stopPropagation()}
           >
-            <Sidebar {...sidebarSharedProps} processingSessions={processingSessions} />
+            <Sidebar {...sidebarProps} />
           </div>
         </div>
       )}
@@ -241,8 +410,7 @@ function AppContentInner() {
         <MainContent
           selectedProject={selectedProject}
           selectedSession={selectedSession}
-          activeTab={activeTab}
-          setActiveTab={setActiveTab}
+          workspace={workspace}
           ws={ws}
           sendMessage={sendMessage}
           isMobile={isMobile}
@@ -266,9 +434,9 @@ function AppContentInner() {
 
       <CommandPalette
         selectedProject={selectedProject}
-        onStartNewChat={handleNewSession}
+        onStartNewChat={startNewChat}
         onOpenSettings={() => openSettings()}
-        onShowTab={setActiveTab}
+        onShowTab={handleShowTab}
       />
     </div>
   );

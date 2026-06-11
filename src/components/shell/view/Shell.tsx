@@ -23,6 +23,11 @@ import TerminalShortcutsPanel from './subcomponents/TerminalShortcutsPanel';
 
 type CliPromptOption = { number: string; label: string };
 
+export type ShellController = {
+  /** Kills the server PTY and disconnects (workspace shell-tab close). */
+  kill: () => void;
+};
+
 type ShellProps = {
   selectedProject?: Project | null;
   selectedSession?: ProjectSession | null;
@@ -32,6 +37,10 @@ type ShellProps = {
   minimal?: boolean;
   autoConnect?: boolean;
   isActive?: boolean;
+  /** Workspace shell-tab id; differentiates this shell's server PTY key. */
+  shellId?: string | null;
+  /** Lets the parent imperatively control this shell (kill-on-tab-close). */
+  onRegisterController?: ((controller: ShellController | null) => void) | null;
 };
 
 export default function Shell({
@@ -43,6 +52,8 @@ export default function Shell({
   minimal = false,
   autoConnect = false,
   isActive = true,
+  shellId = null,
+  onRegisterController = null,
 }: ShellProps) {
   const { t } = useTranslation('chat');
   const [isRestarting, setIsRestarting] = useState(false);
@@ -61,6 +72,10 @@ export default function Shell({
     isConnecting,
     connectToShell,
     disconnectFromShell,
+    openAuthUrlInBrowser,
+    copyAuthUrlToClipboard,
+    refit,
+    killShell,
   } = useShellRuntime({
     selectedProject,
     selectedSession,
@@ -69,9 +84,30 @@ export default function Shell({
     minimal,
     autoConnect,
     isRestarting,
+    shellId,
     onProcessComplete,
     onOutputRef,
   });
+
+  // Expose an imperative controller so the workspace tab strip can kill the
+  // PTY before unmounting this shell on tab close.
+  useEffect(() => {
+    if (!onRegisterController) {
+      return undefined;
+    }
+    onRegisterController({ kill: killShell });
+    return () => onRegisterController(null);
+  }, [killShell, onRegisterController]);
+
+  // Hidden tabs skip fitting (0×0 guard); refit once layout settles after
+  // this tab becomes visible again.
+  useEffect(() => {
+    if (!isActive || !isInitialized) {
+      return undefined;
+    }
+    const animationFrameId = window.requestAnimationFrame(() => refit());
+    return () => window.cancelAnimationFrame(animationFrameId);
+  }, [isActive, isInitialized, refit]);
 
   // Check xterm.js buffer for CLI prompt patterns (❯ N. label)
   const checkBufferForPrompt = useCallback(() => {
