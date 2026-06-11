@@ -57,7 +57,6 @@ export type UseWorkspaceTabsResult = {
 
 const STORAGE_PREFIX = 'workspace-tabs:';
 const LEGACY_ACTIVE_TAB_KEY = 'activeTab';
-const FALLBACK_PANEL: WorkspacePanel = 'files';
 
 let legacyKeyMigrated = false;
 
@@ -283,12 +282,18 @@ export function useWorkspaceTabs({ projectId }: { projectId: string | null }): U
       if (index === -1) {
         return;
       }
-      const tabs = previous.tabs.filter((tab) => tab.id !== id);
+      let tabs = previous.tabs.filter((tab) => tab.id !== id);
       let activeId = previous.activeId;
-      if (activeId === id) {
-        // Prefer the left neighbor, then right, then fall back to a panel.
-        const neighbor = tabs[index - 1] ?? tabs[index] ?? null;
-        activeId = neighbor ? neighbor.id : FALLBACK_PANEL;
+      if (tabs.length === 0) {
+        // Closing the last tab falls back to a fresh pending chat tab
+        // (chat is the app's home surface).
+        const seeded = seedState();
+        tabs = seeded.tabs;
+        activeId = activeId === id ? seeded.activeId : activeId;
+      } else if (activeId === id) {
+        // Prefer the left neighbor, then right.
+        const neighbor = tabs[index - 1] ?? tabs[index];
+        activeId = neighbor.id;
       }
       applyState({ tabs, activeId });
     },
@@ -335,10 +340,14 @@ export function useWorkspaceTabs({ projectId }: { projectId: string | null }): U
         return;
       }
       const removedIds = new Set(removed.map((tab) => tab.id));
-      const tabs = previous.tabs.filter((tab) => !removedIds.has(tab.id));
+      let tabs = previous.tabs.filter((tab) => !removedIds.has(tab.id));
       let activeId = previous.activeId;
-      if (activeId && removedIds.has(activeId)) {
-        activeId = tabs[0]?.id ?? FALLBACK_PANEL;
+      if (tabs.length === 0) {
+        const seeded = seedState();
+        tabs = seeded.tabs;
+        activeId = activeId && removedIds.has(activeId) ? seeded.activeId : activeId;
+      } else if (activeId && removedIds.has(activeId)) {
+        activeId = tabs[0].id;
       }
       applyState({ tabs, activeId });
     },
