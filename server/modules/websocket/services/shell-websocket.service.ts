@@ -20,6 +20,9 @@ type ShellIncomingMessage = {
   isPlainShell?: boolean;
   forceRestart?: boolean;
   skipPermissions?: boolean;
+  // Client-generated id of a workspace shell tab; lets several shells for the
+  // same project/session coexist (each gets its own PTY map entry).
+  shellId?: string;
 };
 
 type PtySessionEntry = {
@@ -269,7 +272,14 @@ export function handleShellConnection(
           isPlainShell && initialCommand
             ? `_cmd_${Buffer.from(initialCommand).toString('base64').slice(0, 16)}`
             : '';
-        ptySessionKey = `${projectPath}_${sessionId ?? 'default'}${commandSuffix}`;
+        // Sanitized because it is client-supplied and lands in a Map key.
+        // Absent for plain/minimal shells (login flows) so their keys are
+        // unchanged; only workspace shell tabs send a shellId.
+        const sanitizedShellId = readString(data.shellId)
+          .replace(/[^a-zA-Z0-9_-]/g, '')
+          .slice(0, 24);
+        const shellSuffix = sanitizedShellId ? `_sh_${sanitizedShellId}` : '';
+        ptySessionKey = `${projectPath}_${sessionId ?? 'default'}${commandSuffix}${shellSuffix}`;
 
         if (isLoginCommand || forceRestart) {
           const oldSession = ptySessionsMap.get(ptySessionKey);
@@ -500,6 +510,23 @@ export function handleShellConnection(
       if (data.type === 'resize') {
         if (shellProcess) {
           shellProcess.resize(readNumber(data.cols, 80), readNumber(data.rows, 24));
+        }
+        return;
+      }
+
+      // Explicit teardown when a workspace shell tab is closed: kill the PTY
+      // now instead of letting the CLI run invisibly until the 30-min timeout.
+      if (data.type === 'kill') {
+        if (ptySessionKey) {
+          const session = ptySessionsMap.get(ptySessionKey);
+          if (session) {
+            if (session.timeoutId) {
+              clearTimeout(session.timeoutId);
+            }
+            session.pty.kill();
+            ptySessionsMap.delete(ptySessionKey);
+          }
+          shellProcess = null;
         }
       }
     } catch (error) {

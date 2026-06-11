@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import ChatInterface from '../../chat/view/ChatInterface';
 import FileTree from '../../file-tree/view/FileTree';
@@ -15,7 +15,10 @@ import { useFileOpenResolver } from '../../../hooks/useFileOpenResolver';
 import { authenticatedFetch } from '../../../utils/api';
 import { useEditorSidebar } from '../../code-editor/hooks/useEditorSidebar';
 import EditorSidebar from '../../code-editor/view/EditorSidebar';
-import type { Project } from '../../../types/app';
+import CodeEditor from '../../code-editor/view/CodeEditor';
+import type { CodeEditorDiffInfo } from '../../code-editor/types/types';
+import type { ShellController } from '../../shell/view/Shell';
+import type { Project, ProjectSession } from '../../../types/app';
 import { TaskMasterPanel } from '../../task-master';
 
 import MainContentHeader from './subcomponents/MainContentHeader';
@@ -36,8 +39,7 @@ type TasksSettingsContextValue = {
 function MainContent({
   selectedProject,
   selectedSession,
-  activeTab,
-  setActiveTab,
+  workspace,
   ws,
   sendMessage,
   isMobile,
@@ -63,20 +65,64 @@ function MainContent({
   const shouldShowTasksTab = Boolean(tasksEnabled && isTaskMasterInstalled);
   const shouldShowBrowserTab = browserUseEnabled;
 
-  const {
-    editingFile,
-    editorWidth,
-    editorExpanded,
-    hasManualWidth,
-    resizeHandleRef,
-    handleFileOpen,
-    handleCloseEditor,
-    handleToggleEditorExpand,
-    handleResizeStart,
-  } = useEditorSidebar({
-    selectedProject,
-    isMobile,
-  });
+  const { activeTab, activePanel, activeId } = workspace;
+
+  // Imperative shell controllers so closing a shell tab can kill its PTY
+  // before the Shell component unmounts.
+  const shellControllersRef = useRef(new Map<string, ShellController>());
+
+  // Tabs the user has visited this app run. Hidden shell tabs restored from
+  // localStorage don't auto-connect until first activated (avoids a WS/PTY
+  // reattach storm on reload); mutated during render so the activating tab
+  // connects on the same pass.
+  const activatedTabIdsRef = useRef(new Set<string>());
+  if (activeId) {
+    activatedTabIdsRef.current.add(activeId);
+  }
+
+  const handleFileOpen = useCallback(
+    (filePath: string, diffInfo: CodeEditorDiffInfo | null = null) => {
+      workspace.openFileTab(filePath, undefined, diffInfo);
+    },
+    [workspace],
+  );
+
+  const handleCloseTab = useCallback(
+    (id: string) => {
+      const tab = workspace.tabs.find((candidate) => candidate.id === id);
+      if (tab?.kind === 'shell') {
+        shellControllersRef.current.get(id)?.kill();
+      }
+      workspace.closeTab(id);
+    },
+    [workspace],
+  );
+
+  const handleNewShell = useCallback(() => {
+    workspace.openShellTab({
+      sessionId: selectedSession?.id ?? null,
+      provider: selectedSession?.__provider,
+    });
+  }, [selectedSession?.__provider, selectedSession?.id, workspace]);
+
+  // Synthetic per-tab sessions: each shell tab is pinned to the session it
+  // was opened with (immutable), so useShellRuntime's session-change
+  // disconnect never fires for a given tab.
+  const shellTabSessions = useMemo(() => {
+    const sessions = new Map<string, ProjectSession | null>();
+    for (const tab of workspace.tabs) {
+      if (tab.kind !== 'shell') {
+        continue;
+      }
+      sessions.set(
+        tab.id,
+        tab.sessionId
+          ? { id: tab.sessionId, __provider: tab.provider, summary: tab.title ?? '' }
+          : null,
+      );
+    }
+    return sessions;
+  }, [workspace.tabs]);
 
   // Resolves bare/partial file references (e.g. links inside chat messages) to
   // real project files before opening them in the in-app editor.
@@ -94,10 +140,10 @@ function MainContent({
   }, [selectedProject, currentProject?.projectId, setCurrentProject]);
 
   useEffect(() => {
-    if (!shouldShowTasksTab && activeTab === 'tasks') {
-      setActiveTab('chat');
+    if (!shouldShowTasksTab && activePanel === 'tasks') {
+      workspace.activateTab(workspace.tabs[0]?.id ?? 'files');
     }
-  }, [shouldShowTasksTab, activeTab, setActiveTab]);
+  }, [shouldShowTasksTab, activePanel, workspace]);
 
   const loadBrowserUseSettings = useCallback(async () => {
     try {
@@ -123,8 +169,7 @@ function MainContent({
 
   usePaletteOpsRegister({
     openFile: (filePath: string) => {
-      setActiveTab('files');
-      handleFileOpen(filePath);
+      workspace.openFileTab(filePath);
     },
     // Opens the editor side panel in place, keeping the current tab (e.g. chat).
     openFileInEditor: (filePath: string) => {
@@ -143,19 +188,23 @@ function MainContent({
   return (
     <div className="flex h-full flex-col">
       <MainContentHeader
-        activeTab={activeTab}
-        setActiveTab={setActiveTab}
+        workspace={workspace}
         selectedProject={selectedProject}
         selectedSession={selectedSession}
         shouldShowTasksTab={shouldShowTasksTab}
         shouldShowBrowserTab={shouldShowBrowserTab}
         isMobile={isMobile}
         onMenuClick={onMenuClick}
+        onCloseTab={handleCloseTab}
+        onNewShell={handleNewShell}
       />
 
       <div className="flex min-h-0 flex-1 overflow-hidden">
-        <div className={`flex min-h-0 min-w-[200px] flex-col overflow-hidden ${editorExpanded ? 'hidden' : ''} flex-1`}>
-          <div className={`h-full ${activeTab === 'chat' ? 'block' : 'hidden'}`}>
+        <div className="flex min-h-0 min-w-[200px] flex-1 flex-col overflow-hidden">
+          {/* Single chat surface: every chat tab points into this instance,
+              driven by selectedSession. Kept mounted so chat state survives
+              tab switches. */}
+          <div className={`h-full ${activeTab?.kind === 'chat' ? 'block' : 'hidden'}`}>
             <ErrorBoundary showDetails>
               <ChatInterface
                 selectedProject={selectedProject}
@@ -175,72 +224,100 @@ function MainContent({
                 sendByCtrlEnter={sendByCtrlEnter}
                 externalMessageUpdate={externalMessageUpdate}
                 newSessionTrigger={newSessionTrigger}
-                onShowAllTasks={tasksEnabled ? () => setActiveTab('tasks') : null}
+                onShowAllTasks={tasksEnabled ? () => workspace.activateTab('tasks') : null}
               />
             </ErrorBoundary>
           </div>
 
           {/* Keep the file tree mounted so expanded folders, search and scroll
               survive tab switches; key by project so state resets on project change. */}
-          <div className={`h-full overflow-hidden ${activeTab === 'files' ? 'block' : 'hidden'}`}>
+          <div className={`h-full overflow-hidden ${activePanel === 'files' ? 'block' : 'hidden'}`}>
             <FileTree
               key={selectedProject.projectId}
               selectedProject={selectedProject}
-              isActive={activeTab === 'files'}
+              isActive={activePanel === 'files'}
               onFileOpen={handleFileOpen}
             />
           </div>
 
-          {activeTab === 'shell' && (
-            <div className="h-full w-full overflow-hidden">
-              <StandaloneShell
-                project={selectedProject}
-                session={selectedSession}
-                showHeader={false}
-                isActive={activeTab === 'shell'}
-              />
-            </div>
-          )}
+          {/* All shell tabs stay mounted (live PTYs); only the active one is
+              visible. Hidden tabs skip terminal fitting (0×0 guard). */}
+          {workspace.tabs.map((tab) => {
+            if (tab.kind !== 'shell') {
+              return null;
+            }
+            const isTabActive = activeId === tab.id;
+            return (
+              <div key={tab.id} className={`h-full w-full overflow-hidden ${isTabActive ? 'block' : 'hidden'}`}>
+                <StandaloneShell
+                  project={selectedProject}
+                  session={shellTabSessions.get(tab.id) ?? null}
+                  shellId={tab.shellId}
+                  showHeader={false}
+                  isActive={isTabActive}
+                  autoConnect={activatedTabIdsRef.current.has(tab.id)}
+                  onRegisterController={(controller) => {
+                    if (controller) {
+                      shellControllersRef.current.set(tab.id, controller);
+                    } else {
+                      shellControllersRef.current.delete(tab.id);
+                    }
+                  }}
+                />
+              </div>
+            );
+          })}
 
-          {activeTab === 'git' && (
+          {/* File tabs: kept-mounted editors so unsaved edits survive tab
+              switches (lost on close — accepted for now). */}
+          {workspace.tabs.map((tab) => {
+            if (tab.kind !== 'file') {
+              return null;
+            }
+            const isTabActive = activeId === tab.id;
+            return (
+              <div key={tab.id} className={`h-full overflow-hidden ${isTabActive ? 'block' : 'hidden'}`}>
+                <CodeEditor
+                  file={{
+                    name: tab.name,
+                    path: tab.path,
+                    projectId: selectedProject.projectId,
+                    diffInfo: tab.diffInfo ?? null,
+                  }}
+                  onClose={() => handleCloseTab(tab.id)}
+                  projectPath={selectedProject.path}
+                  isSidebar
+                  onFileOpen={handleFileOpen}
+                />
+              </div>
+            );
+          })}
+
+          {activePanel === 'git' && (
             <div className="h-full overflow-hidden">
               <GitPanel selectedProject={selectedProject} isMobile={isMobile} onFileOpen={handleFileOpen} />
             </div>
           )}
 
-          {shouldShowTasksTab && <TaskMasterPanel isVisible={activeTab === 'tasks'} />}
+          {shouldShowTasksTab && <TaskMasterPanel isVisible={activePanel === 'tasks'} />}
 
-          {shouldShowBrowserTab && activeTab === 'browser' && (
+          {activePanel === 'browser' && (
             <div className="h-full overflow-hidden">
-              <BrowserUsePanel isVisible={activeTab === 'browser'} onShowSettings={onShowSettings} />
+              <BrowserUsePanel isVisible onShowSettings={onShowSettings} />
             </div>
           )}
+          <div className={`h-full overflow-hidden ${activePanel === 'preview' ? 'block' : 'hidden'}`} />
 
-          {activeTab.startsWith('plugin:') && (
+          {activePanel?.startsWith('plugin:') && (
             <div className="h-full overflow-hidden">
               <PluginTabContent
-                pluginName={activeTab.replace('plugin:', '')}
+                pluginName={activePanel.replace('plugin:', '')}
                 selectedProject={selectedProject}
                 selectedSession={selectedSession}
               />
             </div>
           )}
         </div>
-
-        <EditorSidebar
-          editingFile={editingFile}
-          isMobile={isMobile}
-          editorExpanded={editorExpanded}
-          editorWidth={editorWidth}
-          hasManualWidth={hasManualWidth}
-          resizeHandleRef={resizeHandleRef}
-          onResizeStart={handleResizeStart}
-          onCloseEditor={handleCloseEditor}
-          onToggleEditorExpand={handleToggleEditorExpand}
-          projectPath={selectedProject.path}
-          fillSpace={activeTab === 'files'}
-          onFileOpen={handleFileOpen}
-        />
       </div>
     </div>
   );
