@@ -1,18 +1,19 @@
 import { useCallback, useRef, useState, useEffect } from 'react';
 import type { MainContentHeaderProps } from '../../types/types';
 import MobileMenuButton from './MobileMenuButton';
-import MainContentTabSwitcher from './MainContentTabSwitcher';
+import WorkspaceTabStrip from './WorkspaceTabStrip';
 import MainContentTitle from './MainContentTitle';
 import OpenInTerminalButton from './OpenInTerminalButton';
 
 export default function MainContentHeader({
-  activeTab,
-  setActiveTab,
+  workspace,
   selectedProject,
   selectedSession,
   shouldShowTasksTab,
   isMobile,
   onMenuClick,
+  onCloseTab,
+  onNewShell,
 }: MainContentHeaderProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [canScrollLeft, setCanScrollLeft] = useState(false);
@@ -37,22 +38,24 @@ export default function MainContentHeader({
   return (
     <div className="pwa-header-safe flex-shrink-0 border-b border-border/60 bg-background px-3 py-1.5 sm:px-4 sm:py-2">
       <div className="flex items-center justify-between gap-3">
-        <div className="flex min-w-0 flex-1 items-center gap-2">
+        <div className="flex min-w-0 flex-shrink-[3] basis-1/4 items-center gap-2 sm:flex-1">
           {isMobile && <MobileMenuButton onMenuClick={onMenuClick} />}
           <MainContentTitle
-            activeTab={activeTab}
+            workspace={workspace}
             selectedProject={selectedProject}
             selectedSession={selectedSession}
             shouldShowTasksTab={shouldShowTasksTab}
           />
         </div>
 
-        <div className="flex flex-shrink-0 items-center gap-2">
+        {/* The tab strip can grow arbitrarily wide — it must shrink and
+            scroll within the viewport rather than push the layout. */}
+        <div className="flex min-w-0 flex-shrink items-center gap-2">
           <OpenInTerminalButton
             selectedProject={selectedProject}
             selectedSession={selectedSession}
           />
-          <div className="relative min-w-0 flex-shrink overflow-hidden sm:flex-shrink-0">
+          <div className="relative min-w-0 flex-shrink overflow-hidden">
           {canScrollLeft && (
             <div className="pointer-events-none absolute inset-y-0 left-0 z-10 w-6 bg-gradient-to-r from-background to-transparent" />
           )}
@@ -61,10 +64,12 @@ export default function MainContentHeader({
             onScroll={updateScrollState}
             className="scrollbar-hide overflow-x-auto"
           >
-            <MainContentTabSwitcher
-              activeTab={activeTab}
-              setActiveTab={setActiveTab}
+            <WorkspaceTabStrip
+              workspace={workspace}
+              selectedProject={selectedProject}
               shouldShowTasksTab={shouldShowTasksTab}
+              onCloseTab={onCloseTab}
+              onNewShell={onNewShell}
             />
           </div>
           {canScrollRight && (

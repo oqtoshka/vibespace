@@ -1,29 +1,31 @@
 import { useTranslation } from 'react-i18next';
 import SessionProviderLogo from '../../../llm-logo-provider/SessionProviderLogo';
-import type { AppTab, Project, ProjectSession } from '../../../../types/app';
+import type { Project, ProjectSession } from '../../../../types/app';
+import type { WorkspacePanel } from '../../../../types/workspace';
+import type { WorkspaceApi } from '../../types/types';
 import { usePlugins } from '../../../../contexts/PluginsContext';
 
 type MainContentTitleProps = {
-  activeTab: AppTab;
+  workspace: WorkspaceApi;
   selectedProject: Project;
   selectedSession: ProjectSession | null;
   shouldShowTasksTab: boolean;
 };
 
-function getTabTitle(activeTab: AppTab, shouldShowTasksTab: boolean, t: (key: string) => string, pluginDisplayName?: string) {
-  if (activeTab.startsWith('plugin:') && pluginDisplayName) {
+function getPanelTitle(panel: WorkspacePanel, shouldShowTasksTab: boolean, t: (key: string) => string, pluginDisplayName?: string) {
+  if (panel.startsWith('plugin:') && pluginDisplayName) {
     return pluginDisplayName;
   }
 
-  if (activeTab === 'files') {
+  if (panel === 'files') {
     return t('mainContent.projectFiles');
   }
 
-  if (activeTab === 'git') {
+  if (panel === 'git') {
     return t('tabs.git');
   }
 
-  if (activeTab === 'tasks' && shouldShowTasksTab) {
+  if (panel === 'tasks' && shouldShowTasksTab) {
     return 'TaskMaster';
   }
 
@@ -39,7 +41,7 @@ function getSessionTitle(session: ProjectSession): string {
 }
 
 export default function MainContentTitle({
-  activeTab,
+  workspace,
   selectedProject,
   selectedSession,
   shouldShowTasksTab,
@@ -47,12 +49,27 @@ export default function MainContentTitle({
   const { t } = useTranslation();
   const { plugins } = usePlugins();
 
-  const pluginDisplayName = activeTab.startsWith('plugin:')
-    ? plugins.find((p) => p.name === activeTab.replace('plugin:', ''))?.displayName
+  const activeTab = workspace.activeTab;
+  const activePanel = workspace.activePanel;
+
+  const pluginDisplayName = activePanel?.startsWith('plugin:')
+    ? plugins.find((p) => p.name === activePanel.replace('plugin:', ''))?.displayName
     : undefined;
 
-  const showSessionIcon = activeTab === 'chat' && Boolean(selectedSession);
-  const showChatNewSession = activeTab === 'chat' && !selectedSession;
+  const isChat = activeTab?.kind === 'chat';
+  const showSessionIcon = isChat && Boolean(selectedSession);
+  const showChatNewSession = isChat && !selectedSession;
+
+  // Non-chat selections: shell/file tabs show their own titles; panels keep
+  // the legacy panel titles.
+  const plainTitle =
+    activeTab?.kind === 'shell'
+      ? activeTab.title || t('tabs.shell')
+      : activeTab?.kind === 'file'
+        ? activeTab.name
+        : activePanel
+          ? getPanelTitle(activePanel, shouldShowTasksTab, t, pluginDisplayName)
+          : 'Project';
 
   return (
     <div className="scrollbar-hide flex min-w-0 flex-1 items-center gap-2 overflow-x-auto">
@@ -63,7 +80,7 @@ export default function MainContentTitle({
       )}
 
       <div className="min-w-0 flex-1">
-        {activeTab === 'chat' && selectedSession ? (
+        {isChat && selectedSession ? (
           <div className="min-w-0">
             <h2 className="scrollbar-hide overflow-x-auto whitespace-nowrap text-sm font-semibold leading-tight text-foreground">
               {getSessionTitle(selectedSession)}
@@ -78,7 +95,7 @@ export default function MainContentTitle({
         ) : (
           <div className="min-w-0">
             <h2 className="text-sm font-semibold leading-tight text-foreground">
-              {getTabTitle(activeTab, shouldShowTasksTab, t, pluginDisplayName)}
+              {plainTitle}
             </h2>
             <div className="truncate text-[11px] leading-tight text-muted-foreground">{selectedProject.displayName}</div>
           </div>
