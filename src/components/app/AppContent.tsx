@@ -42,6 +42,7 @@ const parseStartedAt = (value: unknown): number | undefined => {
 };
 
 import { useWorkspaceTabs } from '../../hooks/useWorkspaceTabs';
+import { dbg } from '../../utils/debugLog';
 import type { WorkspaceApi } from '../main-content/types/types';
 import type { SidebarView } from '../sidebar/types/types';
 import type { AppTab, Project, ProjectSession } from '../../types/app';
@@ -245,6 +246,16 @@ function AppContentInner() {
 
   const tabs = useWorkspaceTabs({ projectId: selectedProject?.projectId ?? null });
 
+  // Trace the upstream selection drivers so the debug log shows what changed
+  // before each tab/expand reaction (helps spot project/session ping-pong).
+  useEffect(() => {
+    dbg('state.selection', {
+      project: selectedProject?.projectId ?? null,
+      session: selectedSession?.id?.slice(0, 8) ?? null,
+      urlSession: sessionId?.slice(0, 8) ?? null,
+    });
+  }, [selectedProject?.projectId, selectedSession?.id, sessionId]);
+
   // The main sidebar switches between the sessions list and the project file
   // tree (VSCode-style); the header's files button and the command palette
   // drive it from outside the sidebar.
@@ -367,8 +378,14 @@ function AppContentInner() {
     if (activeTab.sessionId === selectedSession?.id || activeTab.sessionId === sessionId) {
       return;
     }
+    dbg('effect.tab->session.navigate', {
+      activeTabSession: activeTab.sessionId.slice(0, 8),
+      selectedSession: selectedSession?.id?.slice(0, 8) ?? null,
+      urlSession: sessionId?.slice(0, 8) ?? null,
+      project: selectedProject?.projectId,
+    });
     navigate(`/session/${activeTab.sessionId}`);
-  }, [activeTab, navigate, selectedSession?.id, sessionId]);
+  }, [activeTab, navigate, selectedProject?.projectId, selectedSession?.id, sessionId]);
 
   /**
    * Reactive sync (session → tab): deep links and first-message adoption.
@@ -385,15 +402,25 @@ function AppContentInner() {
     }
     const pending = workspaceTabs.find((tab) => tab.kind === 'chat' && tab.sessionId === null);
     if (pending && activeId === pending.id) {
+      dbg('effect.session->tab.adopt', {
+        session: sid.slice(0, 8),
+        project: selectedProject?.projectId,
+      });
       adoptPendingSession(sid, selectedSession.__provider, getSessionTitle(selectedSession));
       return;
     }
+    dbg('effect.session->tab.openChat', {
+      session: sid.slice(0, 8),
+      project: selectedProject?.projectId,
+      activeId,
+      tabs: workspaceTabs.length,
+    });
     openChatTab(sid, {
       provider: selectedSession.__provider,
       title: getSessionTitle(selectedSession),
       activate: true,
     });
-  }, [activeId, adoptPendingSession, findChatTabBySession, openChatTab, selectedSession, workspaceTabs]);
+  }, [activeId, adoptPendingSession, findChatTabBySession, openChatTab, selectedProject?.projectId, selectedSession, workspaceTabs]);
 
   /** Command palette tab navigation mapped onto the workspace model. */
   const handleShowTab = useCallback(
