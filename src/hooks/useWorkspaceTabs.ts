@@ -1,7 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { LLMProvider } from '../types/app';
+import { dbg } from '../utils/debugLog';
 import type { CodeEditorDiffInfo } from '../components/code-editor/types/types';
 import { isPanelId, type WorkspacePanel, type WorkspaceTab } from '../types/workspace';
+
+/** Compact tab summary for debug logs (avoids dumping full objects). */
+function summarizeTabs(tabs: WorkspaceTab[]): string {
+  return tabs
+    .map((tab) =>
+      tab.kind === 'chat'
+        ? `chat:${tab.sessionId ? tab.sessionId.slice(0, 8) : 'pending'}`
+        : tab.kind === 'shell'
+          ? `shell:${tab.shellId.slice(0, 8)}`
+          : `file:${tab.name}`,
+    )
+    .join(',');
+}
 
 /**
  * Per-project VSCode-like workspace tabs: chat sessions, live shells and
@@ -179,6 +193,11 @@ export function useWorkspaceTabs({ projectId }: { projectId: string | null }): U
   // sidebar). Setting state during render makes React re-render immediately,
   // so no mismatched pairing ever reaches effects or the DOM.
   if (stateProjectIdRef.current !== projectId) {
+    dbg('tabs.swap', {
+      from: stateProjectIdRef.current,
+      to: projectId,
+      loadedTabs: projectId ? summarizeTabs(loadState(projectId).tabs) : '',
+    });
     stateProjectIdRef.current = projectId;
     const next = projectId ? loadState(projectId) : EMPTY_STATE;
     stateRef.current = next;
@@ -215,6 +234,12 @@ export function useWorkspaceTabs({ projectId }: { projectId: string | null }): U
         provider: opts?.provider,
         title: opts?.title,
       };
+      dbg('tabs.openChat', {
+        sessionId: sessionId ? sessionId.slice(0, 8) : 'pending',
+        activate,
+        project: stateProjectIdRef.current,
+        newId: tab.id,
+      });
       applyState({
         tabs: [...previous.tabs, tab],
         activeId: activate ? tab.id : previous.activeId,
@@ -277,6 +302,7 @@ export function useWorkspaceTabs({ projectId }: { projectId: string | null }): U
       if (!isPanelId(id) && !previous.tabs.some((tab) => tab.id === id)) {
         return;
       }
+      dbg('tabs.setActive', { from: previous.activeId, to: id, project: stateProjectIdRef.current });
       applyState({ ...previous, activeId: id });
     },
     [applyState],
@@ -302,6 +328,14 @@ export function useWorkspaceTabs({ projectId }: { projectId: string | null }): U
         const neighbor = tabs[index - 1] ?? tabs[index];
         activeId = neighbor.id;
       }
+      dbg('tabs.close', {
+        closed: id,
+        wasActive: previous.activeId === id,
+        newActive: activeId,
+        project: stateProjectIdRef.current,
+        before: summarizeTabs(previous.tabs),
+        after: summarizeTabs(tabs),
+      });
       applyState({ tabs, activeId });
     },
     [applyState],
