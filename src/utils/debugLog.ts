@@ -7,11 +7,17 @@ type DebugEvent = Record<string, unknown> & { tag: string };
 
 // Telemetry is OFF by default — the heartbeat alone fired a POST to
 // /api/debug-log every 200ms, flooding the network tab. Opt in at runtime with
-// `localStorage.setItem('vibespace-debug', '1')` and reload; no rebuild needed.
+// `localStorage.setItem('vibespace-debug', '1')` and reload, or — handier on
+// tablets without devtools — open the app with `?vibedebug=1` in the URL
+// (`?vibedebug=0` turns it back off). The URL value persists to localStorage.
 const DEBUG_ENABLED =
   typeof window !== 'undefined' &&
   (() => {
     try {
+      const urlValue = new URLSearchParams(window.location.search).get('vibedebug');
+      if (urlValue === '1' || urlValue === '0') {
+        window.localStorage.setItem('vibespace-debug', urlValue);
+      }
       return window.localStorage.getItem('vibespace-debug') === '1';
     } catch {
       return false;
