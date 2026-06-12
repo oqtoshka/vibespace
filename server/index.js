@@ -223,14 +223,24 @@ app.use('/api/voice', authenticateToken, voiceRoutes);
 
 // Debug log sink — unauthenticated, fire-and-forget client telemetry for
 // reproducing iOS bugs without Web Inspector. Body is `{ events: [...] }`.
+// Also tee client debug events to a stable JSONL file so they can be read
+// back after the fact (the daemon's stdout isn't always easy to reach).
+const CLIENT_DEBUG_LOG_PATH = path.join(os.tmpdir(), 'vibespace-client-debug.log');
 app.post('/api/debug-log', express.json({ limit: '256kb' }), (req, res) => {
     const events = Array.isArray(req.body?.events) ? req.body.events : [req.body];
+    const lines = [];
     for (const ev of events) {
         try {
-            console.log('[DBG]', JSON.stringify(ev));
+            const line = JSON.stringify(ev);
+            console.log('[DBG]', line);
+            lines.push(line);
         } catch {
             console.log('[DBG] <unserializable>');
         }
+    }
+    if (lines.length > 0) {
+        // Fire-and-forget append; never block or fail the response on IO.
+        fs.appendFile(CLIENT_DEBUG_LOG_PATH, lines.join('\n') + '\n', () => {});
     }
     res.status(204).end();
 });
