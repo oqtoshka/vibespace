@@ -170,13 +170,20 @@ export function useWorkspaceTabs({ projectId }: { projectId: string | null }): U
     setState(next);
   }, []);
 
-  useEffect(() => {
-    if (stateProjectIdRef.current === projectId) {
-      return;
-    }
+  // Swap to the new project's tabs synchronously during render (not in an
+  // effect): an effect-based swap commits one render where the caller's
+  // selectedProject is the new project but tabs/activeTab still belong to the
+  // old one. AppContent's tab→session sync then navigates to the OLD
+  // project's session, URL hydration re-selects the old project, and the two
+  // ping-pong across projects (visibly auto-expanding each one in the
+  // sidebar). Setting state during render makes React re-render immediately,
+  // so no mismatched pairing ever reaches effects or the DOM.
+  if (stateProjectIdRef.current !== projectId) {
     stateProjectIdRef.current = projectId;
-    applyState(projectId ? loadState(projectId) : EMPTY_STATE);
-  }, [applyState, projectId]);
+    const next = projectId ? loadState(projectId) : EMPTY_STATE;
+    stateRef.current = next;
+    setState(next);
+  }
 
   useEffect(() => {
     if (projectId && stateProjectIdRef.current === projectId) {
