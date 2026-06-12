@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { TFunction } from 'i18next';
 
 import { api } from '../../../utils/api';
+import { dbg } from '../../../utils/debugLog';
 import { usePaletteOps } from '../../../contexts/PaletteOpsContext';
 import type { Project, ProjectSession, LLMProvider } from '../../../types/app';
 import type { SessionActivityMap } from '../../../hooks/useSessionProtection';
@@ -187,12 +188,18 @@ export function useSidebarController({
     }
 
     setExpandedProjects((prev) => {
-      if (prev.has(selectedProjectId)) {
+      // Accordion: only the selected project stays open. Clicking a project row
+      // already replaces the set via toggleProject, but selecting a project
+      // *indirectly* (session click, tab restore, the "By activity" view, a deep
+      // link) routes here. An additive merge would accumulate one expanded
+      // project per navigation and never prune, so several rows end up open at
+      // once — and collapsing any one then wipes them all. Collapse to a
+      // singleton to match the manual-toggle behavior.
+      if (prev.size === 1 && prev.has(selectedProjectId)) {
         return prev;
       }
-      const next = new Set(prev);
-      next.add(selectedProjectId);
-      return next;
+      dbg('expand.autoExpand', { selected: selectedProjectId, prev: [...prev] });
+      return new Set([selectedProjectId]);
     });
   }, [selectedProject?.projectId]);
 
@@ -452,6 +459,7 @@ export function useSidebarController({
       if (!prev.has(projectId)) {
         next.add(projectId);
       }
+      dbg('expand.toggle', { projectId, prev: [...prev], next: [...next] });
       return next;
     });
   }, []);
