@@ -152,6 +152,26 @@ function getSessionTitle(session: ProjectSession): string {
   return (session.summary as string) || 'New Session';
 }
 
+/** Which project's loaded session lists contain this session, if any.
+ * Sessions are globally unique, so a hit in another project is conclusive. */
+function findSessionOwnerProjectId(projects: Project[], sessionId: string): string | null {
+  for (const project of projects) {
+    const sessionLists = [
+      project.sessions,
+      project.cursorSessions,
+      project.codexSessions,
+      project.geminiSessions,
+      project.opencodeSessions,
+    ];
+    for (const sessions of sessionLists) {
+      if (sessions?.some((session) => session.id === sessionId)) {
+        return project.projectId;
+      }
+    }
+  }
+  return null;
+}
+
 function AppContentInner() {
   const navigate = useNavigate();
   const { sessionId } = useParams<{ sessionId?: string }>();
@@ -167,6 +187,7 @@ function AppContentInner() {
   } = useSessionProtection();
 
   const {
+    projects,
     selectedProject,
     selectedSession,
     sidebarOpen,
@@ -378,6 +399,23 @@ function AppContentInner() {
     if (activeTab.sessionId === selectedSession?.id || activeTab.sessionId === sessionId) {
       return;
     }
+    // A restored tab whose session provably belongs to ANOTHER project is
+    // poisoned state (persisted by the old project-swap race). Navigating to
+    // it would flip the selected project away — the clicked project's row
+    // collapses immediately ("can't expand"), and with two mutually-poisoned
+    // blobs the app navigates in an infinite loop. Close the tab instead;
+    // this also heals the bad blob on disk.
+    const owner = findSessionOwnerProjectId(projects, activeTab.sessionId);
+    if (owner && selectedProject && owner !== selectedProject.projectId) {
+      dbg('effect.tab->session.healCrossProject', {
+        tab: activeTab.id,
+        session: activeTab.sessionId.slice(0, 8),
+        owner,
+        project: selectedProject.projectId,
+      });
+      closeTab(activeTab.id);
+      return;
+    }
     dbg('effect.tab->session.navigate', {
       activeTabSession: activeTab.sessionId.slice(0, 8),
       selectedSession: selectedSession?.id?.slice(0, 8) ?? null,
@@ -385,7 +423,7 @@ function AppContentInner() {
       project: selectedProject?.projectId,
     });
     navigate(`/session/${activeTab.sessionId}`);
-  }, [activeTab, navigate, selectedProject?.projectId, selectedSession?.id, sessionId]);
+  }, [activeTab, closeTab, navigate, projects, selectedProject, selectedSession?.id, sessionId]);
 
   /**
    * Reactive sync (session → tab): deep links and first-message adoption.
