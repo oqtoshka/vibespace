@@ -13,6 +13,7 @@ import { useDropzone } from 'react-dropzone';
 
 import { authenticatedFetch } from '../../../utils/api';
 import type { MarkSessionProcessing } from '../../../hooks/useSessionProtection';
+import { downscaleImageFiles } from '../../../utils/imageDownscale';
 import { grantClaudeToolPermission } from '../utils/chatPermissions';
 import {
   clearQueuedMessage,
@@ -245,6 +246,9 @@ export function useChatComposerState({
   const lastSubmitAtRef = useRef(0);
   const queueIdRef = useRef(0);
   const lastSentRef = useRef<{ content: string; images: File[] } | null>(null);
+  // restoreFailedSend is defined later; call through a ref so runSubmit (above
+  // it) can use it without a temporal-dead-zone hazard in its deps.
+  const restoreFailedSendRef = useRef<() => void>(() => {});
   const selectedProjectId = selectedProject?.projectId;
   // Prefer the stable backend-allocated id (selectedSession.id) but fall back
   // to currentSessionId for a just-established session that hasn't been
@@ -729,12 +733,17 @@ export function useChatComposerState({
 
       let uploadedImages: unknown[] = [];
       if (images.length > 0) {
-        const formData = new FormData();
-        images.forEach((file) => {
-          formData.append('images', file);
-        });
-
         try {
+          // Shrink phone-sized photos before upload so they fit under the
+          // server (5MB) and reverse-proxy body limits, and to skip wasting
+          // mobile bandwidth on resolution Claude downsamples away anyway.
+          const prepared = await downscaleImageFiles(images);
+
+          const formData = new FormData();
+          prepared.forEach((file) => {
+            formData.append('images', file);
+          });
+
           const response = await authenticatedFetch('/api/assets/images', {
             method: 'POST',
             headers: {},
@@ -742,7 +751,24 @@ export function useChatComposerState({
           });
 
           if (!response.ok) {
-            throw new Error('Failed to upload images');
+            // Surface the actual reason instead of a generic message: 413 is a
+            // body-size limit (proxy/server), 400 is usually an unsupported
+            // type, etc. The server returns { error } for app-level failures;
+            // proxy-level rejections (e.g. nginx 413) have no JSON body.
+            let detail = '';
+            try {
+              const body = await response.json();
+              detail = typeof body?.error === 'string' ? body.error : '';
+            } catch {
+              detail = '';
+            }
+            if (!detail) {
+              detail =
+                response.status === 413
+                  ? 'Image too large for the server to accept.'
+                  : `Upload failed (HTTP ${response.status}).`;
+            }
+            throw new Error(detail);
           }
 
           const result = await response.json();
@@ -755,6 +781,9 @@ export function useChatComposerState({
             content: `Failed to upload images: ${message}`,
             timestamp: new Date(),
           });
+          // Put the message + attachments back in the composer so a failed
+          // upload doesn't silently discard what the user typed.
+          restoreFailedSendRef.current();
           return;
         }
       }
@@ -1046,6 +1075,10 @@ export function useChatComposerState({
     inputValueRef.current = next;
     if (send) handleSubmitRef.current?.(createFakeSubmitEvent());
   }, [setInput]);
+
+  useEffect(() => {
+    restoreFailedSendRef.current = restoreFailedSend;
+  }, [restoreFailedSend]);
 
   useEffect(() => {
     inputValueRef.current = input;
