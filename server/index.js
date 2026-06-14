@@ -76,6 +76,7 @@ import {
     resolvePreviewAssetPath,
     isTextAsset,
     rewriteAssetReferences,
+    resolveCustomRenderer,
 } from './utils/htmlPreview.js';
 import { IS_PLATFORM } from './constants/config.js';
 import { c } from './utils/colors.js';
@@ -754,6 +755,69 @@ app.post('/api/projects/:projectId/html-preview', authenticateToken, async (req,
     } catch (error) {
         console.error('Error resolving HTML preview:', error);
         res.status(500).json({ error: error.message });
+    }
+});
+
+// Custom-format preview: runs a project-declared (or convention-detected)
+// renderer that turns a source file (e.g. a `*.flow.json` flow spec) into
+// self-contained HTML, and returns that HTML for a srcDoc iframe. The live
+// editor `content` is rendered (written to a temp input) so edits preview.
+//
+// Trust model: the renderer command comes from the project's own
+// `.vibespace/preview.json` (or the `_kit/render.mjs` sibling convention), so
+// running it is equivalent to running the project's build — acceptable for this
+// single-user instance.
+app.post('/api/projects/:projectId/render-custom', authenticateToken, async (req, res) => {
+    let tmpInput = null;
+    let tmpOutput = null;
+    try {
+        const { projectId } = req.params;
+        const filePath = typeof req.body?.path === 'string' ? req.body.path : '';
+        const content = typeof req.body?.content === 'string' ? req.body.content : null;
+
+        const projectRoot = await projectsDb.getProjectPathById(projectId);
+        if (!projectRoot) {
+            return res.status(404).json({ error: 'Project not found' });
+        }
+        const validation = validatePathInProject(projectRoot, filePath);
+        if (!validation.valid) {
+            return res.status(400).json({ error: validation.error });
+        }
+
+        const renderer = await resolveCustomRenderer(validation.resolved, projectRoot, process.execPath);
+        if (!renderer) {
+            return res.status(400).json({ error: 'No renderer configured for this file type.' });
+        }
+
+        // Render the live editor content (fall back to disk) via a temp input so
+        // unsaved edits preview. The output is a temp HTML file the renderer writes.
+        const source = content === null ? await fsPromises.readFile(validation.resolved, 'utf8') : content;
+        const stamp = `${Date.now()}-${process.pid}-${Math.round(Math.random() * 1e9)}`;
+        tmpInput = path.join(os.tmpdir(), `vibespace-render-${stamp}-${path.basename(validation.resolved)}`);
+        tmpOutput = path.join(os.tmpdir(), `vibespace-render-${stamp}.html`);
+        await fsPromises.writeFile(tmpInput, source);
+
+        const args = renderer.args.map((a) => a.replace('{input}', tmpInput).replace('{output}', tmpOutput));
+        await new Promise((resolve, reject) => {
+            execFile(renderer.bin, args, { cwd: projectRoot, timeout: 15000, maxBuffer: 8 * 1024 * 1024 }, (error, _stdout, stderr) => {
+                if (error) {
+                    error.stderr = stderr;
+                    reject(error);
+                } else {
+                    resolve();
+                }
+            });
+        });
+
+        const html = await fsPromises.readFile(tmpOutput, 'utf8');
+        res.json({ html });
+    } catch (error) {
+        console.error('Error rendering custom format:', error.message, error.stderr || '');
+        const detail = (error.stderr && String(error.stderr).trim()) || error.message;
+        res.status(500).json({ error: `Renderer failed: ${detail}`.slice(0, 600) });
+    } finally {
+        if (tmpInput) await fsPromises.unlink(tmpInput).catch(() => {});
+        if (tmpOutput) await fsPromises.unlink(tmpOutput).catch(() => {});
     }
 });
 

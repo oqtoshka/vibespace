@@ -122,6 +122,54 @@ export function isTextAsset(filePath) {
   return TEXT_EXTENSIONS.has(path.extname(filePath).toLowerCase());
 }
 
+/** Matches a basename against a simple `*.ext`/`*.a.b` or exact-name glob. */
+function matchesGlob(basename, pattern) {
+  if (pattern.startsWith('*')) {
+    return basename.endsWith(pattern.slice(1));
+  }
+  return basename === pattern;
+}
+
+/**
+ * Resolves the command that renders a custom-format file to self-contained HTML.
+ *
+ * Order: an explicit `renderers` entry in `.vibespace/preview.json` (each
+ * `{ match, command }`, command is an argv array with `{input}`/`{output}`
+ * placeholders), then the built-in convention — a `*.flow.json` whose sibling
+ * `_kit/render.mjs` exists is rendered with `node render.mjs <in> <out>`.
+ *
+ * @returns {Promise<{ bin: string, args: string[] } | null>} argv template with
+ *   `{input}`/`{output}` still in `args`, or null when nothing renders it.
+ */
+export async function resolveCustomRenderer(absFilePath, projectRoot, nodeBin) {
+  const basename = path.basename(absFilePath);
+
+  const config = await readPreviewConfig(projectRoot);
+  const renderers = Array.isArray(config?.renderers) ? config.renderers : [];
+  for (const entry of renderers) {
+    if (entry?.match && Array.isArray(entry.command) && entry.command.length > 0 && matchesGlob(basename, entry.match)) {
+      const [bin, ...args] = entry.command;
+      const resolvedBin = bin === 'node' ? nodeBin : bin;
+      return { bin: resolvedBin, args };
+    }
+  }
+
+  // Built-in: `*.flow.json` with a sibling `_kit/render.mjs`.
+  if (basename.endsWith('.flow.json')) {
+    const renderer = path.join(path.dirname(absFilePath), '_kit', 'render.mjs');
+    try {
+      const stat = await fsPromises.stat(renderer);
+      if (stat.isFile()) {
+        return { bin: nodeBin, args: [renderer, '{input}', '{output}'] };
+      }
+    } catch {
+      // no sibling renderer
+    }
+  }
+
+  return null;
+}
+
 /**
  * Rewrites root-absolute alias references inside a served text asset so they
  * point at the preview route (`assetBase` = `/api/projects/:id/preview-fs`).
