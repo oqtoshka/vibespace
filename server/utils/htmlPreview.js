@@ -154,16 +154,26 @@ export async function resolveCustomRenderer(absFilePath, projectRoot, nodeBin) {
     }
   }
 
-  // Built-in: `*.flow.json` with a sibling `_kit/render.mjs`.
+  // Built-in: `*.flow.json` rendered by the nearest ancestor `_kit/render.mjs`.
+  // Flows are organized in subfolders (auth/, event/, …) while the renderer
+  // lives once at the flows root, so walk up rather than only checking siblings.
   if (basename.endsWith('.flow.json')) {
-    const renderer = path.join(path.dirname(absFilePath), '_kit', 'render.mjs');
-    try {
-      const stat = await fsPromises.stat(renderer);
-      if (stat.isFile()) {
-        return { bin: nodeBin, args: [renderer, '{input}', '{output}'] };
+    const normalizedRoot = path.resolve(projectRoot);
+    let dir = path.dirname(path.resolve(absFilePath));
+    for (let i = 0; i < 40; i += 1) {
+      const renderer = path.join(dir, '_kit', 'render.mjs');
+      try {
+        const stat = await fsPromises.stat(renderer);
+        if (stat.isFile()) {
+          return { bin: nodeBin, args: [renderer, '{input}', '{output}'] };
+        }
+      } catch {
+        // keep walking up
       }
-    } catch {
-      // no sibling renderer
+      if (dir === normalizedRoot) break;
+      const parent = path.dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
     }
   }
 
