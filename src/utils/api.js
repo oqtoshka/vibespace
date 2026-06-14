@@ -145,6 +145,14 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ filePath, content }),
     }),
+  // Resolves a .puml file's local includes server-side and returns a render
+  // URL for the configured PlantUML server.
+  renderPlantUml: (projectId, { path, content, signal } = {}) =>
+    authenticatedFetch(`/api/projects/${projectId}/plantuml`, {
+      method: 'POST',
+      body: JSON.stringify({ path, content }),
+      signal,
+    }),
   // `dir` scopes the listing to a subdirectory (lazy tree loading), `depth`
   // bounds the walk (omit for the full deep tree), `meta: 0` skips per-entry
   // stat metadata for path-only consumers.

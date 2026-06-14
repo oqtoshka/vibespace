@@ -43,7 +43,23 @@ export default function CodeEditor({
   const paletteOps = usePaletteOps();
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showDiff, setShowDiff] = useState(Boolean(file.diffInfo));
-  const [markdownPreview, setMarkdownPreview] = useState(false);
+
+  const isMarkdownFile = useMemo(() => {
+    const extension = file.name.split('.').pop()?.toLowerCase();
+    return extension === 'md' || extension === 'markdown';
+  }, [file.name]);
+
+  const isPlantUmlFile = useMemo(() => {
+    const extension = file.name.split('.').pop()?.toLowerCase();
+    return extension === 'puml' || extension === 'plantuml' || extension === 'iuml' || extension === 'wsd';
+  }, [file.name]);
+
+  const isPreviewable = isMarkdownFile || isPlantUmlFile;
+
+  // Default previewable files (markdown, PlantUML) to their rendered preview
+  // when opened normally — via the file tree or a markdown link jump. A diff
+  // view (git/quick-diff) opens in the editor so the changes are visible.
+  const [previewMode, setPreviewMode] = useState(() => isPreviewable && !file.diffInfo);
 
   const {
     isDarkMode,
@@ -67,11 +83,6 @@ export default function CodeEditor({
     file,
     projectPath,
   });
-
-  const isMarkdownFile = useMemo(() => {
-    const extension = file.name.split('.').pop()?.toLowerCase();
-    return extension === 'md' || extension === 'markdown';
-  }, [file.name]);
 
   const minimapExtension = useMemo(
     () => (
@@ -199,11 +210,11 @@ export default function CodeEditor({
             file={file}
             isSidebar={isSidebar}
             isFullscreen={isFullscreen}
-            isMarkdownFile={isMarkdownFile}
-            markdownPreview={markdownPreview}
+            isPreviewable={isPreviewable}
+            previewMode={previewMode}
             saving={saving}
             saveSuccess={saveSuccess}
-            onToggleMarkdownPreview={() => setMarkdownPreview((previous) => !previous)}
+            onTogglePreview={() => setPreviewMode((previous) => !previous)}
             onOpenSettings={() => paletteOps.openSettings('appearance')}
             onDownload={handleDownload}
             onSave={handleSave}
@@ -211,8 +222,8 @@ export default function CodeEditor({
             onClose={onClose}
             labels={{
               showingChanges: t('header.showingChanges'),
-              editMarkdown: t('actions.editMarkdown'),
-              previewMarkdown: t('actions.previewMarkdown'),
+              edit: t('actions.edit', 'Edit'),
+              preview: t('actions.preview', 'Preview'),
               settings: t('toolbar.settings'),
               download: t('actions.download'),
               save: t('actions.save'),
@@ -234,13 +245,15 @@ export default function CodeEditor({
             <CodeEditorSurface
               content={content}
               onChange={setContent}
-              markdownPreview={markdownPreview}
+              previewMode={previewMode}
               isMarkdownFile={isMarkdownFile}
+              isPlantUmlFile={isPlantUmlFile}
               isDarkMode={isDarkMode}
               fontSize={fontSize}
               showLineNumbers={showLineNumbers}
               extensions={extensions}
               currentFilePath={file.path}
+              projectId={file.projectId}
               onFileOpen={onFileOpen}
             />
           </div>
