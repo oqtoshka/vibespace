@@ -53,6 +53,7 @@ import {
     getActiveOpenCodeSessions,
 } from './opencode-cli.js';
 import sessionManager from './sessionManager.js';
+import { encodePlantUmlSource, inlinePlantUmlIncludes } from './utils/plantuml.js';
 import {
     stripAnsiSequences,
     normalizeDetectedUrl,
@@ -573,6 +574,46 @@ app.get('/api/projects/:projectId/file', authenticateToken, async (req, res) => 
         } else {
             res.status(500).json({ error: error.message });
         }
+    }
+});
+
+// PlantUML preview: resolve a .puml file's local `!include`s (which a remote
+// renderer can't reach) against the project tree, then return a render URL for
+// the configured PlantUML server. `content` carries the live editor text so
+// unsaved edits preview; `path` anchors include resolution to the file's dir.
+const PLANTUML_SERVER_URL = (process.env.PLANTUML_SERVER_URL || 'https://www.plantuml.com/plantuml').replace(/\/+$/, '');
+app.post('/api/projects/:projectId/plantuml', authenticateToken, async (req, res) => {
+    try {
+        const { projectId } = req.params;
+        const filePath = typeof req.body?.path === 'string' ? req.body.path : '';
+        const content = typeof req.body?.content === 'string' ? req.body.content : null;
+        const format = req.body?.format === 'png' ? 'png' : 'svg';
+
+        const projectRoot = await projectsDb.getProjectPathById(projectId);
+        if (!projectRoot) {
+            return res.status(404).json({ error: 'Project not found' });
+        }
+
+        const validation = validatePathInProject(projectRoot, filePath);
+        if (!validation.valid) {
+            return res.status(400).json({ error: validation.error });
+        }
+
+        // Prefer live editor content; fall back to the file on disk.
+        let source = content;
+        if (source === null) {
+            source = await fsPromises.readFile(validation.resolved, 'utf8');
+        }
+        if (!source.trim()) {
+            return res.status(400).json({ error: 'Empty diagram' });
+        }
+
+        const inlined = await inlinePlantUmlIncludes(source, path.dirname(validation.resolved), projectRoot);
+        const code = encodePlantUmlSource(inlined);
+        res.json({ url: `${PLANTUML_SERVER_URL}/${format}/${code}` });
+    } catch (error) {
+        console.error('Error building PlantUML render:', error);
+        res.status(500).json({ error: error.message });
     }
 });
 

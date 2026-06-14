@@ -2,33 +2,38 @@ import CodeMirror from '@uiw/react-codemirror';
 import { oneDark } from '@codemirror/theme-one-dark';
 import type { Extension } from '@codemirror/state';
 import MarkdownPreview from './markdown/MarkdownPreview';
+import PlantUmlPreview from './PlantUmlPreview';
 
 type CodeEditorSurfaceProps = {
   content: string;
   onChange: (value: string) => void;
-  markdownPreview: boolean;
+  previewMode: boolean;
   isMarkdownFile: boolean;
+  isPlantUmlFile: boolean;
   isDarkMode: boolean;
   fontSize: number;
   showLineNumbers: boolean;
   extensions: Extension[];
   currentFilePath?: string | null;
+  projectId?: string;
   onFileOpen?: ((filePath: string) => void) | null;
 };
 
 export default function CodeEditorSurface({
   content,
   onChange,
-  markdownPreview,
+  previewMode,
   isMarkdownFile,
+  isPlantUmlFile,
   isDarkMode,
   fontSize,
   showLineNumbers,
   extensions,
   currentFilePath = null,
+  projectId,
   onFileOpen = null,
 }: CodeEditorSurfaceProps) {
-  if (markdownPreview && isMarkdownFile) {
+  if (previewMode && isMarkdownFile) {
     return (
       <div className="h-full overflow-y-auto bg-white dark:bg-gray-900">
         <div className="prose prose-sm mx-auto max-w-4xl max-w-none px-8 py-6 dark:prose-invert prose-headings:font-semibold prose-a:text-blue-600 prose-code:text-sm prose-pre:bg-gray-900 prose-img:rounded-lg dark:prose-a:text-blue-400">
@@ -36,6 +41,10 @@ export default function CodeEditorSurface({
         </div>
       </div>
     );
+  }
+
+  if (previewMode && isPlantUmlFile) {
+    return <PlantUmlPreview content={content} projectId={projectId} path={currentFilePath ?? ''} />;
   }
 
   return (
