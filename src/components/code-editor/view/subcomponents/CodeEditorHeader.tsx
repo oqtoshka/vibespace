@@ -6,13 +6,11 @@ type CodeEditorHeaderProps = {
   file: CodeEditorFile;
   isSidebar: boolean;
   isFullscreen: boolean;
-  isMarkdownFile: boolean;
-  isHtmlPreviewFile: boolean;
-  markdownPreview: boolean;
+  isPreviewable: boolean;
+  previewMode: boolean;
   saving: boolean;
   saveSuccess: boolean;
-  onToggleMarkdownPreview: () => void;
-  onOpenHtmlPreview: () => void;
+  onTogglePreview: () => void;
   onOpenSettings: () => void;
   onDownload: () => void;
   onSave: () => void;
@@ -20,9 +18,8 @@ type CodeEditorHeaderProps = {
   onClose: () => void;
   labels: {
     showingChanges: string;
-    editMarkdown: string;
-    previewMarkdown: string;
-    previewHtml: string;
+    edit: string;
+    preview: string;
     settings: string;
     download: string;
     save: string;
@@ -38,13 +35,11 @@ export default function CodeEditorHeader({
   file,
   isSidebar,
   isFullscreen,
-  isMarkdownFile,
-  isHtmlPreviewFile,
-  markdownPreview,
+  isPreviewable,
+  previewMode,
   saving,
   saveSuccess,
-  onToggleMarkdownPreview,
-  onOpenHtmlPreview,
+  onTogglePreview,
   onOpenSettings,
   onDownload,
   onSave,
@@ -73,18 +68,18 @@ export default function CodeEditorHeader({
 
       {/* Buttons - don't shrink, always visible */}
       <div className="flex shrink-0 items-center gap-0.5">
-        {isMarkdownFile && (
+        {isPreviewable && (
           <button
             type="button"
-            onClick={onToggleMarkdownPreview}
+            onClick={onTogglePreview}
             className={`flex items-center justify-center rounded-md p-1.5 transition-colors ${
-              markdownPreview
+              previewMode
                 ? 'bg-blue-50 text-blue-600 dark:bg-blue-900/30 dark:text-blue-400'
                 : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-white'
             }`}
-            title={markdownPreview ? labels.editMarkdown : labels.previewMarkdown}
+            title={previewMode ? labels.edit : labels.preview}
           >
-            {markdownPreview ? <Code2 className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+            {previewMode ? <Code2 className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
           </button>
         )}
 
