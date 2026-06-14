@@ -63,7 +63,10 @@ export default function CodeEditor({
     return extension === 'html' || extension === 'htm';
   }, [file.name]);
 
-  const isPreviewable = isMarkdownFile || isPlantUmlFile || isHtmlFile;
+  // Custom formats with a project renderer (e.g. *.flow.json → flow diagram).
+  const isCustomRenderFile = useMemo(() => file.name.toLowerCase().endsWith('.flow.json'), [file.name]);
+
+  const isPreviewable = isMarkdownFile || isPlantUmlFile || isHtmlFile || isCustomRenderFile;
 
   // Default previewable files (markdown, PlantUML, HTML) to their rendered
   // preview when opened normally — via the file tree or a markdown link jump.
@@ -286,6 +289,7 @@ export default function CodeEditor({
               isMarkdownFile={isMarkdownFile}
               isPlantUmlFile={isPlantUmlFile}
               isHtmlFile={isHtmlFile}
+              isCustomRenderFile={isCustomRenderFile}
               isDarkMode={isDarkMode}
               fontSize={fontSize}
               showLineNumbers={showLineNumbers}
