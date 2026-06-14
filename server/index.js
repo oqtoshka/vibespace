@@ -76,7 +76,14 @@ import providerRoutes from './modules/providers/provider.routes.js';
 import { startEnabledPluginServers, stopAllPlugins, getPluginPort } from './utils/plugin-process-manager.js';
 import { initializeDatabase, projectsDb, sessionsDb } from './modules/database/index.js';
 import { configureWebPush } from './services/vapid-keys.js';
-import { validateApiKey, authenticateToken, authenticateWebSocket } from './middleware/auth.js';
+import { validateApiKey, authenticateToken, authenticateWebSocket, JWT_SECRET } from './middleware/auth.js';
+import jwt from 'jsonwebtoken';
+import {
+    resolvePreviewModel,
+    resolvePreviewAssetPath,
+    isTextAsset,
+    rewriteAssetReferences,
+} from './utils/htmlPreview.js';
 import { IS_PLATFORM } from './constants/config.js';
 import { c } from './utils/colors.js';
 
@@ -171,6 +178,79 @@ app.use('/api', validateApiKey);
 
 // Authentication routes (public)
 app.use('/api/auth', authRoutes);
+
+// HTML-preview asset route — MUST be registered before the /api/projects Bearer
+// guard below, because iframe subresource requests (`<script src="/kit/...">`)
+// can't send the app's Authorization header. It authenticates instead via a
+// path-scoped cookie issued by POST /api/projects/:id/html-preview, whose signed
+// payload carries the resolved web root + alias map.
+const PREVIEW_COOKIE = 'vibespace_preview';
+
+function readCookie(req, name) {
+    const header = req.headers.cookie;
+    if (!header) return null;
+    for (const part of header.split(';')) {
+        const idx = part.indexOf('=');
+        if (idx === -1) continue;
+        if (part.slice(0, idx).trim() === name) {
+            return decodeURIComponent(part.slice(idx + 1).trim());
+        }
+    }
+    return null;
+}
+
+app.get('/api/projects/:projectId/preview-fs/*', async (req, res) => {
+    try {
+        const { projectId } = req.params;
+        const cookieToken = readCookie(req, PREVIEW_COOKIE) || req.query.token;
+        if (!cookieToken) {
+            return res.status(401).send('Preview session required');
+        }
+        let claims;
+        try {
+            claims = jwt.verify(cookieToken, JWT_SECRET);
+        } catch {
+            return res.status(401).send('Invalid preview session');
+        }
+        if (claims.projectId !== projectId || !claims.webRoot) {
+            return res.status(403).send('Preview session mismatch');
+        }
+
+        const projectRoot = await projectsDb.getProjectPathById(projectId);
+        if (!projectRoot) {
+            return res.status(404).send('Project not found');
+        }
+
+        const reqPath = `/${req.params[0] || ''}`;
+        const target = resolvePreviewAssetPath(reqPath, claims.webRoot, claims.aliases || {}, projectRoot);
+        if (!target) {
+            return res.status(403).send('Path outside project');
+        }
+
+        let stat;
+        try {
+            stat = await fsPromises.stat(target);
+        } catch {
+            return res.status(404).send('Not found');
+        }
+        if (stat.isDirectory()) {
+            return res.status(404).send('Not found');
+        }
+
+        const assetBase = `/api/projects/${projectId}/preview-fs`;
+        if (isTextAsset(target)) {
+            const text = await fsPromises.readFile(target, 'utf8');
+            const rewritten = rewriteAssetReferences(text, claims.aliases || {}, assetBase);
+            res.type(mime.lookup(target) || 'text/plain');
+            return res.send(rewritten);
+        }
+        res.type(mime.lookup(target) || 'application/octet-stream');
+        return res.send(await fsPromises.readFile(target));
+    } catch (error) {
+        console.error('Error serving preview asset:', error);
+        res.status(500).send('Preview error');
+    }
+});
 
 // Projects API Routes (protected)
 app.use('/api/projects', authenticateToken, projectModuleRoutes);
@@ -613,6 +693,51 @@ app.post('/api/projects/:projectId/plantuml', authenticateToken, async (req, res
         res.json({ url: `${PLANTUML_SERVER_URL}/${format}/${code}` });
     } catch (error) {
         console.error('Error building PlantUML render:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// HTML live preview. Sketch-style HTML loads resources from root-absolute paths
+// (`/kit/...`) a dev server maps to project dirs; we serve the file and those
+// resources ourselves so it renders in an iframe. See server/utils/htmlPreview.js.
+//
+// Auth note: iframe subresource requests can't carry the app's Bearer token, so
+// the resolve step issues a short-lived, path-scoped cookie that the asset route
+// (registered above the /api/projects Bearer guard) reads. The cookie also
+// carries the resolved web root + alias map, so each asset request is
+// self-describing without re-reading config.
+
+// Resolve a preview: validate the entry, set the preview cookie, return its URL.
+app.post('/api/projects/:projectId/html-preview', authenticateToken, async (req, res) => {
+    try {
+        const { projectId } = req.params;
+        const filePath = typeof req.body?.path === 'string' ? req.body.path : '';
+
+        const projectRoot = await projectsDb.getProjectPathById(projectId);
+        if (!projectRoot) {
+            return res.status(404).json({ error: 'Project not found' });
+        }
+        const validation = validatePathInProject(projectRoot, filePath);
+        if (!validation.valid) {
+            return res.status(400).json({ error: validation.error });
+        }
+
+        const { webRoot, aliases, entryRel } = await resolvePreviewModel(validation.resolved, projectRoot);
+
+        const previewToken = jwt.sign(
+            { userId: req.user.id, projectId, webRoot, aliases },
+            JWT_SECRET,
+            { expiresIn: '12h' },
+        );
+        res.cookie(PREVIEW_COOKIE, previewToken, {
+            httpOnly: true,
+            sameSite: 'lax',
+            path: `/api/projects/${projectId}/preview-fs`,
+            maxAge: 12 * 60 * 60 * 1000,
+        });
+        res.json({ entryUrl: `/api/projects/${projectId}/preview-fs/${entryRel}` });
+    } catch (error) {
+        console.error('Error resolving HTML preview:', error);
         res.status(500).json({ error: error.message });
     }
 });
