@@ -47,7 +47,23 @@ export default function CodeEditor({
   const paletteOps = usePaletteOps();
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [showDiff, setShowDiff] = useState(Boolean(file.diffInfo));
-  const [markdownPreview, setMarkdownPreview] = useState(false);
+
+  const isMarkdownFile = useMemo(() => {
+    const extension = file.name.split('.').pop()?.toLowerCase();
+    return extension === 'md' || extension === 'markdown';
+  }, [file.name]);
+
+  const isPlantUmlFile = useMemo(() => {
+    const extension = file.name.split('.').pop()?.toLowerCase();
+    return extension === 'puml' || extension === 'plantuml' || extension === 'iuml' || extension === 'wsd';
+  }, [file.name]);
+
+  const isPreviewable = isMarkdownFile || isPlantUmlFile;
+
+  // Default previewable files (markdown, PlantUML) to their rendered preview
+  // when opened normally — via the file tree or a markdown link jump. A diff
+  // view (git/quick-diff) opens in the editor so the changes are visible.
+  const [previewMode, setPreviewMode] = useState(() => isPreviewable && !file.diffInfo);
 
   // The code editor follows the app-wide theme; it has no theme of its own.
   const { isDarkMode } = useTheme();
@@ -75,34 +91,6 @@ export default function CodeEditor({
     file,
     projectPath,
   });
-
-  const isMarkdownFile = useMemo(() => {
-    const extension = file.name.split('.').pop()?.toLowerCase();
-    return extension === 'md' || extension === 'markdown';
-  }, [file.name]);
-
-  const isHtmlPreviewFile = useMemo(() => {
-    const extension = file.name.split('.').pop()?.toLowerCase();
-    return extension === 'html' || extension === 'htm';
-  }, [file.name]);
-
-  const openHtmlPreview = useCallback(() => {
-    const previewWindow = window.open('', '_blank');
-    if (!previewWindow) return;
-
-    previewWindow.opener = null;
-    previewWindow.document.title = file.name;
-    previewWindow.document.body.style.margin = '0';
-
-    const iframe = previewWindow.document.createElement('iframe');
-    iframe.title = file.name;
-    iframe.sandbox.add('allow-forms', 'allow-modals', 'allow-popups', 'allow-scripts');
-    iframe.style.cssText = 'position:fixed;inset:0;width:100%;height:100%;border:0;background:white';
-
-    iframe.srcdoc = content;
-
-    previewWindow.document.body.appendChild(iframe);
-  }, [content, file.name]);
 
   const minimapExtension = useMemo(
     () => (
@@ -254,13 +242,11 @@ export default function CodeEditor({
             file={file}
             isSidebar={isSidebar}
             isFullscreen={isFullscreen}
-            isMarkdownFile={isMarkdownFile}
-            isHtmlPreviewFile={isHtmlPreviewFile}
-            markdownPreview={markdownPreview}
+            isPreviewable={isPreviewable}
+            previewMode={previewMode}
             saving={saving}
             saveSuccess={saveSuccess}
-            onToggleMarkdownPreview={() => setMarkdownPreview((previous) => !previous)}
-            onOpenHtmlPreview={openHtmlPreview}
+            onTogglePreview={() => setPreviewMode((previous) => !previous)}
             onOpenSettings={() => paletteOps.openSettings('appearance')}
             onDownload={handleDownload}
             onSave={handleSave}
@@ -268,9 +254,8 @@ export default function CodeEditor({
             onClose={onClose}
             labels={{
               showingChanges: t('header.showingChanges'),
-              editMarkdown: t('actions.editMarkdown'),
-              previewMarkdown: t('actions.previewMarkdown'),
-              previewHtml: t('actions.previewHtml', 'Open HTML preview in new tab'),
+              edit: t('actions.edit', 'Edit'),
+              preview: t('actions.preview', 'Preview'),
               settings: t('toolbar.settings'),
               download: t('actions.download'),
               save: t('actions.save'),
@@ -292,13 +277,15 @@ export default function CodeEditor({
             <CodeEditorSurface
               content={content}
               onChange={setContent}
-              markdownPreview={markdownPreview}
+              previewMode={previewMode}
               isMarkdownFile={isMarkdownFile}
+              isPlantUmlFile={isPlantUmlFile}
               isDarkMode={isDarkMode}
               fontSize={fontSize}
               showLineNumbers={showLineNumbers}
               extensions={extensions}
               currentFilePath={file.path}
+              projectId={file.projectId}
               onFileOpen={onFileOpen}
             />
           </div>
