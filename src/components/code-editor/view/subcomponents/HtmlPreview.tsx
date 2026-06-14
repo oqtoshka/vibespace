@@ -1,39 +1,81 @@
 import { useEffect, useState } from 'react';
+import { api } from '../../../../utils/api';
 
 /**
  * Renders an HTML file as a live page, mirroring the markdown/PlantUML preview.
  *
- * The content is rendered inside a sandboxed iframe via `srcdoc`. The sandbox
- * grants `allow-scripts` (so dynamic pages render) but deliberately omits
- * `allow-same-origin`, so the page runs in an opaque origin and can't reach the
- * app's DOM, cookies, or storage. Relative resource links (`./style.css`) don't
- * resolve under `srcdoc` — self-contained pages and absolute/CDN URLs work.
+ * Sketch-style HTML isn't self-contained — it loads resources from root-absolute
+ * paths (`/kit/...`) a dev server maps to project dirs. So rather than a `srcDoc`
+ * iframe (which has no origin for those paths to resolve against), we ask the
+ * backend to resolve the serving model and serve the file + its resources, then
+ * point the iframe at that URL. The backend sets a path-scoped cookie so the
+ * iframe's subresource requests authenticate.
+ *
+ * The served page renders from disk, so unsaved editor edits show after a save.
  */
 
 type HtmlPreviewProps = {
-  content: string;
+  projectId?: string;
+  path: string;
 };
 
-const RENDER_DEBOUNCE_MS = 300;
-
-export default function HtmlPreview({ content }: HtmlPreviewProps) {
-  // Debounce so typing in the editor doesn't re-run scripts / flicker on every
-  // keystroke; the preview settles shortly after edits stop.
-  const [srcDoc, setSrcDoc] = useState(content);
+export default function HtmlPreview({ projectId, path }: HtmlPreviewProps) {
+  const [entryUrl, setEntryUrl] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    const handle = setTimeout(() => setSrcDoc(content), RENDER_DEBOUNCE_MS);
-    return () => clearTimeout(handle);
-  }, [content]);
+    if (!projectId || !path) {
+      setError('No project context for preview.');
+      return;
+    }
+    let active = true;
+    setError(null);
+    setEntryUrl(null);
+    void (async () => {
+      try {
+        const response = await api.resolveHtmlPreview(projectId, { path });
+        if (!active) return;
+        if (!response.ok) {
+          const body = await response.json().catch(() => ({}));
+          setError(body?.error || `Preview failed (HTTP ${response.status}).`);
+          return;
+        }
+        const data = await response.json();
+        // Cache-bust so a re-open after editing/saving reloads fresh content.
+        setEntryUrl(`${data.entryUrl}?v=${Date.now()}`);
+      } catch (err) {
+        if (!active) return;
+        setError((err as Error)?.message || 'Preview request failed.');
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, [projectId, path]);
+
+  if (error) {
+    return (
+      <div className="flex h-full items-center justify-center bg-white dark:bg-gray-900">
+        <div className="max-w-md text-center text-sm text-gray-500 dark:text-gray-400">
+          <p className="font-medium text-gray-700 dark:text-gray-300">Couldn’t preview this page</p>
+          <p className="mt-1">{error}</p>
+          <p className="mt-1">Switch to the editor to view the source.</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="h-full w-full bg-white">
-      <iframe
-        title="HTML preview"
-        srcDoc={srcDoc}
-        sandbox="allow-scripts allow-popups allow-forms allow-modals"
-        className="h-full w-full border-0"
-      />
+      {entryUrl && (
+        <iframe
+          key={entryUrl}
+          title="HTML preview"
+          src={entryUrl}
+          sandbox="allow-scripts allow-same-origin allow-popups allow-forms allow-modals"
+          className="h-full w-full border-0"
+        />
+      )}
     </div>
   );
 }
