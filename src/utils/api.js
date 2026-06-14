@@ -161,6 +161,14 @@ export const api = {
       body: JSON.stringify({ path }),
       signal,
     }),
+  // Runs a project renderer for a custom format (e.g. *.flow.json) and returns
+  // self-contained HTML to display in a srcDoc iframe.
+  renderCustom: (projectId, { path, content, signal } = {}) =>
+    authenticatedFetch(`/api/projects/${projectId}/render-custom`, {
+      method: 'POST',
+      body: JSON.stringify({ path, content }),
+      signal,
+    }),
   // `dir` scopes the listing to a subdirectory (lazy tree loading), `depth`
   // bounds the walk (omit for the full deep tree), `meta: 0` skips per-entry
   // stat metadata for path-only consumers.
