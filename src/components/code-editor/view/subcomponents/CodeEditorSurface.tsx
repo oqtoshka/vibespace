@@ -51,7 +51,7 @@ export default function CodeEditorSurface({
   }
 
   if (previewMode && isHtmlFile) {
-    return <HtmlPreview content={content} />;
+    return <HtmlPreview projectId={projectId} path={currentFilePath ?? ''} />;
   }
 
   return (
