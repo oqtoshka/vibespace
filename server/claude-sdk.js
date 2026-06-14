@@ -107,6 +107,31 @@ function resolveToolApproval(requestId, decision) {
   }
 }
 
+/**
+ * Cancels every pending tool-approval prompt belonging to a session.
+ *
+ * When a turn is parked awaiting an interactive permission decision (e.g. the
+ * ExitPlanMode prompt at the end of plan mode), `interrupt()` alone does not
+ * unblock it — the `canUseTool` callback is awaiting our own promise, not the
+ * subprocess. Resolving those promises as cancelled lets the callback return
+ * and the query unwind, so the child process can actually exit instead of
+ * lingering as an orphan editing the working tree.
+ * @param {string} sessionId
+ * @returns {number} count of approvals cancelled
+ */
+function cancelPendingApprovalsForSession(sessionId) {
+  let cancelled = 0;
+  for (const [requestId, resolver] of pendingToolApprovals.entries()) {
+    if (resolver._sessionId === sessionId) {
+      // finalize() deletes the entry from the map and settles the awaiting
+      // promise with a cancelled decision (canUseTool then returns deny).
+      resolver({ cancelled: true });
+      cancelled += 1;
+    }
+  }
+  return cancelled;
+}
+
 // Match stored permission entries against a tool + input combo.
 // This only supports exact tool names and the Bash(command:*) shorthand
 // used by the UI; it intentionally does not implement full glob semantics,
@@ -514,6 +539,9 @@ async function queryClaudeSDK(command, options = {}, ws) {
   let sessionCreatedSent = false;
   let tempImagePaths = [];
   let tempDir = null;
+  // Declared at function scope so the catch block can compare it against the
+  // tracked session to detect supersession.
+  let queryInstance = null;
 
   const emitNotification = (event) => {
     notifyUserIfEnabled({
@@ -536,6 +564,15 @@ async function queryClaudeSDK(command, options = {}, ws) {
         ws.send(createNormalizedMessage({ kind: 'error', content: message, sessionId: sessionId || null, provider: 'claude' }));
         return;
       }
+    }
+
+    // One agent per session. If a previous query for this resume id is still
+    // tracked (e.g. a plan-mode turn that was stopped on its permission prompt,
+    // then resumed in bypass mode), end it before spawning. Without this the
+    // orphan keeps running and we get two `claude` processes editing the same
+    // working tree — the "parallel editors" race.
+    if (sessionId) {
+      await forceEndClaudeSDKSession(sessionId, 'new claude-command for same session');
     }
 
     const resolvedModel = await providerModelsService.resolveResumeModel(
@@ -664,7 +701,6 @@ async function queryClaudeSDK(command, options = {}, ws) {
     const prevStreamTimeout = process.env.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT;
     process.env.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT = '300000';
 
-    let queryInstance;
     try {
       queryInstance = query({
         prompt: finalCommand,
@@ -737,27 +773,50 @@ async function queryClaudeSDK(command, options = {}, ws) {
       }
     }
 
-    // Clean up session on completion
-    if (capturedSessionId) {
-      removeSession(capturedSessionId);
+    // Only finalize if this loop still owns the tracked session. If it was
+    // aborted (session removed) or superseded by a newer query for the same id
+    // (force-end + respawn), our terminal cleanup would either clobber the new
+    // session's tracking or emit a stale `complete` that flips the client to
+    // idle mid-turn — the root of "the queued message sent but the new turn
+    // didn't start." In those cases stay silent; the owner reports completion.
+    const stillOwnsSession = !capturedSessionId || getSession(capturedSessionId)?.instance === queryInstance;
+
+    if (stillOwnsSession) {
+      if (capturedSessionId) {
+        removeSession(capturedSessionId);
+      }
+
+      // Clean up temporary image files
+      await cleanupTempFiles(tempImagePaths, tempDir);
+
+      // Send completion event
+      ws.send(createNormalizedMessage({ kind: 'complete', exitCode: 0, isNewSession: !sessionId && !!command, sessionId: capturedSessionId, provider: 'claude' }));
+      notifyRunStopped({
+        userId: ws?.userId || null,
+        provider: 'claude',
+        sessionId: capturedSessionId || sessionId || null,
+        sessionName: sessionSummary,
+        stopReason: 'completed'
+      });
+    } else {
+      console.log(`Query loop for ${capturedSessionId} ended after being superseded/aborted — suppressing stale complete`);
+      // The temp files for this run are ours to clean even when superseded.
+      await cleanupTempFiles(tempImagePaths, tempDir);
     }
-
-    // Clean up temporary image files
-    await cleanupTempFiles(tempImagePaths, tempDir);
-
-    // Send completion event
-    ws.send(createNormalizedMessage({ kind: 'complete', exitCode: 0, isNewSession: !sessionId && !!command, sessionId: capturedSessionId, provider: 'claude' }));
-    notifyRunStopped({
-      userId: ws?.userId || null,
-      provider: 'claude',
-      sessionId: capturedSessionId || sessionId || null,
-      sessionName: sessionSummary,
-      stopReason: 'completed'
-    });
     // Complete
 
   } catch (error) {
     console.error('SDK query error:', error);
+
+    // If a newer query superseded this one, its loop owns the session now —
+    // don't remove its tracking or surface this (likely abort-induced) error.
+    const stillOwnsSessionOnError =
+      !capturedSessionId || getSession(capturedSessionId)?.instance === queryInstance;
+    if (!stillOwnsSessionOnError) {
+      console.log(`Suppressing error from superseded query loop for ${capturedSessionId}:`, error?.message || error);
+      await cleanupTempFiles(tempImagePaths, tempDir);
+      return;
+    }
 
     // Clean up session on error
     if (capturedSessionId) {
@@ -822,6 +881,32 @@ async function queryClaudeSDK(command, options = {}, ws) {
  * @param {string} sessionId - Session identifier
  * @returns {boolean} True if session was aborted, false if not found
  */
+/**
+ * Unconditionally tears down a running query for a session — no phantom-abort
+ * grace window. Used before starting a new turn so a single session can never
+ * have two live queries (and two `claude` subprocesses) editing the same cwd.
+ * @param {string} sessionId
+ * @param {string} reason - logged context
+ * @returns {Promise<boolean>} true if a session was found and ended
+ */
+async function forceEndClaudeSDKSession(sessionId, reason = 'superseded') {
+  const session = getSession(sessionId);
+  if (!session) {
+    return false;
+  }
+  console.log(`Force-ending SDK session ${sessionId} (${reason})`);
+  session.status = 'aborted';
+  cancelPendingApprovalsForSession(sessionId);
+  try {
+    await session.instance.interrupt();
+  } catch (interruptError) {
+    console.warn(`interrupt() for ${sessionId} rejected during force-end:`, interruptError?.message || interruptError);
+  }
+  await cleanupTempFiles(session.tempImagePaths, session.tempDir);
+  removeSession(sessionId);
+  return true;
+}
+
 async function abortClaudeSDKSession(sessionId) {
   const session = getSession(sessionId);
 
@@ -844,11 +929,27 @@ async function abortClaudeSDKSession(sessionId) {
   try {
     console.log(`Aborting SDK session: ${sessionId}`);
 
-    // Call interrupt() on the query instance
-    await session.instance.interrupt();
-
-    // Update session status
+    // Mark aborted up front so any late stream messages / re-entrant calls
+    // treat this query as dead.
     session.status = 'aborted';
+
+    // Release any interactive permission prompt this turn is parked on FIRST.
+    // interrupt() can't unblock a query waiting inside the canUseTool callback
+    // (it's awaiting our promise, not generating), so without this the child
+    // process lingers as an orphan after the session is untracked below.
+    const cancelledApprovals = cancelPendingApprovalsForSession(sessionId);
+    if (cancelledApprovals > 0) {
+      console.log(`Cancelled ${cancelledApprovals} pending approval(s) for ${sessionId} before interrupt`);
+    }
+
+    // Now interrupt the query; with the approval released it can actually unwind.
+    try {
+      await session.instance.interrupt();
+    } catch (interruptError) {
+      // interrupt() can reject if the query already ended — not fatal, we still
+      // tear down below.
+      console.warn(`interrupt() for ${sessionId} rejected:`, interruptError?.message || interruptError);
+    }
 
     // Clean up temporary image files
     await cleanupTempFiles(session.tempImagePaths, session.tempDir);
@@ -859,6 +960,9 @@ async function abortClaudeSDKSession(sessionId) {
     return true;
   } catch (error) {
     console.error(`Error aborting session ${sessionId}:`, error);
+    // Best-effort teardown even on error so we don't leave a tracked zombie.
+    cancelPendingApprovalsForSession(sessionId);
+    removeSession(sessionId);
     return false;
   }
 }
