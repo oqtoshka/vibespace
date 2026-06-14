@@ -54,11 +54,16 @@ export default function CodeEditor({
     return extension === 'puml' || extension === 'plantuml' || extension === 'iuml' || extension === 'wsd';
   }, [file.name]);
 
-  const isPreviewable = isMarkdownFile || isPlantUmlFile;
+  const isHtmlFile = useMemo(() => {
+    const extension = file.name.split('.').pop()?.toLowerCase();
+    return extension === 'html' || extension === 'htm';
+  }, [file.name]);
 
-  // Default previewable files (markdown, PlantUML) to their rendered preview
-  // when opened normally — via the file tree or a markdown link jump. A diff
-  // view (git/quick-diff) opens in the editor so the changes are visible.
+  const isPreviewable = isMarkdownFile || isPlantUmlFile || isHtmlFile;
+
+  // Default previewable files (markdown, PlantUML, HTML) to their rendered
+  // preview when opened normally — via the file tree or a markdown link jump.
+  // A diff view (git/quick-diff) opens in the editor so the changes are visible.
   const [previewMode, setPreviewMode] = useState(() => isPreviewable && !file.diffInfo);
 
   const {
@@ -248,6 +253,7 @@ export default function CodeEditor({
               previewMode={previewMode}
               isMarkdownFile={isMarkdownFile}
               isPlantUmlFile={isPlantUmlFile}
+              isHtmlFile={isHtmlFile}
               isDarkMode={isDarkMode}
               fontSize={fontSize}
               showLineNumbers={showLineNumbers}
