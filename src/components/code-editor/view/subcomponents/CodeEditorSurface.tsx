@@ -4,6 +4,7 @@ import type { Extension } from '@codemirror/state';
 import MarkdownPreview from './markdown/MarkdownPreview';
 import PlantUmlPreview from './PlantUmlPreview';
 import HtmlPreview from './HtmlPreview';
+import CustomRenderPreview from './CustomRenderPreview';
 
 type CodeEditorSurfaceProps = {
   content: string;
@@ -12,6 +13,7 @@ type CodeEditorSurfaceProps = {
   isMarkdownFile: boolean;
   isPlantUmlFile: boolean;
   isHtmlFile: boolean;
+  isCustomRenderFile: boolean;
   isDarkMode: boolean;
   fontSize: number;
   showLineNumbers: boolean;
@@ -28,6 +30,7 @@ export default function CodeEditorSurface({
   isMarkdownFile,
   isPlantUmlFile,
   isHtmlFile,
+  isCustomRenderFile,
   isDarkMode,
   fontSize,
   showLineNumbers,
@@ -52,6 +55,10 @@ export default function CodeEditorSurface({
 
   if (previewMode && isHtmlFile) {
     return <HtmlPreview projectId={projectId} path={currentFilePath ?? ''} />;
+  }
+
+  if (previewMode && isCustomRenderFile) {
+    return <CustomRenderPreview content={content} projectId={projectId} path={currentFilePath ?? ''} />;
   }
 
   return (
