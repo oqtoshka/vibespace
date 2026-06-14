@@ -166,6 +166,14 @@ export const api = {
       body: JSON.stringify({ path, content }),
       signal,
     }),
+  // Resolves an HTML file's serving model (web root + aliases), sets a
+  // path-scoped preview cookie, and returns the URL to load in the iframe.
+  resolveHtmlPreview: (projectId, { path, signal } = {}) =>
+    authenticatedFetch(`/api/projects/${projectId}/html-preview`, {
+      method: 'POST',
+      body: JSON.stringify({ path }),
+      signal,
+    }),
   // `dir` scopes the listing to a subdirectory (lazy tree loading), `depth`
   // bounds the walk (omit for the full deep tree), `meta: 0` skips per-entry
   // stat metadata for path-only consumers.
