@@ -559,7 +559,26 @@ export function getToolConfig(toolName: string): ToolDisplayConfig {
 /**
  * Check if a tool result should be hidden
  */
+// Self-corrected tool errors the model recovers from on its own — pure noise,
+// not real failures. Claude Code's Edit/Write enforce read-before-write; if the
+// model edits a file it hasn't read, it gets this error, then reads and retries.
+// Surfacing it as a red error box just clutters the transcript.
+const BENIGN_RECOVERABLE_TOOL_ERROR_PATTERNS = [
+  /has not been read yet[.\s]*read it first/i,
+];
+
+function isBenignRecoverableToolError(toolResult: any): boolean {
+  if (!toolResult?.isError) return false;
+  const content =
+    typeof toolResult.content === 'string' ? toolResult.content : String(toolResult.content ?? '');
+  return BENIGN_RECOVERABLE_TOOL_ERROR_PATTERNS.some((pattern) => pattern.test(content));
+}
+
 export function shouldHideToolResult(toolName: string, toolResult: any): boolean {
+  // Hide benign, self-corrected errors regardless of the tool's config — the
+  // eventual successful retry already shows the real outcome.
+  if (isBenignRecoverableToolError(toolResult)) return true;
+
   const config = getToolConfig(toolName);
 
   if (!config.result) return false;
