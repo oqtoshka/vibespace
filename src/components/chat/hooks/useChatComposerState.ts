@@ -14,6 +14,7 @@ import { useDropzone } from 'react-dropzone';
 import { authenticatedFetch } from '../../../utils/api';
 import type { MarkSessionProcessing } from '../../../hooks/useSessionProtection';
 import { downscaleImageFiles } from '../../../utils/imageDownscale';
+import { readActiveWorktree, bindSessionCwd, getSessionCwd } from '../../../hooks/useActiveWorktree';
 import { grantClaudeToolPermission } from '../utils/chatPermissions';
 import {
   clearQueuedMessage,
@@ -249,6 +250,9 @@ export function useChatComposerState({
   // restoreFailedSend is defined later; call through a ref so runSubmit (above
   // it) can use it without a temporal-dead-zone hazard in its deps.
   const restoreFailedSendRef = useRef<() => void>(() => {});
+  // Holds the worktree cwd chosen for a brand-new session until its real id
+  // arrives (then we bind it, so later messages keep the same cwd).
+  const pendingNewSessionCwdRef = useRef<string | null>(null);
   const selectedProjectId = selectedProject?.projectId;
   // Prefer the stable backend-allocated id (selectedSession.id) but fall back
   // to currentSessionId for a just-established session that hasn't been
@@ -266,6 +270,13 @@ export function useChatComposerState({
   // while `queuedDraft` still holds the old session's draft; the persistence
   // effect must not write across that gap.
   const queuedDraftSessionRef = useRef<string | null>(sessionKey);
+
+  useEffect(() => {
+    if (currentSessionId && pendingNewSessionCwdRef.current && !getSessionCwd(currentSessionId)) {
+      bindSessionCwd(currentSessionId, pendingNewSessionCwdRef.current);
+      pendingNewSessionCwdRef.current = null;
+    }
+  }, [currentSessionId]);
 
   const handleBuiltInCommand = useCallback(
     (result: CommandExecutionResult) => {

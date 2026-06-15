@@ -1,6 +1,7 @@
 import { getConnection } from '@/modules/database/connection.js';
 import { projectsDb } from '@/modules/database/repositories/projects.db.js';
 import { normalizeProjectPath } from '@/shared/utils.js';
+import { parentProjectFromWorktreeCwd } from '@/utils/worktrees.js';
 
 type SessionRow = {
   session_id: string;
@@ -8,6 +9,7 @@ type SessionRow = {
   provider_session_id: string | null;
   project_path: string | null;
   jsonl_path: string | null;
+  worktree_path: string | null;
   custom_name: string | null;
   isArchived: number;
   created_at: string;
@@ -15,7 +17,7 @@ type SessionRow = {
 };
 
 const SESSION_ROW_COLUMNS =
-  'session_id, provider, provider_session_id, project_path, jsonl_path, custom_name, isArchived, created_at, updated_at';
+  'session_id, provider, provider_session_id, project_path, jsonl_path, worktree_path, custom_name, isArchived, created_at, updated_at';
 
 const SQLITE_UTC_TIMESTAMP_REGEX = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
 
@@ -79,7 +81,23 @@ export const sessionsDb = {
     const db = getConnection();
     const createdAtValue = normalizeTimestamp(createdAt);
     const updatedAtValue = normalizeTimestamp(updatedAt);
-    const normalizedProjectPath = normalizeProjectPathForProvider(provider, projectPath);
+
+    // Worktree reverse-map: a session whose cwd is a vibespace-managed worktree
+    // (~/.vibespace/worktrees/<projectId>/<slug>) belongs to its PARENT project,
+    // not a standalone project at the worktree path. Record the parent path and
+    // keep the worktree dir in worktree_path so the UI can pin/indicate it.
+    let effectiveProjectPath = projectPath;
+    let worktreePath: string | null = null;
+    const parent = parentProjectFromWorktreeCwd(projectPath);
+    if (parent) {
+      const parentProjectPath = projectsDb.getProjectPathById(parent.projectId);
+      if (parentProjectPath) {
+        effectiveProjectPath = parentProjectPath;
+        worktreePath = projectPath;
+      }
+    }
+
+    const normalizedProjectPath = normalizeProjectPathForProvider(provider, effectiveProjectPath);
 
     // First, ensure the project path is recorded in the projects table,
     // since it's a foreign key in the sessions table.
@@ -119,14 +137,15 @@ export const sessionsDb = {
     // keyed by the provider-native id for both columns. The ON CONFLICT path
     // covers legacy rows that predate the provider_session_id mapping.
     db.prepare(
-      `INSERT INTO sessions (session_id, provider, provider_session_id, custom_name, project_path, jsonl_path, isArchived, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, 0, COALESCE(?, CURRENT_TIMESTAMP), COALESCE(?, CURRENT_TIMESTAMP))
+      `INSERT INTO sessions (session_id, provider, provider_session_id, custom_name, project_path, jsonl_path, worktree_path, isArchived, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 0, COALESCE(?, CURRENT_TIMESTAMP), COALESCE(?, CURRENT_TIMESTAMP))
        ON CONFLICT(session_id) DO UPDATE SET
          provider = excluded.provider,
          provider_session_id = excluded.provider_session_id,
          updated_at = excluded.updated_at,
          project_path = excluded.project_path,
          jsonl_path = excluded.jsonl_path,
+         worktree_path = excluded.worktree_path,
          isArchived = 0,
          custom_name = COALESCE(excluded.custom_name, sessions.custom_name)`
     ).run(
@@ -136,6 +155,7 @@ export const sessionsDb = {
       customName ?? null,
       normalizedProjectPath,
       jsonlPath ?? null,
+      worktreePath,
       createdAtValue,
       updatedAtValue
     );

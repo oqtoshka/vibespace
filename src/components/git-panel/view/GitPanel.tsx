@@ -11,6 +11,7 @@ import GitRepositoryErrorState from '../view/GitRepositoryErrorState';
 import GitViewTabs from '../view/GitViewTabs';
 import ConfirmActionModal from '../view/modals/ConfirmActionModal';
 import RepoPicker from '../view/RepoPicker';
+import WorktreePicker from '../view/WorktreePicker';
 
 export default function GitPanel({ selectedProject, isMobile = false, onFileOpen }: GitPanelProps) {
   const [activeView, setActiveView] = useState<GitPanelView>('changes');
@@ -42,6 +43,11 @@ export default function GitPanel({ selectedProject, isMobile = false, onFileOpen
     operationError,
     clearOperationError,
     refreshAll,
+    worktrees,
+    activeWorktreePath,
+    selectWorktree,
+    addWorktree,
+    removeWorktree,
     switchBranch,
     createBranch,
     deleteBranch,
@@ -109,6 +115,17 @@ export default function GitPanel({ selectedProject, isMobile = false, onFileOpen
           repos={discoveredRepos}
           selectedRepoPath={selectedRepoPath}
           onSelectRepo={selectRepo}
+        />
+      )}
+
+      {worktrees.length > 0 && (
+        <WorktreePicker
+          isMobile={isMobile}
+          worktrees={worktrees}
+          activeWorktreePath={activeWorktreePath}
+          onSelect={selectWorktree}
+          onAdd={addWorktree}
+          onRemove={removeWorktree}
         />
       )}
 

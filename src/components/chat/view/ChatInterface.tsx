@@ -1,8 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ArrowDownIcon } from 'lucide-react';
+import { ArrowDownIcon, TreePine } from 'lucide-react';
 
 import { useTasksSettings } from '../../../contexts/TasksSettingsContext';
+import { useActiveWorktree } from '../../../hooks/useActiveWorktree';
 import { useWebSocket } from '../../../contexts/WebSocketContext';
 import PermissionContext from '../../../contexts/PermissionContext';
 import { QuickSettingsPanel } from '../../quick-settings-panel';
@@ -306,6 +307,7 @@ function ChatInterface({
   // reserve enough bottom space to keep the floating status tab from
   // overlapping the last message.
   const hasActivityIndicator = Boolean(sessionActivity && pendingPermissionRequests.length === 0);
+  const { activeWorktree } = useActiveWorktree(selectedProject?.projectId ?? null);
 
   if (!selectedProject) {
     const selectedProviderLabel =
@@ -331,9 +333,23 @@ function ChatInterface({
     );
   }
 
+  // Worktree indicator: an existing session shows its pinned worktree; a pending
+  // (new) session shows the project's active worktree it will run in.
+  const sessionWorktreeBranch = (selectedSession?.worktreeBranch as string | null | undefined) ?? null;
+  const worktreeLabel = selectedSession
+    ? sessionWorktreeBranch
+    : activeWorktree?.branch ?? (activeWorktree ? activeWorktree.path.split('/').pop() ?? null : null);
+
   return (
     <PermissionContext.Provider value={permissionContextValue}>
       <div className="flex h-full min-h-0 flex-col">
+        {worktreeLabel && (
+          <div className="flex flex-shrink-0 items-center gap-1.5 border-b border-amber-500/20 bg-amber-500/5 px-3 py-1 text-xs text-amber-700 dark:text-amber-400">
+            <TreePine className="h-3 w-3 flex-shrink-0" />
+            <span className="text-amber-700/70 dark:text-amber-400/70">worktree</span>
+            <span className="truncate font-medium">{worktreeLabel}</span>
+          </div>
+        )}
         <ChatMessagesPane
           scrollContainerRef={scrollContainerRef}
           onWheel={handleScroll}
