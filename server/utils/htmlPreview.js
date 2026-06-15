@@ -122,6 +122,46 @@ export function isTextAsset(filePath) {
   return TEXT_EXTENSIONS.has(path.extname(filePath).toLowerCase());
 }
 
+/**
+ * Wires a rendered flow's cross-flow links to open the target `.flow.json` in
+ * vibespace instead of navigating the iframe to a dead docs URL.
+ *
+ * The flow renderer emits links as `DOCSIFY_BASE_URL_PLACEHOLDER/diagrams/<ref>.html`
+ * (the docs build substitutes the placeholder; we run the renderer raw, so the
+ * link 404s). We resolve `<ref>` to the source `.flow.json` under the project's
+ * `diagrams/` dir, replace the href with a data attribute, and inject a click
+ * interceptor that postMessages the path up to the parent (which opens the file).
+ */
+export function wireFlowCrossLinks(html, currentFileAbs, projectRoot) {
+  const diagSegment = `${path.sep}diagrams${path.sep}`;
+  const diagIdx = currentFileAbs.indexOf(diagSegment);
+  const diagramsRoot = diagIdx >= 0
+    ? currentFileAbs.slice(0, diagIdx + `${path.sep}diagrams`.length)
+    : path.dirname(currentFileAbs);
+  const normalizedProjectRoot = path.resolve(projectRoot) + path.sep;
+
+  let out = html.replace(
+    /href="DOCSIFY_BASE_URL_PLACEHOLDER\/diagrams\/([^"']+?)\.html"/g,
+    (match, ref) => {
+      const target = path.resolve(diagramsRoot, `${ref}.flow.json`);
+      if (!`${target}${path.sep}`.startsWith(normalizedProjectRoot)) {
+        return match; // outside project — leave untouched
+      }
+      const safe = target.replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+      return `href="#" data-vibespace-flow="${safe}"`;
+    },
+  );
+  // Drop any other unsubstituted placeholders so stray links don't misnavigate.
+  out = out.replace(/DOCSIFY_BASE_URL_PLACEHOLDER/g, '');
+
+  const interceptor =
+    `<script>document.addEventListener('click',function(e){` +
+    `var a=e.target&&e.target.closest?e.target.closest('[data-vibespace-flow]'):null;` +
+    `if(a){e.preventDefault();try{parent.postMessage({type:'vibespace:open-file',path:a.getAttribute('data-vibespace-flow')},'*');}catch(_){}}` +
+    `},true);</script>`;
+  return out.includes('</body>') ? out.replace('</body>', `${interceptor}</body>`) : out + interceptor;
+}
+
 /** Matches a basename against a simple `*.ext`/`*.a.b` or exact-name glob. */
 function matchesGlob(basename, pattern) {
   if (pattern.startsWith('*')) {
