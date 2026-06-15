@@ -13,15 +13,33 @@ type CustomRenderPreviewProps = {
   content: string;
   projectId?: string;
   path: string;
+  /** Opens an in-project file — used by cross-flow links in the rendered output. */
+  onFileOpen?: ((filePath: string) => void) | null;
 };
 
 const RENDER_DEBOUNCE_MS = 500;
 
-export default function CustomRenderPreview({ content, projectId, path }: CustomRenderPreviewProps) {
+export default function CustomRenderPreview({ content, projectId, path, onFileOpen = null }: CustomRenderPreviewProps) {
   const [html, setHtml] = useState<string | null>(null);
   const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const iframeRef = useRef<HTMLIFrameElement | null>(null);
+
+  // The rendered output postMessages cross-flow link clicks; open the target
+  // file in vibespace. Scoped to this preview's iframe so multiple open flow
+  // tabs don't each react.
+  useEffect(() => {
+    function onMessage(event: MessageEvent) {
+      if (event.source !== iframeRef.current?.contentWindow) return;
+      const data = event.data;
+      if (data?.type === 'vibespace:open-file' && typeof data.path === 'string') {
+        onFileOpen?.(data.path);
+      }
+    }
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, [onFileOpen]);
 
   useEffect(() => {
     if (!projectId || !path) {
@@ -74,6 +92,7 @@ export default function CustomRenderPreview({ content, projectId, path }: Custom
     <div className="h-full w-full bg-white">
       {html !== null ? (
         <iframe
+          ref={iframeRef}
           title="Custom render preview"
           srcDoc={html}
           sandbox="allow-scripts"

@@ -84,6 +84,7 @@ import {
     isTextAsset,
     rewriteAssetReferences,
     resolveCustomRenderer,
+    wireFlowCrossLinks,
 } from './utils/htmlPreview.js';
 import { IS_PLATFORM } from './constants/config.js';
 import { c } from './utils/colors.js';
@@ -795,7 +796,10 @@ app.post('/api/projects/:projectId/render-custom', authenticateToken, async (req
         });
 
         const html = await fsPromises.readFile(tmpOutput, 'utf8');
-        res.json({ html });
+        // Wire flow cross-links to open the target .flow.json in vibespace
+        // (no-op for non-flow renderers without the docs placeholder).
+        const wired = wireFlowCrossLinks(html, validation.resolved, projectRoot);
+        res.json({ html: wired });
     } catch (error) {
         console.error('Error rendering custom format:', error.message, error.stderr || '');
         const detail = (error.stderr && String(error.stderr).trim()) || error.message;
