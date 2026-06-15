@@ -41,6 +41,10 @@ export interface ProjectSession {
   // Tags the session with the owning project's DB `projectId` so UI handlers
   // (session switching, sidebar focus, etc.) can match against selectedProject.
   __projectId?: string;
+  // Set when the session runs in a git worktree rather than the main checkout.
+  // `worktreePath` is the absolute dir; `worktreeBranch` is its display label.
+  worktreePath?: string | null;
+  worktreeBranch?: string | null;
   [key: string]: unknown;
 }
 

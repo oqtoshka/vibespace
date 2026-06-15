@@ -16,10 +16,13 @@ import type {
   GitRemoteStatus,
   GitReposResponse,
   GitStatusResponse,
+  GitWorktree,
+  GitWorktreesResponse,
   UseGitPanelControllerOptions,
 } from '../types/types';
 import { getAllChangedFiles } from '../utils/gitPanelUtils';
 import { useSelectedProvider } from './useSelectedProvider';
+import { useActiveWorktree } from '../../../hooks/useActiveWorktree';
 
 // ! use authenticatedFetch directly. fetchWithAuth is redundant 
 const fetchWithAuth = authenticatedFetch as (url: string, options?: RequestInit) => Promise<Response>;
@@ -90,6 +93,9 @@ export function useGitPanelController({
   const [discoveredRepos, setDiscoveredRepos] = useState<GitDiscoveredRepo[]>([]);
   const [selectedRepoPath, setSelectedRepoPath] = useState<string | null>(null);
   const [rootIsRepo, setRootIsRepo] = useState(true);
+  const [worktrees, setWorktrees] = useState<GitWorktree[]>([]);
+  // Which worktree new chat sessions run in (shared with the composer).
+  const { activeWorktree, setActiveWorktree } = useActiveWorktree(selectedProject?.projectId ?? null);
 
   const clearOperationError = useCallback(() => setOperationError(null), []);
   // Tracks the DB projectId so async requests can detect stale responses when
@@ -852,6 +858,117 @@ export function useGitPanelController({
     [selectedProject, selectedRepoPath],
   );
 
+  // Worktrees for the current repo. Selecting one sets the project's active
+  // worktree (drives where new chat sessions run); it does not change the
+  // panel's own git views in this version.
+  const fetchWorktrees = useCallback(async (signal?: AbortSignal) => {
+    if (!selectedProject) {
+      return;
+    }
+    const projectId = selectedProject.projectId;
+    try {
+      const response = await fetchWithAuth(
+        withRepoParam(`/api/git/worktrees?project=${encodeURIComponent(projectId)}`),
+        { signal },
+      );
+      const data = await readJson<GitWorktreesResponse>(response, signal);
+      if (signal?.aborted || selectedProjectIdRef.current !== projectId) {
+        return;
+      }
+      setWorktrees(data.worktrees ?? []);
+    } catch (error) {
+      if (signal?.aborted || isAbortError(error)) {
+        return;
+      }
+      console.error('Error fetching worktrees:', error);
+    }
+  }, [selectedProject, withRepoParam]);
+
+  const selectWorktree = useCallback(
+    (worktree: GitWorktree | null) => {
+      // The main checkout (isMain) means "no worktree override".
+      if (!worktree || worktree.isMain) {
+        setActiveWorktree(null);
+      } else {
+        setActiveWorktree({ path: worktree.path, branch: worktree.branch });
+      }
+    },
+    [setActiveWorktree],
+  );
+
+  const addWorktree = useCallback(
+    async ({ branch, createBranch: createNew, base = null }: { branch: string; createBranch: boolean; base?: string | null }) => {
+      const trimmed = branch.trim();
+      if (!selectedProject || !trimmed) {
+        return false;
+      }
+      try {
+        const response = await fetchWithAuth('/api/git/worktrees/add', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            project: selectedProject.projectId,
+            branch: trimmed,
+            createBranch: createNew,
+            base: base || undefined,
+            ...repoBody(),
+          }),
+        });
+        const data = await readJson<{ success?: boolean; worktree?: GitWorktree; error?: string }>(response);
+        if (!data.success) {
+          setOperationError(data.error || 'Failed to create worktree');
+          return false;
+        }
+        await fetchWorktrees();
+        // Activate the new worktree so new sessions land in it.
+        if (data.worktree) {
+          setActiveWorktree({ path: data.worktree.path, branch: data.worktree.branch });
+        }
+        return true;
+      } catch (error) {
+        console.error('Error creating worktree:', error);
+        setOperationError(error instanceof Error ? error.message : 'Failed to create worktree');
+        return false;
+      }
+    },
+    [fetchWorktrees, repoBody, selectedProject, setActiveWorktree],
+  );
+
+  const removeWorktree = useCallback(
+    async (worktreePath: string) => {
+      if (!selectedProject || !worktreePath) {
+        return false;
+      }
+      try {
+        const response = await fetchWithAuth('/api/git/worktrees/remove', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            project: selectedProject.projectId,
+            worktreePath,
+            force: true,
+            ...repoBody(),
+          }),
+        });
+        const data = await readJson<{ success?: boolean; error?: string }>(response);
+        if (!data.success) {
+          setOperationError(data.error || 'Failed to remove worktree');
+          return false;
+        }
+        if (activeWorktree?.path === worktreePath) {
+          setActiveWorktree(null);
+        }
+        await fetchWorktrees();
+        return true;
+      } catch (error) {
+        console.error('Error removing worktree:', error);
+        setOperationError(error instanceof Error ? error.message : 'Failed to remove worktree');
+        return false;
+      }
+    },
+    [activeWorktree, fetchWorktrees, repoBody, selectedProject, setActiveWorktree],
+  );
+
   // Project change: reset everything and kick off repo discovery.
   useEffect(() => {
     const controller = new AbortController();
@@ -901,11 +1018,12 @@ export function useGitPanelController({
     void fetchGitStatus(controller.signal);
     void fetchBranches();
     void fetchRemoteStatus();
+    void fetchWorktrees(controller.signal);
 
     return () => {
       controller.abort();
     };
-  }, [fetchBranches, fetchGitStatus, fetchRemoteStatus, selectedProject, selectedRepoPath]);
+  }, [fetchBranches, fetchGitStatus, fetchRemoteStatus, fetchWorktrees, selectedProject, selectedRepoPath]);
 
   useEffect(() => {
     if (!selectedProject || activeView !== 'history') {
@@ -938,6 +1056,11 @@ export function useGitPanelController({
     operationError,
     clearOperationError,
     refreshAll,
+    worktrees,
+    activeWorktreePath: activeWorktree?.path ?? null,
+    selectWorktree,
+    addWorktree,
+    removeWorktree,
     switchBranch,
     createBranch,
     deleteBranch,
