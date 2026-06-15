@@ -58,7 +58,14 @@ export default function CodeEditorSurface({
   }
 
   if (previewMode && isCustomRenderFile) {
-    return <CustomRenderPreview content={content} projectId={projectId} path={currentFilePath ?? ''} />;
+    return (
+      <CustomRenderPreview
+        content={content}
+        projectId={projectId}
+        path={currentFilePath ?? ''}
+        onFileOpen={onFileOpen}
+      />
+    );
   }
 
   return (
