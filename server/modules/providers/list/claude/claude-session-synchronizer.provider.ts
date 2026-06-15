@@ -19,6 +19,24 @@ type ParsedSession = {
 };
 
 /**
+ * Claude stores Task/subagent transcripts in a per-session subfolder:
+ *   ~/.claude/projects/<proj>/<SESSION_UUID>/subagents/agent-<id>.jsonl
+ *
+ * Those files carry the PARENT session's `sessionId` and `cwd` (plus
+ * `isSidechain: true`). If we index them as standalone sessions, the
+ * `ON CONFLICT(session_id) DO UPDATE` upsert clobbers the real session row's
+ * `jsonl_path` to point at the subagent file — the main transcript then
+ * "disappears" and the session renders the subagent's history instead.
+ *
+ * Subagent transcripts are surfaced inline by the history provider (nested
+ * under their parent tool call), so they must never become sessions of their
+ * own. Skip any `.jsonl` that lives under a `subagents/` path segment.
+ */
+function isSubagentTranscriptPath(filePath: string): boolean {
+  return filePath.split(path.sep).includes('subagents');
+}
+
+/**
  * Session indexer for Claude transcript artifacts.
  */
 export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
@@ -38,6 +56,10 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
 
     let processed = 0;
     for (const filePath of files) {
+      if (isSubagentTranscriptPath(filePath)) {
+        continue;
+      }
+
       const parsed = await this.processSessionFile(filePath, nameMap);
       if (!parsed) {
         continue;
@@ -64,6 +86,11 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
    */
   async synchronizeFile(filePath: string): Promise<string | null> {
     if (!filePath.endsWith('.jsonl')) {
+      return null;
+    }
+
+    // A live subagent write must not re-hijack its parent's session row.
+    if (isSubagentTranscriptPath(filePath)) {
       return null;
     }
 
