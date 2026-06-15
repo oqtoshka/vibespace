@@ -5,6 +5,11 @@ import { promises as fs } from 'fs';
 import { projectsDb } from '../modules/database/index.js';
 import { queryClaudeSDK } from '../claude-sdk.js';
 import { spawnCursor } from '../cursor-cli.js';
+import {
+  listWorktrees,
+  addWorktree,
+  removeWorktree,
+} from '../utils/worktrees.js';
 
 const router = express.Router();
 const COMMIT_DIFF_CHARACTER_LIMIT = 500_000;
@@ -888,6 +893,67 @@ router.post('/delete-branch', async (req, res) => {
   } catch (error) {
     console.error('Git delete branch error:', error);
     res.status(500).json({ error: error.message });
+  }
+});
+
+// List worktrees for the repo (main checkout + any added worktrees).
+router.get('/worktrees', async (req, res) => {
+  const { project, repoPath } = req.query;
+  if (!project) {
+    return res.status(400).json({ error: 'Project id is required' });
+  }
+  try {
+    const projectPath = await getActualRepoPath(project, repoPath);
+    await validateGitRepository(projectPath);
+    const worktrees = await listWorktrees(projectPath);
+    res.json({ worktrees });
+  } catch (error) {
+    console.error('Git worktrees list error:', error);
+    res.json({ error: error.message, worktrees: [] });
+  }
+});
+
+// Create a worktree under <dataDir>/worktrees/<projectId>/<branchSlug>.
+// `createBranch` makes a new branch (optionally from `base`); otherwise checks
+// out an existing branch.
+router.post('/worktrees/add', async (req, res) => {
+  const { project, repoPath, branch, createBranch = false, base = null } = req.body;
+  if (!project || !branch) {
+    return res.status(400).json({ error: 'Project id and branch are required' });
+  }
+  try {
+    validateBranchName(branch);
+    if (base) validateCommitRef(base);
+    const projectPath = await getActualRepoPath(project, repoPath);
+    await validateGitRepository(projectPath);
+    const worktree = await addWorktree({
+      repoPath: projectPath,
+      projectId: project,
+      branch,
+      createBranch: Boolean(createBranch),
+      base: base || null,
+    });
+    res.json({ success: true, worktree });
+  } catch (error) {
+    console.error('Git worktree add error:', error);
+    res.status(500).json({ error: (error.stderr && String(error.stderr).trim()) || error.message });
+  }
+});
+
+// Remove a worktree (validated as belonging to the repo).
+router.post('/worktrees/remove', async (req, res) => {
+  const { project, repoPath, worktreePath, force = false } = req.body;
+  if (!project || !worktreePath) {
+    return res.status(400).json({ error: 'Project id and worktreePath are required' });
+  }
+  try {
+    const projectPath = await getActualRepoPath(project, repoPath);
+    await validateGitRepository(projectPath);
+    const result = await removeWorktree({ repoPath: projectPath, worktreePath, force: Boolean(force) });
+    res.json({ success: true, ...result });
+  } catch (error) {
+    console.error('Git worktree remove error:', error);
+    res.status(500).json({ error: (error.stderr && String(error.stderr).trim()) || error.message });
   }
 });
 

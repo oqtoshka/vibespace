@@ -13,6 +13,7 @@ import { useDropzone } from 'react-dropzone';
 
 import { authenticatedFetch } from '../../../utils/api';
 import { downscaleImageFiles } from '../../../utils/imageDownscale';
+import { readActiveWorktree, bindSessionCwd, getSessionCwd } from '../../../hooks/useActiveWorktree';
 import { grantClaudeToolPermission } from '../utils/chatPermissions';
 import { safeLocalStorage } from '../utils/chatStorage';
 import type {
@@ -225,7 +226,17 @@ export function useChatComposerState({
   // restoreFailedSend is defined later; call through a ref so runSubmit (above
   // it) can use it without a temporal-dead-zone hazard in its deps.
   const restoreFailedSendRef = useRef<() => void>(() => {});
+  // Holds the worktree cwd chosen for a brand-new session until its real id
+  // arrives (then we bind it, so later messages keep the same cwd).
+  const pendingNewSessionCwdRef = useRef<string | null>(null);
   const selectedProjectId = selectedProject?.projectId;
+
+  useEffect(() => {
+    if (currentSessionId && pendingNewSessionCwdRef.current && !getSessionCwd(currentSessionId)) {
+      bindSessionCwd(currentSessionId, pendingNewSessionCwdRef.current);
+      pendingNewSessionCwdRef.current = null;
+    }
+  }, [currentSessionId]);
 
   const handleBuiltInCommand = useCallback(
     (result: CommandExecutionResult) => {
@@ -705,14 +716,28 @@ export function useChatComposerState({
       const resolvedProjectPath = selectedProject.fullPath || selectedProject.path || '';
       const sessionSummary = getNotificationSessionSummary(selectedSession, rawContent);
 
+      // Worktree-aware cwd. Existing session → its pinned worktree (or a stable
+      // binding made earlier this page session); brand-new session → the
+      // project's active worktree. bindSessionCwd keeps the cwd stable across a
+      // session's messages before the server-synced worktreePath is available.
+      const sessionWorktreePath =
+        (selectedSession?.worktreePath as string | null | undefined) ?? null;
+      const effectiveCwd =
+        getSessionCwd(effectiveSessionId || null) ||
+        (effectiveSessionId
+          ? sessionWorktreePath || resolvedProjectPath
+          : readActiveWorktree(selectedProject.projectId)?.path || resolvedProjectPath);
+      bindSessionCwd(effectiveSessionId || null, effectiveCwd);
+      pendingNewSessionCwdRef.current = effectiveSessionId ? pendingNewSessionCwdRef.current : effectiveCwd;
+
       if (provider === 'cursor') {
         sendMessage({
           type: 'cursor-command',
           command: messageContent,
           sessionId: effectiveSessionId,
           options: {
-            cwd: resolvedProjectPath,
-            projectPath: resolvedProjectPath,
+            cwd: effectiveCwd,
+            projectPath: effectiveCwd,
             sessionId: effectiveSessionId,
             resume: Boolean(effectiveSessionId),
             model: cursorModel,
@@ -727,8 +752,8 @@ export function useChatComposerState({
           command: messageContent,
           sessionId: effectiveSessionId,
           options: {
-            cwd: resolvedProjectPath,
-            projectPath: resolvedProjectPath,
+            cwd: effectiveCwd,
+            projectPath: effectiveCwd,
             sessionId: effectiveSessionId,
             resume: Boolean(effectiveSessionId),
             model: codexModel,
@@ -742,8 +767,8 @@ export function useChatComposerState({
           command: messageContent,
           sessionId: effectiveSessionId,
           options: {
-            cwd: resolvedProjectPath,
-            projectPath: resolvedProjectPath,
+            cwd: effectiveCwd,
+            projectPath: effectiveCwd,
             sessionId: effectiveSessionId,
             resume: Boolean(effectiveSessionId),
             model: geminiModel,
@@ -758,8 +783,8 @@ export function useChatComposerState({
           command: messageContent,
           sessionId: effectiveSessionId,
           options: {
-            cwd: resolvedProjectPath,
-            projectPath: resolvedProjectPath,
+            cwd: effectiveCwd,
+            projectPath: effectiveCwd,
             sessionId: effectiveSessionId,
             resume: Boolean(effectiveSessionId),
             model: opencodeModel,
@@ -771,8 +796,8 @@ export function useChatComposerState({
           type: 'claude-command',
           command: messageContent,
           options: {
-            projectPath: resolvedProjectPath,
-            cwd: resolvedProjectPath,
+            projectPath: effectiveCwd,
+            cwd: effectiveCwd,
             sessionId: effectiveSessionId,
             resume: Boolean(effectiveSessionId),
             toolsSettings,
