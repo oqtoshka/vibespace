@@ -120,6 +120,7 @@ export default function GitPanel({ selectedProject, isMobile = false, onFileOpen
         <WorktreePicker
           isMobile={isMobile}
           worktrees={worktrees}
+          branches={localBranches}
           activeWorktreePath={activeWorktreePath}
           onSelect={selectWorktree}
           onAdd={addWorktree}

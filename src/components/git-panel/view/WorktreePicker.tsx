@@ -5,6 +5,8 @@ import type { GitWorktree } from '../types/types';
 type WorktreePickerProps = {
   isMobile: boolean;
   worktrees: GitWorktree[];
+  /** Local branch names — used to populate the "existing branch" option. */
+  branches: string[];
   activeWorktreePath: string | null;
   onSelect: (worktree: GitWorktree | null) => void;
   onAdd: (opts: { branch: string; createBranch: boolean; base?: string | null }) => Promise<boolean>;
@@ -24,15 +26,23 @@ function worktreeLabel(worktree: GitWorktree): string {
 export default function WorktreePicker({
   isMobile,
   worktrees,
+  branches,
   activeWorktreePath,
   onSelect,
   onAdd,
   onRemove,
 }: WorktreePickerProps) {
   const [showDropdown, setShowDropdown] = useState(false);
+  const [mode, setMode] = useState<'new' | 'existing'>('new');
   const [newBranch, setNewBranch] = useState('');
+  const [existingBranch, setExistingBranch] = useState('');
   const [creating, setCreating] = useState(false);
   const dropdownRef = useRef<HTMLDivElement | null>(null);
+
+  // A branch can be checked out in only one worktree, so exclude branches
+  // already attached to a worktree from the "existing" option.
+  const checkedOut = new Set(worktrees.map((w) => w.branch).filter(Boolean) as string[]);
+  const availableExisting = branches.filter((b) => !checkedOut.has(b));
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -48,13 +58,18 @@ export default function WorktreePicker({
   const buttonLabel = active ? worktreeLabel(active) : 'main checkout';
 
   const handleCreate = async () => {
-    const branch = newBranch.trim();
+    const branch = mode === 'new' ? newBranch.trim() : existingBranch;
     if (!branch || creating) return;
     setCreating(true);
-    const ok = await onAdd({ branch, createBranch: true, base: 'HEAD' });
+    const ok = await onAdd({
+      branch,
+      createBranch: mode === 'new',
+      base: mode === 'new' ? 'HEAD' : null,
+    });
     setCreating(false);
     if (ok) {
       setNewBranch('');
+      setExistingBranch('');
       setShowDropdown(false);
     }
   };
@@ -111,29 +126,63 @@ export default function WorktreePicker({
               })}
             </div>
 
-            <div className="border-t border-border p-2">
+            <div className="space-y-1.5 border-t border-border p-2">
+              {/* New branch (from HEAD) vs an existing branch. */}
+              <div className="flex items-center gap-1 rounded-md bg-muted/50 p-0.5 text-[11px]">
+                {(['new', 'existing'] as const).map((m) => (
+                  <button
+                    key={m}
+                    onClick={() => setMode(m)}
+                    className={`flex-1 rounded px-2 py-1 font-medium transition ${
+                      mode === m ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
+                    }`}
+                  >
+                    {m === 'new' ? 'New branch' : 'Existing branch'}
+                  </button>
+                ))}
+              </div>
+
               <div className="flex items-center gap-1.5">
                 <GitBranchPlus className="h-3.5 w-3.5 flex-shrink-0 text-muted-foreground" />
-                <input
-                  type="text"
-                  value={newBranch}
-                  onChange={(e) => setNewBranch(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') void handleCreate();
-                  }}
-                  placeholder="new-branch-name"
-                  className="h-7 min-w-0 flex-1 rounded-md border border-border bg-background px-2 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary/40"
-                />
+                {mode === 'new' ? (
+                  <input
+                    type="text"
+                    value={newBranch}
+                    onChange={(e) => setNewBranch(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') void handleCreate();
+                    }}
+                    placeholder="new-branch-name"
+                    className="h-7 min-w-0 flex-1 rounded-md border border-border bg-background px-2 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary/40"
+                  />
+                ) : (
+                  <select
+                    value={existingBranch}
+                    onChange={(e) => setExistingBranch(e.target.value)}
+                    className="h-7 min-w-0 flex-1 rounded-md border border-border bg-background px-2 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-primary/40"
+                  >
+                    <option value="">
+                      {availableExisting.length ? 'Select branch…' : 'No available branches'}
+                    </option>
+                    {availableExisting.map((b) => (
+                      <option key={b} value={b}>
+                        {b}
+                      </option>
+                    ))}
+                  </select>
+                )}
                 <button
                   onClick={() => void handleCreate()}
-                  disabled={!newBranch.trim() || creating}
+                  disabled={(mode === 'new' ? !newBranch.trim() : !existingBranch) || creating}
                   className="h-7 flex-shrink-0 rounded-md bg-primary px-2 text-xs font-medium text-primary-foreground transition hover:bg-primary/90 disabled:opacity-50"
                 >
                   {creating ? '…' : 'Create'}
                 </button>
               </div>
-              <p className="mt-1 px-0.5 text-[11px] text-muted-foreground">
-                Creates a worktree on a new branch from HEAD. New sessions run there.
+              <p className="px-0.5 text-[11px] text-muted-foreground">
+                {mode === 'new'
+                  ? 'New branch from HEAD, checked out in a worktree. New sessions run there.'
+                  : 'Checks out the chosen branch in a worktree. New sessions run there.'}
               </p>
             </div>
           </div>
