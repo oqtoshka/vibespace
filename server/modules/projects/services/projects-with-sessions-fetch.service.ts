@@ -12,6 +12,9 @@ type SessionSummary = {
   summary: string;
   messageCount: number;
   lastActivity: string;
+  // Set when the session runs in a git worktree (not the project's main checkout).
+  worktreePath?: string | null;
+  worktreeBranch?: string | null;
 };
 
 type SessionsByProvider = Record<'claude' | 'cursor' | 'codex' | 'gemini' | 'opencode', SessionSummary[]>;
@@ -22,6 +25,7 @@ type SessionRepositoryRow = {
   custom_name?: string | null;
   updated_at?: string | null;
   created_at?: string | null;
+  worktree_path?: string | null;
 };
 
 export type ProjectListItem = {
@@ -127,11 +131,15 @@ function normalizeSessionPagination(options: SessionPaginationOptions = {}): { l
 }
 
 function mapSessionRowToSummary(row: SessionRepositoryRow): SessionSummary {
+  const worktreePath = row.worktree_path || null;
   return {
     id: row.session_id,
     summary: row.custom_name || '',
     messageCount: 0,
     lastActivity: row.updated_at ?? row.created_at ?? new Date().toISOString(),
+    worktreePath,
+    // The worktree dir is named after the branch slug; use it as the label.
+    worktreeBranch: worktreePath ? path.basename(worktreePath) : null,
   };
 }
 
