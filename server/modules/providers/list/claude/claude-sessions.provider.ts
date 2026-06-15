@@ -117,8 +117,26 @@ async function getSessionMessages(
     }
 
     const projectDir = path.dirname(jsonLPath);
-    const files = await fsp.readdir(projectDir);
-    const agentFiles = files.filter((file) => file.endsWith('.jsonl') && file.startsWith('agent-'));
+
+    // Claude stores Task/subagent transcripts under a per-session subfolder:
+    //   <projectDir>/<sessionId>/subagents/agent-<id>.jsonl
+    // Older transcripts kept them flat in <projectDir>. Probe both locations so
+    // subagent tool output nests inline under its parent tool call regardless of
+    // on-disk layout. (These files carry the parent's sessionId, so they must
+    // never be indexed as standalone sessions — see the synchronizer.)
+    const subagentDirs = [path.join(projectDir, sessionId, 'subagents'), projectDir];
+    const agentFilesByDir = new Map<string, Set<string>>();
+    for (const dir of subagentDirs) {
+      try {
+        const entries = await fsp.readdir(dir);
+        agentFilesByDir.set(
+          dir,
+          new Set(entries.filter((file) => file.endsWith('.jsonl') && file.startsWith('agent-'))),
+        );
+      } catch {
+        // Directory may not exist (e.g. session spawned no subagents); skip it.
+      }
+    }
 
     const messages: AnyRecord[] = [];
     const agentToolsCache = new Map<string, AnyRecord[]>();
@@ -154,11 +172,19 @@ async function getSessionMessages(
 
     for (const agentId of agentIds) {
       const agentFileName = `agent-${agentId}.jsonl`;
-      if (!agentFiles.includes(agentFileName)) {
+
+      let agentFilePath: string | null = null;
+      for (const dir of subagentDirs) {
+        if (agentFilesByDir.get(dir)?.has(agentFileName)) {
+          agentFilePath = path.join(dir, agentFileName);
+          break;
+        }
+      }
+
+      if (!agentFilePath) {
         continue;
       }
 
-      const agentFilePath = path.join(projectDir, agentFileName);
       const tools = await parseAgentTools(agentFilePath);
       agentToolsCache.set(agentId, tools);
     }
