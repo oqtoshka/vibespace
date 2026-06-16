@@ -789,6 +789,7 @@ export function useChatComposerState({
             resume: Boolean(effectiveSessionId),
             model: opencodeModel,
             sessionSummary,
+            images: uploadedImages,
           },
         });
       } else {

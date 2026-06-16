@@ -1,5 +1,8 @@
 import { spawn } from 'child_process';
 import fsSync from 'node:fs';
+import { mkdtemp, rm, unlink, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 
 import crossSpawn from 'cross-spawn';
 import Database from 'better-sqlite3';
@@ -84,7 +87,7 @@ function readOpenCodeTokenUsage(sessionId) {
 
 async function spawnOpenCode(command, options = {}, ws) {
   return new Promise((resolve, reject) => {
-    const { sessionId, projectPath, cwd, model, sessionSummary } = options;
+    const { sessionId, projectPath, cwd, model, sessionSummary, images } = options;
     const workingDir = cwd || projectPath || process.cwd();
     const processKey = sessionId || Date.now().toString();
     let capturedSessionId = sessionId || null;
@@ -92,6 +95,8 @@ async function spawnOpenCode(command, options = {}, ws) {
     let stdoutLineBuffer = '';
     let terminalNotificationSent = false;
     let opencodeProcess = null;
+    let tempImageDir = null;
+    const tempImagePaths = [];
 
     const notifyTerminalState = ({ code = null, error = null } = {}) => {
       if (terminalNotificationSent) {
@@ -189,7 +194,7 @@ async function spawnOpenCode(command, options = {}, ws) {
       }
     };
 
-    void providerModelsService.resolveResumeModel('opencode', sessionId, model).then((resolvedModel) => {
+    void providerModelsService.resolveResumeModel('opencode', sessionId, model).then(async (resolvedModel) => {
       const args = ['run', '--format', 'json'];
       if (sessionId) {
         args.push('--session', sessionId);
@@ -197,6 +202,31 @@ async function spawnOpenCode(command, options = {}, ws) {
       if (resolvedModel) {
         args.push('--model', resolvedModel);
       }
+
+      // Persist any attached images to temp files and attach them natively via
+      // `opencode run -f <path>`. Cleaned up in the 'close' handler below.
+      if (Array.isArray(images) && images.length > 0) {
+        try {
+          tempImageDir = await mkdtemp(path.join(os.tmpdir(), 'vibespace-opencode-img-'));
+          for (const [index, image] of images.entries()) {
+            const matches = typeof image?.data === 'string'
+              ? image.data.match(/^data:([^;]+);base64,(.+)$/)
+              : null;
+            if (!matches) {
+              continue;
+            }
+            const [, mimeType, base64Data] = matches;
+            const extension = (mimeType.split('/')[1] || 'png').split('+')[0];
+            const filepath = path.join(tempImageDir, `image_${index}.${extension}`);
+            await writeFile(filepath, Buffer.from(base64Data, 'base64'));
+            tempImagePaths.push(filepath);
+            args.push('-f', filepath);
+          }
+        } catch (error) {
+          console.error('[OpenCode] Failed to persist attached images:', error);
+        }
+      }
+
       if (command && command.trim()) {
         args.push(command.trim());
       }
@@ -239,6 +269,12 @@ async function spawnOpenCode(command, options = {}, ws) {
         const finalSessionId = capturedSessionId || sessionId || processKey;
         activeOpenCodeProcesses.delete(finalSessionId);
         activeOpenCodeProcesses.delete(processKey);
+
+        // Remove the temp image files written for `-f` attachments.
+        await Promise.all(tempImagePaths.map((imagePath) => unlink(imagePath).catch(() => {})));
+        if (tempImageDir) {
+          await rm(tempImageDir, { recursive: true, force: true }).catch(() => {});
+        }
 
         if (stdoutLineBuffer.trim()) {
           processOpenCodeOutputLine(stdoutLineBuffer.trim());
@@ -290,6 +326,12 @@ async function spawnOpenCode(command, options = {}, ws) {
         const finalSessionId = capturedSessionId || sessionId || processKey;
         activeOpenCodeProcesses.delete(finalSessionId);
         activeOpenCodeProcesses.delete(processKey);
+
+        // Remove the temp image files written for `-f` attachments.
+        await Promise.all(tempImagePaths.map((imagePath) => unlink(imagePath).catch(() => {})));
+        if (tempImageDir) {
+          await rm(tempImageDir, { recursive: true, force: true }).catch(() => {});
+        }
 
         const installed = await providerAuthService.isProviderInstalled('opencode');
         const errorContent = !installed
