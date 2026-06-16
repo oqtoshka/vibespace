@@ -1,4 +1,7 @@
 import fsSync from 'node:fs';
+import { mkdtemp, rm, unlink, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 
 import crossSpawn from 'cross-spawn';
 import Database from 'better-sqlite3';
@@ -304,6 +307,12 @@ async function spawnOpenCode(command, options = {}, ws) {
         activeOpenCodeProcesses.delete(finalSessionId);
         activeOpenCodeProcesses.delete(processKey);
 
+        // Remove the temp image files written for `-f` attachments.
+        await Promise.all(tempImagePaths.map((imagePath) => unlink(imagePath).catch(() => {})));
+        if (tempImageDir) {
+          await rm(tempImageDir, { recursive: true, force: true }).catch(() => {});
+        }
+
         if (stdoutLineBuffer.trim()) {
           processOpenCodeOutputLine(stdoutLineBuffer.trim());
           stdoutLineBuffer = '';
@@ -353,6 +362,12 @@ async function spawnOpenCode(command, options = {}, ws) {
         const finalSessionId = capturedSessionId || sessionId || processKey;
         activeOpenCodeProcesses.delete(finalSessionId);
         activeOpenCodeProcesses.delete(processKey);
+
+        // Remove the temp image files written for `-f` attachments.
+        await Promise.all(tempImagePaths.map((imagePath) => unlink(imagePath).catch(() => {})));
+        if (tempImageDir) {
+          await rm(tempImageDir, { recursive: true, force: true }).catch(() => {});
+        }
 
         const installed = await providerAuthService.isProviderInstalled('opencode');
         const errorContent = !installed
