@@ -270,9 +270,10 @@ export function handleChatConnection(
           isActive = dependencies.isOpenCodeSessionActive(sessionId);
         } else {
           isActive = dependencies.isClaudeSDKSessionActive(sessionId);
-          if (isActive) {
-            dependencies.reconnectSessionWriter(sessionId, ws);
-          }
+          // Attach to a live persistent session even when it is idle between
+          // turns (no active turn), so a later background-job auto-resume still
+          // streams to this client. No-ops when no session is tracked.
+          dependencies.reconnectSessionWriter(sessionId, ws);
         }
 
         writer.send({

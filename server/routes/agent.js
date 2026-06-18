@@ -954,7 +954,8 @@ router.post('/', validateExternalApiKey, async (req, res) => {
         cwd: finalProjectPath,
         sessionId: sessionId || null,
         model: model,
-        permissionMode: 'bypassPermissions' // Bypass all permissions for API calls
+        permissionMode: 'bypassPermissions', // Bypass all permissions for API calls
+        ephemeral: true // one-shot REST call: don't leave a persistent session
       }, writer);
 
     } else if (provider === 'cursor') {

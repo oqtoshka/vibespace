@@ -1191,7 +1191,8 @@ Generate the commit message:`;
       await queryClaudeSDK(prompt, {
         cwd: projectPath,
         permissionMode: 'bypassPermissions',
-        model: 'sonnet'
+        model: 'sonnet',
+        ephemeral: true
       }, writer);
     } else if (provider === 'cursor') {
       await spawnCursor(prompt, {
