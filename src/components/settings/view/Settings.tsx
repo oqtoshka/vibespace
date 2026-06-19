@@ -47,6 +47,8 @@ function Settings({ isOpen, onClose, projects = [], initialTab = 'agents' }: Set
     setClaudePermissions,
     notificationPreferences,
     setNotificationPreferences,
+    saveTelegramToken,
+    sendTelegramTest,
     cursorPermissions,
     setCursorPermissions,
     codexPermissionMode,
@@ -197,6 +199,8 @@ function Settings({ isOpen, onClose, projects = [], initialTab = 'agents' }: Set
                 <NotificationsSettingsTab
                   notificationPreferences={notificationPreferences}
                   onNotificationPreferencesChange={setNotificationPreferences}
+                  onSaveTelegramToken={saveTelegramToken}
+                  onSendTelegramTest={sendTelegramTest}
                   pushPermission={pushPermission}
                   isPushSubscribed={isPushSubscribed}
                   isPushLoading={isPushLoading}

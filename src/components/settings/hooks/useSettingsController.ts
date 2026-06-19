@@ -115,12 +115,20 @@ const createDefaultNotificationPreferences = (): NotificationPreferencesState =>
     stop: true,
     error: true,
   },
+  telegram: {
+    enabled: false,
+    chatId: '',
+    botToken: '',
+    botTokenSet: false,
+    botTokenHint: '',
+  },
 });
 
 const normalizeNotificationPreferences = (
   preferences?: Partial<NotificationPreferencesState> | null,
 ): NotificationPreferencesState => {
   const defaults = createDefaultNotificationPreferences();
+  const telegram = preferences?.telegram;
 
   return {
     channels: {
@@ -133,6 +141,14 @@ const normalizeNotificationPreferences = (
       actionRequired: preferences?.events?.actionRequired ?? defaults.events.actionRequired,
       stop: preferences?.events?.stop ?? defaults.events.stop,
       error: preferences?.events?.error ?? defaults.events.error,
+    },
+    telegram: {
+      enabled: telegram?.enabled ?? defaults.telegram.enabled,
+      chatId: telegram?.chatId ?? defaults.telegram.chatId,
+      // botToken is the form input only — never hydrated from the server.
+      botToken: '',
+      botTokenSet: telegram?.botTokenSet ?? defaults.telegram.botTokenSet,
+      botTokenHint: telegram?.botTokenHint ?? defaults.telegram.botTokenHint,
     },
   };
 };
@@ -275,6 +291,16 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
       if (!notificationResponse.ok) {
         throw new Error('Failed to save notification preferences');
       }
+      // Re-sync from the masked server response so the token input clears and
+      // botTokenSet/hint reflect what's now stored.
+      try {
+        const saved = await toResponseJson<NotificationPreferencesResponse>(notificationResponse);
+        if (saved.success && saved.preferences) {
+          setNotificationPreferences(normalizeNotificationPreferences(saved.preferences));
+        }
+      } catch {
+        /* response already validated as ok; ignore re-sync parse errors */
+      }
 
       setSaveStatus('success');
     } catch (error) {
@@ -296,6 +322,53 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
   const updateCodeEditorSetting = useCallback(
     <K extends keyof CodeEditorSettingsState>(key: K, value: CodeEditorSettingsState[K]) => {
       setCodeEditorSettings((prev) => ({ ...prev, [key]: value }));
+    },
+    [],
+  );
+
+  // Persists a new Telegram bot token (kept out of the debounced auto-save so the
+  // secret only leaves the browser on an explicit action). Re-syncs masked state.
+  const saveTelegramToken = useCallback(async (botToken: string): Promise<boolean> => {
+    try {
+      const response = await authenticatedFetch('/api/settings/notification-preferences', {
+        method: 'PUT',
+        body: JSON.stringify({
+          ...notificationPreferences,
+          telegram: { ...notificationPreferences.telegram, botToken },
+        }),
+      });
+      if (!response.ok) {
+        return false;
+      }
+      const saved = await toResponseJson<NotificationPreferencesResponse>(response);
+      if (saved.success && saved.preferences) {
+        setNotificationPreferences(normalizeNotificationPreferences(saved.preferences));
+      }
+      return true;
+    } catch (error) {
+      console.error('Error saving Telegram token:', error);
+      return false;
+    }
+  }, [notificationPreferences]);
+
+  // Sends a Telegram test message using the supplied draft token/chat id, falling
+  // back server-side to the stored secret when the draft token is blank.
+  const sendTelegramTest = useCallback(
+    async (botToken: string, chatId: string): Promise<{ ok: boolean; error?: string }> => {
+      try {
+        const response = await authenticatedFetch('/api/settings/notification-preferences/telegram/test', {
+          method: 'POST',
+          body: JSON.stringify({ botToken, chatId }),
+        });
+        if (response.ok) {
+          return { ok: true };
+        }
+        const data = await response.json().catch(() => ({}));
+        return { ok: false, error: data?.error || 'Failed to send test message' };
+      } catch (error) {
+        console.error('Error sending Telegram test message:', error);
+        return { ok: false, error: 'Network error' };
+      }
     },
     [],
   );
@@ -392,6 +465,8 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
     setCursorPermissions,
     notificationPreferences,
     setNotificationPreferences,
+    saveTelegramToken,
+    sendTelegramTest,
     codexPermissionMode,
     setCodexPermissionMode,
     providerAuthStatus,
