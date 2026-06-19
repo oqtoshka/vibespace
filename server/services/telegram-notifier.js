@@ -6,6 +6,8 @@
  * run failed) alongside web push. Uses the global `fetch` (Node 18+).
  */
 
+import { summarizeRecap, classifyAssistantState } from './notification-content.js';
+
 const TELEGRAM_API_BASE = 'https://api.telegram.org';
 const SEND_TIMEOUT_MS = 10000;
 
@@ -18,13 +20,6 @@ const PROVIDER_LABELS = {
   system: 'System',
 };
 
-const KIND_EMOJI = {
-  stop: '✅',
-  action_required: '⏳',
-  error: '❌',
-  info: '🔔',
-};
-
 /** Minimal HTML escaping for Telegram `parse_mode: HTML`. */
 function escapeHtml(text) {
   return String(text)
@@ -35,26 +30,42 @@ function escapeHtml(text) {
 
 /**
  * Builds the human-readable message body for a notification event.
- * Mirrors the wording of the web-push body so both channels read the same.
+ * For finished runs it carries a state (finished / needs answer / background) +
+ * a one-line recap; for permission prompts it shows the exact pending action.
+ * Mirrors the web-push body so both channels read the same.
  */
 function buildTelegramText(event, { sessionName } = {}) {
   const providerLabel = PROVIDER_LABELS[event.provider] || 'Assistant';
-  const emoji = KIND_EMOJI[event.kind] || KIND_EMOJI.info;
+  const meta = event.meta || {};
+  const name = typeof sessionName === 'string' ? sessionName.trim() : '';
+  const nameLine = name ? `\n📁 ${escapeHtml(name)}` : '';
+
+  if (event.code === 'permission.required') {
+    const detail = meta.toolDetail || (meta.toolName ? `Tool "${meta.toolName}"` : 'A tool needs approval');
+    return `🔐 <b>${escapeHtml(providerLabel)}</b> — Approval needed\n<code>${escapeHtml(detail)}</code>${nameLine}`;
+  }
+
+  if (event.code === 'run.stopped') {
+    if (meta.stopReason === 'aborted') {
+      return `⏹️ <b>${escapeHtml(providerLabel)}</b> — Stopped${nameLine}`;
+    }
+    const { emoji, label } = classifyAssistantState({ recap: meta.recap, toolNames: meta.toolNames });
+    const recap = summarizeRecap(meta.recap);
+    const recapLine = recap ? `\n<i>${escapeHtml(recap)}</i>` : '';
+    return `${emoji} <b>${escapeHtml(providerLabel)}</b> — ${label}${recapLine}${nameLine}`;
+  }
+
+  if (event.code === 'run.failed') {
+    const detail = meta.error ? `: ${escapeHtml(meta.error)}` : '';
+    return `❌ <b>${escapeHtml(providerLabel)}</b> — Failed${detail}${nameLine}`;
+  }
 
   const CODE_MAP = {
-    'permission.required': event.meta?.toolName
-      ? `needs approval for "${event.meta.toolName}"`
-      : 'needs your approval',
-    'run.stopped': event.meta?.stopReason === 'aborted' ? 'run was stopped' : 'finished',
-    'run.failed': event.meta?.error ? `failed: ${event.meta.error}` : 'failed',
-    'agent.notification': event.meta?.message ? String(event.meta.message) : 'sent a notification',
+    'agent.notification': meta.message ? String(meta.message) : 'sent a notification',
     'push.enabled': 'notifications are now enabled',
   };
   const message = CODE_MAP[event.code] || 'has an update';
-
-  const headline = `${emoji} <b>${escapeHtml(providerLabel)}</b> ${escapeHtml(message)}`;
-  const name = typeof sessionName === 'string' ? sessionName.trim() : '';
-  return name ? `${headline}\n<i>${escapeHtml(name)}</i>` : headline;
+  return `🔔 <b>${escapeHtml(providerLabel)}</b> ${escapeHtml(message)}${nameLine}`;
 }
 
 /**
