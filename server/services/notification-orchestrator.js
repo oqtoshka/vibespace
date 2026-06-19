@@ -1,6 +1,7 @@
 import webPush from 'web-push';
 
 import { notificationPreferencesDb, pushSubscriptionsDb, sessionsDb } from '../modules/database/index.js';
+import { sendTelegramMessage, buildTelegramText } from './telegram-notifier.js';
 
 const KIND_TO_PREF_KEY = {
   action_required: 'actionRequired',
@@ -28,12 +29,19 @@ const cleanupOldEventKeys = () => {
   }
 };
 
-function shouldSendPush(preferences, event) {
-  const webPushEnabled = Boolean(preferences?.channels?.webPush);
+function isEventEnabled(preferences, event) {
   const prefEventKey = KIND_TO_PREF_KEY[event.kind];
-  const eventEnabled = prefEventKey ? Boolean(preferences?.events?.[prefEventKey]) : true;
+  return prefEventKey ? Boolean(preferences?.events?.[prefEventKey]) : true;
+}
 
-  return webPushEnabled && eventEnabled;
+function shouldSendPush(preferences, event) {
+  return Boolean(preferences?.channels?.webPush) && isEventEnabled(preferences, event);
+}
+
+function shouldSendTelegram(preferences, event) {
+  const telegram = preferences?.telegram;
+  const configured = Boolean(telegram?.enabled && telegram?.botToken && telegram?.chatId);
+  return configured && isEventEnabled(preferences, event);
 }
 
 function isDuplicate(event) {
@@ -138,6 +146,18 @@ function buildPushBody(event) {
   };
 }
 
+async function sendTelegram(telegram, event) {
+  const text = buildTelegramText(event, { sessionName: resolveSessionName(event) });
+  const result = await sendTelegramMessage({
+    botToken: telegram.botToken,
+    chatId: telegram.chatId,
+    text,
+  });
+  if (!result.ok) {
+    console.error('Telegram notification error:', result.error);
+  }
+}
+
 async function sendWebPush(userId, event) {
   const subscriptions = pushSubscriptionsDb.getSubscriptions(userId);
   if (!subscriptions.length) return;
@@ -176,16 +196,25 @@ function notifyUserIfEnabled({ userId, event }) {
   }
 
   const preferences = notificationPreferencesDb.getPreferences(userId);
-  if (!shouldSendPush(preferences, event)) {
+  const wantPush = shouldSendPush(preferences, event);
+  const wantTelegram = shouldSendTelegram(preferences, event);
+  if (!wantPush && !wantTelegram) {
     return;
   }
   if (isDuplicate(event)) {
     return;
   }
 
-  sendWebPush(userId, event).catch((err) => {
-    console.error('Web push send error:', err);
-  });
+  if (wantPush) {
+    sendWebPush(userId, event).catch((err) => {
+      console.error('Web push send error:', err);
+    });
+  }
+  if (wantTelegram) {
+    sendTelegram(preferences.telegram, event).catch((err) => {
+      console.error('Telegram send error:', err);
+    });
+  }
 }
 
 function notifyRunStopped({ userId, provider, sessionId = null, stopReason = 'completed', sessionName = null }) {

@@ -1,8 +1,9 @@
 import express from 'express';
 
-import { apiKeysDb, credentialsDb, notificationPreferencesDb, pushSubscriptionsDb } from '../modules/database/index.js';
+import { apiKeysDb, credentialsDb, notificationPreferencesDb, pushSubscriptionsDb, toClientNotificationPreferences } from '../modules/database/index.js';
 import { getPublicKey } from '../services/vapid-keys.js';
 import { createNotificationEvent, notifyUserIfEnabled } from '../services/notification-orchestrator.js';
+import { sendTelegramMessage } from '../services/telegram-notifier.js';
 
 const router = express.Router();
 
@@ -185,7 +186,7 @@ router.patch('/credentials/:credentialId/toggle', async (req, res) => {
 router.get('/notification-preferences', async (req, res) => {
   try {
     const preferences = notificationPreferencesDb.getPreferences(req.user.id);
-    res.json({ success: true, preferences });
+    res.json({ success: true, preferences: toClientNotificationPreferences(preferences) });
   } catch (error) {
     console.error('Error fetching notification preferences:', error);
     res.status(500).json({ error: 'Failed to fetch notification preferences' });
@@ -195,10 +196,43 @@ router.get('/notification-preferences', async (req, res) => {
 router.put('/notification-preferences', async (req, res) => {
   try {
     const preferences = notificationPreferencesDb.updatePreferences(req.user.id, req.body || {});
-    res.json({ success: true, preferences });
+    res.json({ success: true, preferences: toClientNotificationPreferences(preferences) });
   } catch (error) {
     console.error('Error saving notification preferences:', error);
     res.status(500).json({ error: 'Failed to save notification preferences' });
+  }
+});
+
+// Sends a test message to the configured (or supplied) Telegram chat so the
+// user can verify the bot token + chat id without waiting for a real event.
+// An empty/masked botToken in the body falls back to the stored secret.
+router.post('/notification-preferences/telegram/test', async (req, res) => {
+  try {
+    const stored = notificationPreferencesDb.getPreferences(req.user.id);
+    const body = req.body || {};
+    const incomingToken = typeof body.botToken === 'string' ? body.botToken.trim() : '';
+    const botToken = incomingToken && !incomingToken.startsWith('•') ? incomingToken : stored.telegram?.botToken;
+    const chatId = typeof body.chatId === 'string' && body.chatId.trim()
+      ? body.chatId.trim()
+      : stored.telegram?.chatId;
+
+    if (!botToken || !chatId) {
+      return res.status(400).json({ error: 'Telegram bot token and chat id are required' });
+    }
+
+    const result = await sendTelegramMessage({
+      botToken,
+      chatId,
+      text: '✅ <b>VibeSpace</b> Telegram notifications are working.',
+    });
+
+    if (!result.ok) {
+      return res.status(502).json({ error: result.error || 'Failed to send Telegram message' });
+    }
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Error sending Telegram test message:', error);
+    res.status(500).json({ error: 'Failed to send Telegram test message' });
   }
 });
 

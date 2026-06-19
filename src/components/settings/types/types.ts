@@ -26,6 +26,17 @@ export type ClaudePermissionsState = {
   skipPermissions: boolean;
 };
 
+export type TelegramPreferencesState = {
+  enabled: boolean;
+  chatId: string;
+  /** New token typed into the form; '' means "leave the stored secret as-is". */
+  botToken: string;
+  /** Whether a token is already stored server-side. */
+  botTokenSet: boolean;
+  /** Masked tail of the stored token, for display only. */
+  botTokenHint: string;
+};
+
 export type NotificationPreferencesState = {
   channels: {
     inApp: boolean;
@@ -37,6 +48,7 @@ export type NotificationPreferencesState = {
     stop: boolean;
     error: boolean;
   };
+  telegram: TelegramPreferencesState;
 };
 
 export type CursorPermissionsState = {

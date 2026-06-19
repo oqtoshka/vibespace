@@ -4,7 +4,10 @@ export { apiKeysDb } from '@/modules/database/repositories/api-keys.js';
 export { appConfigDb } from '@/modules/database/repositories/app-config.js';
 export { credentialsDb } from '@/modules/database/repositories/credentials.js';
 export { githubTokensDb } from '@/modules/database/repositories/github-tokens.js';
-export { notificationPreferencesDb } from '@/modules/database/repositories/notification-preferences.js';
+export {
+  notificationPreferencesDb,
+  toClientNotificationPreferences,
+} from '@/modules/database/repositories/notification-preferences.js';
 export { projectsDb } from '@/modules/database/repositories/projects.db.js';
 export { pushSubscriptionsDb } from '@/modules/database/repositories/push-subscriptions.js';
 export { scanStateDb } from '@/modules/database/repositories/scan-state.db.js';
