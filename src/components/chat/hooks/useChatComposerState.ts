@@ -61,6 +61,12 @@ interface UseChatComposerStateArgs {
   setClaudeStatus: (status: { text: string; tokens: number; can_interrupt: boolean } | null) => void;
   setIsUserScrolledUp: (isScrolledUp: boolean) => void;
   setPendingPermissionRequests: Dispatch<SetStateAction<PendingPermissionRequest[]>>;
+  /**
+   * Optimistically drops the rewound message and everything after it from the
+   * visible transcript before the edited message is resent. Wired to the session
+   * store's `rewindTo`.
+   */
+  onRewindTruncate?: (sessionId: string, messageUuid: string) => void;
 }
 
 interface MentionableFile {
@@ -198,6 +204,7 @@ export function useChatComposerState({
   setClaudeStatus,
   setIsUserScrolledUp,
   setPendingPermissionRequests,
+  onRewindTruncate,
 }: UseChatComposerStateArgs) {
   const [input, setInput] = useState(() => {
     if (typeof window !== 'undefined' && selectedProject) {
@@ -836,6 +843,115 @@ export function useChatComposerState({
     ],
   );
 
+  /**
+   * Rewind / edit-in-place: re-send an edited past user message, dropping that
+   * message and everything after it. Only Claude and OpenCode sessions support
+   * it (their transcripts can be truncated in place); other providers never
+   * surface the affordance because their messages carry no `uuid` anchor.
+   */
+  const rewindMessage = useCallback(
+    (message: ChatMessage, newContent: string) => {
+      const rewindUuid = typeof message.uuid === 'string' ? message.uuid : null;
+      const content = newContent.trim();
+      if (!rewindUuid || !content || !selectedProject) return;
+      if (provider !== 'claude' && provider !== 'opencode') return;
+
+      const effectiveSessionId = currentSessionId || selectedSession?.id || null;
+      // Rewind only makes sense for an already-persisted session.
+      if (!effectiveSessionId) return;
+
+      // Carry the original attachments over unchanged (already data URLs).
+      const images = Array.isArray(message.images) ? message.images : [];
+
+      // Optimistically drop the edited message + its responses from the view,
+      // then show the edited message as the new tail.
+      onRewindTruncate?.(effectiveSessionId, rewindUuid);
+      addMessage({
+        type: 'user',
+        content,
+        images: images as ChatMessage['images'],
+        timestamp: new Date(),
+      });
+      setIsLoading(true);
+      setCanAbortSession(true);
+      setClaudeStatus({ text: 'Processing', tokens: 0, can_interrupt: true });
+      setIsUserScrolledUp(false);
+      setTimeout(() => scrollToBottom(), 100);
+      onSessionActive?.(effectiveSessionId);
+      onSessionProcessing?.(effectiveSessionId);
+
+      let toolsSettings: unknown = { allowedTools: [], disallowedTools: [], skipPermissions: false };
+      try {
+        const settingsKey = provider === 'opencode' ? 'opencode-settings' : 'claude-settings';
+        const saved = safeLocalStorage.getItem(settingsKey);
+        if (saved) toolsSettings = JSON.parse(saved);
+      } catch (error) {
+        console.error('Error loading tools settings:', error);
+      }
+
+      const resolvedProjectPath = selectedProject.fullPath || selectedProject.path || '';
+      const sessionSummary = getNotificationSessionSummary(selectedSession, content);
+      const sessionWorktreePath = (selectedSession?.worktreePath as string | null | undefined) ?? null;
+      const effectiveCwd =
+        getSessionCwd(effectiveSessionId) || sessionWorktreePath || resolvedProjectPath;
+      bindSessionCwd(effectiveSessionId, effectiveCwd);
+
+      if (provider === 'opencode') {
+        sendMessage({
+          type: 'opencode-command',
+          command: content,
+          sessionId: effectiveSessionId,
+          options: {
+            cwd: effectiveCwd,
+            projectPath: effectiveCwd,
+            sessionId: effectiveSessionId,
+            resume: true,
+            model: opencodeModel,
+            sessionSummary,
+            images,
+            rewind: rewindUuid,
+          },
+        });
+      } else {
+        sendMessage({
+          type: 'claude-command',
+          command: content,
+          options: {
+            projectPath: effectiveCwd,
+            cwd: effectiveCwd,
+            sessionId: effectiveSessionId,
+            resume: true,
+            toolsSettings,
+            permissionMode,
+            model: claudeModel,
+            sessionSummary,
+            images,
+            rewind: rewindUuid,
+          },
+        });
+      }
+    },
+    [
+      selectedProject,
+      selectedSession,
+      currentSessionId,
+      provider,
+      claudeModel,
+      opencodeModel,
+      permissionMode,
+      onRewindTruncate,
+      addMessage,
+      sendMessage,
+      scrollToBottom,
+      onSessionActive,
+      onSessionProcessing,
+      setIsLoading,
+      setCanAbortSession,
+      setClaudeStatus,
+      setIsUserScrolledUp,
+    ],
+  );
+
   // Reset the composer fields after a message is captured for sending/queueing.
   const clearComposer = useCallback(() => {
     setInput('');
@@ -1225,5 +1341,6 @@ export function useChatComposerState({
     removeQueuedMessage,
     restoreFailedSend,
     clearFailedSendBackup,
+    rewindMessage,
   };
 }

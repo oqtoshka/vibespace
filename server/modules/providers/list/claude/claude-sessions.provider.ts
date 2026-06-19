@@ -4,7 +4,7 @@ import path from 'node:path';
 import readline from 'node:readline';
 
 import type { IProviderSessions } from '@/shared/interfaces.js';
-import type { AnyRecord, FetchHistoryOptions, FetchHistoryResult, NormalizedMessage } from '@/shared/types.js';
+import type { AnyRecord, FetchHistoryOptions, FetchHistoryResult, NormalizedMessage, RewindResult } from '@/shared/types.js';
 import { createNormalizedMessage, generateMessageId, readObjectRecord } from '@/shared/utils.js';
 import { sessionsDb } from '@/modules/database/index.js';
 
@@ -393,6 +393,7 @@ export class ClaudeSessionsProvider implements IProviderSessions {
             if (text && !isInternalContent(text)) {
               messages.push(createNormalizedMessage({
                 id: `${baseId}_text_${partIndex}`,
+                uuid: raw.uuid,
                 sessionId,
                 timestamp: ts,
                 provider: PROVIDER,
@@ -413,6 +414,7 @@ export class ClaudeSessionsProvider implements IProviderSessions {
           if (textParts && !isInternalContent(textParts)) {
             messages.push(createNormalizedMessage({
               id: `${baseId}_text`,
+              uuid: raw.uuid,
               sessionId,
               timestamp: ts,
               provider: PROVIDER,
@@ -501,6 +503,7 @@ export class ClaudeSessionsProvider implements IProviderSessions {
         if (text && !isInternalContent(text)) {
           messages.push(createNormalizedMessage({
             id: baseId,
+            uuid: raw.uuid,
             sessionId,
             timestamp: ts,
             provider: PROVIDER,
@@ -695,5 +698,81 @@ export class ClaudeSessionsProvider implements IProviderSessions {
       offset: normalizedOffset,
       limit: normalizedLimit,
     };
+  }
+
+  /**
+   * Rewinds the session's JSONL transcript by truncating every line from the
+   * record whose `uuid === messageUuid` onward (inclusive). The original file is
+   * backed up alongside it first. Resuming the same session id then continues the
+   * conversation in-place from the kept prefix.
+   *
+   * If the anchor is the first user turn (nothing resumable precedes it) the file
+   * is left untouched and `startFresh` is returned so the caller can begin a new
+   * session instead.
+   */
+  async rewindHistory(sessionId: string, messageUuid: string): Promise<RewindResult> {
+    const jsonLPath = sessionsDb.getSessionById(sessionId)?.jsonl_path;
+    if (!jsonLPath) {
+      return { ok: false, startFresh: false, removed: 0 };
+    }
+
+    let raw: string;
+    try {
+      raw = await fsp.readFile(jsonLPath, 'utf8');
+    } catch {
+      return { ok: false, startFresh: false, removed: 0 };
+    }
+
+    const lines = raw.split('\n');
+    let cutIndex = -1;
+    let priorUserTurns = 0;
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (!line.trim()) {
+        continue;
+      }
+      let entry: AnyRecord;
+      try {
+        entry = JSON.parse(line) as AnyRecord;
+      } catch {
+        continue;
+      }
+      if (entry.sessionId !== sessionId) {
+        continue;
+      }
+      if (entry.uuid === messageUuid) {
+        cutIndex = i;
+        break;
+      }
+      if (entry.message?.role === 'user' && entry.isMeta !== true && entry.type !== 'tool_result') {
+        priorUserTurns += 1;
+      }
+    }
+
+    if (cutIndex === -1) {
+      return { ok: false, startFresh: false, removed: 0 };
+    }
+
+    // Nothing resumable precedes the edited message — let the caller start fresh
+    // and leave the original transcript intact as pre-edit history.
+    if (priorUserTurns === 0) {
+      const removed = lines.slice(cutIndex).filter((line) => line.trim()).length;
+      return { ok: true, startFresh: true, removed };
+    }
+
+    const kept = lines.slice(0, cutIndex);
+    const removed = lines.slice(cutIndex).filter((line) => line.trim()).length;
+
+    // Back up the full transcript before truncating so a rewind is recoverable.
+    try {
+      await fsp.copyFile(jsonLPath, `${jsonLPath}.rewind-${Date.now()}.bak`);
+    } catch (error) {
+      console.warn(`[ClaudeProvider] Failed to back up transcript before rewind for ${sessionId}:`, error);
+    }
+
+    const body = kept.join('\n').replace(/\n+$/, '');
+    await fsp.writeFile(jsonLPath, body.length > 0 ? `${body}\n` : '');
+
+    return { ok: true, startFresh: false, removed };
   }
 }

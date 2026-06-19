@@ -332,3 +332,74 @@ test('OpenCode sessions provider reads sqlite history and token usage', { concur
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
+
+// Appends a second user+assistant turn to the standard fixture so a rewind has
+// something to truncate (the base fixture has a single user turn).
+const appendSecondTurn = (homeDir: string): void => {
+  const dbPath = path.join(homeDir, '.local', 'share', 'opencode', 'opencode.db');
+  const db = new Database(dbPath);
+  try {
+    db.prepare('INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?)')
+      .run('message-user-2', 'open-session-1', 1_700_000_004_000, 1_700_000_004_000, JSON.stringify({ role: 'user', time: { created: 1_700_000_004_000 } }));
+    db.prepare('INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?)')
+      .run('message-assistant-2', 'open-session-1', 1_700_000_005_000, 1_700_000_005_000, JSON.stringify({ role: 'assistant', time: { created: 1_700_000_005_000 } }));
+    const insertPart = db.prepare('INSERT INTO part (id, message_id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?, ?)');
+    insertPart.run('part-user-2', 'message-user-2', 'open-session-1', 1_700_000_004_000, 1_700_000_004_000, JSON.stringify({ type: 'text', text: JSON.stringify('a follow-up question') }));
+    insertPart.run('part-assistant-2', 'message-assistant-2', 'open-session-1', 1_700_000_005_000, 1_700_000_005_000, JSON.stringify({ type: 'text', text: 'a follow-up answer' }));
+  } finally {
+    db.close();
+  }
+};
+
+test('OpenCode sessions provider rewinds in-place by deleting the anchor turn and everything after', { concurrency: false }, async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'opencode-session-rewind-'));
+  const workspacePath = path.join(tempRoot, 'workspace');
+  await mkdir(workspacePath, { recursive: true });
+  const restoreHomeDir = patchHomeDir(tempRoot);
+
+  try {
+    await createOpenCodeDatabase(tempRoot, workspacePath);
+    appendSecondTurn(tempRoot);
+    const provider = new OpenCodeSessionsProvider();
+
+    const before = await provider.fetchHistory('open-session-1');
+    assert.equal(before.total, 6, 'two turns are present before the rewind');
+
+    // Rewind to the SECOND user turn — its message and the assistant reply go.
+    const result = await provider.rewindHistory('open-session-1', 'message-user-2');
+    assert.deepEqual(result, { ok: true, startFresh: false, removed: 2 });
+
+    const after = await provider.fetchHistory('open-session-1');
+    assert.equal(after.total, 4, 'the second turn was truncated');
+    assert.ok(
+      !after.messages.some((m) => m.content === 'a follow-up question' || m.content === 'a follow-up answer'),
+      'the discarded turn is gone',
+    );
+  } finally {
+    restoreHomeDir();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('OpenCode sessions provider reports startFresh when rewinding to the first user turn', { concurrency: false }, async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'opencode-session-rewind-fresh-'));
+  const workspacePath = path.join(tempRoot, 'workspace');
+  await mkdir(workspacePath, { recursive: true });
+  const restoreHomeDir = patchHomeDir(tempRoot);
+
+  try {
+    await createOpenCodeDatabase(tempRoot, workspacePath);
+    const provider = new OpenCodeSessionsProvider();
+
+    const result = await provider.rewindHistory('open-session-1', 'message-user');
+    assert.equal(result.ok, true);
+    assert.equal(result.startFresh, true, 'editing the first turn starts fresh');
+
+    // Nothing is deleted — the original history is left intact.
+    const after = await provider.fetchHistory('open-session-1');
+    assert.equal(after.total, 4, 'history is untouched when starting fresh');
+  } finally {
+    restoreHomeDir();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});

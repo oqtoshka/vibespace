@@ -33,6 +33,12 @@ export type MessageKind =
 
 export interface NormalizedMessage {
   id: string;
+  /**
+   * Provider-native transcript id (Claude JSONL `uuid`, OpenCode `message.id`).
+   * Set on user messages so they can be rewound/edited in place. Unlike `id`
+   * (which may be suffixed per content part) this is the clean anchor.
+   */
+  uuid?: string;
   sessionId: string;
   timestamp: string;
   provider: LLMProvider;
@@ -598,6 +604,32 @@ export function useSessionStore() {
   }, [notify, resolveSessionId]);
 
   /**
+   * Rewind (edit-and-resend): optimistically drop the anchor message and
+   * everything after it from the visible transcript. The anchor lives in the
+   * server-fetched history; everything realtime is necessarily newer, so it is
+   * cleared wholesale. Matches by `uuid` first, falling back to `id`.
+   */
+  const rewindTo = useCallback((sessionId: string, messageUuid: string) => {
+    const resolvedSessionId = resolveSessionId(sessionId) ?? sessionId;
+    const slot = storeRef.current.get(resolvedSessionId);
+    if (!slot) return;
+    const matches = (m: NormalizedMessage) => m.uuid === messageUuid || m.id === messageUuid;
+    const serverIdx = slot.serverMessages.findIndex(matches);
+    if (serverIdx >= 0) {
+      slot.serverMessages = slot.serverMessages.slice(0, serverIdx);
+      slot.realtimeMessages = [];
+    } else {
+      const realtimeIdx = slot.realtimeMessages.findIndex(matches);
+      if (realtimeIdx >= 0) {
+        slot.realtimeMessages = slot.realtimeMessages.slice(0, realtimeIdx);
+      }
+    }
+    slot.total = slot.serverMessages.length;
+    recomputeMergedIfNeeded(slot);
+    notify(resolvedSessionId);
+  }, [notify, resolveSessionId]);
+
+  /**
    * Get merged messages for a session (for rendering).
    */
   const getMessages = useCallback((sessionId: string): NormalizedMessage[] => {
@@ -693,6 +725,7 @@ export function useSessionStore() {
     updateStreaming,
     finalizeStreaming,
     clearRealtime,
+    rewindTo,
     getMessages,
     getSessionSlot,
     replaceSessionId,
@@ -700,7 +733,7 @@ export function useSessionStore() {
     getSlot, has, fetchFromServer, fetchMore,
     appendRealtime, appendRealtimeBatch, refreshFromServer,
     setActiveSession, setStatus, isStale, updateStreaming, finalizeStreaming,
-    clearRealtime, getMessages, getSessionSlot, replaceSessionId,
+    clearRealtime, rewindTo, getMessages, getSessionSlot, replaceSessionId,
   ]);
 }
 

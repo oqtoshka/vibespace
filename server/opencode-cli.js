@@ -86,6 +86,22 @@ function readOpenCodeTokenUsage(sessionId) {
 }
 
 async function spawnOpenCode(command, options = {}, ws) {
+  // Rewind / edit-and-resend: truncate this session's history at the edited
+  // message before resuming, so `opencode run --session <id>` continues in-place
+  // from that point. If nothing resumable precedes the edit, run as a new session.
+  if (options.rewind && options.sessionId) {
+    try {
+      abortOpenCodeSession(options.sessionId);
+      const result = await sessionsService.rewindHistory(options.sessionId, options.rewind);
+      if (result.startFresh || !result.ok) {
+        options = { ...options, sessionId: undefined, resume: false };
+      }
+    } catch (error) {
+      console.error('[OpenCode] rewind failed:', error?.message || error);
+    }
+    options = { ...options, rewind: undefined };
+  }
+
   return new Promise((resolve, reject) => {
     const { sessionId, projectPath, cwd, model, sessionSummary, images } = options;
     const workingDir = cwd || projectPath || process.cwd();

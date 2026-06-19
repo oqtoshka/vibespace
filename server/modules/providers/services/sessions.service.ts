@@ -8,6 +8,7 @@ import type {
   FetchHistoryResult,
   LLMProvider,
   NormalizedMessage,
+  RewindResult,
 } from '@/shared/types.js';
 import { AppError } from '@/shared/utils.js';
 
@@ -112,6 +113,33 @@ export const sessionsService = {
       offset: options.offset ?? 0,
       projectPath: session.project_path ?? '',
     });
+  },
+
+  /**
+   * Rewinds (truncates) a session's persisted transcript at the given message so
+   * the conversation can be resumed in-place from that point with edited content.
+   * Resolves the provider from the indexed session metadata and delegates to its
+   * `rewindHistory` implementation.
+   */
+  async rewindHistory(sessionId: string, messageUuid: string): Promise<RewindResult> {
+    const session = sessionsDb.getSessionById(sessionId);
+    if (!session) {
+      throw new AppError(`Session "${sessionId}" was not found.`, {
+        code: 'SESSION_NOT_FOUND',
+        statusCode: 404,
+      });
+    }
+
+    const provider = session.provider as LLMProvider;
+    const sessions = providerRegistry.resolveProvider(provider).sessions;
+    if (!sessions.rewindHistory) {
+      throw new AppError(`Rewind is not supported for provider "${provider}".`, {
+        code: 'REWIND_UNSUPPORTED',
+        statusCode: 400,
+      });
+    }
+
+    return sessions.rewindHistory(sessionId, messageUuid);
   },
 
   /**

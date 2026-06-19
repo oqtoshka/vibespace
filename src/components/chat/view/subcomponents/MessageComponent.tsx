@@ -1,5 +1,6 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { PencilIcon } from 'lucide-react';
 
 import SessionProviderLogo from '../../../llm-logo-provider/SessionProviderLogo';
 import type {
@@ -35,6 +36,13 @@ type MessageComponentProps = {
   showThinking?: boolean;
   selectedProject?: Project | null;
   provider: Provider | string;
+  /**
+   * Rewind/edit-in-place: when provided, user messages with a transcript anchor
+   * (`uuid`) show an edit affordance. Invoked with the new content on save.
+   */
+  onRewind?: (message: ChatMessage, newContent: string) => void;
+  /** Disables the edit affordance while a turn is streaming. */
+  rewindDisabled?: boolean;
 };
 
 type InteractiveOption = {
@@ -45,7 +53,7 @@ type InteractiveOption = {
 
 const COPY_HIDDEN_TOOL_NAMES = new Set(['Bash', 'Edit', 'Write', 'ApplyPatch']);
 
-const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, autoExpandTools, showRawParameters, showThinking, selectedProject, provider }: MessageComponentProps) => {
+const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, autoExpandTools, showRawParameters, showThinking, selectedProject, provider, onRewind, rewindDisabled }: MessageComponentProps) => {
   const renderStart = performance.now();
   const contentLen = String(message.content || '').length;
   const toolResultLen = (message as any).toolResult?.content ? String((message as any).toolResult.content).length : 0;
@@ -69,7 +77,41 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, a
       (prevMessage.type === 'error'));
   const messageRef = useRef<HTMLDivElement | null>(null);
   const [isExpanded, setIsExpanded] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
+  const [editDraft, setEditDraft] = useState('');
+  const editTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const userCopyContent = String(message.content || '');
+  const canRewind = message.type === 'user'
+    && Boolean(onRewind)
+    && typeof message.uuid === 'string'
+    && message.uuid.length > 0;
+
+  useEffect(() => {
+    if (!isEditing) return;
+    const node = editTextareaRef.current;
+    if (node) {
+      node.focus();
+      node.setSelectionRange(node.value.length, node.value.length);
+      node.style.height = 'auto';
+      node.style.height = `${node.scrollHeight}px`;
+    }
+  }, [isEditing]);
+
+  const beginEdit = () => {
+    setEditDraft(String(message.content || ''));
+    setIsEditing(true);
+  };
+  const cancelEdit = () => {
+    setIsEditing(false);
+    setEditDraft('');
+  };
+  const saveEdit = () => {
+    const next = editDraft.trim();
+    if (!next) return;
+    setIsEditing(false);
+    setEditDraft('');
+    onRewind?.(message, next);
+  };
   const formattedMessageContent = useMemo(
     () => formatUsageLimitText(String(message.content || '')),
     [message.content]
@@ -130,28 +172,86 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, a
         /* User message bubble on the right */
         <div className="flex w-full items-end space-x-0 sm:w-auto sm:max-w-[85%] sm:space-x-3 md:max-w-md lg:max-w-lg xl:max-w-xl">
           <div className="group flex-1 rounded-2xl rounded-br-md bg-blue-600 px-3 py-2 text-white shadow-sm sm:flex-initial sm:px-4">
-            <div dir="auto" className="whitespace-pre-wrap break-words text-sm">
-              {message.content}
-            </div>
-            {message.images && message.images.length > 0 && (
-              <div className="mt-2 grid grid-cols-2 gap-2">
-                {message.images.map((img, idx) => (
-                  <img
-                    key={img.name || idx}
-                    src={img.data}
-                    alt={img.name}
-                    className="h-auto max-w-full cursor-pointer rounded-lg transition-opacity hover:opacity-90"
-                    onClick={() => window.open(img.data, '_blank')}
-                  />
-                ))}
+            {isEditing ? (
+              <div className="flex flex-col gap-2">
+                <textarea
+                  ref={editTextareaRef}
+                  value={editDraft}
+                  onChange={(e) => {
+                    setEditDraft(e.target.value);
+                    e.target.style.height = 'auto';
+                    e.target.style.height = `${e.target.scrollHeight}px`;
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Escape') {
+                      e.preventDefault();
+                      cancelEdit();
+                    } else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                      e.preventDefault();
+                      saveEdit();
+                    }
+                  }}
+                  dir="auto"
+                  rows={1}
+                  className="w-full resize-none rounded-lg bg-blue-500/40 px-2 py-1.5 text-sm text-white placeholder-blue-200 outline-none ring-1 ring-blue-300/40 focus:ring-blue-200 sm:min-w-[18rem]"
+                  placeholder={t('editMessagePlaceholder', { defaultValue: 'Edit your message…' })}
+                />
+                <div className="flex items-center justify-end gap-2 text-xs">
+                  <button
+                    type="button"
+                    onClick={cancelEdit}
+                    className="rounded px-2 py-1 text-blue-100 transition-colors hover:bg-blue-500/50"
+                  >
+                    {t('cancel', { defaultValue: 'Cancel' })}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={saveEdit}
+                    disabled={!editDraft.trim()}
+                    className="rounded bg-white/90 px-2 py-1 font-medium text-blue-700 transition-colors hover:bg-white disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {t('saveAndResend', { defaultValue: 'Save & resend' })}
+                  </button>
+                </div>
               </div>
+            ) : (
+              <>
+                <div dir="auto" className="whitespace-pre-wrap break-words text-sm">
+                  {message.content}
+                </div>
+                {message.images && message.images.length > 0 && (
+                  <div className="mt-2 grid grid-cols-2 gap-2">
+                    {message.images.map((img, idx) => (
+                      <img
+                        key={img.name || idx}
+                        src={img.data}
+                        alt={img.name}
+                        className="h-auto max-w-full cursor-pointer rounded-lg transition-opacity hover:opacity-90"
+                        onClick={() => window.open(img.data, '_blank')}
+                      />
+                    ))}
+                  </div>
+                )}
+                <div className="mt-1 flex items-center justify-end gap-1 text-xs text-blue-100">
+                  {canRewind && (
+                    <button
+                      type="button"
+                      onClick={beginEdit}
+                      disabled={rewindDisabled}
+                      title={t('editMessage', { defaultValue: 'Edit message' })}
+                      aria-label={t('editMessage', { defaultValue: 'Edit message' })}
+                      className="rounded p-0.5 text-blue-100 opacity-0 transition-opacity hover:bg-blue-500/50 focus:opacity-100 group-hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-30"
+                    >
+                      <PencilIcon className="h-3.5 w-3.5" />
+                    </button>
+                  )}
+                  {shouldShowUserCopyControl && (
+                    <MessageCopyControl content={userCopyContent} messageType="user" />
+                  )}
+                  <span>{formattedTime}</span>
+                </div>
+              </>
             )}
-            <div className="mt-1 flex items-center justify-end gap-1 text-xs text-blue-100">
-              {shouldShowUserCopyControl && (
-                <MessageCopyControl content={userCopyContent} messageType="user" />
-              )}
-              <span>{formattedTime}</span>
-            </div>
           </div>
           {!isGrouped && (
             <div className="hidden h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-blue-600 text-sm text-white sm:flex">

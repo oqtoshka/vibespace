@@ -29,6 +29,10 @@ export interface ChatMessage {
   type: string;
   content?: string;
   displayText?: string;
+  /** Stable React key source (mirrors NormalizedMessage.id). */
+  id?: string;
+  /** Provider-native transcript anchor for rewind/edit-in-place (user messages). */
+  uuid?: string;
   timestamp: string | number | Date;
   images?: ChatImage[];
   reasoning?: string;
