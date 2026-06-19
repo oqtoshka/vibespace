@@ -1,4 +1,5 @@
-import { Bell, BellOff, BellRing, Loader2, Play, Volume2 } from 'lucide-react';
+import { Bell, BellOff, BellRing, Loader2, Play, Send, Volume2 } from 'lucide-react';
+import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { Button } from '../../../../shared/view/ui';
@@ -8,6 +9,8 @@ import type { NotificationPreferencesState } from '../../types/types';
 type NotificationsSettingsTabProps = {
   notificationPreferences: NotificationPreferencesState;
   onNotificationPreferencesChange: (value: NotificationPreferencesState) => void;
+  onSaveTelegramToken: (token: string) => Promise<boolean>;
+  onSendTelegramTest: (botToken: string, chatId: string) => Promise<{ ok: boolean; error?: string }>;
   pushPermission: NotificationPermission | 'unsupported';
   isPushSubscribed: boolean;
   isPushLoading: boolean;
@@ -28,6 +31,8 @@ type NotificationsSettingsTabProps = {
 export default function NotificationsSettingsTab({
   notificationPreferences,
   onNotificationPreferencesChange,
+  onSaveTelegramToken,
+  onSendTelegramTest,
   pushPermission,
   isPushSubscribed,
   isPushLoading,
@@ -42,6 +47,37 @@ export default function NotificationsSettingsTab({
 
   const pushSupported = pushPermission !== 'unsupported';
   const pushDenied = pushPermission === 'denied';
+
+  const telegram = notificationPreferences.telegram;
+  const [tokenDraft, setTokenDraft] = useState('');
+  const [savingToken, setSavingToken] = useState(false);
+  const [testState, setTestState] = useState<'idle' | 'sending' | 'ok' | 'error'>('idle');
+  const [testError, setTestError] = useState('');
+
+  const handleSaveToken = async () => {
+    const token = tokenDraft.trim();
+    if (!token || savingToken) return;
+    setSavingToken(true);
+    const ok = await onSaveTelegramToken(token);
+    setSavingToken(false);
+    if (ok) setTokenDraft('');
+  };
+
+  const handleSendTest = async () => {
+    if (testState === 'sending') return;
+    setTestState('sending');
+    setTestError('');
+    const result = await onSendTelegramTest(tokenDraft.trim(), telegram.chatId.trim());
+    if (result.ok) {
+      setTestState('ok');
+    } else {
+      setTestState('error');
+      setTestError(result.error || '');
+    }
+  };
+
+  const telegramConfigured = telegram.botTokenSet || tokenDraft.trim().length > 0;
+  const canTest = telegramConfigured && telegram.chatId.trim().length > 0 && testState !== 'sending';
 
   return (
     <div className="space-y-6 md:space-y-8">
@@ -148,6 +184,113 @@ export default function NotificationsSettingsTab({
           )}
         </div>
       )}
+
+      <div className="space-y-4 bg-card border border-border rounded-lg p-4">
+        <div className="space-y-1">
+          <div className="flex items-center gap-2">
+            <Send className="h-4 w-4 text-blue-600" />
+            <h4 className="font-medium text-foreground">
+              {t('notifications.telegram.title', { defaultValue: 'Telegram' })}
+            </h4>
+          </div>
+          <p className="text-sm text-muted-foreground">
+            {t('notifications.telegram.description', {
+              defaultValue:
+                'Send a Telegram message when a run finishes, fails, or needs your input. Uses the event toggles below.',
+            })}
+          </p>
+        </div>
+
+        <label className="flex items-center gap-2 text-sm text-foreground">
+          <input
+            type="checkbox"
+            checked={telegram.enabled}
+            onChange={(event) =>
+              onNotificationPreferencesChange({
+                ...notificationPreferences,
+                telegram: { ...telegram, enabled: event.target.checked },
+              })
+            }
+            className="h-4 w-4"
+          />
+          {t('notifications.telegram.enabled', { defaultValue: 'Enable Telegram notifications' })}
+        </label>
+
+        <div className="space-y-1">
+          <label className="block text-xs font-medium text-muted-foreground">
+            {t('notifications.telegram.chatId', { defaultValue: 'Chat ID' })}
+          </label>
+          <input
+            type="text"
+            value={telegram.chatId}
+            onChange={(event) =>
+              onNotificationPreferencesChange({
+                ...notificationPreferences,
+                telegram: { ...telegram, chatId: event.target.value },
+              })
+            }
+            placeholder="123456789"
+            className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground"
+          />
+        </div>
+
+        <div className="space-y-1">
+          <label className="block text-xs font-medium text-muted-foreground">
+            {t('notifications.telegram.botToken', { defaultValue: 'Bot token' })}
+          </label>
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <input
+              type="password"
+              value={tokenDraft}
+              onChange={(event) => setTokenDraft(event.target.value)}
+              placeholder={
+                telegram.botTokenSet
+                  ? t('notifications.telegram.tokenSet', {
+                      defaultValue: 'Saved ({{hint}}) — type to replace',
+                      hint: telegram.botTokenHint,
+                    })
+                  : '123456:ABC-DEF...'
+              }
+              autoComplete="off"
+              className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground"
+            />
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={!tokenDraft.trim() || savingToken}
+              onClick={handleSaveToken}
+            >
+              {savingToken ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : null}
+              {t('notifications.telegram.saveToken', { defaultValue: 'Save token' })}
+            </Button>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-3">
+          <Button type="button" variant="outline" size="sm" disabled={!canTest} onClick={handleSendTest}>
+            {testState === 'sending' ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <Send className="h-4 w-4" />
+            )}
+            {t('notifications.telegram.test', { defaultValue: 'Send test' })}
+          </Button>
+          {testState === 'ok' && (
+            <span className="text-sm text-green-600 dark:text-green-400">
+              {t('notifications.telegram.testOk', { defaultValue: 'Sent! Check Telegram.' })}
+            </span>
+          )}
+          {testState === 'error' && (
+            <span className="text-sm text-red-600 dark:text-red-400">
+              {t('notifications.telegram.testFailed', { defaultValue: 'Failed' })}
+              {testError ? `: ${testError}` : ''}
+            </span>
+          )}
+        </div>
+      </div>
 
       <div className="space-y-4 rounded-lg border border-border bg-card p-4">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
