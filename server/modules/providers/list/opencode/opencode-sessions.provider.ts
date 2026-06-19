@@ -4,7 +4,7 @@ import Database from 'better-sqlite3';
 
 import { parseImagesInputTag } from '@/shared/image-attachments.js';
 import type { IProviderSessions } from '@/shared/interfaces.js';
-import type { AnyRecord, FetchHistoryOptions, FetchHistoryResult, NormalizedMessage } from '@/shared/types.js';
+import type { AnyRecord, FetchHistoryOptions, FetchHistoryResult, NormalizedMessage, RewindResult } from '@/shared/types.js';
 import {
   createNormalizedMessage,
   generateMessageId,
@@ -410,6 +410,7 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
         if (content.trim() || attachments.length > 0) {
           normalized.push(createNormalizedMessage({
             id: baseId,
+            uuid: messageRole === 'user' ? row.message_id : undefined,
             sessionId,
             timestamp,
             provider: PROVIDER,
@@ -488,5 +489,78 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
     }
 
     return normalized;
+  }
+
+  /**
+   * Rewinds an OpenCode session by deleting every `message` (and its `part`
+   * rows) at or after the anchor message, in the same `(time_created, id)` order
+   * the history reader uses. Resuming `opencode run --session <id>` then reads
+   * the truncated history and continues in-place.
+   *
+   * If nothing resumable precedes the anchor (it was the first user turn) the
+   * rows are left intact and `startFresh` is returned so the caller starts a new
+   * session instead.
+   */
+  async rewindHistory(sessionId: string, messageUuid: string): Promise<RewindResult> {
+    const dbPath = getOpenCodeDatabasePath();
+    if (!fsSync.existsSync(dbPath)) {
+      return { ok: false, startFresh: false, removed: 0 };
+    }
+
+    const db = new Database(dbPath, { fileMustExist: true });
+    try {
+      const edited = db
+        .prepare('SELECT id, time_created FROM message WHERE id = ? AND session_id = ?')
+        .get(messageUuid, sessionId) as { id: string; time_created: number | null } | undefined;
+      if (!edited) {
+        return { ok: false, startFresh: false, removed: 0 };
+      }
+
+      const editedTime = edited.time_created ?? 0;
+
+      // Count user turns strictly before the anchor in (time_created, id) order.
+      const priorRows = db
+        .prepare(
+          'SELECT data FROM message WHERE session_id = ? AND (COALESCE(time_created, 0) < ? OR (COALESCE(time_created, 0) = ? AND id < ?))',
+        )
+        .all(sessionId, editedTime, editedTime, edited.id) as Array<{ data: string | null }>;
+      let priorUserTurns = 0;
+      for (const row of priorRows) {
+        const info = readJsonRecord(row.data);
+        if (readOptionalString(info?.role) === 'user') {
+          priorUserTurns += 1;
+        }
+      }
+
+      // Messages at or after the anchor (inclusive).
+      const condition = '(COALESCE(time_created, 0) > ? OR (COALESCE(time_created, 0) = ? AND id >= ?))';
+      const toRemove = db
+        .prepare(`SELECT id FROM message WHERE session_id = ? AND ${condition}`)
+        .all(sessionId, editedTime, editedTime, edited.id) as Array<{ id: string }>;
+      const removed = toRemove.length;
+
+      if (priorUserTurns === 0) {
+        // Nothing resumable precedes the anchor — leave history intact; the caller
+        // starts a brand-new session.
+        return { ok: true, startFresh: true, removed };
+      }
+
+      const delParts = db.prepare('DELETE FROM part WHERE session_id = ? AND message_id = ?');
+      const delMessage = db.prepare('DELETE FROM message WHERE session_id = ? AND id = ?');
+      const truncate = db.transaction((ids: string[]) => {
+        for (const id of ids) {
+          delParts.run(sessionId, id);
+          delMessage.run(sessionId, id);
+        }
+      });
+      truncate(toRemove.map((row) => row.id));
+
+      return { ok: true, startFresh: false, removed };
+    } catch (error) {
+      console.warn(`[OpenCodeProvider] Failed to rewind session ${sessionId}:`, error);
+      return { ok: false, startFresh: false, removed: 0 };
+    } finally {
+      db.close();
+    }
   }
 }

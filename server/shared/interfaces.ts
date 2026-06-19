@@ -4,6 +4,7 @@ import type {
   LLMProvider,
   McpScope,
   NormalizedMessage,
+  RewindResult,
   ProviderSkill,
   ProviderSkillListOptions,
   ProviderAuthStatus,
@@ -146,6 +147,13 @@ export interface IProviderMcp {
 export interface IProviderSessions {
   normalizeMessage(raw: unknown, sessionId: string | null): NormalizedMessage[];
   fetchHistory(sessionId: string, options?: FetchHistoryOptions): Promise<FetchHistoryResult>;
+  /**
+   * Truncates this session's persisted transcript at (and including) the message
+   * with `messageUuid`, so the conversation can be resumed in-place from that
+   * point ("rewind" / edit-and-resend). Optional: only providers whose history
+   * can be safely rewound implement it.
+   */
+  rewindHistory?(sessionId: string, messageUuid: string): Promise<RewindResult>;
 }
 
 // ---------------------------

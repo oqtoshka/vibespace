@@ -50,6 +50,13 @@ function __setClaudeQueryImpl(fn) {
   queryImpl = fn || query;
 }
 
+// Indirection so tests can substitute the transcript-truncation step without a
+// real session database. Defaults to the provider-backed implementation.
+let rewindHistoryImpl = (sessionId, messageUuid) => sessionsService.rewindHistory(sessionId, messageUuid);
+function __setRewindHistoryImpl(fn) {
+  rewindHistoryImpl = fn || ((sessionId, messageUuid) => sessionsService.rewindHistory(sessionId, messageUuid));
+}
+
 const TOOL_APPROVAL_TIMEOUT_MS = parseInt(process.env.CLAUDE_TOOL_APPROVAL_TIMEOUT_MS, 10) || 55000;
 
 const TOOLS_REQUIRING_INTERACTION = new Set(['AskUserQuestion', 'ExitPlanMode']);
@@ -938,6 +945,7 @@ function finalizeSession(session) {
   if (session.finalized) return;
   session.finalized = true;
   completeTurn(session);
+  session.finalizeDeferred?.resolve();
   clearIdleTimer(session);
   if (session.maxLifetimeTimer) {
     clearTimeout(session.maxLifetimeTimer);
@@ -1114,6 +1122,7 @@ async function startPersistentSession(command, options, ws) {
     maxLifetimeTimer: null,
     ended: false,
     finalized: false,
+    finalizeDeferred: createDeferred(),
   };
 
   const emitNotification = (event) => {
@@ -1177,6 +1186,42 @@ async function startPersistentSession(command, options, ws) {
   return turnPromise;
 }
 
+/** Waits for a session's message loop to fully tear down, with a hard cap. */
+function waitForFinalize(session, timeoutMs = 10000) {
+  if (!session || session.finalized || !session.finalizeDeferred) {
+    return Promise.resolve();
+  }
+  return Promise.race([
+    session.finalizeDeferred.promise,
+    new Promise((resolve) => { setTimeout(resolve, timeoutMs).unref?.(); }),
+  ]);
+}
+
+/**
+ * Rewinds a session in-place: tears down any live session so the SDK releases
+ * the transcript, then truncates the transcript at (and including) the edited
+ * message so a subsequent resume continues from that point.
+ * @returns {Promise<import('./shared/types.js').RewindResult>}
+ */
+async function performClaudeRewind(sessionId, rewindUuid) {
+  const live = getSession(sessionId);
+  if (live && !live.ended) {
+    cancelPendingApprovalsForSession(sessionId);
+    endSession(live, 'rewind');
+    await waitForFinalize(live);
+    if (getSession(sessionId) === live) {
+      removeSession(sessionId);
+    }
+  }
+
+  try {
+    return await rewindHistoryImpl(sessionId, rewindUuid);
+  } catch (error) {
+    console.error(`Rewind for session ${sessionId} failed:`, error?.message || error);
+    return { ok: false, startFresh: false, removed: 0 };
+  }
+}
+
 /**
  * Executes (or continues) a Claude query using the SDK. A brand-new session
  * spins up a persistent streaming query; a message for an already-running
@@ -1187,7 +1232,7 @@ async function startPersistentSession(command, options, ws) {
  * @returns {Promise<void>}
  */
 async function queryClaudeSDK(command, options = {}, ws) {
-  const { sessionId } = options;
+  const { sessionId, rewind } = options;
 
   try {
     // Fail fast on a missing working directory (e.g. a project on an unmounted
@@ -1202,6 +1247,21 @@ async function queryClaudeSDK(command, options = {}, ws) {
         ws.send(createNormalizedMessage({ kind: 'error', content: message, sessionId: sessionId || null, provider: 'claude' }));
         return;
       }
+    }
+
+    // Rewind / edit-and-resend: truncate the transcript at the edited message,
+    // then resume in-place from that point (a fresh persistent session loads the
+    // truncated history). Never reuse the live session — its in-memory context
+    // still holds the discarded tail.
+    if (rewind && sessionId) {
+      const result = await performClaudeRewind(sessionId, rewind);
+      const baseOptions = { ...options, rewind: undefined };
+      if (result.startFresh || !result.ok) {
+        // First-turn edit (nothing to resume) or the anchor was not found — start
+        // a brand-new session so the edited message is never dropped.
+        return await startPersistentSession(command, { ...baseOptions, sessionId: undefined, resume: false }, ws);
+      }
+      return await startPersistentSession(command, { ...baseOptions, resume: true }, ws);
     }
 
     // Continue a live persistent session by feeding the new turn into it.
@@ -1375,5 +1435,6 @@ export {
   resolveToolApproval,
   getPendingApprovalsForSession,
   reconnectSessionWriter,
-  __setClaudeQueryImpl
+  __setClaudeQueryImpl,
+  __setRewindHistoryImpl
 };

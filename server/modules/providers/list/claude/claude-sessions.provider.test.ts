@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -90,5 +90,75 @@ test('fetchHistory nests subagent tools discovered under <sessionId>/subagents/'
     assert.ok(Array.isArray(toolUse?.subagentTools), 'subagentTools must be attached to the parent tool call');
     assert.equal((toolUse?.subagentTools as unknown[]).length, 1, 'the one subagent tool should be nested inline');
     assert.equal((toolUse?.subagentTools as Array<{ toolName: string }>)[0].toolName, 'Bash');
+  });
+});
+
+const REWIND_SESSION = '33333333-3333-4333-8333-333333333333';
+
+function conversationJsonl(): string {
+  return jsonl(
+    { type: 'user', sessionId: REWIND_SESSION, uuid: 'u1', timestamp: '2026-01-01T00:00:00.000Z', message: { role: 'user', content: 'first question' } },
+    { type: 'assistant', sessionId: REWIND_SESSION, uuid: 'a1', timestamp: '2026-01-01T00:00:01.000Z', message: { role: 'assistant', content: 'first answer' } },
+    { type: 'user', sessionId: REWIND_SESSION, uuid: 'u2', timestamp: '2026-01-01T00:00:02.000Z', message: { role: 'user', content: 'second question' } },
+    { type: 'assistant', sessionId: REWIND_SESSION, uuid: 'a2', timestamp: '2026-01-01T00:00:03.000Z', message: { role: 'assistant', content: 'second answer' } },
+  );
+}
+
+test('rewindHistory truncates the transcript at the edited message and backs it up', async () => {
+  await withIsolatedDatabase(async (tempDir) => {
+    const projectDir = path.join(tempDir, 'projects', '-demo');
+    await mkdir(projectDir, { recursive: true });
+    const mainFile = path.join(projectDir, `${REWIND_SESSION}.jsonl`);
+    await writeFile(mainFile, conversationJsonl());
+    sessionsDb.createSession(REWIND_SESSION, 'claude', '/demo', 'Demo', undefined, undefined, mainFile);
+
+    const provider = new ClaudeSessionsProvider();
+    // Rewind to the SECOND user turn — u2 and everything after it must go.
+    const result = await provider.rewindHistory(REWIND_SESSION, 'u2');
+
+    assert.deepEqual(result, { ok: true, startFresh: false, removed: 2 });
+
+    const remaining = await provider.fetchHistory(REWIND_SESSION, { limit: null });
+    const contents = remaining.messages.map((m) => m.content);
+    assert.deepEqual(contents, ['first question', 'first answer'], 'only the kept prefix remains');
+
+    // The original transcript is preserved as a backup beside the truncated file.
+    const backups = (await readdir(projectDir)).filter((f) => f.includes('.rewind-') && f.endsWith('.bak'));
+    assert.equal(backups.length, 1, 'a single backup was written');
+    const backupBody = await readFile(path.join(projectDir, backups[0]), 'utf8');
+    assert.match(backupBody, /second answer/, 'backup retains the discarded tail');
+  });
+});
+
+test('rewindHistory reports startFresh (and leaves the file intact) for the first user turn', async () => {
+  await withIsolatedDatabase(async (tempDir) => {
+    const projectDir = path.join(tempDir, 'projects', '-demo');
+    await mkdir(projectDir, { recursive: true });
+    const mainFile = path.join(projectDir, `${REWIND_SESSION}.jsonl`);
+    const original = conversationJsonl();
+    await writeFile(mainFile, original);
+    sessionsDb.createSession(REWIND_SESSION, 'claude', '/demo', 'Demo', undefined, undefined, mainFile);
+
+    const provider = new ClaudeSessionsProvider();
+    const result = await provider.rewindHistory(REWIND_SESSION, 'u1');
+
+    assert.equal(result.ok, true);
+    assert.equal(result.startFresh, true, 'editing the first turn starts fresh');
+    assert.equal(await readFile(mainFile, 'utf8'), original, 'the transcript is untouched');
+    const backups = (await readdir(projectDir)).filter((f) => f.includes('.rewind-'));
+    assert.equal(backups.length, 0, 'no backup needed when nothing is truncated');
+  });
+});
+
+test('rewindHistory returns ok:false for an unknown message uuid', async () => {
+  await withIsolatedDatabase(async (tempDir) => {
+    const projectDir = path.join(tempDir, 'projects', '-demo');
+    await mkdir(projectDir, { recursive: true });
+    const mainFile = path.join(projectDir, `${REWIND_SESSION}.jsonl`);
+    await writeFile(mainFile, conversationJsonl());
+    sessionsDb.createSession(REWIND_SESSION, 'claude', '/demo', 'Demo', undefined, undefined, mainFile);
+
+    const result = await new ClaudeSessionsProvider().rewindHistory(REWIND_SESSION, 'does-not-exist');
+    assert.deepEqual(result, { ok: false, startFresh: false, removed: 0 });
   });
 });
