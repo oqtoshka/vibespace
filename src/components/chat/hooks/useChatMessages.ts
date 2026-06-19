@@ -86,6 +86,8 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
       // fall back to timestamp+content — and the streaming row's timestamp is
       // rewritten on every delta flush, churning the key and remounting bubbles.
       id: msg.id,
+      // Clean transcript anchor for rewind/edit-in-place (user messages only).
+      uuid: msg.uuid,
       displayText: msg.displayText,
       commandName: msg.commandName,
       commandMessage: msg.commandMessage,

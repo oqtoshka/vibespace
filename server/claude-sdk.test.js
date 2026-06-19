@@ -7,6 +7,7 @@ import {
   isClaudeSDKSessionActive,
   isClaudeSDKSessionAlive,
   __setClaudeQueryImpl,
+  __setRewindHistoryImpl,
 } from './claude-sdk.js';
 
 // A writer that records every normalized message the session pushes out, and
@@ -208,6 +209,65 @@ test('stop interrupts the turn but keeps the session and its background job aliv
   } finally {
     delete process.env.CLAUDE_ABORT_MIN_TURN_AGE_MS;
     __setClaudeQueryImpl(null);
+  }
+});
+
+test('a rewind tears down the live session and resumes a fresh query from the truncated transcript', async () => {
+  const sessionId = 'rewind-session-1';
+  const queryInvocations = [];
+
+  // Two query lifetimes: the original session, then the post-rewind resume.
+  const fakeQuery = ({ prompt, options }) => {
+    const index = queryInvocations.length;
+    queryInvocations.push({ options });
+    const reader = prompt[Symbol.asyncIterator]();
+    const gen = (async function* () {
+      const first = await reader.next();
+      if (index === 0) {
+        // Original session: stream, then idle (stay alive between turns). Parking
+        // on the input stream mirrors the real SDK — closing input ends the query.
+        yield assistantText('original answer', sessionId);
+        yield resultMsg(sessionId);
+        await reader.next(); // resolves done when endSession() closes the input
+      } else {
+        // The resumed (rewound) turn — capture the edited prompt it received.
+        queryInvocations[index].firstUserMessage = first.value;
+        yield assistantText('rewound answer', sessionId);
+        yield resultMsg(sessionId);
+      }
+    })();
+    gen.interrupt = async () => {};
+    return gen;
+  };
+
+  __setClaudeQueryImpl(fakeQuery);
+  let rewindArgs = null;
+  __setRewindHistoryImpl(async (sid, uuid) => {
+    rewindArgs = { sid, uuid };
+    return { ok: true, startFresh: false, removed: 3 };
+  });
+  const writer = makeRecordingWriter();
+
+  try {
+    await queryClaudeSDK('first message', { sessionId, ephemeral: false }, writer);
+    await writer.waitFor((msgs) => msgs.some((m) => JSON.stringify(m).includes('original answer')), 'original turn');
+    assert.equal(isClaudeSDKSessionAlive(sessionId), true, 'session is live after the first turn');
+
+    // Edit-and-resend an earlier message.
+    await queryClaudeSDK('edited message', { sessionId, rewind: 'msg-uuid-2' }, writer);
+
+    assert.deepEqual(rewindArgs, { sid: sessionId, uuid: 'msg-uuid-2' }, 'rewind anchored on the edited message');
+    await writer.waitFor((msgs) => msgs.some((m) => JSON.stringify(m).includes('rewound answer')), 'resumed turn');
+
+    // The resume re-spawned the query with resume pointed at the same session id.
+    assert.equal(queryInvocations.length, 2, 'a fresh query was started after the rewind');
+    assert.equal(queryInvocations[1].options.resume, sessionId, 'the resumed query loads the truncated transcript');
+    const injected = queryInvocations[1].firstUserMessage;
+    assert.equal(injected?.message?.content, 'edited message', 'the edited message is replayed as the new turn');
+  } finally {
+    await abortClaudeSDKSession(sessionId).catch(() => {});
+    __setClaudeQueryImpl(null);
+    __setRewindHistoryImpl(null);
   }
 });
 
