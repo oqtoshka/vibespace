@@ -214,6 +214,13 @@ export type ServerEventKind = MessageKind | GatewayEventKind;
  */
 export type NormalizedMessage = {
   id: string;
+  /**
+   * Provider-native transcript identifier for the underlying record, when one
+   * exists (Claude JSONL `uuid`, OpenCode `message.id`). Unlike `id` (which may
+   * be suffixed per content part) this is the clean anchor used to rewind/edit a
+   * message in place.
+   */
+  uuid?: string;
   sessionId: string;
   timestamp: string;
   provider: LLMProvider;
@@ -301,6 +308,24 @@ export type FetchHistoryResult = {
   offset: number;
   limit: number | null;
   tokenUsage?: unknown;
+};
+
+/**
+ * Outcome of a "rewind" (message-edit) on a persisted session: the transcript is
+ * truncated at (and including) the anchor message so the conversation can be
+ * resumed in-place from that point with edited content.
+ */
+export type RewindResult = {
+  /** Whether the anchor message was found and the transcript was truncated. */
+  ok: boolean;
+  /**
+   * True when nothing resumable remains before the anchor (e.g. the edited
+   * message was the first user turn). The caller should start a brand-new
+   * session instead of resuming.
+   */
+  startFresh: boolean;
+  /** Number of transcript records removed. */
+  removed: number;
 };
 
 // ---------------------------

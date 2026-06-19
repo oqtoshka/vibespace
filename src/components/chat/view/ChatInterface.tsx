@@ -196,6 +196,7 @@ function ChatInterface({
     removeQueuedMessage,
     restoreFailedSend,
     clearFailedSendBackup,
+    rewindMessage,
   } = useChatComposerState({
     selectedProject,
     selectedSession,
@@ -223,6 +224,7 @@ function ChatInterface({
     setIsUserScrolledUp,
     setPendingPermissionRequests,
     resolvePermissionModeForProvider,
+    onRewindTruncate: (sessionId, messageUuid) => sessionStore.rewindTo(sessionId, messageUuid),
   });
 
   // On WebSocket reconnect, re-fetch the current session's messages from the
@@ -396,6 +398,8 @@ function ChatInterface({
           showRawParameters={showRawParameters}
           showThinking={showThinking}
           selectedProject={selectedProject}
+          onRewindMessage={rewindMessage}
+          rewindDisabled={isLoading}
         />
 
         <div className="relative flex-shrink-0">

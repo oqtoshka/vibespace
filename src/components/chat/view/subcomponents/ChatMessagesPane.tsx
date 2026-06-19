@@ -66,6 +66,8 @@ interface ChatMessagesPaneProps {
   showRawParameters?: boolean;
   showThinking?: boolean;
   selectedProject: Project;
+  onRewindMessage?: (message: ChatMessage, newContent: string) => void;
+  rewindDisabled?: boolean;
 }
 
 function ChatMessagesPane({
@@ -114,6 +116,8 @@ function ChatMessagesPane({
   showRawParameters,
   showThinking,
   selectedProject,
+  onRewindMessage,
+  rewindDisabled,
 }: ChatMessagesPaneProps) {
   const { t } = useTranslation('chat');
   const groupedVisibleMessages = useMemo(
@@ -312,6 +316,8 @@ function ChatMessagesPane({
                   showThinking={showThinking}
                   selectedProject={selectedProject}
                   provider={provider}
+                  onRewind={onRewindMessage}
+                  rewindDisabled={rewindDisabled}
                 />
               );
             });
