@@ -32,6 +32,7 @@ import {
   notifyRunStopped,
   notifyUserIfEnabled
 } from './services/notification-orchestrator.js';
+import { describeTool } from './services/notification-content.js';
 import { sessionsService } from './modules/providers/services/sessions.service.js';
 import { providerAuthService } from './modules/providers/services/provider-auth.service.js';
 import { createCompleteMessage, createNormalizedMessage } from './shared/utils.js';
@@ -737,6 +738,23 @@ function handleTaskMessage(session, message) {
  * @param {{aborted?: boolean}} opts - when aborted, the ws handler emits the
  *   (aborted) completion, so we don't send our own.
  */
+/**
+ * Records the latest assistant text + tool names for the in-flight turn, so the
+ * "run stopped" notification can carry a recap and detect background work.
+ * Only overwrites the text when this message actually has text blocks, so a
+ * trailing tool-only message doesn't blank out the real answer.
+ */
+function captureAssistantSummary(session, message) {
+  const blocks = message?.message?.content;
+  if (!Array.isArray(blocks)) return;
+  const textParts = [];
+  for (const b of blocks) {
+    if (b?.type === 'text' && b.text) textParts.push(b.text);
+    else if (b?.type === 'tool_use' && b.name) session.turnToolNames.push(b.name);
+  }
+  if (textParts.length) session.lastAssistantText = textParts.join('\n').trim();
+}
+
 function settleTurn(session, ws, { aborted = false } = {}) {
   if (!session.awaitingResult) return;
   session.awaitingResult = false;
@@ -780,6 +798,8 @@ function settleTurn(session, ws, { aborted = false } = {}) {
     sessionId: session.sessionId,
     sessionName: session.sessionSummary,
     stopReason: aborted ? 'aborted' : 'completed',
+    recap: aborted ? '' : session.lastAssistantText,
+    toolNames: aborted ? [] : session.turnToolNames,
   });
 
   // One-shot callers (commit-message / agent flows) don't want a lingering
@@ -836,7 +856,7 @@ function makeCanUseTool(session, sdkOptions, ws, emitNotification) {
       sessionId: sid(),
       kind: 'action_required',
       code: 'permission.required',
-      meta: { toolName, sessionName: session.sessionSummary },
+      meta: { toolName, toolDetail: describeTool(toolName, input), sessionName: session.sessionSummary },
       severity: 'warning',
       requiresUserAction: true,
       dedupeKey: `claude:permission:${sid() || 'none'}:${requestId}`
@@ -905,7 +925,14 @@ async function runSessionLoop(session, ws) {
       // guard so this turn's `result` is honored, including queued resume turns
       // that begin after a previous turn already settled.
       if (message.type === 'assistant') {
+        // A fresh turn: reset the recap capture so a stale prior answer isn't
+        // reused in this turn's "stopped" notification.
+        if (!session.awaitingResult) {
+          session.lastAssistantText = '';
+          session.turnToolNames = [];
+        }
         session.awaitingResult = true;
+        captureAssistantSummary(session, message);
       }
 
       // Drive background-job tracking / auto-resume off the task system messages.
@@ -1112,6 +1139,8 @@ async function startPersistentSession(command, options, ws) {
     turnActive: true,
     turnStartTime: Date.now(),
     awaitingResult: true,
+    lastAssistantText: '',
+    turnToolNames: [],
     firstTurnCompleted: false,
     sessionCreatedSent: false,
     currentTurn: null,

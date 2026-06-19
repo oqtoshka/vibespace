@@ -2,6 +2,7 @@ import webPush from 'web-push';
 
 import { notificationPreferencesDb, pushSubscriptionsDb, sessionsDb } from '../modules/database/index.js';
 import { sendTelegramMessage, buildTelegramText } from './telegram-notifier.js';
+import { summarizeRecap, classifyAssistantState } from './notification-content.js';
 
 const KIND_TO_PREF_KEY = {
   action_required: 'actionRequired',
@@ -119,19 +120,38 @@ function resolveSessionName(event) {
   return normalizeSessionName(sessionsDb.getSessionName(event.sessionId, event.provider));
 }
 
-function buildPushBody(event) {
+function buildPushMessage(event) {
+  const meta = event.meta || {};
+
+  if (event.code === 'permission.required') {
+    const detail = meta.toolDetail || (meta.toolName ? `Tool "${meta.toolName}"` : 'A tool needs your approval');
+    return `🔐 Approval needed — ${detail}`;
+  }
+
+  if (event.code === 'run.stopped') {
+    if (meta.stopReason === 'aborted') {
+      return '⏹️ Stopped';
+    }
+    const { emoji, label } = classifyAssistantState({ recap: meta.recap, toolNames: meta.toolNames });
+    const recap = summarizeRecap(meta.recap);
+    return recap ? `${emoji} ${label} — ${recap}` : `${emoji} ${label}`;
+  }
+
+  if (event.code === 'run.failed') {
+    return meta.error ? `❌ Failed: ${meta.error}` : '❌ Failed';
+  }
+
   const CODE_MAP = {
-    'permission.required': event.meta?.toolName
-      ? `Action Required: Tool "${event.meta.toolName}" needs approval`
-      : 'Action Required: A tool needs your approval',
-    'run.stopped': event.meta?.stopReason || 'Run Stopped: The run has stopped',
-    'run.failed': event.meta?.error ? `Run Failed: ${event.meta.error}` : 'Run Failed: The run encountered an error',
-    'agent.notification': event.meta?.message ? String(event.meta.message) : 'You have a new notification',
+    'agent.notification': meta.message ? String(meta.message) : 'You have a new notification',
     'push.enabled': 'Push notifications are now enabled!'
   };
+  return CODE_MAP[event.code] || 'You have a new notification';
+}
+
+function buildPushBody(event) {
   const providerLabel = PROVIDER_LABELS[event.provider] || 'Assistant';
   const sessionName = resolveSessionName(event);
-  const message = CODE_MAP[event.code] || 'You have a new notification';
+  const message = buildPushMessage(event);
 
   return {
     title: sessionName || 'VibeSpace',
@@ -217,7 +237,15 @@ function notifyUserIfEnabled({ userId, event }) {
   }
 }
 
-function notifyRunStopped({ userId, provider, sessionId = null, stopReason = 'completed', sessionName = null }) {
+function notifyRunStopped({
+  userId,
+  provider,
+  sessionId = null,
+  stopReason = 'completed',
+  sessionName = null,
+  recap = '',
+  toolNames = []
+}) {
   notifyUserIfEnabled({
     userId,
     event: createNotificationEvent({
@@ -225,7 +253,7 @@ function notifyRunStopped({ userId, provider, sessionId = null, stopReason = 'co
       sessionId,
       kind: 'stop',
       code: 'run.stopped',
-      meta: { stopReason, sessionName },
+      meta: { stopReason, sessionName, recap, toolNames },
       severity: 'info',
       dedupeKey: `${provider}:run:stop:${sessionId || 'none'}:${stopReason}`
     })

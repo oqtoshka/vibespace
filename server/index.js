@@ -172,11 +172,20 @@ app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // Public health check endpoint (no authentication required)
 app.get('/health', (req, res) => {
+    // Active = a turn currently processing (safe-to-restart signal for deploys).
+    const activeSessions = [
+        ...getActiveClaudeSDKSessions(),
+        ...getActiveCursorSessions(),
+        ...getActiveCodexSessions(),
+        ...getActiveGeminiSessions(),
+        ...getActiveOpenCodeSessions(),
+    ];
     res.json({
         status: 'ok',
         timestamp: new Date().toISOString(),
         installMode,
-        version: RUNNING_VERSION
+        version: RUNNING_VERSION,
+        activeSessions: activeSessions.length
     });
 });
 
