@@ -1,4 +1,5 @@
 import { IS_PLATFORM } from "../constants/config";
+import { persistAuthToken } from "./authToken";
 
 // Utility function for authenticated API calls
 export const authenticatedFetch = (url, options = {}) => {
@@ -24,7 +25,7 @@ export const authenticatedFetch = (url, options = {}) => {
   }).then((response) => {
     const refreshedToken = response.headers.get('X-Refreshed-Token');
     if (refreshedToken) {
-      localStorage.setItem('auth-token', refreshedToken);
+      persistAuthToken(refreshedToken);
     }
     return response;
   });
