@@ -216,6 +216,8 @@ export default function CodeEditor({
         <div className={innerContainerClassName}>
           <CodeEditorHeader
             file={file}
+            projectPath={projectPath}
+            onFileOpen={onFileOpen}
             isSidebar={isSidebar}
             isFullscreen={isFullscreen}
             isPreviewable={isPreviewable}

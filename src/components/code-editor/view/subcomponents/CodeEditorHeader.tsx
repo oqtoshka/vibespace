@@ -1,8 +1,11 @@
 import { Code2, Download, Eye, Maximize2, Minimize2, Save, Settings as SettingsIcon, X } from 'lucide-react';
 import type { CodeEditorFile } from '../../types/types';
+import CodeEditorBreadcrumb from './CodeEditorBreadcrumb';
 
 type CodeEditorHeaderProps = {
   file: CodeEditorFile;
+  projectPath?: string;
+  onFileOpen?: ((filePath: string) => void) | null;
   isSidebar: boolean;
   isFullscreen: boolean;
   isPreviewable: boolean;
@@ -32,6 +35,8 @@ type CodeEditorHeaderProps = {
 
 export default function CodeEditorHeader({
   file,
+  projectPath,
+  onFileOpen,
   isSidebar,
   isFullscreen,
   isPreviewable,
@@ -61,7 +66,12 @@ export default function CodeEditorHeader({
               </span>
             )}
           </div>
-          <p className="truncate text-xs text-gray-500 dark:text-gray-400">{file.path}</p>
+          <CodeEditorBreadcrumb
+            filePath={file.path}
+            projectPath={projectPath}
+            projectId={file.projectId}
+            onFileOpen={onFileOpen}
+          />
         </div>
       </div>
 
