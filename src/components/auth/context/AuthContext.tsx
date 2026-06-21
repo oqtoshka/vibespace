@@ -1,7 +1,8 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { IS_PLATFORM } from '../../../constants/config';
 import { api } from '../../../utils/api';
-import { AUTH_ERROR_MESSAGES, AUTH_TOKEN_STORAGE_KEY } from '../constants';
+import { clearAuthToken, persistAuthToken, readAuthToken } from '../../../utils/authToken';
+import { AUTH_ERROR_MESSAGES } from '../constants';
 import type {
   AuthContextValue,
   AuthProviderProps,
@@ -15,19 +16,6 @@ import { parseJsonSafely, resolveApiErrorMessage } from '../utils';
 
 const AuthContext = createContext<AuthContextValue | null>(null);
 
-const readStoredToken = (): string | null => localStorage.getItem(AUTH_TOKEN_STORAGE_KEY);
-
-const persistToken = (token: string) => {
-  localStorage.setItem(AUTH_TOKEN_STORAGE_KEY, token);
-};
-
-const clearStoredToken = () => {
-  localStorage.removeItem(AUTH_TOKEN_STORAGE_KEY);
-  // Drop the projects-list cache too; otherwise a different user logging in on
-  // the same browser would briefly see the previous user's projects.
-  localStorage.removeItem('projects-cache-v1');
-};
-
 export function useAuth(): AuthContextValue {
   const context = useContext(AuthContext);
   if (!context) {
@@ -39,7 +27,7 @@ export function useAuth(): AuthContextValue {
 
 export function AuthProvider({ children }: AuthProviderProps) {
   const [user, setUser] = useState<AuthUser | null>(null);
-  const [token, setToken] = useState<string | null>(() => readStoredToken());
+  const [token, setToken] = useState<string | null>(() => readAuthToken());
   const [isLoading, setIsLoading] = useState(true);
   const [needsSetup, setNeedsSetup] = useState(false);
   const [hasCompletedOnboarding, setHasCompletedOnboarding] = useState(true);
@@ -48,13 +36,13 @@ export function AuthProvider({ children }: AuthProviderProps) {
   const setSession = useCallback((nextUser: AuthUser, nextToken: string) => {
     setUser(nextUser);
     setToken(nextToken);
-    persistToken(nextToken);
+    persistAuthToken(nextToken);
   }, []);
 
   const clearSession = useCallback(() => {
     setUser(null);
     setToken(null);
-    clearStoredToken();
+    clearAuthToken();
   }, []);
 
   const checkOnboardingStatus = useCallback(async () => {

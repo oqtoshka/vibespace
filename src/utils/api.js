@@ -1,4 +1,5 @@
 import { IS_PLATFORM } from "../constants/config";
+import { persistAuthToken } from "./authToken";
 
 // Only accept a refreshed token that has this app's issued JWT shape
 // (three base64url segments). An attacker-injected/malformed header value
@@ -35,7 +36,7 @@ export const authenticatedFetch = (url, options = {}) => {
   }).then((response) => {
     const refreshedToken = response.headers.get('X-Refreshed-Token');
     if (isValidRefreshedToken(refreshedToken)) {
-      localStorage.setItem('auth-token', refreshedToken);
+      persistAuthToken(refreshedToken);
     }
     return response;
   });
