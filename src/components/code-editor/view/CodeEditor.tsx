@@ -16,6 +16,7 @@ import CodeEditorHeader from './subcomponents/CodeEditorHeader';
 import CodeEditorLoadingState from './subcomponents/CodeEditorLoadingState';
 import CodeEditorSurface from './subcomponents/CodeEditorSurface';
 import CodeEditorBinaryFile from './subcomponents/CodeEditorBinaryFile';
+import CodeEditorPdfView from './subcomponents/CodeEditorPdfView';
 
 type CodeEditorProps = {
   file: CodeEditorFile;
@@ -59,10 +60,20 @@ export default function CodeEditor({
     return extension === 'html' || extension === 'htm';
   }, [file.name]);
 
+  const isDbmlFile = useMemo(() => {
+    const extension = file.name.split('.').pop()?.toLowerCase();
+    return extension === 'dbml';
+  }, [file.name]);
+
+  const isPdfFile = useMemo(() => {
+    const extension = file.name.split('.').pop()?.toLowerCase();
+    return extension === 'pdf';
+  }, [file.name]);
+
   // Custom formats with a project renderer (e.g. *.flow.json → flow diagram).
   const isCustomRenderFile = useMemo(() => file.name.toLowerCase().endsWith('.flow.json'), [file.name]);
 
-  const isPreviewable = isMarkdownFile || isPlantUmlFile || isHtmlFile || isCustomRenderFile;
+  const isPreviewable = isMarkdownFile || isPlantUmlFile || isHtmlFile || isCustomRenderFile || isDbmlFile;
 
   // Default previewable files (markdown, PlantUML, HTML) to their rendered
   // preview when opened normally — via the file tree or a markdown link jump.
@@ -184,6 +195,20 @@ export default function CodeEditor({
     );
   }
 
+  // PDFs are detected as binary (so no text read happens) but render inline in
+  // the browser's native PDF viewer rather than the "cannot be displayed" screen.
+  if (isBinary && isPdfFile) {
+    return (
+      <CodeEditorPdfView
+        file={file}
+        isSidebar={isSidebar}
+        isFullscreen={isFullscreen}
+        onClose={onClose}
+        onToggleFullscreen={() => setIsFullscreen((previous) => !previous)}
+      />
+    );
+  }
+
   // Binary file display
   if (isBinary) {
     return (
@@ -258,6 +283,7 @@ export default function CodeEditor({
               previewMode={previewMode}
               isMarkdownFile={isMarkdownFile}
               isPlantUmlFile={isPlantUmlFile}
+              isDbmlFile={isDbmlFile}
               isHtmlFile={isHtmlFile}
               isCustomRenderFile={isCustomRenderFile}
               isDarkMode={isDarkMode}

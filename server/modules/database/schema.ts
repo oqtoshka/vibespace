@@ -112,6 +112,25 @@ CREATE TABLE IF NOT EXISTS app_config (
 );
 `;
 
+// Public, unguessable share links to project files. `file_path` is the absolute
+// resolved path on disk; the public routes re-validate it against the project
+// root before serving. `expires_at` NULL means permanent (until the file is
+// deleted). Project deletion isn't FK-cascaded — a dead project_id just resolves
+// to nothing and the link 404s.
+export const FILE_SHARES_TABLE_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS file_shares (
+    share_id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL,
+    file_path TEXT NOT NULL,
+    created_by_user_id INTEGER NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    expires_at DATETIME,
+    view_count INTEGER DEFAULT 0,
+    last_accessed DATETIME,
+    FOREIGN KEY (created_by_user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+`;
+
 export const INIT_SCHEMA_SQL = `
 -- Initialize authentication database
 PRAGMA foreign_keys = ON;
@@ -151,4 +170,7 @@ CREATE INDEX IF NOT EXISTS idx_session_ids_lookup ON sessions(session_id);
 ${LAST_SCANNED_AT_SQL}
 
 ${APP_CONFIG_TABLE_SCHEMA_SQL}
+
+${FILE_SHARES_TABLE_SCHEMA_SQL}
+CREATE INDEX IF NOT EXISTS idx_file_shares_project_file ON file_shares(project_id, file_path);
 `;

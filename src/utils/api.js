@@ -154,6 +154,13 @@ export const api = {
       body: JSON.stringify({ path, content }),
       signal,
     }),
+  // Renders a .dbml file's schema into an ER diagram (SVG) server-side.
+  renderDbml: (projectId, { path, content, signal } = {}) =>
+    authenticatedFetch(`/api/projects/${projectId}/dbml`, {
+      method: 'POST',
+      body: JSON.stringify({ path, content }),
+      signal,
+    }),
   // Resolves an HTML file's serving model (web root + aliases), sets a
   // path-scoped preview cookie, and returns the URL to load in the iframe.
   resolveHtmlPreview: (projectId, { path, signal } = {}) =>
@@ -182,6 +189,25 @@ export const api = {
     const query = params.toString();
     return authenticatedFetch(`/api/projects/${projectId}/files${query ? `?${query}` : ''}`, fetchOptions);
   },
+
+  // File share links (authenticated management).
+  createShare: (projectId, { path, expiresIn } = {}) =>
+    authenticatedFetch(`/api/projects/${projectId}/share`, {
+      method: 'POST',
+      body: JSON.stringify({ path, expiresIn: expiresIn ?? null }),
+    }),
+  listShares: (projectId, filePath) =>
+    authenticatedFetch(`/api/projects/${projectId}/shares?path=${encodeURIComponent(filePath)}`),
+  deleteShare: (projectId, shareId) =>
+    authenticatedFetch(`/api/projects/${projectId}/shares/${encodeURIComponent(shareId)}`, {
+      method: 'DELETE',
+    }),
+
+  // Public share access (no auth) — used by the standalone /share/:shareId page.
+  shareMeta: (shareId) => fetch(`/api/share/${encodeURIComponent(shareId)}/meta`),
+  shareRender: (shareId) => fetch(`/api/share/${encodeURIComponent(shareId)}/render`),
+  shareContentUrl: (shareId, { download = false } = {}) =>
+    `/api/share/${encodeURIComponent(shareId)}/content${download ? '?download' : ''}`,
 
   // File operations
   createFile: (projectId, { path, type, name }) =>

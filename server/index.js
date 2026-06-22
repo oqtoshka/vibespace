@@ -54,6 +54,7 @@ import {
 } from './opencode-cli.js';
 import sessionManager from './sessionManager.js';
 import { encodePlantUmlSource, inlinePlantUmlIncludes } from './utils/plantuml.js';
+import { renderDbmlToSvg } from './utils/dbml.js';
 import {
     stripAnsiSequences,
     normalizeDetectedUrl,
@@ -74,7 +75,8 @@ import geminiRoutes from './routes/gemini.js';
 import pluginsRoutes from './routes/plugins.js';
 import providerRoutes from './modules/providers/provider.routes.js';
 import { startEnabledPluginServers, stopAllPlugins, getPluginPort } from './utils/plugin-process-manager.js';
-import { initializeDatabase, projectsDb, sessionsDb } from './modules/database/index.js';
+import { initializeDatabase, projectsDb, sessionsDb, fileSharesDb } from './modules/database/index.js';
+import crypto from 'crypto';
 import { configureWebPush } from './services/vapid-keys.js';
 import { validateApiKey, authenticateToken, authenticateWebSocket, JWT_SECRET } from './middleware/auth.js';
 import jwt from 'jsonwebtoken';
@@ -704,6 +706,223 @@ app.post('/api/projects/:projectId/plantuml', authenticateToken, async (req, res
         res.json({ url: `${PLANTUML_SERVER_URL}/${format}/${code}` });
     } catch (error) {
         console.error('Error building PlantUML render:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// DBML preview: render a `.dbml` file's schema into an ER diagram (SVG) using
+// @softwaretechnik/dbml-renderer (the graphviz-via-wasm renderer the VSCode DBML
+// extensions use). `content` carries the live editor text so unsaved edits
+// preview; a parse error returns 400 with a readable message.
+app.post('/api/projects/:projectId/dbml', authenticateToken, async (req, res) => {
+    try {
+        const { projectId } = req.params;
+        const filePath = typeof req.body?.path === 'string' ? req.body.path : '';
+        const content = typeof req.body?.content === 'string' ? req.body.content : null;
+
+        const projectRoot = await projectsDb.getProjectPathById(projectId);
+        if (!projectRoot) {
+            return res.status(404).json({ error: 'Project not found' });
+        }
+
+        const validation = validatePathInProject(projectRoot, filePath);
+        if (!validation.valid) {
+            return res.status(400).json({ error: validation.error });
+        }
+
+        // Prefer live editor content; fall back to the file on disk.
+        let source = content;
+        if (source === null) {
+            source = await fsPromises.readFile(validation.resolved, 'utf8');
+        }
+        if (!source.trim()) {
+            return res.status(400).json({ error: 'Empty diagram' });
+        }
+
+        try {
+            const svg = renderDbmlToSvg(source);
+            res.json({ svg });
+        } catch (renderError) {
+            return res.status(400).json({ error: renderError.message || 'Invalid DBML' });
+        }
+    } catch (error) {
+        console.error('Error building DBML render:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// ── File share links ──────────────────────────────────────────────────────
+// Mint/list/revoke public, no-login links to a project file. Anyone with the
+// (unguessable) link reads the live file via the unauthenticated
+// /api/share/:shareId/* routes below; the link 404s once revoked/expired and
+// 410s once the underlying file is gone.
+const SHARE_EXPIRY_SECONDS = { '1h': 3600, '1d': 86400, '7d': 604800 };
+
+app.post('/api/projects/:projectId/share', authenticateToken, async (req, res) => {
+    try {
+        const { projectId } = req.params;
+        const filePath = typeof req.body?.path === 'string' ? req.body.path : '';
+        const expiresIn = req.body?.expiresIn ?? null; // '1h' | '1d' | '7d' | null (permanent)
+
+        const projectRoot = await projectsDb.getProjectPathById(projectId);
+        if (!projectRoot) {
+            return res.status(404).json({ error: 'Project not found' });
+        }
+        const validation = validatePathInProject(projectRoot, filePath);
+        if (!validation.valid) {
+            return res.status(400).json({ error: validation.error });
+        }
+        try {
+            const stat = await fsPromises.stat(validation.resolved);
+            if (!stat.isFile()) {
+                return res.status(400).json({ error: 'Only files can be shared' });
+            }
+        } catch {
+            return res.status(404).json({ error: 'File not found' });
+        }
+
+        let expiresAt = null;
+        if (expiresIn && SHARE_EXPIRY_SECONDS[expiresIn]) {
+            expiresAt = new Date(Date.now() + SHARE_EXPIRY_SECONDS[expiresIn] * 1000).toISOString();
+        }
+
+        const shareId = crypto.randomBytes(24).toString('base64url');
+        fileSharesDb.createShare({
+            shareId,
+            projectId,
+            filePath: validation.resolved,
+            userId: req.user.id,
+            expiresAt,
+        });
+        res.json({ shareId, expiresAt });
+    } catch (error) {
+        console.error('Error creating share:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get('/api/projects/:projectId/shares', authenticateToken, async (req, res) => {
+    try {
+        const { projectId } = req.params;
+        const filePath = typeof req.query?.path === 'string' ? req.query.path : '';
+        const projectRoot = await projectsDb.getProjectPathById(projectId);
+        if (!projectRoot) {
+            return res.status(404).json({ error: 'Project not found' });
+        }
+        const validation = validatePathInProject(projectRoot, filePath);
+        if (!validation.valid) {
+            return res.status(400).json({ error: validation.error });
+        }
+        const shares = fileSharesDb.listSharesForFile(projectId, validation.resolved).map((s) => ({
+            shareId: s.share_id,
+            createdAt: s.created_at,
+            expiresAt: s.expires_at,
+            viewCount: s.view_count,
+            lastAccessed: s.last_accessed,
+        }));
+        res.json({ shares });
+    } catch (error) {
+        console.error('Error listing shares:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.delete('/api/projects/:projectId/shares/:shareId', authenticateToken, async (req, res) => {
+    try {
+        const deleted = fileSharesDb.deleteShare(req.params.shareId, req.user.id);
+        if (!deleted) {
+            return res.status(404).json({ error: 'Share not found' });
+        }
+        res.json({ success: true });
+    } catch (error) {
+        console.error('Error deleting share:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Resolve an active share to its on-disk file, re-validating against the project
+// root and confirming the file still exists. Returns an error shape on any miss
+// so a stale/forbidden path never leaks. 410 = link valid but file deleted.
+async function resolveShare(shareId) {
+    const share = fileSharesDb.getActiveShare(shareId);
+    if (!share) return { status: 404, error: 'This link is invalid or has expired' };
+    const projectRoot = await projectsDb.getProjectPathById(share.project_id);
+    if (!projectRoot) return { status: 404, error: 'This link is invalid or has expired' };
+    const validation = validatePathInProject(projectRoot, share.file_path);
+    if (!validation.valid) return { status: 404, error: 'This link is invalid or has expired' };
+    try {
+        const stat = await fsPromises.stat(validation.resolved);
+        if (!stat.isFile()) return { status: 410, error: 'The shared file is no longer available' };
+        return { share, resolved: validation.resolved, size: stat.size };
+    } catch {
+        return { status: 410, error: 'The shared file is no longer available' };
+    }
+}
+
+// Public (no auth): metadata for a shared file. Only the basename is exposed —
+// never the absolute server path.
+app.get('/api/share/:shareId/meta', async (req, res) => {
+    try {
+        const result = await resolveShare(req.params.shareId);
+        if (result.error) return res.status(result.status).json({ error: result.error });
+        fileSharesDb.recordAccess(req.params.shareId);
+        res.json({
+            name: path.basename(result.resolved),
+            size: result.size,
+            mime: mime.lookup(result.resolved) || 'application/octet-stream',
+            expiresAt: result.share.expires_at,
+        });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Public (no auth): stream the shared file's bytes. `?download` forces a save.
+app.get('/api/share/:shareId/content', async (req, res) => {
+    try {
+        const result = await resolveShare(req.params.shareId);
+        if (result.error) return res.status(result.status).json({ error: result.error });
+        fileSharesDb.recordAccess(req.params.shareId);
+        const mimeType = mime.lookup(result.resolved) || 'application/octet-stream';
+        res.setHeader('Content-Type', mimeType);
+        if (req.query.download !== undefined) {
+            res.setHeader('Content-Disposition', `attachment; filename="${path.basename(result.resolved)}"`);
+        }
+        const fileStream = fs.createReadStream(result.resolved);
+        fileStream.pipe(res);
+        fileStream.on('error', () => {
+            if (!res.headersSent) res.status(500).json({ error: 'Error reading file' });
+        });
+    } catch (error) {
+        if (!res.headersSent) res.status(500).json({ error: error.message });
+    }
+});
+
+// Public (no auth): rendered artifact for previewable diagram types. Markdown is
+// rendered client-side from /content, so only puml/dbml need server rendering.
+app.get('/api/share/:shareId/render', async (req, res) => {
+    try {
+        const result = await resolveShare(req.params.shareId);
+        if (result.error) return res.status(result.status).json({ error: result.error });
+        const ext = path.extname(result.resolved).slice(1).toLowerCase();
+        const source = await fsPromises.readFile(result.resolved, 'utf8');
+        if (!source.trim()) return res.status(400).json({ error: 'Empty file' });
+
+        if (ext === 'dbml') {
+            try {
+                return res.json({ type: 'svg', svg: renderDbmlToSvg(source) });
+            } catch (renderError) {
+                return res.status(400).json({ error: renderError.message || 'Invalid DBML' });
+            }
+        }
+        if (ext === 'puml' || ext === 'plantuml' || ext === 'iuml' || ext === 'wsd') {
+            const projectRoot = await projectsDb.getProjectPathById(result.share.project_id);
+            const inlined = await inlinePlantUmlIncludes(source, path.dirname(result.resolved), projectRoot);
+            const code = encodePlantUmlSource(inlined);
+            return res.json({ type: 'url', url: `${PLANTUML_SERVER_URL}/svg/${code}` });
+        }
+        return res.status(400).json({ error: 'No renderer for this file type' });
+    } catch (error) {
         res.status(500).json({ error: error.message });
     }
 });

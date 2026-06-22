@@ -1,6 +1,8 @@
-import { Code2, Download, Eye, Maximize2, Minimize2, Save, Settings as SettingsIcon, X } from 'lucide-react';
+import { Code2, Download, Eye, Maximize2, Minimize2, Save, Settings as SettingsIcon, Share2, X } from 'lucide-react';
+import { useState } from 'react';
 import type { CodeEditorFile } from '../../types/types';
 import CodeEditorBreadcrumb from './CodeEditorBreadcrumb';
+import ShareFileDialog from './ShareFileDialog';
 
 type CodeEditorHeaderProps = {
   file: CodeEditorFile;
@@ -52,6 +54,8 @@ export default function CodeEditorHeader({
   labels,
 }: CodeEditorHeaderProps) {
   const saveTitle = saveSuccess ? labels.saved : saving ? labels.saving : labels.save;
+  const [shareOpen, setShareOpen] = useState(false);
+  const canShare = Boolean(file.projectId && file.path && !file.diffInfo);
 
   return (
     <div className="flex min-w-0 flex-shrink-0 items-center justify-between gap-2 border-b border-border px-3 py-1.5">
@@ -110,6 +114,17 @@ export default function CodeEditorHeader({
           <Download className="h-4 w-4" />
         </button>
 
+        {canShare && (
+          <button
+            type="button"
+            onClick={() => setShareOpen(true)}
+            className="flex items-center justify-center rounded-md p-1.5 text-gray-600 hover:bg-gray-100 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-white"
+            title="Share file"
+          >
+            <Share2 className="h-4 w-4" />
+          </button>
+        )}
+
         <button
           type="button"
           onClick={onSave}
@@ -150,6 +165,15 @@ export default function CodeEditorHeader({
           <X className="h-4 w-4" />
         </button>
       </div>
+
+      {shareOpen && file.projectId && (
+        <ShareFileDialog
+          projectId={file.projectId}
+          filePath={file.path}
+          fileName={file.name}
+          onClose={() => setShareOpen(false)}
+        />
+      )}
     </div>
   );
 }

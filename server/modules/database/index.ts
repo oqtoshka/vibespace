@@ -3,6 +3,7 @@ export { closeConnection, getConnection, getDatabasePath } from '@/modules/datab
 export { apiKeysDb } from '@/modules/database/repositories/api-keys.js';
 export { appConfigDb } from '@/modules/database/repositories/app-config.js';
 export { credentialsDb } from '@/modules/database/repositories/credentials.js';
+export { fileSharesDb } from '@/modules/database/repositories/file-shares.js';
 export { githubTokensDb } from '@/modules/database/repositories/github-tokens.js';
 export {
   notificationPreferencesDb,
