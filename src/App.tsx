@@ -8,7 +8,34 @@ import { TasksSettingsProvider } from './contexts/TasksSettingsContext';
 import { WebSocketProvider } from './contexts/WebSocketContext';
 import { PluginsProvider } from './contexts/PluginsContext';
 import AppContent from './components/app/AppContent';
+import SharedFileViewer from './components/share/SharedFileViewer';
 import i18n from './i18n/config.js';
+
+/**
+ * The authenticated application: all providers + the auth gate. Lives under a
+ * catch-all route so the public `/share/:shareId` viewer can render outside the
+ * auth gate and the authenticated WebSocket provider.
+ */
+function AuthedApp() {
+  return (
+    <AuthProvider>
+      <WebSocketProvider>
+        <PluginsProvider>
+          <TasksSettingsProvider>
+            <TaskMasterProvider>
+              <ProtectedRoute>
+                <Routes>
+                  <Route path="/" element={<AppContent />} />
+                  <Route path="/session/:sessionId" element={<AppContent />} />
+                </Routes>
+              </ProtectedRoute>
+            </TaskMasterProvider>
+          </TasksSettingsProvider>
+        </PluginsProvider>
+      </WebSocketProvider>
+    </AuthProvider>
+  );
+}
 
 const DEPLOYMENT_ASSET_DIRECTORIES = new Set(['assets', 'static', 'icons', 'images']);
 
@@ -106,24 +133,14 @@ export default function App() {
   return (
     <I18nextProvider i18n={i18n}>
       <ThemeProvider>
-        <AuthProvider>
-          <WebSocketProvider>
-            <PluginsProvider>
-              <TasksSettingsProvider>
-                <TaskMasterProvider>
-                <ProtectedRoute>
-                  <Router basename={routerBasename}>
-                    <Routes>
-                      <Route path="/" element={<AppContent />} />
-                      <Route path="/session/:sessionId" element={<AppContent />} />
-                    </Routes>
-                  </Router>
-                </ProtectedRoute>
-                </TaskMasterProvider>
-              </TasksSettingsProvider>
-            </PluginsProvider>
-          </WebSocketProvider>
-        </AuthProvider>
+        <Router basename={routerBasename}>
+          <Routes>
+            {/* Public, no-login file share viewer — rendered outside the auth gate. */}
+            <Route path="/share/:shareId" element={<SharedFileViewer />} />
+            {/* Everything else is the authenticated app. */}
+            <Route path="/*" element={<AuthedApp />} />
+          </Routes>
+        </Router>
       </ThemeProvider>
     </I18nextProvider>
   );

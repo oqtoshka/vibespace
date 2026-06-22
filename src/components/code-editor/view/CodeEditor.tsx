@@ -63,10 +63,20 @@ export default function CodeEditor({
     return extension === 'html' || extension === 'htm';
   }, [file.name]);
 
+  const isDbmlFile = useMemo(() => {
+    const extension = file.name.split('.').pop()?.toLowerCase();
+    return extension === 'dbml';
+  }, [file.name]);
+
+  const isPdfFile = useMemo(() => {
+    const extension = file.name.split('.').pop()?.toLowerCase();
+    return extension === 'pdf';
+  }, [file.name]);
+
   // Custom formats with a project renderer (e.g. *.flow.json → flow diagram).
   const isCustomRenderFile = useMemo(() => file.name.toLowerCase().endsWith('.flow.json'), [file.name]);
 
-  const isPreviewable = isMarkdownFile || isPlantUmlFile || isHtmlFile || isCustomRenderFile;
+  const isPreviewable = isMarkdownFile || isPlantUmlFile || isHtmlFile || isCustomRenderFile || isDbmlFile;
 
   // Default previewable files (markdown, PlantUML, HTML) to their rendered
   // preview when opened normally — via the file tree or a markdown link jump.
@@ -290,6 +300,7 @@ export default function CodeEditor({
               previewMode={previewMode}
               isMarkdownFile={isMarkdownFile}
               isPlantUmlFile={isPlantUmlFile}
+              isDbmlFile={isDbmlFile}
               isHtmlFile={isHtmlFile}
               isCustomRenderFile={isCustomRenderFile}
               isDarkMode={isDarkMode}
