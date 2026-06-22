@@ -6,6 +6,7 @@ import { cn } from '../../../lib/utils';
 import { ICON_SIZE_CLASS, getFileIconData } from '../constants/fileIcons';
 import { useExpandedDirectories } from '../hooks/useExpandedDirectories';
 import { useFileTreeData } from '../hooks/useFileTreeData';
+import { useProjectFilesWatch } from '../../../hooks/useProjectFilesWatch';
 import { useFileTreeOperations } from '../hooks/useFileTreeOperations';
 import { useFileTreeSearch } from '../hooks/useFileTreeSearch';
 import { useFileTreeViewMode } from '../hooks/useFileTreeViewMode';
@@ -50,7 +51,9 @@ export default function FileTree({ selectedProject, isActive = true, onFileOpen 
     }
   }, [toast]);
 
-  const { expandedDirs, toggleDirectory, expandDirectories, collapseAll } = useExpandedDirectories();
+  const { expandedDirs, toggleDirectory, expandDirectories, collapseAll } = useExpandedDirectories(
+    selectedProject?.projectId,
+  );
   const { files, loading, refreshFiles, loadDirectory, ensureFullTree, isFullTreeLoading } =
     useFileTreeData(selectedProject, expandedDirs);
 
@@ -63,6 +66,34 @@ export default function FileTree({ selectedProject, isActive = true, onFileOpen 
     }
     wasActiveRef.current = isActive;
   }, [isActive, refreshFiles]);
+
+  // Auto-refresh from server-pushed filesystem changes. Coalesce bursts and
+  // only refetch while the tab is visible — changes that land while it's hidden
+  // are picked up by the tab-return refresh above, so we avoid pointless work.
+  const isActiveRef = useRef(isActive);
+  isActiveRef.current = isActive;
+  const refreshDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const scheduleAutoRefresh = useCallback(() => {
+    if (!isActiveRef.current) {
+      return;
+    }
+    if (refreshDebounceRef.current) {
+      clearTimeout(refreshDebounceRef.current);
+    }
+    refreshDebounceRef.current = setTimeout(() => {
+      refreshDebounceRef.current = null;
+      refreshFiles();
+    }, 400);
+  }, [refreshFiles]);
+  useEffect(
+    () => () => {
+      if (refreshDebounceRef.current) {
+        clearTimeout(refreshDebounceRef.current);
+      }
+    },
+    [],
+  );
+  useProjectFilesWatch(selectedProject?.projectId, scheduleAutoRefresh);
 
   const { viewMode, changeViewMode } = useFileTreeViewMode();
   const { searchQuery, setSearchQuery, filteredFiles } = useFileTreeSearch({
