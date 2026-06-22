@@ -13,6 +13,9 @@ import { dbg } from '../../../utils/debugLog';
 
 const MESSAGES_PER_PAGE = 20;
 const INITIAL_VISIBLE_MESSAGES = 100;
+// How often to re-poll a session's processing state while a turn is believed in
+// flight, so a dropped terminal event can't pin the "Processing" banner open.
+const STUCK_PROCESSING_RECHECK_MS = 12_000;
 
 interface UseChatSessionStateArgs {
   selectedProject: Project | null;
@@ -618,6 +621,46 @@ export function useChatSessionState({
     sessionStore,
     isProcessing,
   ]);
+
+  // Ask the backend whether the active session still has a turn in flight. The
+  // reply (a `session-status` frame) drives isLoading through the realtime
+  // handler, reconciling a stale "Processing" banner when a live `complete` was
+  // missed (socket asleep on mobile, dropped during a reconnect window). The
+  // check also re-attaches this socket as the session writer server-side, so a
+  // later completion still streams here.
+  const recheckSessionStatus = useCallback(() => {
+    if (!ws || !selectedSession) return;
+    const provider =
+      (selectedSession.__provider as LLMProvider) ||
+      (localStorage.getItem('selected-provider') as LLMProvider) ||
+      'claude';
+    sendMessage({ type: 'check-session-status', sessionId: selectedSession.id, provider });
+  }, [ws, sendMessage, selectedSession]);
+
+  // Re-check when the tab regains focus/visibility — the usual moment a missed
+  // terminal surfaces (returning to a tab that streamed while backgrounded).
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') recheckSessionStatus();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('focus', recheckSessionStatus);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('focus', recheckSessionStatus);
+    };
+  }, [recheckSessionStatus]);
+
+  // Watchdog: while a turn is believed in flight, poll status so a lost
+  // `complete` self-heals within one interval rather than hanging forever. The
+  // first tick is a full interval out, by which point a genuinely-running turn
+  // has registered as active server-side — so this never false-clears a real
+  // turn right after send.
+  useEffect(() => {
+    if (!isLoading || !selectedSession || !ws) return;
+    const id = window.setInterval(recheckSessionStatus, STUCK_PROCESSING_RECHECK_MS);
+    return () => window.clearInterval(id);
+  }, [isLoading, selectedSession, ws, recheckSessionStatus]);
 
   // Search navigation target
   useEffect(() => {

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { NavigateFunction } from 'react-router-dom';
 
+import { useWebSocketEvent } from '../contexts/WebSocketContext';
 import { api } from '../utils/api';
 import type { ServerEvent } from '../contexts/WebSocketContext';
 import type {
