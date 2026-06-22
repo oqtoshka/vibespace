@@ -118,6 +118,7 @@ export const sessionsDb = {
            updated_at = COALESCE(?, CURRENT_TIMESTAMP),
            project_path = ?,
            jsonl_path = ?,
+           worktree_path = ?,
            isArchived = 0,
            custom_name = COALESCE(?, custom_name)
          WHERE session_id = ?`
@@ -126,6 +127,7 @@ export const sessionsDb = {
         updatedAtValue,
         normalizedProjectPath,
         jsonlPath ?? null,
+        worktreePath,
         customName ?? null,
         existing.session_id
       );

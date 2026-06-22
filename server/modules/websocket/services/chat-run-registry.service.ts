@@ -248,6 +248,66 @@ export const chatRunRegistry = {
     return run;
   },
 
+  /**
+   * Opens a server-initiated run for a background auto-resume turn — a turn the
+   * agent runs on its own when a `run_in_background` job completes, with no
+   * client `chat.send` behind it. Returns the run's writer (whose events
+   * broadcast to every connected client, since there is no single originating
+   * socket), or `null` when a run is already active for the session (the caller
+   * then keeps streaming to the current run instead).
+   */
+  startResumeRun(appSessionId: string): ChatSessionWriter | null {
+    const existing = runs.get(appSessionId);
+    if (existing && existing.status === 'running') {
+      return null;
+    }
+
+    const row = sessionsDb.getSessionById(appSessionId);
+    const provider = (row?.provider as LLMProvider) ?? 'claude';
+    const providerSessionId = row?.provider_session_id ?? null;
+
+    // No single originating socket for a server-initiated resume, so fan out to
+    // every connected client; the ones viewing this session render the stream,
+    // the rest ignore a session id they don't track. A later `chat.subscribe`
+    // re-attaches a specific socket (replacing this broadcast) for replay.
+    const broadcast = {
+      readyState: WS_OPEN_STATE,
+      send: (data: string) => {
+        connectedClients.forEach((client) => {
+          if (client.readyState === WS_OPEN_STATE) {
+            client.send(data);
+          }
+        });
+      },
+    } as unknown as RealtimeClientConnection;
+
+    const run: ChatRun = {
+      appSessionId,
+      provider,
+      providerSessionId,
+      status: 'running',
+      lastSeq: 0,
+      events: [],
+      writer: null as unknown as ChatSessionWriter,
+      startedAt: Date.now(),
+      completedAt: null,
+    };
+
+    run.writer = new ChatSessionWriter({
+      connection: broadcast,
+      userId: null,
+      provider,
+      providerSessionId,
+      onProviderSessionId: (id) => {
+        recordProviderSessionId(run, id);
+      },
+      decorateOutboundEvent: (message) => decorateAndRecordEvent(run, message),
+    });
+
+    runs.set(appSessionId, run);
+    return run.writer;
+  },
+
   getRun(appSessionId: string): ChatRun | undefined {
     return runs.get(appSessionId);
   },

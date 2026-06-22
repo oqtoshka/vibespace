@@ -12,17 +12,11 @@ import type {
 import { useDropzone } from 'react-dropzone';
 
 import { authenticatedFetch } from '../../../utils/api';
-import type { MarkSessionProcessing } from '../../../hooks/useSessionProtection';
 import { downscaleImageFiles } from '../../../utils/imageDownscale';
 import { readActiveWorktree, bindSessionCwd, getSessionCwd } from '../../../hooks/useActiveWorktree';
+import type { MarkSessionProcessing } from '../../../hooks/useSessionProtection';
 import { grantClaudeToolPermission } from '../utils/chatPermissions';
-import {
-  clearQueuedMessage,
-  readQueuedMessage,
-  safeLocalStorage,
-  writeQueuedMessage,
-  type QueuedSendOptions,
-} from '../utils/chatStorage';
+import { safeLocalStorage } from '../utils/chatStorage';
 import type {
   ChatMessage,
   PendingPermissionRequest,
@@ -42,11 +36,10 @@ interface UseChatComposerStateArgs {
   provider: LLMProvider;
   permissionMode: PermissionMode | string;
   cyclePermissionMode: () => void;
-  resolvePermissionModeForProvider: (provider: LLMProvider, requestedMode: PermissionMode | string) => PermissionMode;
   cursorModel: string;
   claudeModel: string;
   codexModel: string;
-  currentProviderEffort: string;
+  geminiModel: string;
   opencodeModel: string;
   isLoading: boolean;
   canAbortSession: boolean;
@@ -71,8 +64,8 @@ interface UseChatComposerStateArgs {
   setPendingPermissionRequests: Dispatch<SetStateAction<PendingPermissionRequest[]>>;
   /**
    * Optimistically drops the rewound message and everything after it from the
-   * visible transcript before the edited message is resent. Wired to the session
-   * store's `rewindTo`.
+   * visible transcript before the edited message is resent. Wired to the
+   * session store's `rewindTo`.
    */
   onRewindTruncate?: (sessionId: string, messageUuid: string) => void;
 }
@@ -82,11 +75,15 @@ interface MentionableFile {
   path: string;
 }
 
+/** A message captured while a run was processing, awaiting auto-send when idle. */
 export interface QueuedMessage {
   id: string;
   content: string;
   images: File[];
 }
+
+// Cap the pending queue so a runaway loop can't accumulate unbounded sends.
+const MAX_QUEUED_MESSAGES = 20;
 
 interface CommandExecutionResult {
   type: 'builtin' | 'custom';
@@ -164,23 +161,6 @@ const createFakeSubmitEvent = () => {
   return { preventDefault: () => undefined } as unknown as FormEvent<HTMLFormElement>;
 };
 
-export type QueuedDraft = {
-  content: string;
-  images: File[];
-  /**
-   * Send options snapshotted at queue time. Persisted with the draft so the
-   * app-level auto-send can dispatch the message with the right model and
-   * permission settings while another session is being viewed.
-   */
-  options?: QueuedSendOptions;
-};
-
-const restoreQueuedDraft = (sessionKey: string): QueuedDraft | null => {
-  const saved = readQueuedMessage(sessionKey);
-  // Image attachments can't survive a reload; only text and options persist.
-  return saved ? { content: saved.content, images: [], options: saved.options } : null;
-};
-
 const getNotificationSessionSummary = (
   selectedSession: ProjectSession | null,
   fallbackInput: string,
@@ -206,11 +186,10 @@ export function useChatComposerState({
   provider,
   permissionMode,
   cyclePermissionMode,
-  resolvePermissionModeForProvider,
   cursorModel,
   claudeModel,
   codexModel,
-  currentProviderEffort,
+  geminiModel,
   opencodeModel,
   isLoading,
   canAbortSession,
@@ -237,53 +216,19 @@ export function useChatComposerState({
     return '';
   });
   const [attachedImages, setAttachedImages] = useState<File[]>([]);
+  const [queuedMessages, setQueuedMessages] = useState<QueuedMessage[]>([]);
   const [uploadingImages, setUploadingImages] = useState<Map<string, number>>(new Map());
   const [imageErrors, setImageErrors] = useState<Map<string, string>>(new Map());
   const [isTextareaExpanded, setIsTextareaExpanded] = useState(false);
   const [commandModalPayload, setCommandModalPayload] = useState<CommandModalPayload | null>(null);
-  const [queuedMessages, setQueuedMessages] = useState<QueuedMessage[]>([]);
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const inputHighlightRef = useRef<HTMLDivElement>(null);
-  const textareaLineHeightRef = useRef<number | null>(null);
-  const lastAutosizedInputRef = useRef<string | null>(null);
   const handleSubmitRef = useRef<
     ((event: FormEvent<HTMLFormElement> | MouseEvent | TouchEvent | KeyboardEvent<HTMLTextAreaElement>) => Promise<void>) | null
   >(null);
   const inputValueRef = useRef(input);
-  const lastSubmitAtRef = useRef(0);
-  const queueIdRef = useRef(0);
-  const lastSentRef = useRef<{ content: string; images: File[] } | null>(null);
-  // restoreFailedSend is defined later; call through a ref so runSubmit (above
-  // it) can use it without a temporal-dead-zone hazard in its deps.
-  const restoreFailedSendRef = useRef<() => void>(() => {});
-  // Holds the worktree cwd chosen for a brand-new session until its real id
-  // arrives (then we bind it, so later messages keep the same cwd).
-  const pendingNewSessionCwdRef = useRef<string | null>(null);
   const selectedProjectId = selectedProject?.projectId;
-  // Prefer the stable backend-allocated id (selectedSession.id) but fall back
-  // to currentSessionId for a just-established session that hasn't been
-  // handed back to the parent's `selectedSession` prop yet.
-  const sessionKey = selectedSession?.id || currentSessionId || null;
-
-  const [queuedDraft, setQueuedDraft] = useState<QueuedDraft | null>(() => {
-    if (typeof window === 'undefined' || !sessionKey) {
-      return null;
-    }
-    return restoreQueuedDraft(sessionKey);
-  });
-  // Which session the in-memory `queuedDraft` belongs to. On a session switch
-  // there is one commit where `sessionKey` already points at the new session
-  // while `queuedDraft` still holds the old session's draft; the persistence
-  // effect must not write across that gap.
-  const queuedDraftSessionRef = useRef<string | null>(sessionKey);
-
-  useEffect(() => {
-    if (currentSessionId && pendingNewSessionCwdRef.current && !getSessionCwd(currentSessionId)) {
-      bindSessionCwd(currentSessionId, pendingNewSessionCwdRef.current);
-      pendingNewSessionCwdRef.current = null;
-    }
-  }, [currentSessionId]);
 
   const handleBuiltInCommand = useCallback(
     (result: CommandExecutionResult) => {
@@ -405,7 +350,9 @@ export function useChatComposerState({
             ? cursorModel
             : provider === 'codex'
               ? codexModel
-              : provider === 'opencode'
+              : provider === 'gemini'
+                ? geminiModel
+                : provider === 'opencode'
                   ? opencodeModel
                   : claudeModel,
           tokenUsage: tokenBudget,
@@ -460,6 +407,7 @@ export function useChatComposerState({
       codexModel,
       currentSessionId,
       cursorModel,
+      geminiModel,
       opencodeModel,
       handleBuiltInCommand,
       handleCustomCommand,
@@ -527,22 +475,6 @@ export function useChatComposerState({
     }
     inputHighlightRef.current.scrollTop = target.scrollTop;
     inputHighlightRef.current.scrollLeft = target.scrollLeft;
-  }, []);
-
-  const resizeTextarea = useCallback((target: HTMLTextAreaElement) => {
-    target.style.height = 'auto';
-    const nextHeight = Math.max(22, target.scrollHeight);
-    target.style.height = `${nextHeight}px`;
-
-    let lineHeight = textareaLineHeightRef.current;
-    if (!lineHeight) {
-      lineHeight = parseInt(window.getComputedStyle(target).lineHeight);
-      textareaLineHeightRef.current = Number.isFinite(lineHeight) ? lineHeight : 24;
-    }
-
-    const expanded = nextHeight > (textareaLineHeightRef.current || 24) * 2;
-    setIsTextareaExpanded((previous) => previous === expanded ? previous : expanded);
-    lastAutosizedInputRef.current = target.value;
   }, []);
 
   const handleImageFiles = useCallback((files: File[]) => {
@@ -615,178 +547,55 @@ export function useChatComposerState({
     noKeyboard: true,
   });
 
-  // Snapshot of everything `chat.send` needs beyond the text itself. Built at
-  // send time for immediate sends and at queue time for queued ones, so a
-  // queued message keeps the provider settings it was composed under even if
-  // it is later dispatched outside this composer (app-level auto-send).
-  const buildSendOptions = useCallback((currentInput: string): QueuedSendOptions => {
-    const getToolsSettings = () => {
-      try {
-        const settingsKey =
-          provider === 'cursor'
-            ? 'cursor-tools-settings'
-            : provider === 'codex'
-              ? 'codex-settings'
-              : provider === 'opencode'
-                  ? 'opencode-settings'
-                : 'claude-settings';
-        const savedSettings = safeLocalStorage.getItem(settingsKey);
-        if (savedSettings) {
-          return JSON.parse(savedSettings);
-        }
-      } catch (error) {
-        console.error('Error loading tools settings:', error);
+  // Reset the composer fields after a message is captured for sending/queueing.
+  const clearComposer = useCallback(() => {
+    setInput('');
+    inputValueRef.current = '';
+    resetCommandMenuState();
+    setAttachedImages([]);
+    setUploadingImages(new Map());
+    setImageErrors(new Map());
+    setIsTextareaExpanded(false);
+    if (textareaRef.current) {
+      textareaRef.current.style.height = 'auto';
+    }
+    if (selectedProjectId) {
+      safeLocalStorage.removeItem(`draft_input_${selectedProjectId}`);
+    }
+  }, [resetCommandMenuState, selectedProjectId]);
+
+  /**
+   * Core send: uploads attachments, resolves (or allocates) the session, marks
+   * it processing, and dispatches the unified chat.send. Returns false when the
+   * send could not be started (upload/session-creation failure) so the caller
+   * can keep the composer contents instead of clearing them.
+   */
+  const runSubmit = useCallback(
+    async (content: string, images: File[]): Promise<boolean> => {
+      if (!selectedProject) {
+        return false;
       }
-
-      return {
-        allowedTools: [],
-        disallowedTools: [],
-        skipPermissions: false,
-      };
-    };
-
-    const toolsSettings = getToolsSettings();
-    const model =
-      provider === 'cursor'
-        ? cursorModel
-        : provider === 'codex'
-          ? codexModel
-          : provider === 'opencode'
-            ? opencodeModel
-            : claudeModel;
-
-    return {
-      model,
-      effort: currentProviderEffort,
-      permissionMode: resolvePermissionModeForProvider(provider, permissionMode),
-      toolsSettings,
-      skipPermissions: toolsSettings?.skipPermissions || false,
-      sessionSummary: getNotificationSessionSummary(selectedSession, currentInput),
-    };
-  }, [
-    claudeModel,
-    codexModel,
-    currentProviderEffort,
-    cursorModel,
-    opencodeModel,
-    permissionMode,
-    provider,
-    resolvePermissionModeForProvider,
-    selectedSession,
-  ]);
-
-  const handleSubmit = useCallback(
-    async (
-      event: FormEvent<HTMLFormElement> | MouseEvent | TouchEvent | KeyboardEvent<HTMLTextAreaElement>,
-    ) => {
-      event.preventDefault();
-      // Re-entry guard: a single tap on the submit button can fire onTouchStart,
-      // onMouseDown, and the form's onSubmit in sequence (~100-250ms apart on
-      // iOS Safari), each calling this handler. Suppress duplicates within 500ms.
-      const now = Date.now();
-      if (now - lastSubmitAtRef.current < 500) {
-        return;
-      }
-      lastSubmitAtRef.current = now;
-      const currentInput = inputValueRef.current;
-      if (!currentInput.trim() || !selectedProject) {
-        return;
-      }
-
-      // A turn is already in flight: stash this message instead of sending it.
-      // It's auto-flushed (re-running this same function) once the turn ends,
-      // so it still goes through slash-command interception, image upload, etc.
-      if (isLoading) {
-        queuedDraftSessionRef.current = sessionKey;
-        setQueuedDraft({
-          content: currentInput,
-          images: attachedImages,
-          options: buildSendOptions(currentInput),
-        });
-        setInput('');
-        inputValueRef.current = '';
-        setAttachedImages([]);
-        setUploadingImages(new Map());
-        setImageErrors(new Map());
-        resetCommandMenuState();
-        setIsTextareaExpanded(false);
-        if (textareaRef.current) {
-          textareaRef.current.style.height = 'auto';
-        }
-        // selectedProject is guaranteed by the guard at the top of handleSubmit.
-        safeLocalStorage.removeItem(`draft_input_${selectedProject.projectId}`);
-        return;
-      }
-
-      // Intercept slash commands only when "/" is the first input character.
-      // Also accept exact "help" as a convenience alias for users who expect CLI-style help.
-      const commandInput = rawContent.trimEnd();
-      const isHelpAlias = commandInput.trim().toLowerCase() === 'help';
-      if (commandInput.startsWith('/') || isHelpAlias) {
-        const firstSpace = commandInput.indexOf(' ');
-        const commandName = isHelpAlias
-          ? '/help'
-          : firstSpace > 0 ? commandInput.slice(0, firstSpace) : commandInput;
-        const matchedCommand =
-          slashCommands.find((cmd: SlashCommand) => cmd.name === commandName) ||
-          (commandName === '/help'
-            ? ({
-                name: '/help',
-                description: 'Show help documentation for Claude Code',
-                namespace: 'builtin',
-                metadata: { type: 'builtin' },
-              } as SlashCommand)
-            : undefined);
-        if (matchedCommand && matchedCommand.type !== 'skill') {
-          executeCommand(matchedCommand, isHelpAlias ? '/help' : commandInput);
-          return;
-        }
-      }
-
-      // Remember what we're sending so a failed send can restore it to the
-      // composer instead of silently losing the user's text.
-      lastSentRef.current = { content: rawContent, images };
-
-      const messageContent = rawContent;
 
       let uploadedImages: unknown[] = [];
       if (images.length > 0) {
+        // Phone photos routinely exceed the 5MB cap and the proxy body limit.
+        // Re-encode/bound them client-side before upload (no-op when already
+        // small, original kept on any decode/encode failure).
+        const filesToUpload = await downscaleImageFiles(images);
+        const formData = new FormData();
+        filesToUpload.forEach((file) => {
+          formData.append('images', file);
+        });
+
         try {
-          // Shrink phone-sized photos before upload so they fit under the
-          // server (5MB) and reverse-proxy body limits, and to skip wasting
-          // mobile bandwidth on resolution Claude downsamples away anyway.
-          const prepared = await downscaleImageFiles(images);
-
-          const formData = new FormData();
-          prepared.forEach((file) => {
-            formData.append('images', file);
-          });
-
-          const response = await authenticatedFetch('/api/assets/images', {
+          const response = await authenticatedFetch(`/api/projects/${selectedProject.projectId}/upload-images`, {
             method: 'POST',
             headers: {},
             body: formData,
           });
 
           if (!response.ok) {
-            // Surface the actual reason instead of a generic message: 413 is a
-            // body-size limit (proxy/server), 400 is usually an unsupported
-            // type, etc. The server returns { error } for app-level failures;
-            // proxy-level rejections (e.g. nginx 413) have no JSON body.
-            let detail = '';
-            try {
-              const body = await response.json();
-              detail = typeof body?.error === 'string' ? body.error : '';
-            } catch {
-              detail = '';
-            }
-            if (!detail) {
-              detail =
-                response.status === 413
-                  ? 'Image too large for the server to accept.'
-                  : `Upload failed (HTTP ${response.status}).`;
-            }
-            throw new Error(detail);
+            throw new Error('Failed to upload images');
           }
 
           const result = await response.json();
@@ -799,15 +608,12 @@ export function useChatComposerState({
             content: `Failed to upload images: ${message}`,
             timestamp: new Date(),
           });
-          // Put the message + attachments back in the composer so a failed
-          // upload doesn't silently discard what the user typed.
-          restoreFailedSendRef.current();
-          return;
+          return false;
         }
       }
 
       const resolvedProjectPath = selectedProject.fullPath || selectedProject.path || '';
-      const sessionSummary = getNotificationSessionSummary(selectedSession, currentInput);
+      const sessionSummary = getNotificationSessionSummary(selectedSession, content);
 
       // The conversation always has a stable backend-allocated session id
       // BEFORE the first websocket send: brand-new chats allocate one here
@@ -836,7 +642,7 @@ export function useChatComposerState({
             content: `Failed to start a new session: ${message}`,
             timestamp: new Date(),
           });
-          return;
+          return false;
         }
 
         if (!targetSessionId) {
@@ -845,7 +651,7 @@ export function useChatComposerState({
             content: 'Failed to start a new session: no session id returned.',
             timestamp: new Date(),
           });
-          return;
+          return false;
         }
 
         onSessionEstablished?.(targetSessionId, {
@@ -855,9 +661,23 @@ export function useChatComposerState({
         });
       }
 
+      // Worktree-aware cwd. An existing session resolves to its pinned worktree
+      // (or a stable binding made earlier this page session); a brand-new
+      // session resolves to the project's active worktree. bindSessionCwd keeps
+      // the cwd stable across a session's messages before the server-synced
+      // worktreePath is available. `null` worktree falls back to the project.
+      const isExistingSession = Boolean(selectedSession?.id || currentSessionId);
+      const sessionWorktreePath = (selectedSession?.worktreePath as string | null | undefined) ?? null;
+      const effectiveCwd =
+        getSessionCwd(targetSessionId) ||
+        (isExistingSession
+          ? sessionWorktreePath || resolvedProjectPath
+          : readActiveWorktree(selectedProject.projectId)?.path || resolvedProjectPath);
+      bindSessionCwd(targetSessionId, effectiveCwd);
+
       const userMessage: ChatMessage = {
         type: 'user',
-        content: rawContent,
+        content,
         images: uploadedImages as any,
         timestamp: new Date(),
       };
@@ -874,69 +694,216 @@ export function useChatComposerState({
       setIsUserScrolledUp(false);
       setTimeout(() => scrollToBottom(), 100);
 
+      const getToolsSettings = () => {
+        try {
+          const settingsKey =
+            provider === 'cursor'
+              ? 'cursor-tools-settings'
+              : provider === 'codex'
+                ? 'codex-settings'
+                : provider === 'gemini'
+                  ? 'gemini-settings'
+                  : provider === 'opencode'
+                    ? 'opencode-settings'
+                  : 'claude-settings';
+          const savedSettings = safeLocalStorage.getItem(settingsKey);
+          if (savedSettings) {
+            return JSON.parse(savedSettings);
+          }
+        } catch (error) {
+          console.error('Error loading tools settings:', error);
+        }
+
+        return {
+          allowedTools: [],
+          disallowedTools: [],
+          skipPermissions: false,
+        };
+      };
+
+      const toolsSettings = getToolsSettings();
+      const model =
+        provider === 'cursor'
+          ? cursorModel
+          : provider === 'codex'
+            ? codexModel
+            : provider === 'gemini'
+              ? geminiModel
+              : provider === 'opencode'
+                ? opencodeModel
+                : claudeModel;
+
       // One message shape for every provider. The backend resolves the
       // provider, project path, and provider-native resume id from the
       // session row; `options` only carries composer-level preferences.
       sendMessage({
         type: 'chat.send',
         sessionId: targetSessionId,
-        content: messageContent,
+        content,
         options: {
-          ...buildSendOptions(messageContent),
+          cwd: effectiveCwd,
+          model,
+          // Codex has no plan mode; downgrade rather than sending an
+          // unsupported value to its runtime.
+          permissionMode: provider === 'codex' && permissionMode === 'plan' ? 'default' : permissionMode,
+          toolsSettings,
+          skipPermissions: toolsSettings?.skipPermissions || false,
+          sessionSummary,
           images: uploadedImages,
         },
       });
 
-      setInput('');
-      inputValueRef.current = '';
-      resetCommandMenuState();
-      setAttachedImages([]);
-      setUploadingImages(new Map());
-      setImageErrors(new Map());
-      setIsTextareaExpanded(false);
-
-      if (textareaRef.current) {
-        textareaRef.current.style.height = 'auto';
-      }
-
-      safeLocalStorage.removeItem(`draft_input_${selectedProject.projectId}`);
+      return true;
     },
     [
       selectedSession,
-      attachedImages,
-      buildSendOptions,
+      claudeModel,
+      codexModel,
       currentSessionId,
-      executeCommand,
-      isLoading,
+      cursorModel,
+      geminiModel,
+      opencodeModel,
       onSessionProcessing,
       onSessionEstablished,
+      permissionMode,
       provider,
       scrollToBottom,
       selectedProject,
       sendMessage,
-      sessionKey,
       addMessage,
       setIsUserScrolledUp,
+    ],
+  );
+
+  const handleSubmit = useCallback(
+    async (
+      event: FormEvent<HTMLFormElement> | MouseEvent | TouchEvent | KeyboardEvent<HTMLTextAreaElement>,
+    ) => {
+      event.preventDefault();
+      const currentInput = inputValueRef.current;
+      if (!currentInput.trim() || !selectedProject) {
+        return;
+      }
+
+      // Intercept slash commands only when "/" is the first input character.
+      // Also accept exact "help" as a convenience alias for users who expect CLI-style help.
+      const commandInput = currentInput.trimEnd();
+      const isHelpAlias = commandInput.trim().toLowerCase() === 'help';
+      if (commandInput.startsWith('/') || isHelpAlias) {
+        const firstSpace = commandInput.indexOf(' ');
+        const commandName = isHelpAlias
+          ? '/help'
+          : firstSpace > 0 ? commandInput.slice(0, firstSpace) : commandInput;
+        const matchedCommand =
+          slashCommands.find((cmd: SlashCommand) => cmd.name === commandName) ||
+          (commandName === '/help'
+            ? ({
+                name: '/help',
+                description: 'Show help documentation for Claude Code',
+                namespace: 'builtin',
+                metadata: { type: 'builtin' },
+              } as SlashCommand)
+            : undefined);
+        if (matchedCommand && matchedCommand.type !== 'skill') {
+          executeCommand(matchedCommand, isHelpAlias ? '/help' : commandInput);
+          clearComposer();
+          return;
+        }
+      }
+
+      // While a run is processing, queue the message instead of dropping it; the
+      // dequeue effect auto-sends queued items in order once the session goes
+      // idle. The composer clears immediately so the user can keep typing.
+      if (isLoading) {
+        const queued: QueuedMessage = {
+          id: `queued_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+          content: currentInput,
+          images: attachedImages,
+        };
+        setQueuedMessages((previous) => [...previous, queued].slice(-MAX_QUEUED_MESSAGES));
+        clearComposer();
+        return;
+      }
+
+      const content = currentInput;
+      const images = attachedImages;
+      clearComposer();
+      const ok = await runSubmit(content, images);
+      if (!ok) {
+        // Restore the unsent text/attachments so a failed send isn't lost.
+        setInput(content);
+        inputValueRef.current = content;
+        setAttachedImages(images);
+      }
+    },
+    [
+      attachedImages,
+      clearComposer,
+      executeCommand,
+      isLoading,
+      runSubmit,
+      selectedProject,
       slashCommands,
     ],
   );
+
+  // Auto-send the next queued message once the session goes idle. The ref
+  // guards against the brief window after dispatch where `isLoading` has not
+  // yet flipped true — without it, a queue-state re-render would dequeue a
+  // second message before the first run started.
+  const awaitingProcessingRef = useRef(false);
+  useEffect(() => {
+    if (isLoading) {
+      awaitingProcessingRef.current = false;
+      return;
+    }
+    if (awaitingProcessingRef.current || queuedMessages.length === 0) {
+      return;
+    }
+    const next = queuedMessages[0];
+    awaitingProcessingRef.current = true;
+    setQueuedMessages((previous) => previous.slice(1));
+    void runSubmit(next.content, next.images).then((ok) => {
+      if (!ok) {
+        // Send failed (error already surfaced); release the guard so the
+        // remaining queue can still drain instead of stalling forever.
+        awaitingProcessingRef.current = false;
+      }
+    });
+  }, [isLoading, queuedMessages, runSubmit]);
+
+  const removeQueuedMessage = useCallback((id: string) => {
+    setQueuedMessages((previous) => previous.filter((message) => message.id !== id));
+  }, []);
+
+  useEffect(() => {
+    handleSubmitRef.current = handleSubmit;
+  }, [handleSubmit]);
 
   /**
    * Rewind / edit-in-place: re-send an edited past user message, dropping that
    * message and everything after it. Only Claude and OpenCode sessions support
    * it (their transcripts can be truncated in place); other providers never
-   * surface the affordance because their messages carry no `uuid` anchor.
+   * surface the affordance because their messages carry no `uuid` anchor. The
+   * `rewind` anchor rides in the chat.send options; the backend truncates the
+   * transcript at the anchor, then resumes in-place from that point.
    */
   const rewindMessage = useCallback(
     (message: ChatMessage, newContent: string) => {
       const rewindUuid = typeof message.uuid === 'string' ? message.uuid : null;
       const content = newContent.trim();
-      if (!rewindUuid || !content || !selectedProject) return;
-      if (provider !== 'claude' && provider !== 'opencode') return;
+      if (!rewindUuid || !content || !selectedProject) {
+        return;
+      }
+      if (provider !== 'claude' && provider !== 'opencode') {
+        return;
+      }
 
-      const effectiveSessionId = currentSessionId || selectedSession?.id || null;
       // Rewind only makes sense for an already-persisted session.
-      if (!effectiveSessionId) return;
+      const effectiveSessionId = selectedSession?.id || currentSessionId || null;
+      if (!effectiveSessionId) {
+        return;
+      }
 
       // Carry the original attachments over unchanged (already data URLs).
       const images = Array.isArray(message.images) ? message.images : [];
@@ -950,19 +917,21 @@ export function useChatComposerState({
         images: images as ChatMessage['images'],
         timestamp: new Date(),
       });
-      setIsLoading(true);
-      setCanAbortSession(true);
-      setClaudeStatus({ text: 'Processing', tokens: 0, can_interrupt: true });
+      onSessionProcessing?.(effectiveSessionId, { statusText: null, canInterrupt: true });
       setIsUserScrolledUp(false);
       setTimeout(() => scrollToBottom(), 100);
-      onSessionActive?.(effectiveSessionId);
-      onSessionProcessing?.(effectiveSessionId);
 
-      let toolsSettings: unknown = { allowedTools: [], disallowedTools: [], skipPermissions: false };
+      let toolsSettings: Record<string, unknown> = {
+        allowedTools: [],
+        disallowedTools: [],
+        skipPermissions: false,
+      };
       try {
         const settingsKey = provider === 'opencode' ? 'opencode-settings' : 'claude-settings';
         const saved = safeLocalStorage.getItem(settingsKey);
-        if (saved) toolsSettings = JSON.parse(saved);
+        if (saved) {
+          toolsSettings = JSON.parse(saved);
+        }
       } catch (error) {
         console.error('Error loading tools settings:', error);
       }
@@ -974,40 +943,24 @@ export function useChatComposerState({
         getSessionCwd(effectiveSessionId) || sessionWorktreePath || resolvedProjectPath;
       bindSessionCwd(effectiveSessionId, effectiveCwd);
 
-      if (provider === 'opencode') {
-        sendMessage({
-          type: 'opencode-command',
-          command: content,
-          sessionId: effectiveSessionId,
-          options: {
-            cwd: effectiveCwd,
-            projectPath: effectiveCwd,
-            sessionId: effectiveSessionId,
-            resume: true,
-            model: opencodeModel,
-            sessionSummary,
-            images,
-            rewind: rewindUuid,
-          },
-        });
-      } else {
-        sendMessage({
-          type: 'claude-command',
-          command: content,
-          options: {
-            projectPath: effectiveCwd,
-            cwd: effectiveCwd,
-            sessionId: effectiveSessionId,
-            resume: true,
-            toolsSettings,
-            permissionMode,
-            model: claudeModel,
-            sessionSummary,
-            images,
-            rewind: rewindUuid,
-          },
-        });
-      }
+      const model = provider === 'opencode' ? opencodeModel : claudeModel;
+
+      // Same unified shape as handleSubmit's chat.send, plus the `rewind` anchor.
+      sendMessage({
+        type: 'chat.send',
+        sessionId: effectiveSessionId,
+        content,
+        options: {
+          cwd: effectiveCwd,
+          model,
+          permissionMode,
+          toolsSettings,
+          skipPermissions: Boolean(toolsSettings?.skipPermissions),
+          sessionSummary,
+          images,
+          rewind: rewindUuid,
+        },
+      });
     },
     [
       selectedProject,
@@ -1018,194 +971,13 @@ export function useChatComposerState({
       opencodeModel,
       permissionMode,
       onRewindTruncate,
+      onSessionProcessing,
       addMessage,
       sendMessage,
       scrollToBottom,
-      onSessionActive,
-      onSessionProcessing,
-      setIsLoading,
-      setCanAbortSession,
-      setClaudeStatus,
       setIsUserScrolledUp,
     ],
   );
-
-  // Reset the composer fields after a message is captured for sending/queueing.
-  const clearComposer = useCallback(() => {
-    setInput('');
-    inputValueRef.current = '';
-    resetCommandMenuState();
-    setAttachedImages([]);
-    setUploadingImages(new Map());
-    setImageErrors(new Map());
-    setIsTextareaExpanded(false);
-    if (textareaRef.current) {
-      textareaRef.current.style.height = 'auto';
-    }
-    if (selectedProjectId) {
-      safeLocalStorage.removeItem(`draft_input_${selectedProjectId}`);
-    }
-  }, [resetCommandMenuState, selectedProjectId]);
-
-  const handleSubmit = useCallback(
-    async (
-      event: FormEvent<HTMLFormElement> | MouseEvent | TouchEvent | KeyboardEvent<HTMLTextAreaElement>,
-    ) => {
-      event.preventDefault();
-      // Re-entry guard: a single tap on the submit button can fire onTouchStart,
-      // onMouseDown, and the form's onSubmit in sequence (~100-250ms apart on
-      // iOS Safari), each calling this handler. Suppress duplicates within 500ms.
-      const now = Date.now();
-      if (now - lastSubmitAtRef.current < 500) {
-        return;
-      }
-      lastSubmitAtRef.current = now;
-      const currentInput = inputValueRef.current;
-      if (!currentInput.trim() || !selectedProject) {
-        return;
-      }
-
-      // Capture the live composer contents, then reset it immediately so the
-      // user can keep typing the next message without waiting.
-      const captured = {
-        content: currentInput,
-        images: attachedImages,
-      };
-      clearComposer();
-
-      // While the assistant is busy, queue the message instead of dropping it.
-      // The queue flushes one message each time the session goes idle.
-      if (isLoading) {
-        queueIdRef.current += 1;
-        const id = `q_${queueIdRef.current}`;
-        setQueuedMessages((previous) => [...previous, { id, ...captured }]);
-        return;
-      }
-
-      await runSubmit(captured);
-    },
-    [attachedImages, clearComposer, isLoading, runSubmit, selectedProject],
-  );
-
-  // Flush the next queued message when the session transitions to idle.
-  const prevIsLoadingRef = useRef(isLoading);
-  useEffect(() => {
-    const wasLoading = prevIsLoadingRef.current;
-    prevIsLoadingRef.current = isLoading;
-    if (wasLoading && !isLoading && queuedMessages.length > 0) {
-      const [next, ...rest] = queuedMessages;
-      setQueuedMessages(rest);
-      void runSubmit({ content: next.content, images: next.images });
-    }
-  }, [isLoading, queuedMessages, runSubmit]);
-
-  const removeQueuedMessage = useCallback((id: string) => {
-    setQueuedMessages((previous) => previous.filter((message) => message.id !== id));
-  }, []);
-
-  // Called when the send failed (an error arrived instead of a reply): put the
-  // message back into the composer so the user can retry without retyping.
-  const restoreFailedSend = useCallback(() => {
-    const lastSent = lastSentRef.current;
-    if (!lastSent) {
-      return;
-    }
-    lastSentRef.current = null;
-    // Don't clobber anything the user typed since.
-    if (inputValueRef.current.trim()) {
-      return;
-    }
-    setInput(lastSent.content);
-    inputValueRef.current = lastSent.content;
-    if (lastSent.images.length > 0) {
-      setAttachedImages((previous) => (previous.length > 0 ? previous : lastSent.images));
-    }
-  }, []);
-
-  // Called when a send completed successfully: the message is part of the
-  // conversation now, so there is nothing left to restore.
-  const clearFailedSendBackup = useCallback(() => {
-    lastSentRef.current = null;
-  }, []);
-
-  useEffect(() => {
-    handleSubmitRef.current = handleSubmit;
-  }, [handleSubmit]);
-
-  // Once the in-flight turn ends, replay the queued draft through the normal
-  // submit path (slash commands, image upload, etc. all still apply).
-  const wasLoadingRef = useRef(isLoading);
-  const flushSessionKeyRef = useRef(sessionKey);
-  useEffect(() => {
-    const wasLoading = wasLoadingRef.current;
-    wasLoadingRef.current = isLoading;
-
-    // A session switch changes which session `isLoading` describes, so this
-    // transition says nothing about the queued draft's own session. Never
-    // flush across it — the swap effect below replaces `queuedDraft` with the
-    // new session's saved draft right after this.
-    if (flushSessionKeyRef.current !== sessionKey) {
-      flushSessionKeyRef.current = sessionKey;
-      return;
-    }
-
-    if (isLoading || !queuedDraft) {
-      return;
-    }
-
-    // Turn just ended in this session: flush immediately. Otherwise this is a
-    // saved draft restored into an apparently idle session — hold it briefly
-    // so the `chat_subscribed` ack can flip `isLoading` if a run is actually
-    // still live (the cleanup below cancels the send in that case).
-    const delay = wasLoading ? 0 : 750;
-    const timer = setTimeout(() => {
-      // The saved key is the claim ticket shared with the app-level auto-send
-      // (which handles sessions that finish while not viewed). If it's gone,
-      // the message was already dispatched — don't send it twice.
-      if (sessionKey && !readQueuedMessage(sessionKey)) {
-        setQueuedDraft(null);
-        return;
-      }
-      setQueuedDraft(null);
-      setInput(queuedDraft.content);
-      inputValueRef.current = queuedDraft.content;
-      setAttachedImages(queuedDraft.images);
-      setTimeout(() => {
-        handleSubmitRef.current?.(createFakeSubmitEvent());
-      }, 0);
-    }, delay);
-    return () => clearTimeout(timer);
-  }, [isLoading, queuedDraft, sessionKey, setInput]);
-
-  const editQueuedDraft = useCallback(() => {
-    if (!queuedDraft) {
-      return;
-    }
-    setQueuedDraft(null);
-    setInput(queuedDraft.content);
-    inputValueRef.current = queuedDraft.content;
-    setAttachedImages(queuedDraft.images);
-    textareaRef.current?.focus();
-  }, [queuedDraft]);
-
-  const deleteQueuedDraft = useCallback(() => {
-    setQueuedDraft(null);
-  }, []);
-
-  // A voice transcript either fills the input (to edit before sending) or, when the
-  // user tapped "stop and send", is submitted straight away. Mirror the value into
-  // inputValueRef synchronously so handleSubmit reads the new text, not the stale state.
-  const handleVoiceTranscript = useCallback((text: string, send?: boolean) => {
-    const base = inputValueRef.current.trim();
-    const next = base ? `${base} ${text}` : text;
-    setInput(next);
-    inputValueRef.current = next;
-    if (send) handleSubmitRef.current?.(createFakeSubmitEvent());
-  }, [setInput]);
-
-  useEffect(() => {
-    restoreFailedSendRef.current = restoreFailedSend;
-  }, [restoreFailedSend]);
 
   useEffect(() => {
     inputValueRef.current = input;
@@ -1221,9 +993,6 @@ export function useChatComposerState({
       inputValueRef.current = next;
       return next;
     });
-    // Queued messages belong to the project they were drafted in; drop them
-    // when switching projects so they can't be dispatched to the wrong one.
-    setQueuedMessages([]);
   }, [selectedProjectId]);
 
   useEffect(() => {
@@ -1237,44 +1006,17 @@ export function useChatComposerState({
     }
   }, [input, selectedProjectId]);
 
-  // Persist the queued draft under its session's key. Must be defined BEFORE
-  // the swap effect below: on a session switch there is one commit where
-  // `sessionKey` already points at the new session while `queuedDraft` (and
-  // the owner ref) still describe the old one — the ref mismatch makes this
-  // effect skip that commit instead of writing/clearing across sessions.
-  useEffect(() => {
-    if (!sessionKey || queuedDraftSessionRef.current !== sessionKey) {
-      return;
-    }
-    if (queuedDraft?.content) {
-      writeQueuedMessage(sessionKey, { content: queuedDraft.content, options: queuedDraft.options });
-    } else {
-      clearQueuedMessage(sessionKey);
-    }
-  }, [queuedDraft, sessionKey]);
-
-  // Switching sessions swaps in that session's queued draft (image
-  // attachments can't survive a reload, so only text and options restore).
-  useEffect(() => {
-    queuedDraftSessionRef.current = sessionKey;
-    if (!sessionKey) {
-      setQueuedDraft(null);
-      return;
-    }
-    setQueuedDraft(restoreQueuedDraft(sessionKey));
-  }, [sessionKey]);
-
   useEffect(() => {
     if (!textareaRef.current) {
       return;
     }
-    if (lastAutosizedInputRef.current === input) {
-      return;
-    }
-    // Re-run for restored drafts and programmatic input changes. User typing is
-    // already resized in onInput, so this avoids doing the same forced layout twice.
-    resizeTextarea(textareaRef.current);
-  }, [input, resizeTextarea]);
+    // Re-run when input changes so restored drafts get the same autosize behavior as typed text.
+    textareaRef.current.style.height = 'auto';
+    textareaRef.current.style.height = `${Math.max(22, textareaRef.current.scrollHeight)}px`;
+    const lineHeight = parseInt(window.getComputedStyle(textareaRef.current).lineHeight);
+    const expanded = textareaRef.current.scrollHeight > lineHeight * 2;
+    setIsTextareaExpanded(expanded);
+  }, [input]);
 
   useEffect(() => {
     if (!textareaRef.current || input.trim()) {
@@ -1356,11 +1098,15 @@ export function useChatComposerState({
   const handleTextareaInput = useCallback(
     (event: FormEvent<HTMLTextAreaElement>) => {
       const target = event.currentTarget;
-      resizeTextarea(target);
+      target.style.height = 'auto';
+      target.style.height = `${Math.max(22, target.scrollHeight)}px`;
       setCursorPosition(target.selectionStart);
       syncInputOverlayScroll(target);
+
+      const lineHeight = parseInt(window.getComputedStyle(target).lineHeight);
+      setIsTextareaExpanded(target.scrollHeight > lineHeight * 2);
     },
-    [resizeTextarea, setCursorPosition, syncInputOverlayScroll],
+    [setCursorPosition, syncInputOverlayScroll],
   );
 
   const handleClearInput = useCallback(() => {
@@ -1376,15 +1122,6 @@ export function useChatComposerState({
 
   const handleAbortSession = useCallback(() => {
     if (!canAbortSession) {
-      return;
-    }
-
-    // A tap on the send button fires onTouchStart (submit), then a compatibility
-    // mousedown ~100-250ms later. The submit clears the input and flips
-    // isLoading, so the same DOM node has become the STOP button by the time the
-    // mousedown lands — and the tap that sent the message aborts it. Ignore
-    // aborts in the tail of a submit, mirroring handleSubmit's re-entry guard.
-    if (Date.now() - lastSubmitAtRef.current < 500) {
       return;
     }
 
@@ -1480,10 +1217,6 @@ export function useChatComposerState({
     isDragActive,
     openImagePicker: open,
     handleSubmit,
-    queuedDraft,
-    editQueuedDraft,
-    deleteQueuedDraft,
-    handleVoiceTranscript,
     handleInputChange,
     handleKeyDown,
     handlePaste,
@@ -1499,10 +1232,8 @@ export function useChatComposerState({
     commandModalPayload,
     closeCommandModal,
     showCostModal,
+    rewindMessage,
     queuedMessages,
     removeQueuedMessage,
-    restoreFailedSend,
-    clearFailedSendBackup,
-    rewindMessage,
   };
 }

@@ -11,7 +11,6 @@ import { useCallback, useMemo, useRef, useState } from 'react';
 
 import { authenticatedFetch } from '../utils/api';
 import type { LLMProvider } from '../types/app';
-import { dbg } from '../utils/debugLog';
 
 // ─── NormalizedMessage (mirrors server/adapters/types.js) ────────────────────
 
@@ -33,11 +32,7 @@ export type MessageKind =
 
 export interface NormalizedMessage {
   id: string;
-  /**
-   * Provider-native transcript id (Claude JSONL `uuid`, OpenCode `message.id`).
-   * Set on user messages so they can be rewound/edited in place. Unlike `id`
-   * (which may be suffixed per content part) this is the clean anchor.
-   */
+  /** Clean transcript anchor for rewind/edit-in-place (user messages); optional. */
   uuid?: string;
   sessionId: string;
   timestamp: string;
@@ -67,7 +62,7 @@ export interface NormalizedMessage {
   isLocalCommand?: boolean;
   isLocalCommandStdout?: boolean;
   isCompactSummary?: boolean;
-  images?: Array<{ path?: string; data?: string; name?: string }>;
+  images?: string[];
   toolName?: string;
   toolInput?: unknown;
   toolId?: string;
@@ -104,16 +99,6 @@ export interface SessionSlot {
   /** @internal Cache-invalidation refs for computeMerged */
   _lastServerRef: NormalizedMessage[];
   _lastRealtimeRef: NormalizedMessage[];
-  /**
-   * @internal Monotonic ticket per server fetch (fetch/refresh/fetchMore) and
-   * the ticket of the last response applied. Concurrent fetches for the same
-   * session can resolve out of order — e.g. the `complete` refresh racing the
-   * watcher-triggered refresh right as a queued message is flushed — and a
-   * stale response applied last would wind `serverMessages` back to a
-   * transcript that no longer matches what the user already saw.
-   */
-  _fetchSeq: number;
-  _appliedFetchSeq: number;
   status: SessionStatus;
   fetchedAt: number;
   total: number;
@@ -137,8 +122,6 @@ function createEmptySlot(): SessionSlot {
     hasMore: false,
     offset: 0,
     tokenUsage: null,
-    _fetchSeq: 0,
-    _appliedFetchSeq: 0,
   };
 }
 
@@ -478,10 +461,8 @@ export function useSessionStore() {
     } = {},
   ) => {
     const slot = getSlot(sessionId);
-    const fetchTicket = ++slot._fetchSeq;
     slot.status = 'loading';
     notify(sessionId);
-    dbg('fetchFromServer.start', { sessionId, limit: opts.limit ?? null, offset: opts.offset ?? 0 });
 
     try {
       const params = new URLSearchParams();
@@ -492,25 +473,15 @@ export function useSessionStore() {
 
       const qs = params.toString();
       const url = `/api/providers/sessions/${encodeURIComponent(sessionId)}/messages${qs ? `?${qs}` : ''}`;
-      const tFetch = performance.now();
       const response = await authenticatedFetch(url);
-      dbg('fetchFromServer.headers', { sessionId, status: response.status, dur_ms: Math.round(performance.now() - tFetch), contentLength: response.headers.get('content-length') });
 
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}`);
       }
 
-      const tParse = performance.now();
       const body = await response.json();
       const data = body?.data ?? body;
       const messages: NormalizedMessage[] = data.messages || [];
-      dbg('fetchFromServer.parsed', { sessionId, dur_ms: Math.round(performance.now() - tParse), msgCount: messages.length, total: data.total, hasMore: data.hasMore });
-
-      // A later-started fetch already applied: this response is stale.
-      if (fetchTicket <= slot._appliedFetchSeq) {
-        return slot;
-      }
-      slot._appliedFetchSeq = fetchTicket;
 
       slot.serverMessages = messages;
       slot.total = data.total ?? messages.length;
@@ -518,24 +489,17 @@ export function useSessionStore() {
       slot.offset = (opts.offset ?? 0) + messages.length;
       slot.fetchedAt = Date.now();
       slot.status = 'idle';
-      const tMerge = performance.now();
       recomputeMergedIfNeeded(slot);
-      dbg('fetchFromServer.merged', { sessionId, dur_ms: Math.round(performance.now() - tMerge), mergedCount: slot.merged?.length ?? 0 });
       if (data.tokenUsage) {
         slot.tokenUsage = data.tokenUsage;
       }
 
       notify(sessionId);
-      dbg('fetchFromServer.done', { sessionId });
       return slot;
     } catch (error) {
-      dbg('fetchFromServer.error', { sessionId, message: (error as Error)?.message, stack: (error as Error)?.stack });
       console.error(`[SessionStore] fetch failed for ${sessionId}:`, error);
-      // Don't clobber a newer fetch's result with a stale failure.
-      if (fetchTicket > slot._appliedFetchSeq) {
-        slot.status = 'error';
-        notify(sessionId);
-      }
+      slot.status = 'error';
+      notify(sessionId);
       return slot;
     }
   }, [getSlot, notify]);
@@ -552,7 +516,6 @@ export function useSessionStore() {
     const slot = getSlot(sessionId);
     if (!slot.hasMore) return slot;
 
-    const fetchTicket = ++slot._fetchSeq;
     const params = new URLSearchParams();
     const limit = opts.limit ?? 20;
     params.append('limit', String(limit));
@@ -567,13 +530,6 @@ export function useSessionStore() {
       const body = await response.json();
       const data = body?.data ?? body;
       const olderMessages: NormalizedMessage[] = data.messages || [];
-
-      // A full fetch/refresh replaced serverMessages while this page was in
-      // flight — prepending onto the new array would duplicate or misorder.
-      if (fetchTicket <= slot._appliedFetchSeq) {
-        return slot;
-      }
-      slot._appliedFetchSeq = fetchTicket;
 
       // Prepend older messages (they're earlier in the conversation)
       slot.serverMessages = [...olderMessages, ...slot.serverMessages];
@@ -634,7 +590,6 @@ export function useSessionStore() {
     sessionId: string,
   ) => {
     const slot = getSlot(sessionId);
-    const fetchTicket = ++slot._fetchSeq;
     try {
       const url = `/api/providers/sessions/${encodeURIComponent(sessionId)}/messages`;
       const response = await authenticatedFetch(url);
@@ -642,14 +597,6 @@ export function useSessionStore() {
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const body = await response.json();
       const data = body?.data ?? body;
-
-      // A later-started fetch already applied: applying this stale transcript
-      // would erase rows the user has already seen (and re-prune realtime
-      // rows against an outdated snapshot).
-      if (fetchTicket <= slot._appliedFetchSeq) {
-        return;
-      }
-      slot._appliedFetchSeq = fetchTicket;
 
       slot.serverMessages = data.messages || [];
       slot.total = data.total ?? slot.serverMessages.length;
@@ -694,18 +641,15 @@ export function useSessionStore() {
   const updateStreaming = useCallback((sessionId: string, accumulatedText: string, msgProvider: LLMProvider) => {
     const slot = getSlot(sessionId);
     const streamId = `__streaming_${sessionId}`;
-    const idx = slot.realtimeMessages.findIndex(m => m.id === streamId);
     const msg: NormalizedMessage = {
       id: streamId,
       sessionId,
-      // Pin the timestamp to when the stream first appeared. Regenerating it on
-      // every delta flush kept changing the row's identity (and the React key
-      // derived from it), remounting the bubble ~10x/sec mid-stream.
-      timestamp: idx >= 0 ? slot.realtimeMessages[idx].timestamp : new Date().toISOString(),
+      timestamp: new Date().toISOString(),
       provider: msgProvider,
       kind: 'stream_delta',
       content: accumulatedText,
     };
+    const idx = slot.realtimeMessages.findIndex(m => m.id === streamId);
     if (idx >= 0) {
       slot.realtimeMessages = [...slot.realtimeMessages];
       slot.realtimeMessages[idx] = msg;
@@ -752,30 +696,36 @@ export function useSessionStore() {
   }, [notify]);
 
   /**
-   * Rewind (edit-and-resend): optimistically drop the anchor message and
-   * everything after it from the visible transcript. The anchor lives in the
-   * server-fetched history; everything realtime is necessarily newer, so it is
-   * cleared wholesale. Matches by `uuid` first, falling back to `id`.
+   * Rewind/edit-in-place: optimistically drop the anchored user message (matched
+   * by its transcript `uuid`) and everything after it, before the edited message
+   * is resent. Mirrors the server-side transcript truncation so the view doesn't
+   * show the discarded tail alongside the new run.
    */
   const rewindTo = useCallback((sessionId: string, messageUuid: string) => {
-    const resolvedSessionId = resolveSessionId(sessionId) ?? sessionId;
-    const slot = storeRef.current.get(resolvedSessionId);
+    const slot = storeRef.current.get(sessionId);
     if (!slot) return;
-    const matches = (m: NormalizedMessage) => m.uuid === messageUuid || m.id === messageUuid;
-    const serverIdx = slot.serverMessages.findIndex(matches);
-    if (serverIdx >= 0) {
-      slot.serverMessages = slot.serverMessages.slice(0, serverIdx);
-      slot.realtimeMessages = [];
+
+    const anchorIdx = slot.serverMessages.findIndex((m) => m.uuid === messageUuid);
+    if (anchorIdx >= 0) {
+      const anchorTime = readMessageTime(slot.serverMessages[anchorIdx]);
+      slot.serverMessages = slot.serverMessages.slice(0, anchorIdx);
+      slot.realtimeMessages = anchorTime === null
+        ? []
+        : slot.realtimeMessages.filter((m) => {
+            const t = readMessageTime(m);
+            return t === null ? false : t < anchorTime;
+          });
     } else {
-      const realtimeIdx = slot.realtimeMessages.findIndex(matches);
-      if (realtimeIdx >= 0) {
-        slot.realtimeMessages = slot.realtimeMessages.slice(0, realtimeIdx);
+      // Anchor lives only in the realtime tail (edited a just-sent message).
+      const rtIdx = slot.realtimeMessages.findIndex((m) => m.uuid === messageUuid);
+      if (rtIdx >= 0) {
+        slot.realtimeMessages = slot.realtimeMessages.slice(0, rtIdx);
       }
     }
-    slot.total = slot.serverMessages.length;
+
     recomputeMergedIfNeeded(slot);
-    notify(resolvedSessionId);
-  }, [notify, resolveSessionId]);
+    notify(sessionId);
+  }, [notify]);
 
   /**
    * Get merged messages for a session (for rendering).
@@ -812,7 +762,7 @@ export function useSessionStore() {
     getSlot, has, fetchFromServer, fetchMore,
     appendRealtime, appendRealtimeBatch, refreshFromServer,
     setActiveSession, setStatus, isStale, updateStreaming, finalizeStreaming,
-    clearRealtime, rewindTo, getMessages, getSessionSlot, replaceSessionId,
+    clearRealtime, rewindTo, getMessages, getSessionSlot,
   ]);
 }
 

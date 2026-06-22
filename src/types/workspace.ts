@@ -8,7 +8,7 @@ import type { LLMProvider } from './app';
  * tree is NOT a panel — it's a docked, toggleable explorer pane rendered
  * alongside whatever is active (VSCode-style).
  */
-export type WorkspacePanel = 'git' | 'tasks' | 'preview' | `plugin:${string}`;
+export type WorkspacePanel = 'git' | 'tasks' | 'preview' | 'browser' | `plugin:${string}`;
 
 /**
  * A persistent workspace tab. Chat tabs are pointers into the single mounted
@@ -44,7 +44,7 @@ export type WorkspaceTab =
 
 export type WorkspaceTabKind = WorkspaceTab['kind'];
 
-const PANEL_IDS: ReadonlySet<string> = new Set(['git', 'tasks', 'preview']);
+const PANEL_IDS: ReadonlySet<string> = new Set(['git', 'tasks', 'preview', 'browser']);
 
 export function isPanelId(id: string): id is WorkspacePanel {
   return PANEL_IDS.has(id) || id.startsWith('plugin:');
