@@ -10,19 +10,13 @@
  * - Session management with abort capability
  * - Options mapping between CLI and SDK formats
  * - WebSocket message streaming
- * - Persistent, cross-turn sessions so background jobs (run_in_background) survive
- *   past the turn that launched them and auto-resume the agent on completion
- *   (mirrors the Claude Code CLI harness).
  */
 
+import { query } from '@anthropic-ai/claude-agent-sdk';
 import crypto from 'crypto';
 import { promises as fs } from 'fs';
-import os from 'os';
 import path from 'path';
-
-import { query } from '@anthropic-ai/claude-agent-sdk';
-
-import { buildClaudeUserContent, normalizeImageDescriptors } from './shared/image-attachments.js';
+import os from 'os';
 import { CLAUDE_FALLBACK_MODELS } from './modules/providers/list/claude/claude-models.provider.js';
 import { providerModelsService } from './modules/providers/services/provider-models.service.js';
 import { resolveClaudeCodeExecutablePath } from './shared/claude-cli-path.js';
@@ -44,32 +38,21 @@ const pendingToolApprovals = new Map();
 // emit a second one when its generator winds down.
 const abortedSessionIds = new Set();
 
-// Indirection so tests can substitute a scripted SDK query. Defaults to the
-// real `query` from @anthropic-ai/claude-agent-sdk.
+const TOOL_APPROVAL_TIMEOUT_MS = parseInt(process.env.CLAUDE_TOOL_APPROVAL_TIMEOUT_MS, 10) || 55000;
+
+const TOOLS_REQUIRING_INTERACTION = new Set(['AskUserQuestion', 'ExitPlanMode']);
+
+// Indirection so tests can substitute a scripted SDK query / rewind step.
+// Defaults to the real implementations.
 let queryImpl = query;
 function __setClaudeQueryImpl(fn) {
   queryImpl = fn || query;
 }
-
-// Indirection so tests can substitute the transcript-truncation step without a
-// real session database. Defaults to the provider-backed implementation.
 let rewindHistoryImpl = (sessionId, messageUuid) => sessionsService.rewindHistory(sessionId, messageUuid);
 function __setRewindHistoryImpl(fn) {
   rewindHistoryImpl = fn || ((sessionId, messageUuid) => sessionsService.rewindHistory(sessionId, messageUuid));
 }
 
-const TOOL_APPROVAL_TIMEOUT_MS = parseInt(process.env.CLAUDE_TOOL_APPROVAL_TIMEOUT_MS, 10) || 55000;
-
-const TOOLS_REQUIRING_INTERACTION = new Set(['AskUserQuestion', 'ExitPlanMode']);
-
-function resolveClaudeEffort(model, effort, modelsDefinition = CLAUDE_FALLBACK_MODELS) {
-  const selectedModel = modelsDefinition?.OPTIONS?.find((option) => option.value === model) || null;
-  const allowedEfforts = selectedModel?.effort?.values
-    ?.map((value) => value.value) || [];
-  return typeof effort === 'string' && effort !== 'default' && allowedEfforts.includes(effort)
-    ? effort
-    : undefined;
-}
 // A persistent session with no active turn and no running background jobs is
 // torn down after this idle window. While a background job is running the
 // session is kept alive regardless (the job's completion auto-resumes it).
@@ -149,23 +132,17 @@ function resolveToolApproval(requestId, decision) {
 }
 
 /**
- * Cancels every pending tool-approval prompt belonging to a session.
- *
- * When a turn is parked awaiting an interactive permission decision (e.g. the
- * ExitPlanMode prompt at the end of plan mode), `interrupt()` alone does not
- * unblock it — the `canUseTool` callback is awaiting our own promise, not the
- * subprocess. Resolving those promises as cancelled lets the callback return
- * and the query unwind, so the child process can actually exit instead of
- * lingering as an orphan editing the working tree.
+ * Cancels every pending tool-approval prompt for a session, settling each
+ * awaiting `canUseTool` call with a cancelled decision (which returns deny).
+ * Used before interrupting/ending a session so a query parked inside the
+ * approval callback can actually unwind.
  * @param {string} sessionId
  * @returns {number} count of approvals cancelled
  */
 function cancelPendingApprovalsForSession(sessionId) {
   let cancelled = 0;
-  for (const [requestId, resolver] of pendingToolApprovals.entries()) {
+  for (const [, resolver] of pendingToolApprovals.entries()) {
     if (resolver._sessionId === sessionId) {
-      // finalize() deletes the entry from the map and settles the awaiting
-      // promise with a cancelled decision (canUseTool then returns deny).
       resolver({ cancelled: true });
       cancelled += 1;
     }
@@ -207,8 +184,13 @@ function matchesToolPermission(entry, toolName, input) {
   return false;
 }
 
+/**
+ * Maps CLI options to SDK-compatible options format
+ * @param {Object} options - CLI options
+ * @returns {Object} SDK-compatible options
+ */
 function mapCliOptionsToSDK(options = {}) {
-  const { sessionId, cwd, toolsSettings, permissionMode, effort } = options;
+  const { sessionId, cwd, toolsSettings, permissionMode } = options;
 
   const sdkOptions = {};
 
@@ -220,26 +202,32 @@ function mapCliOptionsToSDK(options = {}) {
   // which does not reliably follow npm's shell wrappers like cross-spawn does.
   sdkOptions.pathToClaudeCodeExecutable = resolveClaudeCodeExecutablePath(process.env.CLAUDE_CLI_PATH);
 
+  // Map working directory
   if (cwd) {
     sdkOptions.cwd = cwd;
   }
 
+  // Map permission mode
   if (permissionMode && permissionMode !== 'default') {
     sdkOptions.permissionMode = permissionMode;
   }
 
+  // Map tool settings
   const settings = toolsSettings || {
     allowedTools: [],
     disallowedTools: [],
     skipPermissions: false
   };
 
+  // Handle tool permissions
   if (settings.skipPermissions && permissionMode !== 'plan') {
+    // When skipping permissions, use bypassPermissions mode
     sdkOptions.permissionMode = 'bypassPermissions';
   }
 
   let allowedTools = [...(settings.allowedTools || [])];
 
+  // Add plan mode default tools
   if (permissionMode === 'plan') {
     const planModeTools = ['Read', 'Task', 'exit_plan_mode', 'TodoRead', 'TodoWrite', 'WebFetch', 'WebSearch'];
     for (const tool of planModeTools) {
@@ -258,24 +246,22 @@ function mapCliOptionsToSDK(options = {}) {
 
   sdkOptions.disallowedTools = settings.disallowedTools || [];
 
+  // Map model (default to sonnet)
+  // Valid models: sonnet, opus, haiku, opusplan, sonnet[1m], fable
   sdkOptions.model = options.model || CLAUDE_FALLBACK_MODELS.DEFAULT;
+  // Model logged at query start below
 
-  const resolvedEffort = resolveClaudeEffort(
-    sdkOptions.model,
-    effort,
-    options.effortModels || CLAUDE_FALLBACK_MODELS,
-  );
-  if (resolvedEffort) {
-    sdkOptions.effort = resolvedEffort;
-  }
-
+  // Map system prompt configuration
   sdkOptions.systemPrompt = {
     type: 'preset',
-    preset: 'claude_code'
+    preset: 'claude_code'  // Required to use CLAUDE.md
   };
 
+  // Map setting sources for CLAUDE.md loading
+  // This loads CLAUDE.md from project, user (~/.config/claude/CLAUDE.md), and local directories
   sdkOptions.settingSources = ['project', 'user', 'local'];
 
+  // Map resume session
   if (sessionId) {
     sdkOptions.resume = sessionId;
   }
@@ -287,13 +273,16 @@ function mapCliOptionsToSDK(options = {}) {
  * Adds a session to the active sessions map
  * @param {string} sessionId - Session identifier
  * @param {Object} queryInstance - SDK query instance
- * @param {Object} writer - WebSocket writer for reconnect support
+ * @param {Array<string>} tempImagePaths - Temp image file paths for cleanup
+ * @param {string} tempDir - Temp directory for cleanup
  */
-function addSession(sessionId, queryInstance, writer = null) {
+function addSession(sessionId, queryInstance, tempImagePaths = [], tempDir = null, writer = null) {
   activeSessions.set(sessionId, {
     instance: queryInstance,
     startTime: Date.now(),
     status: 'active',
+    tempImagePaths,
+    tempDir,
     writer
   });
 }
@@ -412,35 +401,92 @@ function extractTokenBudget(sdkMessage) {
 }
 
 /**
- * Builds the SDK `prompt` payload for one turn.
- *
- * Plain text turns pass the string through unchanged. Turns with image
- * attachments use the SDK's streaming-input mode: a single SDKUserMessage
- * whose content carries the prompt text plus one base64 `image` block per
- * attachment (read from the global `~/.cloudcli/assets` folder).
- *
- * @param {string} command - User prompt
- * @param {Array} images - Image descriptors ({ path, name?, mimeType? })
- * @param {string} cwd - Project working directory image paths resolve against
- * @returns {Promise<string|AsyncIterable>} SDK prompt payload
+ * Handles image processing for SDK queries
+ * Saves base64 images to temporary files and returns modified prompt with file paths
+ * @param {string} command - Original user prompt
+ * @param {Array} images - Array of image objects with base64 data
+ * @param {string} cwd - Working directory for temp file creation
+ * @returns {Promise<Object>} {modifiedCommand, tempImagePaths, tempDir}
  */
-async function buildPromptPayload(command, images, cwd) {
-  if (normalizeImageDescriptors(images).length === 0) {
-    return command;
+async function handleImages(command, images, cwd) {
+  const tempImagePaths = [];
+  let tempDir = null;
+
+  if (!images || images.length === 0) {
+    return { modifiedCommand: command, tempImagePaths, tempDir };
   }
 
-  const content = await buildClaudeUserContent(command, images, cwd);
-  return (async function* () {
-    yield {
-      type: 'user',
-      message: {
-        role: 'user',
-        content
-      },
-      parent_tool_use_id: null,
-      timestamp: new Date().toISOString()
-    };
-  })();
+  try {
+    // Create temp directory in the project directory
+    const workingDir = cwd || process.cwd();
+    tempDir = path.join(workingDir, '.tmp', 'images', Date.now().toString());
+    await fs.mkdir(tempDir, { recursive: true });
+
+    // Save each image to a temp file
+    for (const [index, image] of images.entries()) {
+      // Extract base64 data and mime type
+      const matches = image.data.match(/^data:([^;]+);base64,(.+)$/);
+      if (!matches) {
+        console.error('Invalid image data format');
+        continue;
+      }
+
+      const [, mimeType, base64Data] = matches;
+      const extension = mimeType.split('/')[1] || 'png';
+      const filename = `image_${index}.${extension}`;
+      const filepath = path.join(tempDir, filename);
+
+      // Write base64 data to file
+      await fs.writeFile(filepath, Buffer.from(base64Data, 'base64'));
+      tempImagePaths.push(filepath);
+    }
+
+    // Include the full image paths in the prompt
+    let modifiedCommand = command;
+    if (tempImagePaths.length > 0 && command && command.trim()) {
+      const imageNote = `\n\n[Images provided at the following paths:]\n${tempImagePaths.map((p, i) => `${i + 1}. ${p}`).join('\n')}`;
+      modifiedCommand = command + imageNote;
+    }
+
+    // Images processed
+    return { modifiedCommand, tempImagePaths, tempDir };
+  } catch (error) {
+    console.error('Error processing images for SDK:', error);
+    return { modifiedCommand: command, tempImagePaths, tempDir };
+  }
+}
+
+/**
+ * Cleans up temporary image files
+ * @param {Array<string>} tempImagePaths - Array of temp file paths to delete
+ * @param {Array<string>|string|null} tempDirs - Temp directory(ies) to remove
+ */
+async function cleanupTempFiles(tempImagePaths, tempDirs) {
+  const dirs = Array.isArray(tempDirs) ? tempDirs : (tempDirs ? [tempDirs] : []);
+
+  if ((!tempImagePaths || tempImagePaths.length === 0) && dirs.length === 0) {
+    return;
+  }
+
+  try {
+    // Delete individual temp files
+    for (const imagePath of (tempImagePaths || [])) {
+      await fs.unlink(imagePath).catch(err =>
+        console.error(`Failed to delete temp image ${imagePath}:`, err)
+      );
+    }
+
+    // Delete temp directories
+    for (const dir of dirs) {
+      await fs.rm(dir, { recursive: true, force: true }).catch(err =>
+        console.error(`Failed to delete temp directory ${dir}:`, err)
+      );
+    }
+
+    // Temp files cleaned
+  } catch (error) {
+    console.error('Error during temp file cleanup:', error);
+  }
 }
 
 /**
@@ -504,10 +550,16 @@ async function loadMcpConfig(cwd) {
 // Persistent streaming sessions
 //
 // A Claude session is driven by a single long-lived `query()` running in
-// streaming-input mode: we feed user turns into an async-iterable prompt and
-// keep it open across turns. This is what lets `run_in_background` jobs outlive
-// the turn that launched them — the SDK runtime subprocess stays alive — and
-// lets us auto-resume the agent when a job finishes (mirroring the CLI harness).
+// streaming-input mode: user turns are fed into an async-iterable prompt that
+// stays open across turns. This lets `run_in_background` jobs outlive the turn
+// that launched them (the SDK subprocess stays alive) and lets us auto-resume
+// the agent when a job finishes (mirroring the Claude Code CLI harness).
+//
+// New-runtime adaptation: each turn streams to `session.writer`, the CURRENT
+// chat-run's writer. A user turn uses the run the gateway opened; a background
+// auto-resume opens its OWN run via `session.acquireResumeRun()` (so its output
+// is sequenced/replayed under a fresh run, and the session is "processing"
+// again). `settleTurn` sends the terminal `complete`, ending that run.
 // ---------------------------------------------------------------------------
 
 /**
@@ -567,12 +619,15 @@ function createDeferred() {
  * returned promise, which resolves when this turn produces its `result` (or the
  * session ends) — so one-shot callers (commit-message/agent flows) still block
  * until the agent's response is complete, even though the session lives on.
+ * Also resets the per-turn recap capture.
  */
 function beginTurn(session) {
   if (session.currentTurn) {
     session.currentTurn.resolve();
   }
   session.awaitingResult = true;
+  session.lastAssistantText = '';
+  session.turnToolNames = [];
   session.currentTurn = createDeferred();
   return session.currentTurn.promise;
 }
@@ -620,6 +675,23 @@ function buildTaskNotificationMessage(notification) {
   }
   lines.push('</task-notification>');
   return lines.join('\n');
+}
+
+/**
+ * Records the latest assistant text + tool names for the in-flight turn, so the
+ * "run stopped" notification can carry a recap and detect background work. Only
+ * overwrites the text when this message actually has text blocks, so a trailing
+ * tool-only message doesn't blank out the real answer.
+ */
+function captureAssistantSummary(session, message) {
+  const blocks = message?.message?.content;
+  if (!Array.isArray(blocks)) return;
+  const textParts = [];
+  for (const b of blocks) {
+    if (b?.type === 'text' && b.text) textParts.push(b.text);
+    else if (b?.type === 'tool_use' && b.name) session.turnToolNames.push(b.name);
+  }
+  if (textParts.length) session.lastAssistantText = textParts.join('\n').trim();
 }
 
 function clearIdleTimer(session) {
@@ -683,7 +755,7 @@ function handleTaskMessage(session, message) {
 
   if (message.subtype === 'task_started' && message.task_id) {
     // `background` is set true once the task survives a turn boundary (see
-    // onTurnEnd). Foreground subagents complete before their parent turn ends,
+    // settleTurn). Foreground subagents complete before their parent turn ends,
     // so they never get marked and never trigger a (spurious) auto-resume.
     session.pendingTasks.set(message.task_id, {
       description: message.description || '',
@@ -704,12 +776,23 @@ function handleTaskMessage(session, message) {
     if (isBackground && !session.ended && !session.input.closed) {
       const text = buildTaskNotificationMessage(message);
       if (!session.turnActive) {
+        // No active turn → open a fresh run for the auto-resumed turn so its
+        // output streams under its own sequence and the session shows as
+        // processing again. Without a seam (e.g. tests) keep the current
+        // writer.
+        const resumeWriter = session.acquireResumeRun?.();
+        if (resumeWriter) {
+          session.writer = resumeWriter;
+        }
         session.turnActive = true;
         session.turnStartTime = Date.now();
       }
       // A resume turn will run for this injection — make sure it settles even if
-      // it produces only a result (the loop also re-arms this on assistant output).
+      // it produces only a result (the loop also re-arms this on assistant
+      // output). Reset the recap so this turn's "stopped" notification is fresh.
       session.awaitingResult = true;
+      session.lastAssistantText = '';
+      session.turnToolNames = [];
       clearIdleTimer(session);
       console.log(`[claude bg] session ${session.sessionId}: background task ${message.task_id} ${message.status || 'completed'} — auto-resuming agent`);
       session.input.push(makeUserMessage(text));
@@ -732,30 +815,13 @@ function handleTaskMessage(session, message) {
  * the idempotency guard: it is set when a turn starts (a user turn, an injected
  * resume, or any assistant output) and cleared here, so whichever path settles
  * first wins and the other is a no-op. Background jobs are kept running either
- * way — only the model's turn stops.
+ * way — only the model's turn stops. The terminal `complete` ends the current
+ * chat-run (so the next turn can open a new one); when aborted the gateway emits
+ * the (aborted) completion, so we don't send our own.
  * @param {Object} session
- * @param {Object} ws
- * @param {{aborted?: boolean}} opts - when aborted, the ws handler emits the
- *   (aborted) completion, so we don't send our own.
+ * @param {{aborted?: boolean}} opts
  */
-/**
- * Records the latest assistant text + tool names for the in-flight turn, so the
- * "run stopped" notification can carry a recap and detect background work.
- * Only overwrites the text when this message actually has text blocks, so a
- * trailing tool-only message doesn't blank out the real answer.
- */
-function captureAssistantSummary(session, message) {
-  const blocks = message?.message?.content;
-  if (!Array.isArray(blocks)) return;
-  const textParts = [];
-  for (const b of blocks) {
-    if (b?.type === 'text' && b.text) textParts.push(b.text);
-    else if (b?.type === 'tool_use' && b.name) session.turnToolNames.push(b.name);
-  }
-  if (textParts.length) session.lastAssistantText = textParts.join('\n').trim();
-}
-
-function settleTurn(session, ws, { aborted = false } = {}) {
+function settleTurn(session, { aborted = false } = {}) {
   if (!session.awaitingResult) return;
   session.awaitingResult = false;
   session.turnActive = false;
@@ -770,7 +836,7 @@ function settleTurn(session, ws, { aborted = false } = {}) {
   if (!aborted) {
     const isNewSession = session.startedNew && !session.firstTurnCompleted;
     session.firstTurnCompleted = true;
-    ws.send(createNormalizedMessage({
+    session.writer.send(createNormalizedMessage({
       kind: 'complete',
       exitCode: 0,
       isNewSession,
@@ -791,7 +857,7 @@ function settleTurn(session, ws, { aborted = false } = {}) {
   }
 
   // Truly idle now: notify (once per idle transition, matching the old
-  // per-query behaviour).
+  // per-query behaviour), carrying the turn's recap + tools used.
   notifyRunStopped({
     userId: session.userId,
     provider: 'claude',
@@ -815,16 +881,16 @@ function settleTurn(session, ws, { aborted = false } = {}) {
 }
 
 /** Called when a `result` message marks the end of an assistant turn. */
-function onTurnEnd(session, ws) {
-  settleTurn(session, ws, { aborted: false });
+function onTurnEnd(session) {
+  settleTurn(session, { aborted: false });
 }
 
 /**
  * Builds the `canUseTool` permission callback bound to a persistent session.
- * Mirrors the original per-query callback but reads the session's live id and
- * the (mutable) allow/deny lists carried on its sdkOptions.
+ * Reads the session's live id, the (mutable) allow/deny lists carried on its
+ * sdkOptions, and streams prompts to the session's current writer.
  */
-function makeCanUseTool(session, sdkOptions, ws, emitNotification) {
+function makeCanUseTool(session, sdkOptions, emitNotification) {
   return async (toolName, input, context) => {
     const sid = () => session.sessionId || session.options.sessionId || null;
     const requiresInteraction = TOOLS_REQUIRING_INTERACTION.has(toolName);
@@ -850,7 +916,7 @@ function makeCanUseTool(session, sdkOptions, ws, emitNotification) {
     }
 
     const requestId = createRequestId();
-    ws.send(createNormalizedMessage({ kind: 'permission_request', requestId, toolName, input, sessionId: sid(), provider: 'claude' }));
+    session.writer.send(createNormalizedMessage({ kind: 'permission_request', requestId, toolName, input, sessionId: sid(), provider: 'claude' }));
     emitNotification(createNotificationEvent({
       provider: 'claude',
       sessionId: sid(),
@@ -872,7 +938,7 @@ function makeCanUseTool(session, sdkOptions, ws, emitNotification) {
         _receivedAt: new Date(),
       },
       onCancel: (reason) => {
-        ws.send(createNormalizedMessage({ kind: 'permission_cancelled', requestId, reason, sessionId: sid(), provider: 'claude' }));
+        session.writer.send(createNormalizedMessage({ kind: 'permission_cancelled', requestId, reason, sessionId: sid(), provider: 'claude' }));
       }
     });
     if (!decision) {
@@ -902,20 +968,21 @@ function makeCanUseTool(session, sdkOptions, ws, emitNotification) {
 /**
  * Consumes the SDK message stream for the whole life of a persistent session
  * (across every turn and every background-job resume) until the input stream
- * closes. Final cleanup happens in `finally`.
+ * closes. Final cleanup happens in `finally`. All output goes to the session's
+ * CURRENT writer, which is swapped per turn (user turn / auto-resume run).
  */
-async function runSessionLoop(session, ws) {
+async function runSessionLoop(session) {
   try {
     for await (const message of session.instance) {
       // Capture the session id from the first message of a brand-new session.
       if (message.session_id && !session.sessionId) {
         registerSession(message.session_id, session);
-        if (ws.setSessionId && typeof ws.setSessionId === 'function') {
-          ws.setSessionId(message.session_id);
+        if (session.writer.setSessionId && typeof session.writer.setSessionId === 'function') {
+          session.writer.setSessionId(message.session_id);
         }
         if (session.startedNew && !session.sessionCreatedSent) {
           session.sessionCreatedSent = true;
-          ws.send(createNormalizedMessage({ kind: 'session_created', newSessionId: message.session_id, sessionId: message.session_id, provider: 'claude' }));
+          session.writer.send(createNormalizedMessage({ kind: 'session_created', newSessionId: message.session_id, sessionId: message.session_id, provider: 'claude' }));
         }
       }
 
@@ -938,29 +1005,29 @@ async function runSessionLoop(session, ws) {
       // Drive background-job tracking / auto-resume off the task system messages.
       handleTaskMessage(session, message);
 
-      // Transform and normalize the message, then fan out to attached sockets.
+      // Transform and normalize the message, then fan out to the current writer.
       const transformedMessage = transformMessage(message);
       const normalized = sessionsService.normalizeMessage('claude', transformedMessage, sid);
       for (const msg of normalized) {
         if (transformedMessage.parentToolUseId && !msg.parentToolUseId) {
           msg.parentToolUseId = transformedMessage.parentToolUseId;
         }
-        ws.send(msg);
+        session.writer.send(msg);
       }
 
       const tokenBudgetData = extractTokenBudget(message);
       if (tokenBudgetData) {
-        ws.send(createNormalizedMessage({ kind: 'status', text: 'token_budget', tokenBudget: tokenBudgetData, sessionId: sid, provider: 'claude' }));
+        session.writer.send(createNormalizedMessage({ kind: 'status', text: 'token_budget', tokenBudget: tokenBudgetData, sessionId: sid, provider: 'claude' }));
       }
 
       // A `result` marks the end of one assistant turn.
       if (message.type === 'result') {
-        onTurnEnd(session, ws);
+        onTurnEnd(session);
       }
     }
   } catch (error) {
     if (!session.ended) {
-      await handleSessionError(session, ws, error);
+      await handleSessionError(session, error);
     }
   } finally {
     finalizeSession(session);
@@ -988,26 +1055,25 @@ function finalizeSession(session) {
  * Surfaces a fatal session error to the client, with the same recovery paths as
  * the original per-query implementation (resume fallback, prompt-too-long, etc).
  */
-async function handleSessionError(session, ws, error) {
+async function handleSessionError(session, error) {
   console.error('SDK query error:', error);
   const sessionId = session.options.sessionId;
   const sid = session.sessionId || sessionId || null;
 
-  // A session jsonl that holds only bridge/system metadata (e.g. /remote-control
-  // reconnect droppings) has no conversation Claude can resume — the SDK fails
-  // with "No conversation found". Retry once as a brand-new session in the same
-  // cwd so the user's message isn't silently dropped.
+  // A session jsonl that holds only bridge/system metadata has no conversation
+  // Claude can resume — the SDK fails with "No conversation found". Retry once
+  // as a brand-new session in the same cwd so the message isn't silently dropped.
   const notResumable = /No conversation found with session ID/i.test(String(error?.message || ''));
   if (notResumable && sessionId && !session.options._resumeFallback) {
     console.warn(`Session ${sessionId} is not resumable, starting a new session instead`);
-    ws.send(createNormalizedMessage({
+    session.writer.send(createNormalizedMessage({
       kind: 'error',
       content: 'This session has no resumable conversation — sending your message to a new session instead.',
       sessionId,
       provider: 'claude'
     }));
     // finalizeSession (the loop's finally) will untrack this dead session.
-    await queryClaudeSDK(session.command, { ...session.options, sessionId: undefined, resume: false, _resumeFallback: true }, ws);
+    await queryClaudeSDK(session.command, { ...session.options, sessionId: undefined, resume: false, _resumeFallback: true }, session.writer);
     return;
   }
 
@@ -1029,7 +1095,7 @@ async function handleSessionError(session, ws, error) {
     errorContent = error.message;
   }
 
-  ws.send(createNormalizedMessage({ kind: 'error', content: errorContent, sessionId: sid, provider: 'claude' }));
+  session.writer.send(createNormalizedMessage({ kind: 'error', content: errorContent, sessionId: sid, provider: 'claude' }));
   notifyRunFailed({
     userId: session.userId,
     provider: 'claude',
@@ -1042,18 +1108,15 @@ async function handleSessionError(session, ws, error) {
 /**
  * Pushes a new user turn into an already-running persistent session instead of
  * spawning a fresh query — this is what keeps background jobs from a prior turn
- * alive while the conversation continues.
+ * alive while the conversation continues. The session's writer is swapped to
+ * this turn's run writer so its output streams under the new run.
  */
 async function reuseSession(session, command, options, ws) {
-  // Attach this connection's socket to the session's writer so its output (and
-  // any background-job resume) streams here too.
-  try {
-    const rawSocket = ws?.ws;
-    if (rawSocket && session.writer?.updateWebSocket) {
-      session.writer.updateWebSocket(rawSocket);
-    }
-  } catch (err) {
-    console.warn('Failed to attach socket to persistent session writer:', err?.message || err);
+  // Stream this turn's output (and any background-job resume that begins during
+  // it) to the run the gateway just opened.
+  session.writer = ws;
+  if (options.acquireResumeRun) {
+    session.acquireResumeRun = options.acquireResumeRun;
   }
 
   // If a turn is mid-flight, interrupt it so the new message starts promptly
@@ -1128,6 +1191,9 @@ async function startPersistentSession(command, options, ws) {
     instance: null,
     input,
     writer: ws,
+    // Opens a fresh chat-run for a background auto-resume turn (null in tests /
+    // one-shot callers, where the current writer is reused instead).
+    acquireResumeRun: typeof options.acquireResumeRun === 'function' ? options.acquireResumeRun : null,
     model: sdkOptions.model,
     options,
     command,
@@ -1155,14 +1221,14 @@ async function startPersistentSession(command, options, ws) {
   };
 
   const emitNotification = (event) => {
-    notifyUserIfEnabled({ userId: ws?.userId || null, writer: ws, event });
+    notifyUserIfEnabled({ userId: session.userId, writer: session.writer, event });
   };
 
   sdkOptions.hooks = {
     Notification: [{
       matcher: '',
-      hooks: [async (input) => {
-        const message = typeof input?.message === 'string' ? input.message : 'Claude requires your attention.';
+      hooks: [async (hookInput) => {
+        const message = typeof hookInput?.message === 'string' ? hookInput.message : 'Claude requires your attention.';
         emitNotification(createNotificationEvent({
           provider: 'claude',
           sessionId: session.sessionId || sessionId || null,
@@ -1181,7 +1247,7 @@ async function startPersistentSession(command, options, ws) {
   // Caveat: in 'auto'/'bypassPermissions' modes the SDK resolves approval at the
   // permission-mode step and skips this callback, so interactive tools won't
   // reach the UI in those modes (unchanged from the per-query implementation).
-  sdkOptions.canUseTool = makeCanUseTool(session, sdkOptions, ws, emitNotification);
+  sdkOptions.canUseTool = makeCanUseTool(session, sdkOptions, emitNotification);
 
   // Set stream-close timeout for interactive tools (Query constructor reads it synchronously).
   const prevStreamTimeout = process.env.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT;
@@ -1211,7 +1277,7 @@ async function startPersistentSession(command, options, ws) {
   console.log('Starting persistent streaming session for:', sessionId || 'NEW');
   const turnPromise = beginTurn(session);
   input.push(makeUserMessage(finalCommand));
-  void runSessionLoop(session, ws);
+  void runSessionLoop(session);
   return turnPromise;
 }
 
@@ -1370,9 +1436,8 @@ async function abortClaudeSDKSession(sessionId) {
     }
 
     // Settle the turn now (keeps the session alive; reconciles background jobs).
-    // If the interrupt also yields a `result`, onTurnEnd's settleTurn is a
-    // no-op thanks to the awaitingResult guard.
-    settleTurn(session, session.writer, { aborted: true });
+    // The gateway emits the aborted terminal `complete`, so settleTurn skips it.
+    settleTurn(session, { aborted: true });
     return true;
   } catch (error) {
     console.error(`Error aborting session ${sessionId}:`, error);
@@ -1437,20 +1502,17 @@ function getPendingApprovalsForSession(sessionId) {
 }
 
 /**
- * Attach a (re)connecting client's raw WebSocket to a session's writer.
- * Called when a client opens the session (e.g. page refresh, second tab/device)
- * while the SDK session is still alive — including while idle between turns, so
- * a later background-job resume still streams to this client. The writer fans
- * out to every attached socket, so concurrent viewers all receive the stream.
+ * Reconnect a session's WebSocketWriter to a new raw WebSocket.
+ * Called when client reconnects (e.g. page refresh) while SDK is still running.
  * @param {string} sessionId - The session ID
  * @param {Object} newRawWs - The new raw WebSocket connection
- * @returns {boolean} True if the socket was attached to the writer
+ * @returns {boolean} True if writer was successfully reconnected
  */
 function reconnectSessionWriter(sessionId, newRawWs) {
   const session = getSession(sessionId);
   if (!session?.writer?.updateWebSocket) return false;
   session.writer.updateWebSocket(newRawWs);
-  console.log(`[RECONNECT] Client attached to session ${sessionId}`);
+  console.log(`[RECONNECT] Writer swapped for session ${sessionId}`);
   return true;
 }
 

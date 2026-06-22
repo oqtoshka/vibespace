@@ -200,9 +200,20 @@ async function handleChatSend(
     images: filterImagesToUploadStore(clientOptions.images),
     sessionId: session.provider_session_id ?? undefined,
     resume: Boolean(session.provider_session_id),
-    cwd: clientOptions.cwd ?? session.project_path ?? undefined,
+    // Worktree-pinned sessions run in the worktree dir. The client sends `cwd`
+    // explicitly (live path); `session.worktree_path` is the headless fallback
+    // (e.g. background-job resume, or a reload before the client rebinds cwd).
+    cwd: clientOptions.cwd ?? session.worktree_path ?? session.project_path ?? undefined,
     projectPath: session.project_path ?? clientOptions.projectPath,
   };
+
+  // Claude background-job auto-resume: when a `run_in_background` job finishes
+  // after its turn, the persistent session opens its OWN run for the resumed
+  // turn (server-initiated, no client send) so its output is sequenced/replayed
+  // and the session shows as processing again.
+  if (provider === 'claude') {
+    runtimeOptions.acquireResumeRun = () => chatRunRegistry.startResumeRun(sessionId);
+  }
 
   try {
     await spawnFn(command, runtimeOptions, run.writer);
