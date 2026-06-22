@@ -57,7 +57,6 @@ export type MainContentProps = {
   workspace: WorkspaceApi;
   ws: WebSocket | null;
   sendMessage: (message: unknown) => void;
-  latestMessage: unknown;
   isMobile: boolean;
   onMenuClick: () => void;
   isLoading: boolean;

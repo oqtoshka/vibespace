@@ -135,6 +135,42 @@ function userTextFingerprint(m: NormalizedMessage): string | null {
   return t.length > 0 ? t : null;
 }
 
+function assistantTextFingerprint(m: NormalizedMessage): string | null {
+  if (m.kind !== 'text' || m.role !== 'assistant') return null;
+  const t = (m.content || '').trim();
+  return t.length > 0 ? t : null;
+}
+
+/**
+ * Has the server-fetched history caught up with this realtime message? Used to
+ * prune realtime rows that the provider jsonl now contains, while preserving
+ * ones it does not yet (an optimistic user row still being persisted, a
+ * finalized assistant reply that has not landed in history, synthetic errors).
+ *
+ * Wholesale-clearing realtime on every refresh was the bug behind "I sent a
+ * message and it vanished a second later": the refresh fired before the jsonl
+ * had the user's turn, so the optimistic row was dropped from realtime AND
+ * absent from server — gone from both sides.
+ */
+function isCoveredByServer(
+  msg: NormalizedMessage,
+  serverIds: Set<string>,
+  serverUserTexts: Set<string>,
+  serverAssistantTexts: Set<string>,
+): boolean {
+  // Synthetic errors are never written to the provider jsonl; keep them so a
+  // refresh cannot silently erase the only record of a failed send.
+  if (msg.kind === 'error') return false;
+  // In-flight streaming placeholder — keep until finalized/persisted.
+  if (msg.id.startsWith('__streaming_')) return false;
+  if (serverIds.has(msg.id)) return true;
+  const ut = userTextFingerprint(msg);
+  if (ut && serverUserTexts.has(ut)) return true;
+  const at = assistantTextFingerprint(msg);
+  if (at && serverAssistantTexts.has(at)) return true;
+  return false;
+}
+
 /**
  * After `finalizeStreaming`, the client holds a synthetic assistant `text` row
  * while the sessions API soon returns the same reply with a different id.
@@ -504,11 +540,21 @@ export function useSessionStore() {
       slot.total = data.total ?? slot.serverMessages.length;
       slot.hasMore = Boolean(data.hasMore);
       slot.fetchedAt = Date.now();
-      // Drop realtime messages that the server has caught up with to prevent
-      // unbounded growth — except synthetic errors (SDK/resume failures): those
-      // are never persisted to the provider jsonl, so a refresh would silently
-      // wipe them and the user would never learn why their message vanished.
-      slot.realtimeMessages = slot.realtimeMessages.filter((msg) => msg.kind === 'error');
+      // Prune only realtime rows the server has actually caught up with (matched
+      // by id or text fingerprint), keeping anything not yet persisted —
+      // optimistic user rows mid-persist, finalized assistant replies not yet in
+      // history, and synthetic errors. This prevents both unbounded growth and
+      // the "sent message vanishes on refresh" race that a wholesale clear caused.
+      const serverIds = new Set(slot.serverMessages.map((m) => m.id));
+      const serverUserTexts = new Set(
+        slot.serverMessages.map(userTextFingerprint).filter((t): t is string => t !== null),
+      );
+      const serverAssistantTexts = new Set(
+        slot.serverMessages.map(assistantTextFingerprint).filter((t): t is string => t !== null),
+      );
+      slot.realtimeMessages = slot.realtimeMessages.filter(
+        (msg) => !isCoveredByServer(msg, serverIds, serverUserTexts, serverAssistantTexts),
+      );
       recomputeMergedIfNeeded(slot);
       notify(resolvedSessionId);
     } catch (error) {

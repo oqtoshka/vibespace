@@ -148,7 +148,7 @@ function AppContentInner() {
   const { sessionId } = useParams<{ sessionId?: string }>();
   const { t } = useTranslation('common');
   const { isMobile } = useDeviceSettings({ trackPWA: false });
-  const { ws, sendMessage, latestMessage, isConnected } = useWebSocket();
+  const { ws, sendMessage, isConnected } = useWebSocket();
   const wasConnectedRef = useRef(false);
 
   const {
@@ -180,7 +180,6 @@ function AppContentInner() {
   } = useProjectsState({
     sessionId,
     navigate,
-    latestMessage,
     isMobile,
     activeSessions,
   });
@@ -560,7 +559,6 @@ function AppContentInner() {
           workspace={workspace}
           ws={ws}
           sendMessage={sendMessage}
-          latestMessage={latestMessage}
           isMobile={isMobile}
           onMenuClick={() => setSidebarOpen(true)}
           isLoading={isLoadingProjects}

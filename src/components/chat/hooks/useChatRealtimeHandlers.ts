@@ -1,6 +1,6 @@
-import { useEffect, useRef } from 'react';
 import type { Dispatch, MutableRefObject, SetStateAction } from 'react';
 
+import { useWebSocketEvent } from '../../../contexts/WebSocketContext';
 import { usePaletteOps } from '../../../contexts/PaletteOpsContext';
 import { showCompletionTitleIndicator } from '../../../utils/pageTitleNotification';
 import { playChatCompletionSound } from '../../../utils/notificationSound';
@@ -50,7 +50,6 @@ type LatestChatMessage = {
 };
 
 interface UseChatRealtimeHandlersArgs {
-  latestMessage: LatestChatMessage | null;
   provider: LLMProvider;
   selectedSession: ProjectSession | null;
   currentSessionId: string | null;
@@ -82,7 +81,6 @@ interface UseChatRealtimeHandlersArgs {
 /* ------------------------------------------------------------------ */
 
 export function useChatRealtimeHandlers({
-  latestMessage,
   provider,
   selectedSession,
   currentSessionId,
@@ -107,12 +105,9 @@ export function useChatRealtimeHandlers({
   sessionStore,
 }: UseChatRealtimeHandlersArgs) {
   const paletteOps = usePaletteOps();
-  const lastProcessedMessageRef = useRef<LatestChatMessage | null>(null);
 
-  useEffect(() => {
+  useWebSocketEvent((latestMessage: LatestChatMessage) => {
     if (!latestMessage) return;
-    if (lastProcessedMessageRef.current === latestMessage) return;
-    lastProcessedMessageRef.current = latestMessage;
 
     const activeViewSessionId =
       selectedSession?.id || currentSessionId || null;
@@ -397,30 +392,5 @@ export function useChatRealtimeHandlers({
       default:
         break;
     }
-  }, [
-    latestMessage,
-    provider,
-    selectedSession,
-    currentSessionId,
-    setCurrentSessionId,
-    setIsLoading,
-    setCanAbortSession,
-    setClaudeStatus,
-    setTokenBudget,
-    setPendingPermissionRequests,
-    pendingViewSessionRef,
-    streamTimerRef,
-    accumulatedStreamRef,
-    onSessionInactive,
-    onSessionActive,
-    onSessionProcessing,
-    onSessionNotProcessing,
-    onNavigateToSession,
-    onWebSocketReconnect,
-    onSendFailed,
-    onSendSucceeded,
-    onSessionlessError,
-    sessionStore,
-    paletteOps,
-  ]);
+  });
 }

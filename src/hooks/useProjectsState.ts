@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { NavigateFunction } from 'react-router-dom';
 
+import { useWebSocketEvent } from '../contexts/WebSocketContext';
 import { api } from '../utils/api';
 import type {
   AppSocketMessage,
@@ -15,7 +16,6 @@ import type {
 type UseProjectsStateArgs = {
   sessionId?: string;
   navigate: NavigateFunction;
-  latestMessage: AppSocketMessage | null;
   isMobile: boolean;
   activeSessions: Set<string>;
 };
@@ -271,7 +271,6 @@ const writeProjectsCache = (projects: Project[]) => {
 export function useProjectsState({
   sessionId,
   navigate,
-  latestMessage,
   isMobile,
   activeSessions,
 }: UseProjectsStateArgs) {
@@ -315,7 +314,6 @@ export function useProjectsState({
   const [newSessionTrigger, setNewSessionTrigger] = useState(0);
 
   const loadingProgressTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const lastHandledMessageRef = useRef<AppSocketMessage | null>(null);
 
   const fetchProjects = useCallback(async ({ showLoadingState = true }: FetchProjectsOptions = {}) => {
     try {
@@ -424,19 +422,14 @@ export function useProjectsState({
     }
   }, [isLoadingProjects, projects, selectedProject, sessionId]);
 
-  useEffect(() => {
+  // Delivered once per inbound frame, in order — no React-batch coalescing and
+  // no self-retrigger from the local-state reads below, so the old
+  // identity-dedup ref is unnecessary.
+  useWebSocketEvent((raw) => {
+    const latestMessage = raw as AppSocketMessage | null;
     if (!latestMessage) {
       return;
     }
-
-    // `latestMessage` is event-like data. This effect also depends on local state
-    // (`projects`, `selectedProject`, `selectedSession`) to compute derived updates.
-    // Without this guard, handling one websocket message can update that local
-    // state, retrigger the effect, and re-handle the same websocket message.
-    if (lastHandledMessageRef.current === latestMessage) {
-      return;
-    }
-    lastHandledMessageRef.current = latestMessage;
 
     if (latestMessage.type === 'loading_progress') {
       if (loadingProgressTimeoutRef.current) {
@@ -515,7 +508,7 @@ export function useProjectsState({
     if (!updatedSelectedSession) {
       setSelectedSession(null);
     }
-  }, [latestMessage, selectedProject, selectedSession, activeSessions, projects]);
+  });
 
   useEffect(() => {
     return () => {

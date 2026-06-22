@@ -28,7 +28,6 @@ function ChatInterface({
   selectedSession,
   ws,
   sendMessage,
-  latestMessage,
   onFileOpen,
   onInputFocusChange,
   onSessionActive,
@@ -96,6 +95,7 @@ function ChatInterface({
     addMessage,
     isLoading,
     setIsLoading,
+    recheckSessionStatus,
     currentSessionId,
     setCurrentSessionId,
     isLoadingSessionMessages,
@@ -219,8 +219,12 @@ function ChatInterface({
     onRewindTruncate: (sessionId, messageUuid) => sessionStore.rewindTo(sessionId, messageUuid),
   });
 
-  // On WebSocket reconnect, re-fetch the current session's messages from the server
-  // so missed streaming events are shown. Also reset isLoading.
+  // On WebSocket reconnect, re-fetch the current session's messages so missed
+  // streaming events are shown, then re-check the session's processing state.
+  // We must NOT blindly clear isLoading here: a turn may still be running on the
+  // backend across the reconnect, and the fresh socket needs to re-attach as the
+  // session writer (which check-session-status does) to receive its completion.
+  // The resulting `session-status` frame sets isLoading to the real value.
   const handleWebSocketReconnect = useCallback(async () => {
     if (!selectedProject || !selectedSession) return;
     const providerVal = (localStorage.getItem('selected-provider') as LLMProvider) || 'claude';
@@ -230,9 +234,8 @@ function ChatInterface({
       projectId: selectedProject.projectId,
       projectPath: selectedProject.fullPath || selectedProject.path || '',
     });
-    setIsLoading(false);
-    setCanAbortSession(false);
-  }, [selectedProject, selectedSession, sessionStore, setIsLoading, setCanAbortSession]);
+    recheckSessionStatus();
+  }, [selectedProject, selectedSession, sessionStore, recheckSessionStatus]);
 
   // Errors that arrive before a session id exists (e.g. rejected cwd) have no
   // store slot — buffer them through addMessage so the user sees the failure.
@@ -244,7 +247,6 @@ function ChatInterface({
   );
 
   useChatRealtimeHandlers({
-    latestMessage,
     provider,
     selectedSession,
     currentSessionId,

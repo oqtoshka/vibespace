@@ -36,7 +36,6 @@ function MainContent({
   workspace,
   ws,
   sendMessage,
-  latestMessage,
   isMobile,
   onMenuClick,
   isLoading,
@@ -175,7 +174,6 @@ function MainContent({
                 selectedSession={selectedSession}
                 ws={ws}
                 sendMessage={sendMessage}
-                latestMessage={latestMessage}
                 onFileOpen={handleFileOpen}
                 onInputFocusChange={onInputFocusChange}
                 onSessionActive={onSessionActive}
