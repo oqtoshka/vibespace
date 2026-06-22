@@ -3,6 +3,7 @@ import { oneDark } from '@codemirror/theme-one-dark';
 import type { Extension } from '@codemirror/state';
 import MarkdownPreview from './markdown/MarkdownPreview';
 import PlantUmlPreview from './PlantUmlPreview';
+import DbmlPreview from './DbmlPreview';
 import HtmlPreview from './HtmlPreview';
 import CustomRenderPreview from './CustomRenderPreview';
 
@@ -12,6 +13,7 @@ type CodeEditorSurfaceProps = {
   previewMode: boolean;
   isMarkdownFile: boolean;
   isPlantUmlFile: boolean;
+  isDbmlFile: boolean;
   isHtmlFile: boolean;
   isCustomRenderFile: boolean;
   isDarkMode: boolean;
@@ -29,6 +31,7 @@ export default function CodeEditorSurface({
   previewMode,
   isMarkdownFile,
   isPlantUmlFile,
+  isDbmlFile,
   isHtmlFile,
   isCustomRenderFile,
   isDarkMode,
@@ -51,6 +54,10 @@ export default function CodeEditorSurface({
 
   if (previewMode && isPlantUmlFile) {
     return <PlantUmlPreview content={content} projectId={projectId} path={currentFilePath ?? ''} />;
+  }
+
+  if (previewMode && isDbmlFile) {
+    return <DbmlPreview content={content} projectId={projectId} path={currentFilePath ?? ''} />;
   }
 
   if (previewMode && isHtmlFile) {
