@@ -2,6 +2,11 @@ import type { WebSocket } from 'ws';
 
 import { sessionsDb } from '@/modules/database/index.js';
 import { chatRunRegistry } from '@/modules/websocket/services/chat-run-registry.service.js';
+import {
+  subscribeProjectFiles,
+  unsubscribeProjectFiles,
+  unsubscribeAllProjectFiles,
+} from '@/modules/websocket/services/project-files-watcher.service.js';
 import { connectedClients, WS_OPEN_STATE } from '@/modules/websocket/services/websocket-state.service.js';
 import type {
   AnyRecord,
@@ -316,6 +321,11 @@ function handlePermissionResponse(data: AnyRecord, dependencies: ChatWebSocketDe
   });
 }
 
+function readProjectId(data: AnyRecord): string | null {
+  const projectId = typeof data.projectId === 'string' ? data.projectId.trim() : '';
+  return projectId.length > 0 ? projectId : null;
+}
+
 /**
  * Handles authenticated chat websocket messages used by the main chat panel.
  *
@@ -324,6 +334,8 @@ function handlePermissionResponse(data: AnyRecord, dependencies: ChatWebSocketDe
  * - `chat.abort`               { sessionId }
  * - `chat.subscribe`           { sessions: [{ sessionId, lastSeq? }] }
  * - `chat.permission-response` { requestId, allow, updatedInput?, message?, rememberEntry? }
+ * - `files.subscribe`          { projectId }   — watch a project's files
+ * - `files.unsubscribe`        { projectId }
  *
  * Outbound protocol (server to client): every frame is `kind`-based — either
  * a provider `NormalizedMessage` (with `seq`) or a gateway event
@@ -363,6 +375,20 @@ export function handleChatConnection(
         case 'chat.permission-response':
           handlePermissionResponse(data, dependencies);
           return;
+        case 'files.subscribe': {
+          const projectId = readProjectId(data);
+          if (projectId) {
+            await subscribeProjectFiles(ws, projectId);
+          }
+          return;
+        }
+        case 'files.unsubscribe': {
+          const projectId = readProjectId(data);
+          if (projectId) {
+            unsubscribeProjectFiles(ws, projectId);
+          }
+          return;
+        }
         default:
           sendProtocolError(ws, 'UNKNOWN_MESSAGE_TYPE', `Unknown message type "${messageType}".`);
           return;
@@ -377,5 +403,6 @@ export function handleChatConnection(
   ws.on('close', () => {
     console.log('[INFO] Chat client disconnected');
     connectedClients.delete(ws);
+    unsubscribeAllProjectFiles(ws);
   });
 }
