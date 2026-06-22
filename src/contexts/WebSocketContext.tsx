@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from '../components/auth/context/AuthContext';
 import { IS_PLATFORM } from '../constants/config';
 
@@ -49,6 +49,21 @@ export const useWebSocket = () => {
     throw new Error('useWebSocket must be used within a WebSocketProvider');
   }
   return context;
+};
+
+/**
+ * Subscribe to every inbound WebSocket message without missing any. The handler
+ * is kept in a ref so it always sees the latest closure (current props/state)
+ * without re-subscribing on every render — delivery order and exactly-once
+ * semantics are preserved regardless of how often the component re-renders.
+ */
+export const useWebSocketEvent = (handler: WebSocketMessageHandler) => {
+  const { subscribe } = useWebSocket();
+  const handlerRef = useRef(handler);
+  useLayoutEffect(() => {
+    handlerRef.current = handler;
+  });
+  useEffect(() => subscribe((message) => handlerRef.current(message)), [subscribe]);
 };
 
 const buildWebSocketUrl = (token: string | null) => {
