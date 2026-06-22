@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef } from 'react';
 
 import ChatInterface from '../../chat/view/ChatInterface';
 import StandaloneShell from '../../standalone-shell/view/StandaloneShell';
@@ -10,10 +10,6 @@ import { useTaskMaster } from '../../../contexts/TaskMasterContext';
 import { usePaletteOpsRegister } from '../../../contexts/PaletteOpsContext';
 import { useTasksSettings } from '../../../contexts/TasksSettingsContext';
 import { useUiPreferences } from '../../../hooks/useUiPreferences';
-import { useFileOpenResolver } from '../../../hooks/useFileOpenResolver';
-import { authenticatedFetch } from '../../../utils/api';
-import { useEditorSidebar } from '../../code-editor/hooks/useEditorSidebar';
-import EditorSidebar from '../../code-editor/view/EditorSidebar';
 import CodeEditor from '../../code-editor/view/CodeEditor';
 import type { CodeEditorDiffInfo } from '../../code-editor/types/types';
 import type { ShellController } from '../../shell/view/Shell';
@@ -49,20 +45,17 @@ function MainContent({
   onSessionIdle,
   processingSessions,
   onNavigateToSession,
-  onSessionEstablished,
   onShowSettings,
   externalMessageUpdate,
   newSessionTrigger,
 }: MainContentProps) {
   const { preferences } = useUiPreferences();
-  const { showRawParameters, showThinking, sendByCtrlEnter } = preferences;
+  const { autoExpandTools, showRawParameters, showThinking, autoScrollToBottom, sendByCtrlEnter } = preferences;
 
   const { currentProject, setCurrentProject } = useTaskMaster() as TaskMasterContextValue;
   const { tasksEnabled, isTaskMasterInstalled } = useTasksSettings() as TasksSettingsContextValue;
-  const [browserUseEnabled, setBrowserUseEnabled] = useState(false);
 
   const shouldShowTasksTab = Boolean(tasksEnabled && isTaskMasterInstalled);
-  const shouldShowBrowserTab = browserUseEnabled;
 
   const { activeTab, activePanel, activeId } = workspace;
 
@@ -123,10 +116,6 @@ function MainContent({
     return sessions;
   }, [workspace.tabs]);
 
-  // Resolves bare/partial file references (e.g. links inside chat messages) to
-  // real project files before opening them in the in-app editor.
-  const resolvedFileOpen = useFileOpenResolver(selectedProject, handleFileOpen);
-
   useEffect(() => {
     // Identify projects by DB `projectId`; the TaskMaster context uses the
     // same identifier to key its internal maps.
@@ -147,34 +136,8 @@ function MainContent({
     }
   }, [shouldShowTasksTab, activePanel, workspace]);
 
-  const loadBrowserUseSettings = useCallback(async () => {
-    try {
-      const response = await authenticatedFetch('/api/browser-use/settings');
-      const data = await response.json();
-      setBrowserUseEnabled(Boolean(response.ok && data?.success !== false && data?.data?.settings?.enabled));
-    } catch {
-      setBrowserUseEnabled(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    void loadBrowserUseSettings();
-    window.addEventListener('browserUseSettingsChanged', loadBrowserUseSettings);
-    return () => window.removeEventListener('browserUseSettingsChanged', loadBrowserUseSettings);
-  }, [loadBrowserUseSettings]);
-
-  useEffect(() => {
-    if (!shouldShowBrowserTab && activeTab === 'browser') {
-      setActiveTab('chat');
-    }
-  }, [shouldShowBrowserTab, activeTab, setActiveTab]);
-
   usePaletteOpsRegister({
     openFile: handleFileOpen,
-    // Opens files from the palette in a workspace file tab, same as openFile.
-    openFileInEditor: (filePath: string) => {
-      resolvedFileOpen(filePath);
-    },
   });
 
   if (isLoading) {
@@ -192,7 +155,6 @@ function MainContent({
         selectedProject={selectedProject}
         selectedSession={selectedSession}
         shouldShowTasksTab={shouldShowTasksTab}
-        shouldShowBrowserTab={shouldShowBrowserTab}
         isMobile={isMobile}
         onMenuClick={onMenuClick}
         onCloseTab={handleCloseTab}
@@ -217,10 +179,11 @@ function MainContent({
                 onSessionIdle={onSessionIdle}
                 processingSessions={processingSessions}
                 onNavigateToSession={onNavigateToSession}
-                onSessionEstablished={onSessionEstablished}
                 onShowSettings={onShowSettings}
+                autoExpandTools={autoExpandTools}
                 showRawParameters={showRawParameters}
                 showThinking={showThinking}
+                autoScrollToBottom={autoScrollToBottom}
                 sendByCtrlEnter={sendByCtrlEnter}
                 externalMessageUpdate={externalMessageUpdate}
                 newSessionTrigger={newSessionTrigger}
@@ -295,6 +258,7 @@ function MainContent({
               <BrowserUsePanel isVisible onShowSettings={onShowSettings} />
             </div>
           )}
+
           <div className={`h-full overflow-hidden ${activePanel === 'preview' ? 'block' : 'hidden'}`} />
 
           {activePanel?.startsWith('plugin:') && (
