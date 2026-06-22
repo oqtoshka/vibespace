@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 type UseExpandedDirectoriesResult = {
   expandedDirs: Set<string>;
@@ -7,8 +7,69 @@ type UseExpandedDirectoriesResult = {
   collapseAll: () => void;
 };
 
-export function useExpandedDirectories(): UseExpandedDirectoriesResult {
-  const [expandedDirs, setExpandedDirs] = useState<Set<string>>(() => new Set());
+const STORAGE_PREFIX = 'vibespace:file-tree:expanded:';
+
+function storageKey(projectId: string | undefined): string | null {
+  return projectId ? `${STORAGE_PREFIX}${projectId}` : null;
+}
+
+function loadExpanded(projectId: string | undefined): Set<string> {
+  const key = storageKey(projectId);
+  if (!key) {
+    return new Set();
+  }
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) {
+      return new Set();
+    }
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? new Set(parsed.filter((p): p is string => typeof p === 'string')) : new Set();
+  } catch {
+    return new Set();
+  }
+}
+
+function persistExpanded(projectId: string | undefined, dirs: Set<string>): void {
+  const key = storageKey(projectId);
+  if (!key) {
+    return;
+  }
+  try {
+    if (dirs.size === 0) {
+      localStorage.removeItem(key);
+    } else {
+      localStorage.setItem(key, JSON.stringify([...dirs]));
+    }
+  } catch {
+    // Keep runtime state even when persistence fails.
+  }
+}
+
+/**
+ * Tracks which directories are expanded, persisted per project so the tree
+ * keeps its shape across remounts, tab switches, and reloads. The set is keyed
+ * by `projectId`; switching projects swaps in that project's saved state.
+ */
+export function useExpandedDirectories(projectId?: string): UseExpandedDirectoriesResult {
+  const [expandedDirs, setExpandedDirs] = useState<Set<string>>(() => loadExpanded(projectId));
+
+  // Reload the saved set when the project changes. Guarded so we don't clobber
+  // the freshly-loaded set with the previous project's persistence effect.
+  const projectIdRef = useRef(projectId);
+  useEffect(() => {
+    if (projectIdRef.current !== projectId) {
+      projectIdRef.current = projectId;
+      setExpandedDirs(loadExpanded(projectId));
+    }
+  }, [projectId]);
+
+  // Persist on every change (for the current project only).
+  useEffect(() => {
+    if (projectIdRef.current === projectId) {
+      persistExpanded(projectId, expandedDirs);
+    }
+  }, [expandedDirs, projectId]);
 
   const toggleDirectory = useCallback((path: string) => {
     setExpandedDirs((previous) => {
@@ -47,4 +108,3 @@ export function useExpandedDirectories(): UseExpandedDirectoriesResult {
     collapseAll,
   };
 }
-

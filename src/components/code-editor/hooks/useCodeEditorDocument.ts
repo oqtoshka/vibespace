@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../../../utils/api';
+import { useProjectFilesWatch, type FileChange } from '../../../hooks/useProjectFilesWatch';
 import type { CodeEditorFile } from '../types/types';
 import { isBinaryFile } from '../utils/binaryFile';
-import { getPreviewKind } from '../utils/previewableFile';
 
 type UseCodeEditorDocumentParams = {
   file: CodeEditorFile;
@@ -24,9 +24,11 @@ export const useCodeEditorDocument = ({ file, projectPath }: UseCodeEditorDocume
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [isBinary, setIsBinary] = useState(false);
-  // Some binaries (images, PDFs, audio, video) can be rendered natively, so the
-  // editor shows an inline preview instead of the generic binary placeholder.
-  const previewKind = getPreviewKind(file.name);
+  // The content as it currently sits on disk (what we last loaded or saved).
+  // Used to detect unsaved local edits so a disk-change reload never clobbers
+  // them, and to skip no-op reloads triggered by our own saves.
+  const diskContentRef = useRef('');
+  const savingRef = useRef(false);
   // `fileProjectId` is the DB primary key passed down from the editor sidebar;
   // the fallback to `projectPath` preserves older callers that didn't yet
   // propagate the identifier.
@@ -35,35 +37,32 @@ export const useCodeEditorDocument = ({ file, projectPath }: UseCodeEditorDocume
   const fileName = file.name;
   const fileDiffNewString = file.diffInfo?.new_string;
   const fileDiffOldString = file.diffInfo?.old_string;
+  const hasDiff = Boolean(file.diffInfo);
 
-  useEffect(() => {
-    const loadFileContent = async () => {
+  const loadFileContent = useCallback(
+    async ({ silent = false }: { silent?: boolean } = {}) => {
       try {
-        setLoading(true);
+        if (!silent) {
+          setLoading(true);
+        }
         setIsBinary(false);
 
-        // Natively previewable media (image/pdf/audio/video) is rendered by
-        // CodeEditorMediaPreview, so there is nothing to read as text here.
-        // Clear any buffer left over from a previously opened text file so a
-        // stray save can't write stale content over the binary file.
-        if (getPreviewKind(file.name)) {
-          setContent('');
-          setLoading(false);
-          return;
-        }
-
         // Check if file is binary by extension
-        if (isBinaryFile(file.name)) {
-          setContent('');
+        if (isBinaryFile(fileName)) {
           setIsBinary(true);
-          setLoading(false);
+          if (!silent) {
+            setLoading(false);
+          }
           return;
         }
 
         // Diff payload may already include full old/new snapshots, so avoid disk read.
-        if (file.diffInfo && fileDiffNewString !== undefined && fileDiffOldString !== undefined) {
+        if (hasDiff && fileDiffNewString !== undefined && fileDiffOldString !== undefined) {
           setContent(fileDiffNewString);
-          setLoading(false);
+          diskContentRef.current = fileDiffNewString;
+          if (!silent) {
+            setLoading(false);
+          }
           return;
         }
 
@@ -78,26 +77,54 @@ export const useCodeEditorDocument = ({ file, projectPath }: UseCodeEditorDocume
 
         const data = await response.json();
         setContent(data.content);
+        diskContentRef.current = data.content;
       } catch (error) {
         const message = getErrorMessage(error);
         console.error('Error loading file:', error);
-        setContent(`// Error loading file: ${message}\n// File: ${fileName}\n// Path: ${filePath}`);
+        // A silent (watch-triggered) reload that fails must not trash the
+        // buffer the user is looking at — only the initial load surfaces it.
+        if (!silent) {
+          setContent(`// Error loading file: ${message}\n// File: ${fileName}\n// Path: ${filePath}`);
+        }
       } finally {
-        setLoading(false);
+        if (!silent) {
+          setLoading(false);
+        }
       }
-    };
+    },
+    [fileDiffNewString, fileDiffOldString, fileName, filePath, fileProjectId, hasDiff],
+  );
 
-    loadFileContent();
-  }, [file.diffInfo, file.name, fileDiffNewString, fileDiffOldString, fileName, filePath, fileProjectId]);
+  useEffect(() => {
+    void loadFileContent();
+  }, [loadFileContent]);
+
+  // Live-reload when the open file changes on disk (e.g. an agent edits it),
+  // unless the user has unsaved edits or a save is in flight.
+  const handleExternalChange = useCallback(
+    (changes: FileChange[]) => {
+      if (isBinary || hasDiff || savingRef.current) {
+        return;
+      }
+      const touched = changes.some(
+        (change) => change.path === filePath && (change.type === 'change' || change.type === 'add'),
+      );
+      if (!touched) {
+        return;
+      }
+      // Unsaved local edits diverge from disk — leave the buffer alone.
+      if (content !== diskContentRef.current) {
+        return;
+      }
+      void loadFileContent({ silent: true });
+    },
+    [content, filePath, hasDiff, isBinary, loadFileContent],
+  );
+  useProjectFilesWatch(fileProjectId, handleExternalChange);
 
   const handleSave = useCallback(async () => {
-    // Preview-only and binary files have no editable text buffer; never write
-    // them back (e.g. via Cmd/Ctrl+S) or we'd corrupt the file on disk.
-    if (previewKind || isBinaryFile(fileName)) {
-      return;
-    }
-
     setSaving(true);
+    savingRef.current = true;
     setSaveError(null);
 
     try {
@@ -121,6 +148,9 @@ export const useCodeEditorDocument = ({ file, projectPath }: UseCodeEditorDocume
 
       await response.json();
 
+      // The buffer now matches disk; remember it so the watcher's echo of our
+      // own write isn't mistaken for an external change.
+      diskContentRef.current = content;
       setSaveSuccess(true);
       setTimeout(() => setSaveSuccess(false), 2000);
     } catch (error) {
@@ -129,8 +159,9 @@ export const useCodeEditorDocument = ({ file, projectPath }: UseCodeEditorDocume
       setSaveError(message);
     } finally {
       setSaving(false);
+      savingRef.current = false;
     }
-  }, [content, filePath, fileProjectId, previewKind, fileName]);
+  }, [content, filePath, fileProjectId]);
 
   const handleDownload = useCallback(() => {
     const blob = new Blob([content], { type: 'text/plain' });
@@ -155,8 +186,6 @@ export const useCodeEditorDocument = ({ file, projectPath }: UseCodeEditorDocume
     saveSuccess,
     saveError,
     isBinary,
-    previewKind,
-    fileProjectId,
     handleSave,
     handleDownload,
   };
