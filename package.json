@@ -150,6 +150,7 @@
     "@octokit/rest": "^22.0.0",
     "@openai/codex-sdk": "^0.144.0",
     "@replit/codemirror-minimap": "^0.5.2",
+    "@softwaretechnik/dbml-renderer": "^1.0.31",
     "@tailwindcss/typography": "^0.5.16",
     "@uiw/react-codemirror": "^4.23.13",
     "@vscode/ripgrep": "^1.17.1",
