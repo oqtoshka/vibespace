@@ -1,4 +1,3 @@
-import { useEffect, useRef } from 'react';
 import type { Dispatch, MutableRefObject, SetStateAction } from 'react';
 
 import type { ServerEvent } from '../../../contexts/WebSocketContext';
