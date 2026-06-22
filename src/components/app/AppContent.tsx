@@ -148,8 +148,7 @@ function AppContentInner() {
   const { sessionId } = useParams<{ sessionId?: string }>();
   const { t } = useTranslation('common');
   const { isMobile } = useDeviceSettings({ trackPWA: false });
-  const { ws, sendMessage, isConnected } = useWebSocket();
-  const wasConnectedRef = useRef(false);
+  const { ws, sendMessage } = useWebSocket();
 
   const {
     processingSessions,
@@ -454,23 +453,9 @@ function AppContentInner() {
     };
   }, [navigate, openChatTab, refreshProjectsSilently, setSidebarOpen]);
 
-  // Permission recovery: query pending permissions on WebSocket reconnect or session change
-  useEffect(() => {
-    const isReconnect = isConnected && !wasConnectedRef.current;
-
-    if (isReconnect) {
-      wasConnectedRef.current = true;
-    } else if (!isConnected) {
-      wasConnectedRef.current = false;
-    }
-
-    if (isConnected && selectedSession?.id) {
-      sendMessage({
-        type: 'get-pending-permissions',
-        sessionId: selectedSession.id
-      });
-    }
-  }, [isConnected, selectedSession?.id, sendMessage]);
+  // Permission recovery is handled by upstream's chat.subscribe flow: the
+  // `chat_subscribed` ack carries pending approvals on session open and on
+  // reconnect, so no separate request is needed here.
 
   // Adjust the app container to stay above the virtual keyboard on iOS Safari.
   // On Chrome for Android the layout viewport already shrinks when the keyboard opens,
