@@ -152,13 +152,15 @@ function AppContentInner() {
   const wasConnectedRef = useRef(false);
 
   const {
-    activeSessions,
     processingSessions,
-    markSessionAsActive,
-    markSessionAsInactive,
-    markSessionAsProcessing,
-    markSessionAsNotProcessing,
+    markSessionProcessing,
+    markSessionIdle,
   } = useSessionProtection();
+
+  // The sidebar and project-state guard consume a plain Set of active session
+  // ids; upstream's session-activity hook keys a richer Map. Derive the Set
+  // once per change for those consumers (the chat path uses the Map directly).
+  const activeSessions = useMemo(() => new Set(processingSessions.keys()), [processingSessions]);
 
   const {
     projects,
@@ -495,7 +497,7 @@ function AppContentInner() {
     onSessionSelect: handleSidebarSessionSelect,
     onNewSession: startNewChat,
     onSessionDelete: handleSessionDeleteWithTabs,
-    processingSessions,
+    processingSessions: activeSessions,
     view: sidebarView,
     onViewChange: setSidebarView,
     onFileOpen: (filePath: string) => {
@@ -563,10 +565,8 @@ function AppContentInner() {
           onMenuClick={() => setSidebarOpen(true)}
           isLoading={isLoadingProjects}
           onInputFocusChange={setIsInputFocused}
-          onSessionActive={markSessionAsActive}
-          onSessionInactive={markSessionAsInactive}
-          onSessionProcessing={markSessionAsProcessing}
-          onSessionNotProcessing={markSessionAsNotProcessing}
+          onSessionProcessing={markSessionProcessing}
+          onSessionIdle={markSessionIdle}
           processingSessions={processingSessions}
           onNavigateToSession={(targetSessionId: string, options) =>
             navigate(`/session/${targetSessionId}`, { replace: Boolean(options?.replace) })

@@ -17,7 +17,7 @@ export type ProviderModelsCacheInfo = {
   source: 'memory' | 'disk' | 'fresh';
 };
 
-export type AppTab = 'chat' | 'files' | 'shell' | 'git' | 'tasks' | 'preview' | `plugin:${string}`;
+export type AppTab = 'chat' | 'files' | 'shell' | 'git' | 'tasks' | 'preview' | 'browser' | `plugin:${string}`;
 
 export interface ProjectSession {
   id: string;
@@ -29,6 +29,7 @@ export interface ProjectSession {
   updated_at?: string;
   lastActivity?: string;
   messageCount?: number;
+  provider?: LLMProvider;
   __provider?: LLMProvider;
   // Tags the session with the owning project's DB `projectId` so UI handlers
   // (session switching, sidebar focus, etc.) can match against selectedProject.
@@ -74,7 +75,7 @@ export interface Project {
 }
 
 export interface LoadingProgress {
-  type?: 'loading_progress';
+  kind?: 'loading_progress';
   phase?: string;
   current: number;
   total: number;
@@ -82,6 +83,9 @@ export interface LoadingProgress {
   [key: string]: unknown;
 }
 
+// Realtime messages consumed by useProjectsState off the WebSocket stream.
+// Carried over the fork's project-list live-update path (project watcher →
+// `projects_updated`), distinct from the chat gateway's `kind`-based events.
 export interface ProjectsUpdatedMessage {
   type: 'projects_updated';
   projects: Project[];

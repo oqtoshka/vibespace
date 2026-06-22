@@ -2,23 +2,42 @@ import { createContext, useCallback, useContext, useEffect, useLayoutEffect, use
 import { useAuth } from '../components/auth/context/AuthContext';
 import { IS_PLATFORM } from '../constants/config';
 
-export type WebSocketMessageHandler = (message: any) => void;
+/**
+ * One frame received from the chat websocket. The server guarantees every
+ * frame carries a `kind` (provider message kinds plus gateway kinds such as
+ * `chat_subscribed`, `session_upserted`, `loading_progress`,
+ * `protocol_error`). The synthetic `websocket_reconnected` kind is injected
+ * client-side when the socket re-opens after a drop.
+ */
+export type ServerEvent = {
+  kind?: string;
+  type?: string;
+  sessionId?: string;
+  seq?: number;
+  [key: string]: unknown;
+};
+
+type ServerEventListener = (event: ServerEvent) => void;
 
 type WebSocketContextType = {
   ws: WebSocket | null;
-  sendMessage: (message: any) => void;
+  sendMessage: (message: unknown) => void;
   /**
-   * Subscribe to the raw inbound message stream. Every parsed frame is
-   * delivered to every subscriber exactly once, in arrival order, synchronously
-   * from the socket's `onmessage`. Returns an unsubscribe function.
+   * Subscribes to every websocket frame. Returns an unsubscribe function.
    *
-   * This replaced a single `latestMessage` state slot that overwrote itself on
-   * every frame: when several messages landed in one React batch (a turn
-   * boundary emits `stream_end` → `complete` → `projects_updated` back-to-back),
-   * only the last survived to the consuming effect, so terminal events like
-   * `complete` were silently dropped and the UI hung on "Processing".
+   * This is the primary consumption API: events are dispatched synchronously
+   * to every listener, so rapid back-to-back frames can never be coalesced or
+   * dropped the way a single "latest message" state slot could.
    */
-  subscribe: (handler: WebSocketMessageHandler) => () => void;
+  subscribe: (listener: ServerEventListener) => () => void;
+  /**
+   * Legacy state-based access to the most recent frame.
+   *
+   * Kept only for low-frequency consumers (TaskMaster broadcasts). High-rate
+   * chat streams must use `subscribe` — React may batch state updates, which
+   * makes `latestMessage` lossy under load.
+   */
+  latestMessage: ServerEvent | null;
   isConnected: boolean;
 };
 
@@ -33,12 +52,12 @@ export const useWebSocket = () => {
 };
 
 /**
- * Subscribe to every inbound WebSocket message without missing any. The handler
+ * Subscribe to every inbound WebSocket frame without missing any. The handler
  * is kept in a ref so it always sees the latest closure (current props/state)
- * without re-subscribing on every render — delivery order and exactly-once
- * semantics are preserved regardless of how often the component re-renders.
+ * without re-subscribing on every render — exactly-once, in-order delivery is
+ * preserved regardless of re-render frequency. Thin wrapper over `subscribe`.
  */
-export const useWebSocketEvent = (handler: WebSocketMessageHandler) => {
+export const useWebSocketEvent = (handler: (message: ServerEvent) => void) => {
   const { subscribe } = useWebSocket();
   const handlerRef = useRef(handler);
   useLayoutEffect(() => {
@@ -58,28 +77,26 @@ const useWebSocketProviderState = (): WebSocketContextType => {
   const wsRef = useRef<WebSocket | null>(null);
   const unmountedRef = useRef(false); // Track if component is unmounted
   const hasConnectedRef = useRef(false); // Track if we've ever connected (to detect reconnects)
-  const subscribersRef = useRef(new Set<WebSocketMessageHandler>());
+  /**
+   * Listener registry for the subscribe API. A ref (not state) because the
+   * set must be readable synchronously inside `onmessage` and never trigger
+   * re-renders of the provider tree.
+   */
+  const listenersRef = useRef(new Set<ServerEventListener>());
+  const [latestMessage, setLatestMessage] = useState<ServerEvent | null>(null);
   const [isConnected, setIsConnected] = useState(false);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const { token } = useAuth();
 
-  // Fan a parsed frame out to every subscriber, in order, isolating throws so
-  // one bad handler cannot starve the others of the same message.
-  const deliver = useCallback((message: any) => {
-    for (const handler of subscribersRef.current) {
+  const dispatch = useCallback((event: ServerEvent) => {
+    for (const listener of listenersRef.current) {
       try {
-        handler(message);
+        listener(event);
       } catch (error) {
-        console.error('WebSocket subscriber threw while handling a message:', error);
+        console.error('WebSocket listener error:', error);
       }
     }
-  }, []);
-
-  const subscribe = useCallback((handler: WebSocketMessageHandler) => {
-    subscribersRef.current.add(handler);
-    return () => {
-      subscribersRef.current.delete(handler);
-    };
+    setLatestMessage(event);
   }, []);
 
   useEffect(() => {
@@ -107,7 +124,7 @@ const useWebSocketProviderState = (): WebSocketContextType => {
       const wsUrl = buildWebSocketUrl(token);
 
       if (!wsUrl) return console.warn('No authentication token found for WebSocket connection');
-      
+
       const websocket = new WebSocket(wsUrl);
 
       websocket.onopen = () => {
@@ -115,15 +132,15 @@ const useWebSocketProviderState = (): WebSocketContextType => {
         wsRef.current = websocket;
         if (hasConnectedRef.current) {
           // This is a reconnect — signal so components can catch up on missed messages
-          deliver({ type: 'websocket-reconnected', timestamp: Date.now() });
+          dispatch({ kind: 'websocket_reconnected', timestamp: Date.now() });
         }
         hasConnectedRef.current = true;
       };
 
       websocket.onmessage = (event) => {
         try {
-          const data = JSON.parse(event.data);
-          deliver(data);
+          const data = JSON.parse(event.data) as ServerEvent;
+          dispatch(data);
         } catch (error) {
           console.error('Error parsing WebSocket message:', error);
         }
@@ -132,7 +149,7 @@ const useWebSocketProviderState = (): WebSocketContextType => {
       websocket.onclose = () => {
         setIsConnected(false);
         wsRef.current = null;
-        
+
         // Attempt to reconnect after 3 seconds
         reconnectTimeoutRef.current = setTimeout(() => {
           if (unmountedRef.current) return; // Prevent reconnection if unmounted
@@ -147,9 +164,9 @@ const useWebSocketProviderState = (): WebSocketContextType => {
     } catch (error) {
       console.error('Error creating WebSocket connection:', error);
     }
-  }, [token, deliver]); // everytime token changes, we reconnect
+  }, [token, dispatch]); // everytime token changes, we reconnect
 
-  const sendMessage = useCallback((message: any) => {
+  const sendMessage = useCallback((message: unknown) => {
     const socket = wsRef.current;
     if (socket && socket.readyState === WebSocket.OPEN) {
       socket.send(JSON.stringify(message));
@@ -158,20 +175,28 @@ const useWebSocketProviderState = (): WebSocketContextType => {
     }
   }, []);
 
+  const subscribe = useCallback((listener: ServerEventListener) => {
+    listenersRef.current.add(listener);
+    return () => {
+      listenersRef.current.delete(listener);
+    };
+  }, []);
+
   const value: WebSocketContextType = useMemo(() =>
   ({
     ws: wsRef.current,
     sendMessage,
     subscribe,
+    latestMessage,
     isConnected
-  }), [sendMessage, subscribe, isConnected]);
+  }), [sendMessage, subscribe, latestMessage, isConnected]);
 
   return value;
 };
 
 export const WebSocketProvider = ({ children }: { children: React.ReactNode }) => {
   const webSocketData = useWebSocketProviderState();
-  
+
   return (
     <WebSocketContext.Provider value={webSocketData}>
       {children}

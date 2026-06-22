@@ -19,29 +19,26 @@ type ParsedSession = {
 };
 
 /**
- * Claude stores Task/subagent transcripts in a per-session subfolder:
- *   ~/.claude/projects/<proj>/<SESSION_UUID>/subagents/agent-<id>.jsonl
- *
- * Those files carry the PARENT session's `sessionId` and `cwd` (plus
- * `isSidechain: true`). If we index them as standalone sessions, the
- * `ON CONFLICT(session_id) DO UPDATE` upsert clobbers the real session row's
- * `jsonl_path` to point at the subagent file — the main transcript then
- * "disappears" and the session renders the subagent's history instead.
- *
- * Subagent transcripts are surfaced inline by the history provider (nested
- * under their parent tool call), so they must never become sessions of their
- * own. Skip any `.jsonl` that lives under a `subagents/` path segment.
- */
-function isSubagentTranscriptPath(filePath: string): boolean {
-  return filePath.split(path.sep).includes('subagents');
-}
-
-/**
  * Session indexer for Claude transcript artifacts.
  */
 export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
   private readonly provider = 'claude' as const;
   private readonly claudeHome = path.join(os.homedir(), '.claude');
+
+  /**
+   * Returns true when a JSONL file is a subagent transcript rather than a
+   * top-level session.
+   *
+   * Claude stores subagent transcripts under a `subagents/` directory, e.g.
+   * `~/.claude/projects/<encoded-cwd>/<session-id>/subagents/agent-<id>.jsonl`.
+   * Those files repeat the parent session's `sessionId`, so indexing them as
+   * standalone sessions overwrites the parent row's `jsonl_path` and corrupts
+   * the main session record. The recursive scan in `synchronize()` reaches
+   * them, so both entry points must skip them.
+   */
+  private isSubagentTranscript(filePath: string): boolean {
+    return path.normalize(filePath).split(path.sep).includes('subagents');
+  }
 
   /**
    * Scans ~/.claude/projects and upserts discovered sessions into DB.
@@ -56,7 +53,7 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
 
     let processed = 0;
     for (const filePath of files) {
-      if (isSubagentTranscriptPath(filePath)) {
+      if (this.isSubagentTranscript(filePath)) {
         continue;
       }
 
@@ -88,9 +85,8 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
     if (!filePath.endsWith('.jsonl')) {
       return null;
     }
-
     // A live subagent write must not re-hijack its parent's session row.
-    if (isSubagentTranscriptPath(filePath)) {
+    if (this.isSubagentTranscript(filePath)) {
       return null;
     }
 
@@ -138,7 +134,10 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
       return null;
     }
 
-    const existingSession = sessionsDb.getSessionById(parsed.sessionId);
+    // App-created sessions are keyed by an app id, so disk-discovered provider
+    // ids must be resolved through the provider-id mapping first.
+    const existingSession = sessionsDb.getSessionByProviderSessionId(parsed.sessionId)
+      ?? sessionsDb.getSessionById(parsed.sessionId);
     const existingSessionName = existingSession?.custom_name;
     if (existingSessionName && existingSessionName !== 'Untitled Claude Session') {
       return {

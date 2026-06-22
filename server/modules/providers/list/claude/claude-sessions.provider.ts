@@ -5,7 +5,7 @@ import readline from 'node:readline';
 
 import type { IProviderSessions } from '@/shared/interfaces.js';
 import type { AnyRecord, FetchHistoryOptions, FetchHistoryResult, NormalizedMessage, RewindResult } from '@/shared/types.js';
-import { createNormalizedMessage, generateMessageId, readObjectRecord } from '@/shared/utils.js';
+import { createNormalizedMessage, generateMessageId, readObjectRecord, sliceTailPage } from '@/shared/utils.js';
 import { sessionsDb } from '@/modules/database/index.js';
 
 const PROVIDER = 'claude';
@@ -103,10 +103,13 @@ async function parseAgentTools(filePath: string): Promise<AnyRecord[]> {
 
 async function getSessionMessages(
   sessionId: string,
+  providerSessionId: string,
   limit: number | null,
   offset: number,
 ): Promise<ClaudeHistoryMessagesResult> {
   try {
+    // The DB row is keyed by the app-facing session id, while the JSONL rows
+    // on disk carry the provider-native id — both ids are needed here.
     const jsonLPath = sessionsDb.getSessionById(sessionId)?.jsonl_path;
 
     if (!jsonLPath) {
@@ -151,7 +154,7 @@ async function getSessionMessages(
 
       try {
         const entry = JSON.parse(line) as AnyRecord;
-        if (entry.sessionId === sessionId) {
+        if (entry.sessionId === providerSessionId) {
           messages.push(entry);
         }
       } catch {
@@ -619,12 +622,13 @@ export class ClaudeSessionsProvider implements IProviderSessions {
     options: FetchHistoryOptions = {},
   ): Promise<FetchHistoryResult> {
     const { limit = null, offset = 0 } = options;
+    const providerSessionId = options.providerSessionId ?? sessionId;
 
     let result: ClaudeHistoryResult;
     try {
       // Load full history first so `total` reflects frontend-normalized messages,
       // not raw JSONL records.
-      result = await getSessionMessages(sessionId, null, 0);
+      result = await getSessionMessages(sessionId, providerSessionId, null, 0);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.warn(`[ClaudeProvider] Failed to load session ${sessionId}:`, message);
@@ -672,7 +676,6 @@ export class ClaudeSessionsProvider implements IProviderSessions {
       }
     }
 
-    const totalNormalized = normalized.length;
     let total = 0;
     for (const msg of normalized) {
       if (msg.kind !== 'tool_result') {
@@ -681,18 +684,10 @@ export class ClaudeSessionsProvider implements IProviderSessions {
     }
     const normalizedOffset = Math.max(0, offset);
     const normalizedLimit = limit === null ? null : Math.max(0, limit);
-    const messages = normalizedLimit === null
-      ? normalized
-      : normalized.slice(
-          Math.max(0, totalNormalized - normalizedOffset - normalizedLimit),
-          Math.max(0, totalNormalized - normalizedOffset),
-        );
-    const hasMore = normalizedLimit === null
-      ? false
-      : Math.max(0, totalNormalized - normalizedOffset - normalizedLimit) > 0;
+    const { page, hasMore } = sliceTailPage(normalized, normalizedLimit, normalizedOffset);
 
     return {
-      messages,
+      messages: page,
       total,
       hasMore,
       offset: normalizedOffset,

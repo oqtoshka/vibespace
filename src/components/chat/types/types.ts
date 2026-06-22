@@ -1,4 +1,9 @@
 import type { Project, ProjectSession, LLMProvider } from '../../../types/app';
+import type {
+  MarkSessionIdle,
+  MarkSessionProcessing,
+  SessionActivityMap,
+} from '../../../hooks/useSessionProtection';
 
 export type Provider = LLMProvider;
 
@@ -106,6 +111,12 @@ export type SessionNavigationOptions = {
   replace?: boolean;
 };
 
+export type SessionEstablishedContext = {
+  provider: LLMProvider;
+  project: Project;
+  summary?: string | null;
+};
+
 export interface ChatInterfaceProps {
   selectedProject: Project | null;
   selectedSession: ProjectSession | null;
@@ -113,12 +124,11 @@ export interface ChatInterfaceProps {
   sendMessage: (message: unknown) => void;
   onFileOpen?: (filePath: string, diffInfo?: any) => void;
   onInputFocusChange?: (focused: boolean) => void;
-  onSessionActive?: (sessionId?: string | null) => void;
-  onSessionInactive?: (sessionId?: string | null) => void;
-  onSessionProcessing?: (sessionId?: string | null) => void;
-  onSessionNotProcessing?: (sessionId?: string | null) => void;
-  processingSessions?: Set<string>;
+  onSessionProcessing?: MarkSessionProcessing;
+  onSessionIdle?: MarkSessionIdle;
+  processingSessions?: SessionActivityMap;
   onNavigateToSession?: (targetSessionId: string, options?: SessionNavigationOptions) => void;
+  onSessionEstablished?: (sessionId: string, context: SessionEstablishedContext) => void;
   onShowSettings?: () => void;
   autoExpandTools?: boolean;
   showRawParameters?: boolean;

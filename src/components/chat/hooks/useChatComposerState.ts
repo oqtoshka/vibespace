@@ -12,24 +12,20 @@ import type {
 import { useDropzone } from 'react-dropzone';
 
 import { authenticatedFetch } from '../../../utils/api';
-import { downscaleImageFiles } from '../../../utils/imageDownscale';
-import { readActiveWorktree, bindSessionCwd, getSessionCwd } from '../../../hooks/useActiveWorktree';
+import type { MarkSessionProcessing } from '../../../hooks/useSessionProtection';
 import { grantClaudeToolPermission } from '../utils/chatPermissions';
 import { safeLocalStorage } from '../utils/chatStorage';
 import type {
   ChatMessage,
   PendingPermissionRequest,
   PermissionMode,
+  SessionEstablishedContext,
 } from '../types/types';
 import type { Project, ProjectSession, LLMProvider, ProviderModelsCacheInfo } from '../../../types/app';
 import { escapeRegExp } from '../utils/chatFormatting';
 
 import { useFileMentions } from './useFileMentions';
 import { type SlashCommand, useSlashCommands } from './useSlashCommands';
-
-type PendingViewSession = {
-  startedAt: number;
-};
 
 interface UseChatComposerStateArgs {
   selectedProject: Project | null;
@@ -48,36 +44,27 @@ interface UseChatComposerStateArgs {
   tokenBudget: Record<string, unknown> | null;
   sendMessage: (message: unknown) => void;
   sendByCtrlEnter?: boolean;
-  onSessionActive?: (sessionId?: string | null) => void;
-  onSessionProcessing?: (sessionId?: string | null) => void;
+  onSessionProcessing?: MarkSessionProcessing;
+  /**
+   * Invoked with the freshly allocated session id when the user sends the
+   * first message of a brand-new conversation. The backend allocates the id
+   * via POST /api/providers/sessions BEFORE the websocket send, so the id is
+   * stable for the conversation's whole lifetime — the consumer navigates to
+   * /session/:id and records it as the current session.
+   */
+  onSessionEstablished?: (sessionId: string, context: SessionEstablishedContext) => void;
   onInputFocusChange?: (focused: boolean) => void;
   onFileOpen?: (filePath: string, diffInfo?: unknown) => void;
   onShowSettings?: () => void;
-  pendingViewSessionRef: { current: PendingViewSession | null };
   scrollToBottom: () => void;
   addMessage: (msg: ChatMessage) => void;
-  setIsLoading: (loading: boolean) => void;
-  setCanAbortSession: (canAbort: boolean) => void;
-  setClaudeStatus: (status: { text: string; tokens: number; can_interrupt: boolean } | null) => void;
   setIsUserScrolledUp: (isScrolledUp: boolean) => void;
   setPendingPermissionRequests: Dispatch<SetStateAction<PendingPermissionRequest[]>>;
-  /**
-   * Optimistically drops the rewound message and everything after it from the
-   * visible transcript before the edited message is resent. Wired to the session
-   * store's `rewindTo`.
-   */
-  onRewindTruncate?: (sessionId: string, messageUuid: string) => void;
 }
 
 interface MentionableFile {
   name: string;
   path: string;
-}
-
-export interface QueuedMessage {
-  id: string;
-  content: string;
-  images: File[];
 }
 
 interface CommandExecutionResult {
@@ -191,20 +178,15 @@ export function useChatComposerState({
   tokenBudget,
   sendMessage,
   sendByCtrlEnter,
-  onSessionActive,
   onSessionProcessing,
+  onSessionEstablished,
   onInputFocusChange,
   onFileOpen,
   onShowSettings,
-  pendingViewSessionRef,
   scrollToBottom,
   addMessage,
-  setIsLoading,
-  setCanAbortSession,
-  setClaudeStatus,
   setIsUserScrolledUp,
   setPendingPermissionRequests,
-  onRewindTruncate,
 }: UseChatComposerStateArgs) {
   const [input, setInput] = useState(() => {
     if (typeof window !== 'undefined' && selectedProject) {
@@ -219,7 +201,6 @@ export function useChatComposerState({
   const [imageErrors, setImageErrors] = useState<Map<string, string>>(new Map());
   const [isTextareaExpanded, setIsTextareaExpanded] = useState(false);
   const [commandModalPayload, setCommandModalPayload] = useState<CommandModalPayload | null>(null);
-  const [queuedMessages, setQueuedMessages] = useState<QueuedMessage[]>([]);
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const inputHighlightRef = useRef<HTMLDivElement>(null);
@@ -227,23 +208,7 @@ export function useChatComposerState({
     ((event: FormEvent<HTMLFormElement> | MouseEvent | TouchEvent | KeyboardEvent<HTMLTextAreaElement>) => Promise<void>) | null
   >(null);
   const inputValueRef = useRef(input);
-  const lastSubmitAtRef = useRef(0);
-  const queueIdRef = useRef(0);
-  const lastSentRef = useRef<{ content: string; images: File[] } | null>(null);
-  // restoreFailedSend is defined later; call through a ref so runSubmit (above
-  // it) can use it without a temporal-dead-zone hazard in its deps.
-  const restoreFailedSendRef = useRef<() => void>(() => {});
-  // Holds the worktree cwd chosen for a brand-new session until its real id
-  // arrives (then we bind it, so later messages keep the same cwd).
-  const pendingNewSessionCwdRef = useRef<string | null>(null);
   const selectedProjectId = selectedProject?.projectId;
-
-  useEffect(() => {
-    if (currentSessionId && pendingNewSessionCwdRef.current && !getSessionCwd(currentSessionId)) {
-      bindSessionCwd(currentSessionId, pendingNewSessionCwdRef.current);
-      pendingNewSessionCwdRef.current = null;
-    }
-  }, [currentSessionId]);
 
   const handleBuiltInCommand = useCallback(
     (result: CommandExecutionResult) => {
@@ -562,19 +527,19 @@ export function useChatComposerState({
     noKeyboard: true,
   });
 
-  // Core send pipeline, parameterized so it can run either an immediate submit
-  // or a previously queued message. It intentionally does NOT touch the live
-  // composer fields (input/attachments) — the caller owns those.
-  const runSubmit = useCallback(
-    async (payload: { content: string; images: File[] }) => {
-      const { content: rawContent, images } = payload;
-      if (!rawContent.trim() || !selectedProject) {
+  const handleSubmit = useCallback(
+    async (
+      event: FormEvent<HTMLFormElement> | MouseEvent | TouchEvent | KeyboardEvent<HTMLTextAreaElement>,
+    ) => {
+      event.preventDefault();
+      const currentInput = inputValueRef.current;
+      if (!currentInput.trim() || isLoading || !selectedProject) {
         return;
       }
 
       // Intercept slash commands only when "/" is the first input character.
       // Also accept exact "help" as a convenience alias for users who expect CLI-style help.
-      const commandInput = rawContent.trimEnd();
+      const commandInput = currentInput.trimEnd();
       const isHelpAlias = commandInput.trim().toLowerCase() === 'help';
       if (commandInput.startsWith('/') || isHelpAlias) {
         const firstSpace = commandInput.indexOf(' ');
@@ -593,29 +558,30 @@ export function useChatComposerState({
             : undefined);
         if (matchedCommand && matchedCommand.type !== 'skill') {
           executeCommand(matchedCommand, isHelpAlias ? '/help' : commandInput);
+          setInput('');
+          inputValueRef.current = '';
+          setAttachedImages([]);
+          setUploadingImages(new Map());
+          setImageErrors(new Map());
+          resetCommandMenuState();
+          setIsTextareaExpanded(false);
+          if (textareaRef.current) {
+            textareaRef.current.style.height = 'auto';
+          }
           return;
         }
       }
 
-      // Remember what we're sending so a failed send can restore it to the
-      // composer instead of silently losing the user's text.
-      lastSentRef.current = { content: rawContent, images };
-
-      const messageContent = rawContent;
+      const messageContent = currentInput;
 
       let uploadedImages: unknown[] = [];
-      if (images.length > 0) {
+      if (attachedImages.length > 0) {
+        const formData = new FormData();
+        attachedImages.forEach((file) => {
+          formData.append('images', file);
+        });
+
         try {
-          // Shrink phone-sized photos before upload so they fit under the
-          // server (5MB) and reverse-proxy body limits, and to skip wasting
-          // mobile bandwidth on resolution Claude downsamples away anyway.
-          const prepared = await downscaleImageFiles(images);
-
-          const formData = new FormData();
-          prepared.forEach((file) => {
-            formData.append('images', file);
-          });
-
           const response = await authenticatedFetch(`/api/projects/${selectedProject.projectId}/upload-images`, {
             method: 'POST',
             headers: {},
@@ -623,24 +589,7 @@ export function useChatComposerState({
           });
 
           if (!response.ok) {
-            // Surface the actual reason instead of a generic message: 413 is a
-            // body-size limit (proxy/server), 400 is usually an unsupported
-            // type, etc. The server returns { error } for app-level failures;
-            // proxy-level rejections (e.g. nginx 413) have no JSON body.
-            let detail = '';
-            try {
-              const body = await response.json();
-              detail = typeof body?.error === 'string' ? body.error : '';
-            } catch {
-              detail = '';
-            }
-            if (!detail) {
-              detail =
-                response.status === 413
-                  ? 'Image too large for the server to accept.'
-                  : `Upload failed (HTTP ${response.status}).`;
-            }
-            throw new Error(detail);
+            throw new Error('Failed to upload images');
           }
 
           const result = await response.json();
@@ -653,44 +602,77 @@ export function useChatComposerState({
             content: `Failed to upload images: ${message}`,
             timestamp: new Date(),
           });
-          // Put the message + attachments back in the composer so a failed
-          // upload doesn't silently discard what the user typed.
-          restoreFailedSendRef.current();
           return;
         }
       }
 
-      const effectiveSessionId =
-        currentSessionId || selectedSession?.id || sessionStorage.getItem('cursorSessionId');
+      const resolvedProjectPath = selectedProject.fullPath || selectedProject.path || '';
+      const sessionSummary = getNotificationSessionSummary(selectedSession, currentInput);
+
+      // The conversation always has a stable backend-allocated session id
+      // BEFORE the first websocket send: brand-new chats allocate one here
+      // via the session gateway. There is no client-visible session-id
+      // handoff later — this id stays valid for the conversation's lifetime.
+      let targetSessionId = selectedSession?.id || currentSessionId || null;
+      if (!targetSessionId) {
+        try {
+          const response = await authenticatedFetch('/api/providers/sessions', {
+            method: 'POST',
+            body: JSON.stringify({
+              provider,
+              projectPath: resolvedProjectPath,
+            }),
+          });
+          if (!response.ok) {
+            throw new Error(`Failed to create session (${response.status})`);
+          }
+          const body = await response.json();
+          targetSessionId = body?.data?.sessionId || null;
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'Unknown error';
+          console.error('Session creation failed:', error);
+          addMessage({
+            type: 'error',
+            content: `Failed to start a new session: ${message}`,
+            timestamp: new Date(),
+          });
+          return;
+        }
+
+        if (!targetSessionId) {
+          addMessage({
+            type: 'error',
+            content: 'Failed to start a new session: no session id returned.',
+            timestamp: new Date(),
+          });
+          return;
+        }
+
+        onSessionEstablished?.(targetSessionId, {
+          provider,
+          project: selectedProject,
+          summary: sessionSummary,
+        });
+      }
 
       const userMessage: ChatMessage = {
         type: 'user',
-        content: rawContent,
+        content: currentInput,
         images: uploadedImages as any,
         timestamp: new Date(),
       };
 
       addMessage(userMessage);
-      setIsLoading(true); // Processing banner starts
-      setCanAbortSession(true);
-      setClaudeStatus({
-        text: 'Processing',
-        tokens: 0,
-        can_interrupt: true,
+      // Mark this request as processing in the per-session activity map (the
+      // single source of truth the indicator derives from). The id is always
+      // concrete at this point — no pending placeholder exists anymore.
+      onSessionProcessing?.(targetSessionId, {
+        statusText: null,
+        canInterrupt: true,
       });
 
       setIsUserScrolledUp(false);
       setTimeout(() => scrollToBottom(), 100);
-
-      if (!effectiveSessionId && !selectedSession?.id) {
-        // This tracks only that a request is in flight before the provider has
-        // emitted its real session id; routing still waits for session_created.
-        pendingViewSessionRef.current = { startedAt: Date.now() };
-      }
-      if (effectiveSessionId) {
-        onSessionActive?.(effectiveSessionId);
-        onSessionProcessing?.(effectiveSessionId);
-      }
 
       const getToolsSettings = () => {
         try {
@@ -720,105 +702,53 @@ export function useChatComposerState({
       };
 
       const toolsSettings = getToolsSettings();
-      const resolvedProjectPath = selectedProject.fullPath || selectedProject.path || '';
-      const sessionSummary = getNotificationSessionSummary(selectedSession, rawContent);
+      const model =
+        provider === 'cursor'
+          ? cursorModel
+          : provider === 'codex'
+            ? codexModel
+            : provider === 'gemini'
+              ? geminiModel
+              : provider === 'opencode'
+                ? opencodeModel
+                : claudeModel;
 
-      // Worktree-aware cwd. Existing session → its pinned worktree (or a stable
-      // binding made earlier this page session); brand-new session → the
-      // project's active worktree. bindSessionCwd keeps the cwd stable across a
-      // session's messages before the server-synced worktreePath is available.
-      const sessionWorktreePath =
-        (selectedSession?.worktreePath as string | null | undefined) ?? null;
-      const effectiveCwd =
-        getSessionCwd(effectiveSessionId || null) ||
-        (effectiveSessionId
-          ? sessionWorktreePath || resolvedProjectPath
-          : readActiveWorktree(selectedProject.projectId)?.path || resolvedProjectPath);
-      bindSessionCwd(effectiveSessionId || null, effectiveCwd);
-      pendingNewSessionCwdRef.current = effectiveSessionId ? pendingNewSessionCwdRef.current : effectiveCwd;
+      // One message shape for every provider. The backend resolves the
+      // provider, project path, and provider-native resume id from the
+      // session row; `options` only carries composer-level preferences.
+      sendMessage({
+        type: 'chat.send',
+        sessionId: targetSessionId,
+        content: messageContent,
+        options: {
+          model,
+          // Codex has no plan mode; downgrade rather than sending an
+          // unsupported value to its runtime.
+          permissionMode: provider === 'codex' && permissionMode === 'plan' ? 'default' : permissionMode,
+          toolsSettings,
+          skipPermissions: toolsSettings?.skipPermissions || false,
+          sessionSummary,
+          images: uploadedImages,
+        },
+      });
 
-      if (provider === 'cursor') {
-        sendMessage({
-          type: 'cursor-command',
-          command: messageContent,
-          sessionId: effectiveSessionId,
-          options: {
-            cwd: effectiveCwd,
-            projectPath: effectiveCwd,
-            sessionId: effectiveSessionId,
-            resume: Boolean(effectiveSessionId),
-            model: cursorModel,
-            skipPermissions: toolsSettings?.skipPermissions || false,
-            sessionSummary,
-            toolsSettings,
-          },
-        });
-      } else if (provider === 'codex') {
-        sendMessage({
-          type: 'codex-command',
-          command: messageContent,
-          sessionId: effectiveSessionId,
-          options: {
-            cwd: effectiveCwd,
-            projectPath: effectiveCwd,
-            sessionId: effectiveSessionId,
-            resume: Boolean(effectiveSessionId),
-            model: codexModel,
-            sessionSummary,
-            permissionMode: permissionMode === 'plan' ? 'default' : permissionMode,
-          },
-        });
-      } else if (provider === 'gemini') {
-        sendMessage({
-          type: 'gemini-command',
-          command: messageContent,
-          sessionId: effectiveSessionId,
-          options: {
-            cwd: effectiveCwd,
-            projectPath: effectiveCwd,
-            sessionId: effectiveSessionId,
-            resume: Boolean(effectiveSessionId),
-            model: geminiModel,
-            sessionSummary,
-            permissionMode,
-            toolsSettings,
-          },
-        });
-      } else if (provider === 'opencode') {
-        sendMessage({
-          type: 'opencode-command',
-          command: messageContent,
-          sessionId: effectiveSessionId,
-          options: {
-            cwd: effectiveCwd,
-            projectPath: effectiveCwd,
-            sessionId: effectiveSessionId,
-            resume: Boolean(effectiveSessionId),
-            model: opencodeModel,
-            sessionSummary,
-            images: uploadedImages,
-          },
-        });
-      } else {
-        sendMessage({
-          type: 'claude-command',
-          command: messageContent,
-          options: {
-            projectPath: effectiveCwd,
-            cwd: effectiveCwd,
-            sessionId: effectiveSessionId,
-            resume: Boolean(effectiveSessionId),
-            toolsSettings,
-            permissionMode,
-            model: claudeModel,
-            sessionSummary,
-            images: uploadedImages,
-          },
-        });
+      setInput('');
+      inputValueRef.current = '';
+      resetCommandMenuState();
+      setAttachedImages([]);
+      setUploadingImages(new Map());
+      setImageErrors(new Map());
+      setIsTextareaExpanded(false);
+
+      if (textareaRef.current) {
+        textareaRef.current.style.height = 'auto';
       }
+
+      safeLocalStorage.removeItem(`draft_input_${selectedProject.projectId}`);
     },
     [
       selectedSession,
+      attachedImages,
       claudeModel,
       codexModel,
       currentSessionId,
@@ -826,237 +756,24 @@ export function useChatComposerState({
       executeCommand,
       geminiModel,
       opencodeModel,
-      onSessionActive,
+      isLoading,
       onSessionProcessing,
-      pendingViewSessionRef,
+      onSessionEstablished,
       permissionMode,
       provider,
+      resetCommandMenuState,
       scrollToBottom,
       selectedProject,
       sendMessage,
-      setCanAbortSession,
       addMessage,
-      setClaudeStatus,
-      setIsLoading,
       setIsUserScrolledUp,
       slashCommands,
     ],
   );
 
-  /**
-   * Rewind / edit-in-place: re-send an edited past user message, dropping that
-   * message and everything after it. Only Claude and OpenCode sessions support
-   * it (their transcripts can be truncated in place); other providers never
-   * surface the affordance because their messages carry no `uuid` anchor.
-   */
-  const rewindMessage = useCallback(
-    (message: ChatMessage, newContent: string) => {
-      const rewindUuid = typeof message.uuid === 'string' ? message.uuid : null;
-      const content = newContent.trim();
-      if (!rewindUuid || !content || !selectedProject) return;
-      if (provider !== 'claude' && provider !== 'opencode') return;
-
-      const effectiveSessionId = currentSessionId || selectedSession?.id || null;
-      // Rewind only makes sense for an already-persisted session.
-      if (!effectiveSessionId) return;
-
-      // Carry the original attachments over unchanged (already data URLs).
-      const images = Array.isArray(message.images) ? message.images : [];
-
-      // Optimistically drop the edited message + its responses from the view,
-      // then show the edited message as the new tail.
-      onRewindTruncate?.(effectiveSessionId, rewindUuid);
-      addMessage({
-        type: 'user',
-        content,
-        images: images as ChatMessage['images'],
-        timestamp: new Date(),
-      });
-      setIsLoading(true);
-      setCanAbortSession(true);
-      setClaudeStatus({ text: 'Processing', tokens: 0, can_interrupt: true });
-      setIsUserScrolledUp(false);
-      setTimeout(() => scrollToBottom(), 100);
-      onSessionActive?.(effectiveSessionId);
-      onSessionProcessing?.(effectiveSessionId);
-
-      let toolsSettings: unknown = { allowedTools: [], disallowedTools: [], skipPermissions: false };
-      try {
-        const settingsKey = provider === 'opencode' ? 'opencode-settings' : 'claude-settings';
-        const saved = safeLocalStorage.getItem(settingsKey);
-        if (saved) toolsSettings = JSON.parse(saved);
-      } catch (error) {
-        console.error('Error loading tools settings:', error);
-      }
-
-      const resolvedProjectPath = selectedProject.fullPath || selectedProject.path || '';
-      const sessionSummary = getNotificationSessionSummary(selectedSession, content);
-      const sessionWorktreePath = (selectedSession?.worktreePath as string | null | undefined) ?? null;
-      const effectiveCwd =
-        getSessionCwd(effectiveSessionId) || sessionWorktreePath || resolvedProjectPath;
-      bindSessionCwd(effectiveSessionId, effectiveCwd);
-
-      if (provider === 'opencode') {
-        sendMessage({
-          type: 'opencode-command',
-          command: content,
-          sessionId: effectiveSessionId,
-          options: {
-            cwd: effectiveCwd,
-            projectPath: effectiveCwd,
-            sessionId: effectiveSessionId,
-            resume: true,
-            model: opencodeModel,
-            sessionSummary,
-            images,
-            rewind: rewindUuid,
-          },
-        });
-      } else {
-        sendMessage({
-          type: 'claude-command',
-          command: content,
-          options: {
-            projectPath: effectiveCwd,
-            cwd: effectiveCwd,
-            sessionId: effectiveSessionId,
-            resume: true,
-            toolsSettings,
-            permissionMode,
-            model: claudeModel,
-            sessionSummary,
-            images,
-            rewind: rewindUuid,
-          },
-        });
-      }
-    },
-    [
-      selectedProject,
-      selectedSession,
-      currentSessionId,
-      provider,
-      claudeModel,
-      opencodeModel,
-      permissionMode,
-      onRewindTruncate,
-      addMessage,
-      sendMessage,
-      scrollToBottom,
-      onSessionActive,
-      onSessionProcessing,
-      setIsLoading,
-      setCanAbortSession,
-      setClaudeStatus,
-      setIsUserScrolledUp,
-    ],
-  );
-
-  // Reset the composer fields after a message is captured for sending/queueing.
-  const clearComposer = useCallback(() => {
-    setInput('');
-    inputValueRef.current = '';
-    resetCommandMenuState();
-    setAttachedImages([]);
-    setUploadingImages(new Map());
-    setImageErrors(new Map());
-    setIsTextareaExpanded(false);
-    if (textareaRef.current) {
-      textareaRef.current.style.height = 'auto';
-    }
-    if (selectedProjectId) {
-      safeLocalStorage.removeItem(`draft_input_${selectedProjectId}`);
-    }
-  }, [resetCommandMenuState, selectedProjectId]);
-
-  const handleSubmit = useCallback(
-    async (
-      event: FormEvent<HTMLFormElement> | MouseEvent | TouchEvent | KeyboardEvent<HTMLTextAreaElement>,
-    ) => {
-      event.preventDefault();
-      // Re-entry guard: a single tap on the submit button can fire onTouchStart,
-      // onMouseDown, and the form's onSubmit in sequence (~100-250ms apart on
-      // iOS Safari), each calling this handler. Suppress duplicates within 500ms.
-      const now = Date.now();
-      if (now - lastSubmitAtRef.current < 500) {
-        return;
-      }
-      lastSubmitAtRef.current = now;
-      const currentInput = inputValueRef.current;
-      if (!currentInput.trim() || !selectedProject) {
-        return;
-      }
-
-      // Capture the live composer contents, then reset it immediately so the
-      // user can keep typing the next message without waiting.
-      const captured = {
-        content: currentInput,
-        images: attachedImages,
-      };
-      clearComposer();
-
-      // While the assistant is busy, queue the message instead of dropping it.
-      // The queue flushes one message each time the session goes idle.
-      if (isLoading) {
-        queueIdRef.current += 1;
-        const id = `q_${queueIdRef.current}`;
-        setQueuedMessages((previous) => [...previous, { id, ...captured }]);
-        return;
-      }
-
-      await runSubmit(captured);
-    },
-    [attachedImages, clearComposer, isLoading, runSubmit, selectedProject],
-  );
-
-  // Flush the next queued message when the session transitions to idle.
-  const prevIsLoadingRef = useRef(isLoading);
-  useEffect(() => {
-    const wasLoading = prevIsLoadingRef.current;
-    prevIsLoadingRef.current = isLoading;
-    if (wasLoading && !isLoading && queuedMessages.length > 0) {
-      const [next, ...rest] = queuedMessages;
-      setQueuedMessages(rest);
-      void runSubmit({ content: next.content, images: next.images });
-    }
-  }, [isLoading, queuedMessages, runSubmit]);
-
-  const removeQueuedMessage = useCallback((id: string) => {
-    setQueuedMessages((previous) => previous.filter((message) => message.id !== id));
-  }, []);
-
-  // Called when the send failed (an error arrived instead of a reply): put the
-  // message back into the composer so the user can retry without retyping.
-  const restoreFailedSend = useCallback(() => {
-    const lastSent = lastSentRef.current;
-    if (!lastSent) {
-      return;
-    }
-    lastSentRef.current = null;
-    // Don't clobber anything the user typed since.
-    if (inputValueRef.current.trim()) {
-      return;
-    }
-    setInput(lastSent.content);
-    inputValueRef.current = lastSent.content;
-    if (lastSent.images.length > 0) {
-      setAttachedImages((previous) => (previous.length > 0 ? previous : lastSent.images));
-    }
-  }, []);
-
-  // Called when a send completed successfully: the message is part of the
-  // conversation now, so there is nothing left to restore.
-  const clearFailedSendBackup = useCallback(() => {
-    lastSentRef.current = null;
-  }, []);
-
   useEffect(() => {
     handleSubmitRef.current = handleSubmit;
   }, [handleSubmit]);
-
-  useEffect(() => {
-    restoreFailedSendRef.current = restoreFailedSend;
-  }, [restoreFailedSend]);
 
   useEffect(() => {
     inputValueRef.current = input;
@@ -1072,9 +789,6 @@ export function useChatComposerState({
       inputValueRef.current = next;
       return next;
     });
-    // Queued messages belong to the project they were drafted in; drop them
-    // when switching projects so they can't be dispatched to the wrong one.
-    setQueuedMessages([]);
   }, [selectedProjectId]);
 
   useEffect(() => {
@@ -1207,38 +921,19 @@ export function useChatComposerState({
       return;
     }
 
-    // A tap on the send button fires onTouchStart (submit), then a compatibility
-    // mousedown ~100-250ms later. The submit clears the input and flips
-    // isLoading, so the same DOM node has become the STOP button by the time the
-    // mousedown lands — and the tap that sent the message aborts it. Ignore
-    // aborts in the tail of a submit, mirroring handleSubmit's re-entry guard.
-    if (Date.now() - lastSubmitAtRef.current < 500) {
-      return;
-    }
-
-    const cursorSessionId =
-      typeof window !== 'undefined' ? sessionStorage.getItem('cursorSessionId') : null;
-
-    const candidateSessionIds = [
-      currentSessionId,
-      provider === 'cursor' ? cursorSessionId : null,
-      selectedSession?.id || null,
-    ];
-
-    const targetSessionId =
-      candidateSessionIds.find((sessionId) => Boolean(sessionId)) || null;
-
+    const targetSessionId = selectedSession?.id || currentSessionId || null;
     if (!targetSessionId) {
-      console.warn('Abort requested but no concrete session ID is available yet.');
+      console.warn('Abort requested but no session ID is available.');
       return;
     }
 
+    // The backend resolves the provider from the session row, so no provider
+    // field is needed here.
     sendMessage({
-      type: 'abort-session',
+      type: 'chat.abort',
       sessionId: targetSessionId,
-      provider,
     });
-  }, [canAbortSession, currentSessionId, provider, selectedSession?.id, sendMessage]);
+  }, [canAbortSession, currentSessionId, selectedSession?.id, sendMessage]);
 
   const handleGrantToolPermission = useCallback(
     (suggestion: { entry: string; toolName: string }) => {
@@ -1263,7 +958,7 @@ export function useChatComposerState({
 
       validIds.forEach((requestId) => {
         sendMessage({
-          type: 'claude-permission-response',
+          type: 'chat.permission-response',
           requestId,
           allow: Boolean(decision?.allow),
           updatedInput: decision?.updatedInput,
@@ -1272,15 +967,11 @@ export function useChatComposerState({
         });
       });
 
-      setPendingPermissionRequests((previous) => {
-        const next = previous.filter((request) => !validIds.includes(request.requestId));
-        if (next.length === 0) {
-          setClaudeStatus(null);
-        }
-        return next;
-      });
+      setPendingPermissionRequests((previous) =>
+        previous.filter((request) => !validIds.includes(request.requestId)),
+      );
     },
-    [sendMessage, setClaudeStatus, setPendingPermissionRequests],
+    [sendMessage, setPendingPermissionRequests],
   );
 
   const [isInputFocused, setIsInputFocused] = useState(false);
@@ -1337,10 +1028,5 @@ export function useChatComposerState({
     commandModalPayload,
     closeCommandModal,
     showCostModal,
-    queuedMessages,
-    removeQueuedMessage,
-    restoreFailedSend,
-    clearFailedSendBackup,
-    rewindMessage,
   };
 }

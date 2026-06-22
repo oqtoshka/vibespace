@@ -3,6 +3,7 @@ import type { WorkspacePanel, WorkspaceTab } from '../../../types/workspace';
 import type { OpenShellTabOptions } from '../../../hooks/useWorkspaceTabs';
 import type { CodeEditorDiffInfo } from '../../code-editor/types/types';
 import type { SessionNavigationOptions } from '../../chat/types/types';
+import type { MarkSessionProcessing, MarkSessionIdle, SessionActivityMap } from '../../../hooks/useSessionProtection';
 
 /**
  * Workspace tab surface threaded from AppContent (which owns
@@ -61,11 +62,9 @@ export type MainContentProps = {
   onMenuClick: () => void;
   isLoading: boolean;
   onInputFocusChange: (focused: boolean) => void;
-  onSessionActive: SessionLifecycleHandler;
-  onSessionInactive: SessionLifecycleHandler;
-  onSessionProcessing: SessionLifecycleHandler;
-  onSessionNotProcessing: SessionLifecycleHandler;
-  processingSessions: Set<string>;
+  onSessionProcessing: MarkSessionProcessing;
+  onSessionIdle: MarkSessionIdle;
+  processingSessions: SessionActivityMap;
   onNavigateToSession: (targetSessionId: string, options?: SessionNavigationOptions) => void;
   onShowSettings: () => void;
   externalMessageUpdate: number;

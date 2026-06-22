@@ -99,6 +99,8 @@ export const api = {
   },
   getArchivedSessions: () =>
     authenticatedFetch('/api/providers/sessions/archived'),
+  runningSessions: () =>
+    authenticatedFetch('/api/providers/sessions/running'),
   restoreSession: (sessionId) =>
     authenticatedFetch(`/api/providers/sessions/${sessionId}/restore`, {
       method: 'POST',

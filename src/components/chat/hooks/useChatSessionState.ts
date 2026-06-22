@@ -2,23 +2,16 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import type { MutableRefObject } from 'react';
 
 import { authenticatedFetch } from '../../../utils/api';
+import type { MarkSessionIdle, SessionActivityMap } from '../../../hooks/useSessionProtection';
 import type { Project, ProjectSession, LLMProvider } from '../../../types/app';
 import type { SessionStore, NormalizedMessage } from '../../../stores/useSessionStore';
-import type { ChatMessage, Provider } from '../types/types';
+import type { ChatMessage } from '../types/types';
 import { createCachedDiffCalculator, type DiffCalculator } from '../utils/messageTransforms';
 
 import { normalizedToChatMessages } from './useChatMessages';
-import { dbg } from '../../../utils/debugLog';
 
 const MESSAGES_PER_PAGE = 20;
 const INITIAL_VISIBLE_MESSAGES = 100;
-// How often to re-poll a session's processing state while a turn is believed in
-// flight, so a dropped terminal event can't pin the "Processing" banner open.
-const STUCK_PROCESSING_RECHECK_MS = 12_000;
-
-type PendingViewSession = {
-  startedAt: number;
-};
 
 interface UseChatSessionStateArgs {
   selectedProject: Project | null;
@@ -28,9 +21,13 @@ interface UseChatSessionStateArgs {
   autoScrollToBottom?: boolean;
   externalMessageUpdate?: number;
   newSessionTrigger?: number;
-  processingSessions?: Set<string>;
+  processingSessions?: SessionActivityMap;
+  onSessionIdle?: MarkSessionIdle;
   resetStreamingState: () => void;
-  pendingViewSessionRef: MutableRefObject<PendingViewSession | null>;
+  /** When each session's `chat.subscribe` was last sent; guards stale idle acks. */
+  statusCheckSentAtRef: MutableRefObject<Map<string, number>>;
+  /** Highest live seq observed per session; sent as `lastSeq` on subscribe. */
+  lastSeqRef: MutableRefObject<Map<string, number>>;
   sessionStore: SessionStore;
 }
 
@@ -103,21 +100,20 @@ export function useChatSessionState({
   externalMessageUpdate,
   newSessionTrigger,
   processingSessions,
+  onSessionIdle,
   resetStreamingState,
-  pendingViewSessionRef,
+  statusCheckSentAtRef,
+  lastSeqRef,
   sessionStore,
 }: UseChatSessionStateArgs) {
-  const [isLoading, setIsLoading] = useState(false);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(selectedSession?.id || null);
   const [isLoadingSessionMessages, setIsLoadingSessionMessages] = useState(false);
   const [isLoadingMoreMessages, setIsLoadingMoreMessages] = useState(false);
   const [hasMoreMessages, setHasMoreMessages] = useState(false);
   const [totalMessages, setTotalMessages] = useState(0);
-  const [canAbortSession, setCanAbortSession] = useState(false);
   const [isUserScrolledUp, setIsUserScrolledUp] = useState(false);
   const [tokenBudget, setTokenBudget] = useState<Record<string, unknown> | null>(null);
   const [visibleMessageCount, setVisibleMessageCount] = useState(INITIAL_VISIBLE_MESSAGES);
-  const [claudeStatus, setClaudeStatus] = useState<{ text: string; tokens: number; can_interrupt: boolean } | null>(null);
   const [allMessagesLoaded, setAllMessagesLoaded] = useState(false);
   const [isLoadingAllMessages, setIsLoadingAllMessages] = useState(false);
   const [loadAllJustFinished, setLoadAllJustFinished] = useState(false);
@@ -162,7 +158,7 @@ export function useChatSessionState({
      *
      * Why this is essential:
      * - Chat keeps local state that is not fully derived from `selectedSession`:
-     *   `currentSessionId`, `pendingMessages`, streaming/status flags, message
+     *   `currentSessionId`, `pendingUserMessage`, streaming/status flags, message
      *   pagination/scroll bookkeeping, and provider-specific sessionStorage keys.
      * - If the user clicks New Session while already on the same route with no
      *   selected session, parent state updates can be idempotent and this local
@@ -174,13 +170,8 @@ export function useChatSessionState({
      * - No coupling to unrelated external update signals.
      */
     resetStreamingState();
-    pendingViewSessionRef.current = null;
-    setClaudeStatus(null);
-    setCanAbortSession(false);
-    setIsLoading(false);
     setCurrentSessionId(null);
-    setPendingMessages([]);
-    sessionStorage.removeItem('cursorSessionId');
+    setPendingUserMessage(null);
     messagesOffsetRef.current = 0;
     setHasMoreMessages(false);
     setTotalMessages(0);
@@ -208,19 +199,32 @@ export function useChatSessionState({
       clearTimeout(loadAllFinishedTimerRef.current);
       loadAllFinishedTimerRef.current = null;
     }
-  }, [newSessionTrigger, pendingViewSessionRef, resetStreamingState]);
+  }, [newSessionTrigger, onSessionIdle, resetStreamingState]);
+
+  /* ---------------------------------------------------------------- */
+  /*  Derive processing state for the viewed session                  */
+  /* ---------------------------------------------------------------- */
+
+  const activeSessionId = selectedSession?.id || currentSessionId || null;
+
+  // The activity indicator always reflects the latest status of the session
+  // being viewed — never stale local UI state from the last time it was
+  // open. Session ids are concrete before any send, so no pending
+  // placeholder entry exists anymore.
+  const sessionActivity = (activeSessionId && processingSessions?.get(activeSessionId)) || null;
+  const isProcessing = sessionActivity !== null;
+  const canAbortSession = isProcessing && sessionActivity.canInterrupt;
+
+  // Ref mirror so effects can read the latest map without re-running on
+  // every activity transition.
+  const processingSessionsRef = useRef(processingSessions);
+  processingSessionsRef.current = processingSessions;
 
   /* ---------------------------------------------------------------- */
   /*  Derive chatMessages from the store                              */
   /* ---------------------------------------------------------------- */
-
-  const activeSessionId = selectedSession?.id || currentSessionId || null;
-  // Messages shown before the backend announces a session id (the just-sent
-  // user message, and any errors that arrive before a session exists — e.g.
-  // a rejected cwd). Without a buffer for the latter, pre-session failures
-  // were completely invisible: no slot to append to, so no feedback at all.
-  const [pendingMessages, setPendingMessages] = useState<ChatMessage[]>([]);
-  const flushedPendingMessagesRef = useRef<ChatMessage[] | null>(null);
+  const [pendingUserMessage, setPendingUserMessage] = useState<ChatMessage | null>(null);
+  const flushedPendingUserMessageRef = useRef<ChatMessage | null>(null);
 
   // Tell the store which session we're viewing so it only re-renders for this one
   const prevActiveForStoreRef = useRef<string | null>(null);
@@ -230,8 +234,8 @@ export function useChatSessionState({
   }
 
   useEffect(() => {
-    if (pendingMessages.length === 0) {
-      flushedPendingMessagesRef.current = null;
+    if (!pendingUserMessage) {
+      flushedPendingUserMessageRef.current = null;
       return;
     }
 
@@ -239,21 +243,19 @@ export function useChatSessionState({
       return;
     }
 
-    if (flushedPendingMessagesRef.current === pendingMessages) {
+    if (flushedPendingUserMessageRef.current === pendingUserMessage) {
       return;
     }
 
     const prov = (localStorage.getItem('selected-provider') as LLMProvider) || 'claude';
-    for (const pending of pendingMessages) {
-      const normalized = chatMessageToNormalized(pending, activeSessionId, prov);
-      if (normalized) {
-        sessionStore.appendRealtime(activeSessionId, normalized);
-      }
+    const normalized = chatMessageToNormalized(pendingUserMessage, activeSessionId, prov);
+    if (normalized) {
+      sessionStore.appendRealtime(activeSessionId, normalized);
     }
 
-    flushedPendingMessagesRef.current = pendingMessages;
-    setPendingMessages([]);
-  }, [activeSessionId, pendingMessages, sessionStore]);
+    flushedPendingUserMessageRef.current = pendingUserMessage;
+    setPendingUserMessage(null);
+  }, [activeSessionId, pendingUserMessage, sessionStore]);
 
   const storeMessages = activeSessionId ? sessionStore.getMessages(activeSessionId) : [];
 
@@ -265,17 +267,14 @@ export function useChatSessionState({
   }
 
   const chatMessages = useMemo(() => {
-    const tNorm = performance.now();
     const all = normalizedToChatMessages(storeMessages);
-    dbg('chatMessages.normalized', { dur_ms: Math.round(performance.now() - tNorm), inCount: storeMessages.length, outCount: all.length });
-    // Show pending messages when no session data exists yet (new session,
-    // pre-backend-response): the just-sent user message and any early errors.
-    if (pendingMessages.length > 0 && all.length === 0) {
-      return pendingMessages;
+    // Show pending user message when no session data exists yet (new session, pre-backend-response)
+    if (pendingUserMessage && all.length === 0) {
+      return [pendingUserMessage];
     }
     if (viewHiddenCount > 0 && viewHiddenCount < all.length) return all.slice(0, -viewHiddenCount);
     return all;
-  }, [storeMessages, viewHiddenCount, pendingMessages]);
+  }, [storeMessages, viewHiddenCount, pendingUserMessage]);
 
   /* ---------------------------------------------------------------- */
   /*  addMessage / clearMessages / rewindMessages                     */
@@ -283,8 +282,8 @@ export function useChatSessionState({
 
   const addMessage = useCallback((msg: ChatMessage) => {
     if (!activeSessionId) {
-      // No session yet — buffer as pending until the backend creates one
-      setPendingMessages((previous) => [...previous, msg]);
+      // No session yet — show as pending until the backend creates one
+      setPendingUserMessage(msg);
       return;
     }
     const prov = (localStorage.getItem('selected-provider') as LLMProvider) || 'claude';
@@ -329,18 +328,12 @@ export function useChatSessionState({
       if (allMessagesLoadedRef.current) return false;
       if (!hasMoreMessages || !selectedSession || !selectedProject) return false;
 
-      const sessionProvider = selectedSession.__provider || 'claude';
-
       isLoadingMoreRef.current = true;
       const previousScrollHeight = container.scrollHeight;
       const previousScrollTop = container.scrollTop;
 
       try {
         const slot = await sessionStore.fetchMore(selectedSession.id, {
-          provider: sessionProvider as LLMProvider,
-          // DB-assigned projectId replaces the legacy folder-derived name.
-          projectId: selectedProject.projectId,
-          projectPath: selectedProject.fullPath || selectedProject.path || '',
           limit: MESSAGES_PER_PAGE,
         });
         if (!slot || slot.serverMessages.length === 0) return false;
@@ -442,19 +435,15 @@ export function useChatSessionState({
   // Main session loading effect — store-based
   useEffect(() => {
     if (!selectedSession || !selectedProject) {
-      // A new provider run can be in flight before the router has a canonical
-      // selectedSession. Keep the processing banner alive until complete/error.
-      if (pendingViewSessionRef.current) {
+      // A freshly created session can be mid-run before the router has a
+      // canonical selectedSession (the URL effect synthesizes one on the
+      // next render). Keep the active view intact instead of wiping it.
+      if (currentSessionId && processingSessionsRef.current?.has(currentSessionId)) {
         return;
       }
 
       resetStreamingState();
-      pendingViewSessionRef.current = null;
-      setClaudeStatus(null);
-      setCanAbortSession(false);
-      setIsLoading(false);
       setCurrentSessionId(null);
-      sessionStorage.removeItem('cursorSessionId');
       messagesOffsetRef.current = 0;
       setHasMoreMessages(false);
       setTotalMessages(0);
@@ -463,20 +452,33 @@ export function useChatSessionState({
       return;
     }
 
-    const provider = (selectedSession.__provider || localStorage.getItem('selected-provider') as Provider) || 'claude';
-    const sessionKey = `${selectedSession.id}:${selectedProject.projectId}:${provider}`;
+    const selectedSessionId = selectedSession.id;
+    const sessionKey = `${selectedSessionId}:${selectedProject.projectId}`;
+
+    const subscribeToSelectedSession = () => {
+      if (!ws) {
+        return;
+      }
+
+      statusCheckSentAtRef.current.set(selectedSessionId, Date.now());
+      sendMessage({
+        type: 'chat.subscribe',
+        sessions: [{
+          sessionId: selectedSessionId,
+          lastSeq: lastSeqRef.current.get(selectedSessionId) ?? 0,
+        }],
+      });
+    };
 
     // Skip if already loaded and fresh
-    if (lastLoadedSessionKeyRef.current === sessionKey && sessionStore.has(selectedSession.id) && !sessionStore.isStale(selectedSession.id)) {
+    if (lastLoadedSessionKeyRef.current === sessionKey && sessionStore.has(selectedSessionId) && !sessionStore.isStale(selectedSessionId)) {
+      subscribeToSelectedSession();
       return;
     }
 
-    const sessionChanged = currentSessionId !== null && currentSessionId !== selectedSession.id;
+    const sessionChanged = currentSessionId !== null && currentSessionId !== selectedSessionId;
     if (sessionChanged) {
       resetStreamingState();
-      pendingViewSessionRef.current = null;
-      setClaudeStatus(null);
-      setCanAbortSession(false);
     }
 
     // Reset pagination/scroll state
@@ -495,28 +497,22 @@ export function useChatSessionState({
 
     if (sessionChanged) {
       setTokenBudget(null);
-      setIsLoading(false);
     }
 
-    setCurrentSessionId(selectedSession.id);
-    if (provider === 'cursor') {
-      sessionStorage.setItem('cursorSessionId', selectedSession.id);
-    }
+    setCurrentSessionId(selectedSessionId);
 
-    // Check session status
-    if (ws) {
-      sendMessage({ type: 'check-session-status', sessionId: selectedSession.id, provider });
-    }
+    // Subscribe to the session's live run (if any): the ack reconciles the
+    // processing indicator, re-attaches a mid-flight stream to this socket,
+    // and replays any live events missed since `lastSeq`. Recording the send
+    // time lets the ack handler discard idle acks that a newer request has
+    // since outdated.
+    subscribeToSelectedSession();
 
     lastLoadedSessionKeyRef.current = sessionKey;
 
     // Fetch from server → store updates → chatMessages re-derives automatically
     setIsLoadingSessionMessages(true);
-    dbg('chat.session.select', { sessionId: selectedSession.id, projectId: selectedProject.projectId, limit: MESSAGES_PER_PAGE });
-    sessionStore.fetchFromServer(selectedSession.id, {
-      provider: (selectedSession.__provider || provider) as LLMProvider,
-      projectId: selectedProject.projectId,
-      projectPath: selectedProject.fullPath || selectedProject.path || '',
+    sessionStore.fetchFromServer(selectedSessionId, {
       limit: MESSAGES_PER_PAGE,
       offset: 0,
     }).then(slot => {
@@ -526,17 +522,16 @@ export function useChatSessionState({
         if (slot.tokenUsage) setTokenBudget(slot.tokenUsage as Record<string, unknown>);
       }
       setIsLoadingSessionMessages(false);
-      dbg('chat.session.loaded', { sessionId: selectedSession.id, msgCount: slot?.merged?.length ?? 0, total: slot?.total ?? null });
-    }).catch((err) => {
+    }).catch(() => {
       setIsLoadingSessionMessages(false);
-      dbg('chat.session.loadError', { sessionId: selectedSession.id, message: (err as Error)?.message });
     });
   }, [
-    pendingViewSessionRef,
     resetStreamingState,
     selectedProject,
     selectedSession?.id,
     sendMessage,
+    statusCheckSentAtRef,
+    lastSeqRef,
     ws,
     sessionStore,
   ]);
@@ -547,15 +542,9 @@ export function useChatSessionState({
 
     const reloadExternalMessages = async () => {
       try {
-        const provider = (localStorage.getItem('selected-provider') as Provider) || 'claude';
-
         // Skip store refresh during active streaming
-        if (!isLoading) {
-          await sessionStore.refreshFromServer(selectedSession.id, {
-            provider: (selectedSession.__provider || provider) as LLMProvider,
-            projectId: selectedProject.projectId,
-            projectPath: selectedProject.fullPath || selectedProject.path || '',
-          });
+        if (!isProcessing) {
+          await sessionStore.refreshFromServer(selectedSession.id);
 
           if (Boolean(autoScrollToBottom) && isNearBottom()) {
             setTimeout(() => scrollToBottom(), 200);
@@ -575,48 +564,8 @@ export function useChatSessionState({
     selectedProject,
     selectedSession,
     sessionStore,
-    isLoading,
+    isProcessing,
   ]);
-
-  // Ask the backend whether the active session still has a turn in flight. The
-  // reply (a `session-status` frame) drives isLoading through the realtime
-  // handler, reconciling a stale "Processing" banner when a live `complete` was
-  // missed (socket asleep on mobile, dropped during a reconnect window). The
-  // check also re-attaches this socket as the session writer server-side, so a
-  // later completion still streams here.
-  const recheckSessionStatus = useCallback(() => {
-    if (!ws || !selectedSession) return;
-    const provider =
-      (selectedSession.__provider as LLMProvider) ||
-      (localStorage.getItem('selected-provider') as LLMProvider) ||
-      'claude';
-    sendMessage({ type: 'check-session-status', sessionId: selectedSession.id, provider });
-  }, [ws, sendMessage, selectedSession]);
-
-  // Re-check when the tab regains focus/visibility — the usual moment a missed
-  // terminal surfaces (returning to a tab that streamed while backgrounded).
-  useEffect(() => {
-    const onVisible = () => {
-      if (document.visibilityState === 'visible') recheckSessionStatus();
-    };
-    document.addEventListener('visibilitychange', onVisible);
-    window.addEventListener('focus', recheckSessionStatus);
-    return () => {
-      document.removeEventListener('visibilitychange', onVisible);
-      window.removeEventListener('focus', recheckSessionStatus);
-    };
-  }, [recheckSessionStatus]);
-
-  // Watchdog: while a turn is believed in flight, poll status so a lost
-  // `complete` self-heals within one interval rather than hanging forever. The
-  // first tick is a full interval out, by which point a genuinely-running turn
-  // has registered as active server-side — so this never false-clears a real
-  // turn right after send.
-  useEffect(() => {
-    if (!isLoading || !selectedSession || !ws) return;
-    const id = window.setInterval(recheckSessionStatus, STUCK_PROCESSING_RECHECK_MS);
-    return () => window.clearInterval(id);
-  }, [isLoading, selectedSession, ws, recheckSessionStatus]);
 
   // Search navigation target
   useEffect(() => {
@@ -641,13 +590,9 @@ export function useChatSessionState({
 
     const scrollToTarget = async () => {
       if (!allMessagesLoadedRef.current && selectedSession && selectedProject) {
-        const sessionProvider = selectedSession.__provider || 'claude';
           try {
             // Load all messages into the store for search navigation
             const slot = await sessionStore.fetchFromServer(selectedSession.id, {
-              provider: sessionProvider as LLMProvider,
-              projectId: selectedProject.projectId,
-              projectPath: selectedProject.fullPath || selectedProject.path || '',
               limit: null,
               offset: 0,
             });
@@ -721,17 +666,10 @@ export function useChatSessionState({
       setTokenBudget(null);
       return;
     }
-    const sessionProvider = selectedSession.__provider || 'claude';
-    if (sessionProvider !== 'claude' && sessionProvider !== 'codex' && sessionProvider !== 'gemini' && sessionProvider !== 'opencode') {
-      setTokenBudget(null);
-      return;
-    }
-
     const fetchInitialTokenUsage = async () => {
       try {
-        // Token usage endpoint is now keyed by the DB projectId.
-        const params = new URLSearchParams({ provider: sessionProvider });
-        const url = `/api/projects/${selectedProject.projectId}/sessions/${selectedSession.id}/token-usage?${params.toString()}`;
+        // The backend resolves the provider from the indexed session row.
+        const url = `/api/projects/${selectedProject.projectId}/sessions/${selectedSession.id}/token-usage`;
         const response = await authenticatedFetch(url);
         if (response.ok) {
           setTokenBudget(await response.json());
@@ -743,7 +681,7 @@ export function useChatSessionState({
       }
     };
     fetchInitialTokenUsage();
-  }, [selectedProject, selectedSession?.id, selectedSession?.__provider]);
+  }, [selectedProject, selectedSession?.id]);
 
   const visibleMessages = useMemo(() => {
     if (chatMessages.length <= visibleMessageCount) return chatMessages;
@@ -782,16 +720,6 @@ export function useChatSessionState({
     return () => container.removeEventListener('scroll', handleScroll);
   }, [handleScroll]);
 
-  useEffect(() => {
-    const activeViewSessionId = selectedSession?.id || currentSessionId;
-    if (!activeViewSessionId || !processingSessions) return;
-    const shouldBeProcessing = processingSessions.has(activeViewSessionId);
-    if (shouldBeProcessing && !isLoading) {
-      setIsLoading(true);
-      setCanAbortSession(true);
-    }
-  }, [currentSessionId, isLoading, processingSessions, selectedSession?.id]);
-
   // "Load all" overlay
   const prevLoadingRef = useRef(false);
   useEffect(() => {
@@ -813,8 +741,6 @@ export function useChatSessionState({
   const loadAllMessages = useCallback(async () => {
     if (!selectedSession || !selectedProject) return;
     if (isLoadingAllMessages) return;
-    const sessionProvider = selectedSession.__provider || 'claude';
-
     const requestSessionId = selectedSession.id;
     allMessagesLoadedRef.current = true;
     isLoadingMoreRef.current = true;
@@ -827,9 +753,6 @@ export function useChatSessionState({
 
     try {
       const slot = await sessionStore.fetchFromServer(requestSessionId, {
-        provider: sessionProvider as LLMProvider,
-        projectId: selectedProject.projectId,
-        projectPath: selectedProject.fullPath || selectedProject.path || '',
         limit: null,
         offset: 0,
       });
@@ -873,17 +796,15 @@ export function useChatSessionState({
     addMessage,
     clearMessages,
     rewindMessages,
-    isLoading,
-    setIsLoading,
-    recheckSessionStatus,
+    sessionActivity,
+    isProcessing,
+    canAbortSession,
     currentSessionId,
     setCurrentSessionId,
     isLoadingSessionMessages,
     isLoadingMoreMessages,
     hasMoreMessages,
     totalMessages,
-    canAbortSession,
-    setCanAbortSession,
     isUserScrolledUp,
     setIsUserScrolledUp,
     tokenBudget,
@@ -896,8 +817,6 @@ export function useChatSessionState({
     isLoadingAllMessages,
     loadAllJustFinished,
     showLoadAllOverlay,
-    claudeStatus,
-    setClaudeStatus,
     createDiff,
     scrollContainerRef,
     scrollToBottom,

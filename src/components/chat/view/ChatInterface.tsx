@@ -1,13 +1,11 @@
 import React, { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
-import { TreePine } from 'lucide-react';
 
 import { useTasksSettings } from '../../../contexts/TasksSettingsContext';
-import { useActiveWorktree } from '../../../hooks/useActiveWorktree';
+import { useWebSocket } from '../../../contexts/WebSocketContext';
 import PermissionContext from '../../../contexts/PermissionContext';
 import { QuickSettingsPanel } from '../../quick-settings-panel';
 import type { ChatInterfaceProps, Provider  } from '../types/types';
-import type { LLMProvider } from '../../../types/app';
 import { useChatProviderState } from '../hooks/useChatProviderState';
 import { useChatSessionState } from '../hooks/useChatSessionState';
 import { useChatRealtimeHandlers } from '../hooks/useChatRealtimeHandlers';
@@ -19,10 +17,6 @@ import ChatComposer from './subcomponents/ChatComposer';
 import CommandResultModal from './subcomponents/CommandResultModal';
 
 
-type PendingViewSession = {
-  startedAt: number;
-};
-
 function ChatInterface({
   selectedProject,
   selectedSession,
@@ -30,12 +24,11 @@ function ChatInterface({
   sendMessage,
   onFileOpen,
   onInputFocusChange,
-  onSessionActive,
-  onSessionInactive,
   onSessionProcessing,
-  onSessionNotProcessing,
+  onSessionIdle,
   processingSessions,
   onNavigateToSession,
+  onSessionEstablished,
   onShowSettings,
   autoExpandTools,
   showRawParameters,
@@ -47,12 +40,19 @@ function ChatInterface({
   onShowAllTasks,
 }: ChatInterfaceProps) {
   const { tasksEnabled, isTaskMasterInstalled } = useTasksSettings();
+  const { subscribe } = useWebSocket();
   const { t } = useTranslation('chat');
 
   const sessionStore = useSessionStore();
   const streamTimerRef = useRef<number | null>(null);
   const accumulatedStreamRef = useRef('');
-  const pendingViewSessionRef = useRef<PendingViewSession | null>(null);
+  // When each session's `chat.subscribe` was last sent; idle acks older than
+  // a later local request are discarded as stale.
+  const statusCheckSentAtRef = useRef(new Map<string, number>());
+  // Highest live `seq` observed per session. Written by the realtime handler
+  // on every sequenced frame, read whenever a `chat.subscribe` is sent so the
+  // server replays only the events this client actually missed.
+  const lastSeqRef = useRef(new Map<string, number>());
 
   const resetStreamingState = useCallback(() => {
     if (streamTimerRef.current) {
@@ -93,17 +93,15 @@ function ChatInterface({
   const {
     chatMessages,
     addMessage,
-    isLoading,
-    setIsLoading,
-    recheckSessionStatus,
+    sessionActivity,
+    isProcessing,
+    canAbortSession,
     currentSessionId,
     setCurrentSessionId,
     isLoadingSessionMessages,
     isLoadingMoreMessages,
     hasMoreMessages,
     totalMessages,
-    canAbortSession,
-    setCanAbortSession,
     isUserScrolledUp,
     setIsUserScrolledUp,
     tokenBudget,
@@ -116,8 +114,6 @@ function ChatInterface({
     isLoadingAllMessages,
     loadAllJustFinished,
     showLoadAllOverlay,
-    claudeStatus,
-    setClaudeStatus,
     createDiff,
     scrollContainerRef,
     scrollToBottom,
@@ -132,10 +128,21 @@ function ChatInterface({
     externalMessageUpdate,
     newSessionTrigger,
     processingSessions,
+    onSessionIdle,
     resetStreamingState,
-    pendingViewSessionRef,
+    statusCheckSentAtRef,
+    lastSeqRef,
     sessionStore,
   });
+
+  // Brand-new conversation: the composer allocated a stable session id via
+  // the session gateway before the first send. Record it locally and put it
+  // in the URL — this id never changes again, so there is no later handoff.
+  const handleSessionEstablished = useCallback<NonNullable<ChatInterfaceProps['onSessionEstablished']>>((sessionId, context) => {
+    setCurrentSessionId(sessionId);
+    onSessionEstablished?.(sessionId, context);
+    onNavigateToSession?.(sessionId);
+  }, [setCurrentSessionId, onSessionEstablished, onNavigateToSession]);
 
   const {
     input,
@@ -181,11 +188,6 @@ function ChatInterface({
     commandModalPayload,
     closeCommandModal,
     showCostModal,
-    queuedMessages,
-    removeQueuedMessage,
-    restoreFailedSend,
-    clearFailedSendBackup,
-    rewindMessage,
   } = useChatComposerState({
     selectedProject,
     selectedSession,
@@ -198,81 +200,58 @@ function ChatInterface({
     codexModel,
     geminiModel,
     opencodeModel,
-    isLoading,
+    isLoading: isProcessing,
     canAbortSession,
     tokenBudget,
     sendMessage,
     sendByCtrlEnter,
-    onSessionActive,
     onSessionProcessing,
+    onSessionEstablished: handleSessionEstablished,
     onInputFocusChange,
     onFileOpen,
     onShowSettings,
-    pendingViewSessionRef,
     scrollToBottom,
     addMessage,
-    setIsLoading,
-    setCanAbortSession,
-    setClaudeStatus,
     setIsUserScrolledUp,
     setPendingPermissionRequests,
-    onRewindTruncate: (sessionId, messageUuid) => sessionStore.rewindTo(sessionId, messageUuid),
   });
 
-  // On WebSocket reconnect, re-fetch the current session's messages so missed
-  // streaming events are shown, then re-check the session's processing state.
-  // We must NOT blindly clear isLoading here: a turn may still be running on the
-  // backend across the reconnect, and the fresh socket needs to re-attach as the
-  // session writer (which check-session-status does) to receive its completion.
-  // The resulting `session-status` frame sets isLoading to the real value.
+  // On WebSocket reconnect, re-fetch the current session's messages from the
+  // server so missed streaming events are shown, then re-subscribe — the
+  // `chat_subscribed` ack restores or clears the activity indicator, replays
+  // missed live events, and re-attaches a still-running stream to this socket.
   const handleWebSocketReconnect = useCallback(async () => {
     if (!selectedProject || !selectedSession) return;
-    const providerVal = (localStorage.getItem('selected-provider') as LLMProvider) || 'claude';
-    await sessionStore.refreshFromServer(selectedSession.id, {
-      provider: (selectedSession.__provider || providerVal) as LLMProvider,
-      // Use DB projectId; legacy folder-derived projectName is no longer accepted here.
-      projectId: selectedProject.projectId,
-      projectPath: selectedProject.fullPath || selectedProject.path || '',
+    await sessionStore.refreshFromServer(selectedSession.id);
+    statusCheckSentAtRef.current.set(selectedSession.id, Date.now());
+    sendMessage({
+      type: 'chat.subscribe',
+      sessions: [{
+        sessionId: selectedSession.id,
+        lastSeq: lastSeqRef.current.get(selectedSession.id) ?? 0,
+      }],
     });
-    recheckSessionStatus();
-  }, [selectedProject, selectedSession, sessionStore, recheckSessionStatus]);
-
-  // Errors that arrive before a session id exists (e.g. rejected cwd) have no
-  // store slot — buffer them through addMessage so the user sees the failure.
-  const handleSessionlessError = useCallback(
-    (content: string) => {
-      addMessage({ type: 'error', content, timestamp: new Date() });
-    },
-    [addMessage],
-  );
+  }, [selectedProject, selectedSession, sendMessage, sessionStore]);
 
   useChatRealtimeHandlers({
+    subscribe,
     provider,
     selectedSession,
     currentSessionId,
-    setCurrentSessionId,
-    setIsLoading,
-    setCanAbortSession,
-    setClaudeStatus,
     setTokenBudget,
     setPendingPermissionRequests,
-    pendingViewSessionRef,
     streamTimerRef,
     accumulatedStreamRef,
-    onSessionInactive,
-    onSessionActive,
+    lastSeqRef,
+    statusCheckSentAtRef,
     onSessionProcessing,
-    onSessionNotProcessing,
-    onNavigateToSession,
+    onSessionIdle,
     onWebSocketReconnect: handleWebSocketReconnect,
-    onSendFailed: restoreFailedSend,
-    onSendSucceeded: clearFailedSendBackup,
-    onSessionlessError: handleSessionlessError,
     sessionStore,
   });
 
   useEffect(() => {
-    if (!isLoading || !canAbortSession) {
+    if (!canAbortSession) {
       return;
     }
 
@@ -289,7 +268,7 @@ function ChatInterface({
     return () => {
       document.removeEventListener('keydown', handleGlobalEscape, { capture: true });
     };
-  }, [canAbortSession, handleAbortSession, isLoading]);
+  }, [canAbortSession, handleAbortSession]);
 
   useEffect(() => {
     return () => {
@@ -301,8 +280,6 @@ function ChatInterface({
     pendingPermissionRequests,
     handlePermissionDecision,
   }), [pendingPermissionRequests, handlePermissionDecision]);
-
-  const { activeWorktree } = useActiveWorktree(selectedProject?.projectId ?? null);
 
   if (!selectedProject) {
     const selectedProviderLabel =
@@ -330,28 +307,15 @@ function ChatInterface({
     );
   }
 
-  // Worktree indicator: an existing session shows its pinned worktree; a pending
-  // (new) session shows the project's active worktree it will run in.
-  const sessionWorktreeBranch = (selectedSession?.worktreeBranch as string | null | undefined) ?? null;
-  const worktreeLabel = selectedSession
-    ? sessionWorktreeBranch
-    : activeWorktree?.branch ?? (activeWorktree ? activeWorktree.path.split('/').pop() ?? null : null);
-
   return (
     <PermissionContext.Provider value={permissionContextValue}>
       <div className="flex h-full flex-col">
-        {worktreeLabel && (
-          <div className="flex flex-shrink-0 items-center gap-1.5 border-b border-amber-500/20 bg-amber-500/5 px-3 py-1 text-xs text-amber-700 dark:text-amber-400">
-            <TreePine className="h-3 w-3 flex-shrink-0" />
-            <span className="text-amber-700/70 dark:text-amber-400/70">worktree</span>
-            <span className="truncate font-medium">{worktreeLabel}</span>
-          </div>
-        )}
         <ChatMessagesPane
           scrollContainerRef={scrollContainerRef}
           onWheel={handleScroll}
           onTouchMove={handleScroll}
           isLoadingSessionMessages={isLoadingSessionMessages}
+          isProcessing={isProcessing}
           chatMessages={chatMessages}
           selectedSession={selectedSession}
           currentSessionId={currentSessionId}
@@ -394,20 +358,15 @@ function ChatInterface({
           showRawParameters={showRawParameters}
           showThinking={showThinking}
           selectedProject={selectedProject}
-          onRewindMessage={rewindMessage}
-          rewindDisabled={isLoading}
         />
 
         <ChatComposer
           pendingPermissionRequests={pendingPermissionRequests}
           handlePermissionDecision={handlePermissionDecision}
           handleGrantToolPermission={handleGrantToolPermission}
-          claudeStatus={claudeStatus}
-          isLoading={isLoading}
+          activity={sessionActivity}
+          isLoading={isProcessing}
           onAbortSession={handleAbortSession}
-          queuedMessages={queuedMessages}
-          onRemoveQueuedMessage={removeQueuedMessage}
-          provider={provider}
           permissionMode={permissionMode}
           onModeSwitch={cyclePermissionMode}
           tokenBudget={tokenBudget}
