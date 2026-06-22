@@ -1,7 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
+import { TreePine } from 'lucide-react';
 
 import { useTasksSettings } from '../../../contexts/TasksSettingsContext';
+import { useActiveWorktree } from '../../../hooks/useActiveWorktree';
 import { useWebSocket } from '../../../contexts/WebSocketContext';
 import PermissionContext from '../../../contexts/PermissionContext';
 import { QuickSettingsPanel } from '../../quick-settings-panel';
@@ -188,6 +190,9 @@ function ChatInterface({
     commandModalPayload,
     closeCommandModal,
     showCostModal,
+    rewindMessage,
+    queuedMessages,
+    removeQueuedMessage,
   } = useChatComposerState({
     selectedProject,
     selectedSession,
@@ -214,6 +219,7 @@ function ChatInterface({
     addMessage,
     setIsUserScrolledUp,
     setPendingPermissionRequests,
+    onRewindTruncate: (sessionId, messageUuid) => sessionStore.rewindTo(sessionId, messageUuid),
   });
 
   // On WebSocket reconnect, re-fetch the current session's messages from the
@@ -250,6 +256,28 @@ function ChatInterface({
     sessionStore,
   });
 
+  // Self-healing for stuck "Processing": a backgrounded/sleeping tab can miss
+  // the terminal `complete` event, leaving the activity indicator hung. When
+  // the tab becomes visible/focused again and we still believe a run is live,
+  // re-subscribe — the `chat_subscribed` ack reports the true processing state
+  // (clearing a stale indicator) and replays any events missed while hidden.
+  useEffect(() => {
+    if (!selectedSession || !isProcessing) {
+      return undefined;
+    }
+    const recover = () => {
+      if (document.visibilityState === 'visible') {
+        void handleWebSocketReconnect();
+      }
+    };
+    document.addEventListener('visibilitychange', recover);
+    window.addEventListener('focus', recover);
+    return () => {
+      document.removeEventListener('visibilitychange', recover);
+      window.removeEventListener('focus', recover);
+    };
+  }, [selectedSession, isProcessing, handleWebSocketReconnect]);
+
   useEffect(() => {
     if (!canAbortSession) {
       return;
@@ -281,6 +309,8 @@ function ChatInterface({
     handlePermissionDecision,
   }), [pendingPermissionRequests, handlePermissionDecision]);
 
+  const { activeWorktree } = useActiveWorktree(selectedProject?.projectId ?? null);
+
   if (!selectedProject) {
     const selectedProviderLabel =
       provider === 'cursor'
@@ -307,9 +337,23 @@ function ChatInterface({
     );
   }
 
+  // Worktree indicator: an existing session shows its pinned worktree; a pending
+  // (new) session shows the project's active worktree it will run in.
+  const sessionWorktreeBranch = (selectedSession?.worktreeBranch as string | null | undefined) ?? null;
+  const worktreeLabel = selectedSession
+    ? sessionWorktreeBranch
+    : activeWorktree?.branch ?? (activeWorktree ? activeWorktree.path.split('/').pop() ?? null : null);
+
   return (
     <PermissionContext.Provider value={permissionContextValue}>
       <div className="flex h-full flex-col">
+        {worktreeLabel && (
+          <div className="flex flex-shrink-0 items-center gap-1.5 border-b border-amber-500/20 bg-amber-500/5 px-3 py-1 text-xs text-amber-700 dark:text-amber-400">
+            <TreePine className="h-3 w-3 flex-shrink-0" />
+            <span className="text-amber-700/70 dark:text-amber-400/70">worktree</span>
+            <span className="truncate font-medium">{worktreeLabel}</span>
+          </div>
+        )}
         <ChatMessagesPane
           scrollContainerRef={scrollContainerRef}
           onWheel={handleScroll}
@@ -358,6 +402,8 @@ function ChatInterface({
           showRawParameters={showRawParameters}
           showThinking={showThinking}
           selectedProject={selectedProject}
+          onRewindMessage={rewindMessage}
+          rewindDisabled={isProcessing}
         />
 
         <ChatComposer
@@ -426,6 +472,8 @@ function ChatInterface({
           })}
           isTextareaExpanded={isTextareaExpanded}
           sendByCtrlEnter={sendByCtrlEnter}
+          queuedMessages={queuedMessages}
+          onRemoveQueuedMessage={removeQueuedMessage}
         />
       </div>
 

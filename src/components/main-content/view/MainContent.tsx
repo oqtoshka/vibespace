@@ -4,6 +4,7 @@ import ChatInterface from '../../chat/view/ChatInterface';
 import StandaloneShell from '../../standalone-shell/view/StandaloneShell';
 import GitPanel from '../../git-panel/view/GitPanel';
 import PluginTabContent from '../../plugins/view/PluginTabContent';
+import { BrowserUsePanel } from '../../browser-use';
 import type { MainContentProps } from '../types/types';
 import { useTaskMaster } from '../../../contexts/TaskMasterContext';
 import { usePaletteOpsRegister } from '../../../contexts/PaletteOpsContext';
@@ -251,6 +252,12 @@ function MainContent({
           )}
 
           {shouldShowTasksTab && <TaskMasterPanel isVisible={activePanel === 'tasks'} />}
+
+          {activePanel === 'browser' && (
+            <div className="h-full overflow-hidden">
+              <BrowserUsePanel isVisible onShowSettings={onShowSettings} />
+            </div>
+          )}
 
           <div className={`h-full overflow-hidden ${activePanel === 'preview' ? 'block' : 'hidden'}`} />
 

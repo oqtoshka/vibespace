@@ -696,6 +696,38 @@ export function useSessionStore() {
   }, [notify]);
 
   /**
+   * Rewind/edit-in-place: optimistically drop the anchored user message (matched
+   * by its transcript `uuid`) and everything after it, before the edited message
+   * is resent. Mirrors the server-side transcript truncation so the view doesn't
+   * show the discarded tail alongside the new run.
+   */
+  const rewindTo = useCallback((sessionId: string, messageUuid: string) => {
+    const slot = storeRef.current.get(sessionId);
+    if (!slot) return;
+
+    const anchorIdx = slot.serverMessages.findIndex((m) => m.uuid === messageUuid);
+    if (anchorIdx >= 0) {
+      const anchorTime = readMessageTime(slot.serverMessages[anchorIdx]);
+      slot.serverMessages = slot.serverMessages.slice(0, anchorIdx);
+      slot.realtimeMessages = anchorTime === null
+        ? []
+        : slot.realtimeMessages.filter((m) => {
+            const t = readMessageTime(m);
+            return t === null ? false : t < anchorTime;
+          });
+    } else {
+      // Anchor lives only in the realtime tail (edited a just-sent message).
+      const rtIdx = slot.realtimeMessages.findIndex((m) => m.uuid === messageUuid);
+      if (rtIdx >= 0) {
+        slot.realtimeMessages = slot.realtimeMessages.slice(0, rtIdx);
+      }
+    }
+
+    recomputeMergedIfNeeded(slot);
+    notify(sessionId);
+  }, [notify]);
+
+  /**
    * Get merged messages for a session (for rendering).
    */
   const getMessages = useCallback((sessionId: string): NormalizedMessage[] => {
@@ -723,13 +755,14 @@ export function useSessionStore() {
     updateStreaming,
     finalizeStreaming,
     clearRealtime,
+    rewindTo,
     getMessages,
     getSessionSlot,
   }), [
     getSlot, has, fetchFromServer, fetchMore,
     appendRealtime, appendRealtimeBatch, refreshFromServer,
     setActiveSession, setStatus, isStale, updateStreaming, finalizeStreaming,
-    clearRealtime, getMessages, getSessionSlot,
+    clearRealtime, rewindTo, getMessages, getSessionSlot,
   ]);
 }
 

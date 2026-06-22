@@ -1,6 +1,7 @@
 import {
   ClipboardCheck,
   GitBranch,
+  MonitorPlay,
   Plus,
   Terminal,
   type LucideIcon,
@@ -24,6 +25,7 @@ type PanelDefinition =
 
 const BASE_PANELS: PanelDefinition[] = [
   { kind: 'builtin', id: 'git', labelKey: 'tabs.git', icon: GitBranch },
+  { kind: 'builtin', id: 'browser', labelKey: 'tabs.browser', icon: MonitorPlay },
 ];
 
 const TASKS_PANEL: PanelDefinition = {

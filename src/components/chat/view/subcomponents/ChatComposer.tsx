@@ -9,7 +9,9 @@ import type {
   RefObject,
   TouchEvent,
 } from 'react';
-import { ImageIcon, MessageSquareIcon, XIcon, ArrowDownIcon } from 'lucide-react';
+import { ImageIcon, MessageSquareIcon, XIcon, ArrowDownIcon, Clock3 } from 'lucide-react';
+
+import type { QueuedMessage } from '../../hooks/useChatComposerState';
 
 import type { SessionActivity } from '../../../../hooks/useSessionProtection';
 import type { PendingPermissionRequest, PermissionMode } from '../../types/types';
@@ -99,6 +101,8 @@ interface ChatComposerProps {
   placeholder: string;
   isTextareaExpanded: boolean;
   sendByCtrlEnter?: boolean;
+  queuedMessages?: QueuedMessage[];
+  onRemoveQueuedMessage?: (id: string) => void;
 }
 
 export default function ChatComposer({
@@ -152,6 +156,8 @@ export default function ChatComposer({
   placeholder,
   isTextareaExpanded,
   sendByCtrlEnter,
+  queuedMessages,
+  onRemoveQueuedMessage,
 }: ChatComposerProps) {
   const { t } = useTranslation('chat');
   const textareaRect = textareaRef.current?.getBoundingClientRect();
@@ -255,6 +261,40 @@ export default function ChatComposer({
                 <p className="text-sm font-medium">Drop images here</p>
               </div>
             </div>
+          )}
+
+          {queuedMessages && queuedMessages.length > 0 && (
+            <PromptInputHeader>
+              <div className="space-y-1 rounded-xl bg-muted/40 p-2">
+                {queuedMessages.map((queued) => (
+                  <div
+                    key={queued.id}
+                    className="flex items-center gap-2 rounded-lg bg-background/60 px-2 py-1 text-xs text-muted-foreground"
+                  >
+                    <Clock3 className="h-3 w-3 flex-shrink-0 opacity-70" />
+                    <span className="min-w-0 flex-1 truncate" title={queued.content}>
+                      {queued.content}
+                    </span>
+                    {queued.images.length > 0 && (
+                      <span className="flex-shrink-0 opacity-70">
+                        {queued.images.length}
+                        <ImageIcon className="ml-0.5 inline h-3 w-3" />
+                      </span>
+                    )}
+                    {onRemoveQueuedMessage && (
+                      <button
+                        type="button"
+                        onClick={() => onRemoveQueuedMessage(queued.id)}
+                        className="flex-shrink-0 rounded p-0.5 hover:bg-muted"
+                        aria-label={t('queue.remove', { defaultValue: 'Remove queued message' })}
+                      >
+                        <XIcon className="h-3 w-3" />
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </PromptInputHeader>
           )}
 
           {attachedImages.length > 0 && (

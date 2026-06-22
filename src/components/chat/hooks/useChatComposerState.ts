@@ -12,6 +12,8 @@ import type {
 import { useDropzone } from 'react-dropzone';
 
 import { authenticatedFetch } from '../../../utils/api';
+import { downscaleImageFiles } from '../../../utils/imageDownscale';
+import { readActiveWorktree, bindSessionCwd, getSessionCwd } from '../../../hooks/useActiveWorktree';
 import type { MarkSessionProcessing } from '../../../hooks/useSessionProtection';
 import { grantClaudeToolPermission } from '../utils/chatPermissions';
 import { safeLocalStorage } from '../utils/chatStorage';
@@ -60,12 +62,28 @@ interface UseChatComposerStateArgs {
   addMessage: (msg: ChatMessage) => void;
   setIsUserScrolledUp: (isScrolledUp: boolean) => void;
   setPendingPermissionRequests: Dispatch<SetStateAction<PendingPermissionRequest[]>>;
+  /**
+   * Optimistically drops the rewound message and everything after it from the
+   * visible transcript before the edited message is resent. Wired to the
+   * session store's `rewindTo`.
+   */
+  onRewindTruncate?: (sessionId: string, messageUuid: string) => void;
 }
 
 interface MentionableFile {
   name: string;
   path: string;
 }
+
+/** A message captured while a run was processing, awaiting auto-send when idle. */
+export interface QueuedMessage {
+  id: string;
+  content: string;
+  images: File[];
+}
+
+// Cap the pending queue so a runaway loop can't accumulate unbounded sends.
+const MAX_QUEUED_MESSAGES = 20;
 
 interface CommandExecutionResult {
   type: 'builtin' | 'custom';
@@ -187,6 +205,7 @@ export function useChatComposerState({
   addMessage,
   setIsUserScrolledUp,
   setPendingPermissionRequests,
+  onRewindTruncate,
 }: UseChatComposerStateArgs) {
   const [input, setInput] = useState(() => {
     if (typeof window !== 'undefined' && selectedProject) {
@@ -197,6 +216,7 @@ export function useChatComposerState({
     return '';
   });
   const [attachedImages, setAttachedImages] = useState<File[]>([]);
+  const [queuedMessages, setQueuedMessages] = useState<QueuedMessage[]>([]);
   const [uploadingImages, setUploadingImages] = useState<Map<string, number>>(new Map());
   const [imageErrors, setImageErrors] = useState<Map<string, string>>(new Map());
   const [isTextareaExpanded, setIsTextareaExpanded] = useState(false);
@@ -527,57 +547,43 @@ export function useChatComposerState({
     noKeyboard: true,
   });
 
-  const handleSubmit = useCallback(
-    async (
-      event: FormEvent<HTMLFormElement> | MouseEvent | TouchEvent | KeyboardEvent<HTMLTextAreaElement>,
-    ) => {
-      event.preventDefault();
-      const currentInput = inputValueRef.current;
-      if (!currentInput.trim() || isLoading || !selectedProject) {
-        return;
-      }
+  // Reset the composer fields after a message is captured for sending/queueing.
+  const clearComposer = useCallback(() => {
+    setInput('');
+    inputValueRef.current = '';
+    resetCommandMenuState();
+    setAttachedImages([]);
+    setUploadingImages(new Map());
+    setImageErrors(new Map());
+    setIsTextareaExpanded(false);
+    if (textareaRef.current) {
+      textareaRef.current.style.height = 'auto';
+    }
+    if (selectedProjectId) {
+      safeLocalStorage.removeItem(`draft_input_${selectedProjectId}`);
+    }
+  }, [resetCommandMenuState, selectedProjectId]);
 
-      // Intercept slash commands only when "/" is the first input character.
-      // Also accept exact "help" as a convenience alias for users who expect CLI-style help.
-      const commandInput = currentInput.trimEnd();
-      const isHelpAlias = commandInput.trim().toLowerCase() === 'help';
-      if (commandInput.startsWith('/') || isHelpAlias) {
-        const firstSpace = commandInput.indexOf(' ');
-        const commandName = isHelpAlias
-          ? '/help'
-          : firstSpace > 0 ? commandInput.slice(0, firstSpace) : commandInput;
-        const matchedCommand =
-          slashCommands.find((cmd: SlashCommand) => cmd.name === commandName) ||
-          (commandName === '/help'
-            ? ({
-                name: '/help',
-                description: 'Show help documentation for Claude Code',
-                namespace: 'builtin',
-                metadata: { type: 'builtin' },
-              } as SlashCommand)
-            : undefined);
-        if (matchedCommand && matchedCommand.type !== 'skill') {
-          executeCommand(matchedCommand, isHelpAlias ? '/help' : commandInput);
-          setInput('');
-          inputValueRef.current = '';
-          setAttachedImages([]);
-          setUploadingImages(new Map());
-          setImageErrors(new Map());
-          resetCommandMenuState();
-          setIsTextareaExpanded(false);
-          if (textareaRef.current) {
-            textareaRef.current.style.height = 'auto';
-          }
-          return;
-        }
+  /**
+   * Core send: uploads attachments, resolves (or allocates) the session, marks
+   * it processing, and dispatches the unified chat.send. Returns false when the
+   * send could not be started (upload/session-creation failure) so the caller
+   * can keep the composer contents instead of clearing them.
+   */
+  const runSubmit = useCallback(
+    async (content: string, images: File[]): Promise<boolean> => {
+      if (!selectedProject) {
+        return false;
       }
-
-      const messageContent = currentInput;
 
       let uploadedImages: unknown[] = [];
-      if (attachedImages.length > 0) {
+      if (images.length > 0) {
+        // Phone photos routinely exceed the 5MB cap and the proxy body limit.
+        // Re-encode/bound them client-side before upload (no-op when already
+        // small, original kept on any decode/encode failure).
+        const filesToUpload = await downscaleImageFiles(images);
         const formData = new FormData();
-        attachedImages.forEach((file) => {
+        filesToUpload.forEach((file) => {
           formData.append('images', file);
         });
 
@@ -602,12 +608,12 @@ export function useChatComposerState({
             content: `Failed to upload images: ${message}`,
             timestamp: new Date(),
           });
-          return;
+          return false;
         }
       }
 
       const resolvedProjectPath = selectedProject.fullPath || selectedProject.path || '';
-      const sessionSummary = getNotificationSessionSummary(selectedSession, currentInput);
+      const sessionSummary = getNotificationSessionSummary(selectedSession, content);
 
       // The conversation always has a stable backend-allocated session id
       // BEFORE the first websocket send: brand-new chats allocate one here
@@ -636,7 +642,7 @@ export function useChatComposerState({
             content: `Failed to start a new session: ${message}`,
             timestamp: new Date(),
           });
-          return;
+          return false;
         }
 
         if (!targetSessionId) {
@@ -645,7 +651,7 @@ export function useChatComposerState({
             content: 'Failed to start a new session: no session id returned.',
             timestamp: new Date(),
           });
-          return;
+          return false;
         }
 
         onSessionEstablished?.(targetSessionId, {
@@ -655,9 +661,23 @@ export function useChatComposerState({
         });
       }
 
+      // Worktree-aware cwd. An existing session resolves to its pinned worktree
+      // (or a stable binding made earlier this page session); a brand-new
+      // session resolves to the project's active worktree. bindSessionCwd keeps
+      // the cwd stable across a session's messages before the server-synced
+      // worktreePath is available. `null` worktree falls back to the project.
+      const isExistingSession = Boolean(selectedSession?.id || currentSessionId);
+      const sessionWorktreePath = (selectedSession?.worktreePath as string | null | undefined) ?? null;
+      const effectiveCwd =
+        getSessionCwd(targetSessionId) ||
+        (isExistingSession
+          ? sessionWorktreePath || resolvedProjectPath
+          : readActiveWorktree(selectedProject.projectId)?.path || resolvedProjectPath);
+      bindSessionCwd(targetSessionId, effectiveCwd);
+
       const userMessage: ChatMessage = {
         type: 'user',
-        content: currentInput,
+        content,
         images: uploadedImages as any,
         timestamp: new Date(),
       };
@@ -719,8 +739,9 @@ export function useChatComposerState({
       sendMessage({
         type: 'chat.send',
         sessionId: targetSessionId,
-        content: messageContent,
+        content,
         options: {
+          cwd: effectiveCwd,
           model,
           // Codex has no plan mode; downgrade rather than sending an
           // unsupported value to its runtime.
@@ -732,48 +753,231 @@ export function useChatComposerState({
         },
       });
 
-      setInput('');
-      inputValueRef.current = '';
-      resetCommandMenuState();
-      setAttachedImages([]);
-      setUploadingImages(new Map());
-      setImageErrors(new Map());
-      setIsTextareaExpanded(false);
-
-      if (textareaRef.current) {
-        textareaRef.current.style.height = 'auto';
-      }
-
-      safeLocalStorage.removeItem(`draft_input_${selectedProject.projectId}`);
+      return true;
     },
     [
       selectedSession,
-      attachedImages,
       claudeModel,
       codexModel,
       currentSessionId,
       cursorModel,
-      executeCommand,
       geminiModel,
       opencodeModel,
-      isLoading,
       onSessionProcessing,
       onSessionEstablished,
       permissionMode,
       provider,
-      resetCommandMenuState,
       scrollToBottom,
       selectedProject,
       sendMessage,
       addMessage,
       setIsUserScrolledUp,
+    ],
+  );
+
+  const handleSubmit = useCallback(
+    async (
+      event: FormEvent<HTMLFormElement> | MouseEvent | TouchEvent | KeyboardEvent<HTMLTextAreaElement>,
+    ) => {
+      event.preventDefault();
+      const currentInput = inputValueRef.current;
+      if (!currentInput.trim() || !selectedProject) {
+        return;
+      }
+
+      // Intercept slash commands only when "/" is the first input character.
+      // Also accept exact "help" as a convenience alias for users who expect CLI-style help.
+      const commandInput = currentInput.trimEnd();
+      const isHelpAlias = commandInput.trim().toLowerCase() === 'help';
+      if (commandInput.startsWith('/') || isHelpAlias) {
+        const firstSpace = commandInput.indexOf(' ');
+        const commandName = isHelpAlias
+          ? '/help'
+          : firstSpace > 0 ? commandInput.slice(0, firstSpace) : commandInput;
+        const matchedCommand =
+          slashCommands.find((cmd: SlashCommand) => cmd.name === commandName) ||
+          (commandName === '/help'
+            ? ({
+                name: '/help',
+                description: 'Show help documentation for Claude Code',
+                namespace: 'builtin',
+                metadata: { type: 'builtin' },
+              } as SlashCommand)
+            : undefined);
+        if (matchedCommand && matchedCommand.type !== 'skill') {
+          executeCommand(matchedCommand, isHelpAlias ? '/help' : commandInput);
+          clearComposer();
+          return;
+        }
+      }
+
+      // While a run is processing, queue the message instead of dropping it; the
+      // dequeue effect auto-sends queued items in order once the session goes
+      // idle. The composer clears immediately so the user can keep typing.
+      if (isLoading) {
+        const queued: QueuedMessage = {
+          id: `queued_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+          content: currentInput,
+          images: attachedImages,
+        };
+        setQueuedMessages((previous) => [...previous, queued].slice(-MAX_QUEUED_MESSAGES));
+        clearComposer();
+        return;
+      }
+
+      const content = currentInput;
+      const images = attachedImages;
+      clearComposer();
+      const ok = await runSubmit(content, images);
+      if (!ok) {
+        // Restore the unsent text/attachments so a failed send isn't lost.
+        setInput(content);
+        inputValueRef.current = content;
+        setAttachedImages(images);
+      }
+    },
+    [
+      attachedImages,
+      clearComposer,
+      executeCommand,
+      isLoading,
+      runSubmit,
+      selectedProject,
       slashCommands,
     ],
   );
 
+  // Auto-send the next queued message once the session goes idle. The ref
+  // guards against the brief window after dispatch where `isLoading` has not
+  // yet flipped true — without it, a queue-state re-render would dequeue a
+  // second message before the first run started.
+  const awaitingProcessingRef = useRef(false);
+  useEffect(() => {
+    if (isLoading) {
+      awaitingProcessingRef.current = false;
+      return;
+    }
+    if (awaitingProcessingRef.current || queuedMessages.length === 0) {
+      return;
+    }
+    const next = queuedMessages[0];
+    awaitingProcessingRef.current = true;
+    setQueuedMessages((previous) => previous.slice(1));
+    void runSubmit(next.content, next.images).then((ok) => {
+      if (!ok) {
+        // Send failed (error already surfaced); release the guard so the
+        // remaining queue can still drain instead of stalling forever.
+        awaitingProcessingRef.current = false;
+      }
+    });
+  }, [isLoading, queuedMessages, runSubmit]);
+
+  const removeQueuedMessage = useCallback((id: string) => {
+    setQueuedMessages((previous) => previous.filter((message) => message.id !== id));
+  }, []);
+
   useEffect(() => {
     handleSubmitRef.current = handleSubmit;
   }, [handleSubmit]);
+
+  /**
+   * Rewind / edit-in-place: re-send an edited past user message, dropping that
+   * message and everything after it. Only Claude and OpenCode sessions support
+   * it (their transcripts can be truncated in place); other providers never
+   * surface the affordance because their messages carry no `uuid` anchor. The
+   * `rewind` anchor rides in the chat.send options; the backend truncates the
+   * transcript at the anchor, then resumes in-place from that point.
+   */
+  const rewindMessage = useCallback(
+    (message: ChatMessage, newContent: string) => {
+      const rewindUuid = typeof message.uuid === 'string' ? message.uuid : null;
+      const content = newContent.trim();
+      if (!rewindUuid || !content || !selectedProject) {
+        return;
+      }
+      if (provider !== 'claude' && provider !== 'opencode') {
+        return;
+      }
+
+      // Rewind only makes sense for an already-persisted session.
+      const effectiveSessionId = selectedSession?.id || currentSessionId || null;
+      if (!effectiveSessionId) {
+        return;
+      }
+
+      // Carry the original attachments over unchanged (already data URLs).
+      const images = Array.isArray(message.images) ? message.images : [];
+
+      // Optimistically drop the edited message + its responses from the view,
+      // then show the edited message as the new tail.
+      onRewindTruncate?.(effectiveSessionId, rewindUuid);
+      addMessage({
+        type: 'user',
+        content,
+        images: images as ChatMessage['images'],
+        timestamp: new Date(),
+      });
+      onSessionProcessing?.(effectiveSessionId, { statusText: null, canInterrupt: true });
+      setIsUserScrolledUp(false);
+      setTimeout(() => scrollToBottom(), 100);
+
+      let toolsSettings: Record<string, unknown> = {
+        allowedTools: [],
+        disallowedTools: [],
+        skipPermissions: false,
+      };
+      try {
+        const settingsKey = provider === 'opencode' ? 'opencode-settings' : 'claude-settings';
+        const saved = safeLocalStorage.getItem(settingsKey);
+        if (saved) {
+          toolsSettings = JSON.parse(saved);
+        }
+      } catch (error) {
+        console.error('Error loading tools settings:', error);
+      }
+
+      const resolvedProjectPath = selectedProject.fullPath || selectedProject.path || '';
+      const sessionSummary = getNotificationSessionSummary(selectedSession, content);
+      const sessionWorktreePath = (selectedSession?.worktreePath as string | null | undefined) ?? null;
+      const effectiveCwd =
+        getSessionCwd(effectiveSessionId) || sessionWorktreePath || resolvedProjectPath;
+      bindSessionCwd(effectiveSessionId, effectiveCwd);
+
+      const model = provider === 'opencode' ? opencodeModel : claudeModel;
+
+      // Same unified shape as handleSubmit's chat.send, plus the `rewind` anchor.
+      sendMessage({
+        type: 'chat.send',
+        sessionId: effectiveSessionId,
+        content,
+        options: {
+          cwd: effectiveCwd,
+          model,
+          permissionMode,
+          toolsSettings,
+          skipPermissions: Boolean(toolsSettings?.skipPermissions),
+          sessionSummary,
+          images,
+          rewind: rewindUuid,
+        },
+      });
+    },
+    [
+      selectedProject,
+      selectedSession,
+      currentSessionId,
+      provider,
+      claudeModel,
+      opencodeModel,
+      permissionMode,
+      onRewindTruncate,
+      onSessionProcessing,
+      addMessage,
+      sendMessage,
+      scrollToBottom,
+      setIsUserScrolledUp,
+    ],
+  );
 
   useEffect(() => {
     inputValueRef.current = input;
@@ -1028,5 +1232,8 @@ export function useChatComposerState({
     commandModalPayload,
     closeCommandModal,
     showCostModal,
+    rewindMessage,
+    queuedMessages,
+    removeQueuedMessage,
   };
 }
