@@ -12,36 +12,8 @@ import { useDeviceSettings } from '../../hooks/useDeviceSettings';
 import { useSessionProtection } from '../../hooks/useSessionProtection';
 import { useUiPreferences } from '../../hooks/useUiPreferences';
 import { useProjectsState } from '../../hooks/useProjectsState';
-import { useQueuedMessageAutoSend } from '../../hooks/useQueuedMessageAutoSend';
-import { api } from '../../utils/api';
-
-type RunningSessionApiItem = {
-  sessionId?: unknown;
-  startedAt?: unknown;
-  statusText?: unknown;
-  canInterrupt?: unknown;
-};
-
-type RunningSessionsApiPayload = {
-  data?: {
-    sessions?: RunningSessionApiItem[];
-  };
-};
-
-const parseStartedAt = (value: unknown): number | undefined => {
-  if (typeof value === 'number' && Number.isFinite(value) && value > 0) {
-    return value;
-  }
-
-  if (typeof value !== 'string') {
-    return undefined;
-  }
-
-  const parsed = Date.parse(value);
-  return Number.isFinite(parsed) ? parsed : undefined;
-};
-
 import { useWorkspaceTabs } from '../../hooks/useWorkspaceTabs';
+import { useSessionPane, NEW_SESSION_KEY, type SessionView } from '../../hooks/useSessionPane';
 import { dbg } from '../../utils/debugLog';
 import type { WorkspaceApi } from '../main-content/types/types';
 import type { SidebarView } from '../sidebar/types/types';
@@ -145,49 +117,25 @@ export default function AppContent() {
   );
 }
 
-function getSessionTitle(session: ProjectSession): string {
-  if (session.__provider === 'cursor') {
-    return (session.name as string) || 'Untitled Session';
-  }
-  return (session.summary as string) || 'New Session';
-}
-
-/** Which project's loaded session lists contain this session, if any.
- * Sessions are globally unique, so a hit in another project is conclusive. */
-function findSessionOwnerProjectId(projects: Project[], sessionId: string): string | null {
-  for (const project of projects) {
-    const sessionLists = [
-      project.sessions,
-      project.cursorSessions,
-      project.codexSessions,
-      project.geminiSessions,
-      project.opencodeSessions,
-    ];
-    for (const sessions of sessionLists) {
-      if (sessions?.some((session) => session.id === sessionId)) {
-        return project.projectId;
-      }
-    }
-  }
-  return null;
-}
-
 function AppContentInner() {
   const navigate = useNavigate();
   const { sessionId } = useParams<{ sessionId?: string }>();
   const { t } = useTranslation('common');
   const { isMobile } = useDeviceSettings({ trackPWA: false });
-  const { ws, sendMessage, subscribe } = useWebSocket();
+  const { ws, sendMessage } = useWebSocket();
 
   const {
     processingSessions,
     markSessionProcessing,
     markSessionIdle,
-    syncProcessingSessions,
   } = useSessionProtection();
 
+  // The sidebar and project-state guard consume a plain Set of active session
+  // ids; upstream's session-activity hook keys a richer Map. Derive the Set
+  // once per change for those consumers (the chat path uses the Map directly).
+  const activeSessions = useMemo(() => new Set(processingSessions.keys()), [processingSessions]);
+
   const {
-    projects,
     selectedProject,
     selectedSession,
     sidebarOpen,
@@ -196,9 +144,9 @@ function AppContentInner() {
     newSessionTrigger,
     setSidebarOpen,
     setIsInputFocused,
+    setShowSettings,
     openSettings,
     refreshProjectsSilently,
-    registerOptimisticSession,
     sidebarSharedProps,
     handleSessionSelect,
     handleNewSession,
@@ -206,66 +154,12 @@ function AppContentInner() {
   } = useProjectsState({
     sessionId,
     navigate,
-    subscribe,
     isMobile,
-    activeSessions: processingSessions,
+    activeSessions,
   });
-
-  // Queued messages for sessions that finish while another session (or none)
-  // is being viewed are sent from here; the viewed session's composer handles
-  // its own queue.
-  useQueuedMessageAutoSend({
-    processingSessions,
-    activeSessionId: selectedSession?.id ?? sessionId ?? null,
-    ws,
-    sendMessage,
-    markSessionProcessing,
-  });
-
-  const refreshRunningSessions = useCallback(async () => {
-    try {
-      const response = await api.runningSessions();
-      if (!response.ok) {
-        return;
-      }
-
-      const payload = (await response.json()) as RunningSessionsApiPayload;
-      const sessions = Array.isArray(payload.data?.sessions) ? payload.data.sessions : [];
-
-      syncProcessingSessions(
-        sessions
-          .map((session) => {
-            if (typeof session.sessionId !== 'string' || !session.sessionId) {
-              return null;
-            }
-
-            return {
-              sessionId: session.sessionId,
-              startedAt: parseStartedAt(session.startedAt),
-              statusText: typeof session.statusText === 'string' ? session.statusText : undefined,
-              canInterrupt: typeof session.canInterrupt === 'boolean' ? session.canInterrupt : undefined,
-            };
-          })
-          .filter((session): session is NonNullable<typeof session> => Boolean(session)),
-      );
-    } catch (error) {
-      console.error('[AppContent] Failed to sync running sessions:', error);
-    }
-  }, [syncProcessingSessions]);
-
-  useEffect(() => {
-    void refreshRunningSessions();
-  }, [refreshRunningSessions]);
-
-  useEffect(() => {
-    const interval = window.setInterval(() => {
-      void refreshRunningSessions();
-    }, 5000);
-
-    return () => window.clearInterval(interval);
-  }, [refreshRunningSessions]);
 
   const tabs = useWorkspaceTabs({ projectId: selectedProject?.projectId ?? null });
+  const sessionPane = useSessionPane(selectedProject?.projectId ?? null);
 
   // Trace the upstream selection drivers so the debug log shows what changed
   // before each tab/expand reaction (helps spot project/session ping-pong).
@@ -313,165 +207,54 @@ function AppContentInner() {
     activeId,
     activeTab,
     activePanel,
-    openChatTab,
-    openShellTab,
     openFileTab,
     setActive,
     closeTab,
-    adoptPendingSession,
-    findChatTabBySession,
-    closeTabsForSession,
   } = tabs;
+
+  // Current session's chat/terminal view (remembered per session).
+  const currentSessionKey = selectedSession?.id ?? NEW_SESSION_KEY;
+  const sessionView = sessionPane.getView(currentSessionKey);
+  const onSessionViewChange = useCallback(
+    (view: SessionView) => sessionPane.setView(currentSessionKey, view),
+    [sessionPane, currentSessionKey],
+  );
 
   usePaletteOpsRegister({
     openSettings,
     refreshProjects: refreshProjectsSilently,
   });
 
-  /**
-   * Imperative tab activation — the single user-driven path that keeps tab
-   * and session selection in sync without reactive ping-pong. Activating a
-   * chat tab navigates to its session (URL hydration then sets
-   * selectedSession); activating the pending chat tab resets to the
-   * new-session state.
-   */
-  const activateTab = useCallback(
-    (id: string) => {
-      setActive(id);
-      const tab = workspaceTabs.find((candidate) => candidate.id === id);
-      if (tab?.kind !== 'chat') {
-        return;
-      }
-      if (tab.sessionId) {
-        if (tab.sessionId !== selectedSession?.id) {
-          navigate(`/session/${tab.sessionId}`);
-        }
-        return;
-      }
-      // Pending "New session" tab: clear the current session.
-      if ((selectedSession || sessionId) && selectedProject) {
-        handleNewSession(selectedProject);
-      }
-    },
-    [handleNewSession, navigate, selectedProject, selectedSession, sessionId, setActive, workspaceTabs],
-  );
-
-  /** Sidebar session click: select + navigate, then open/focus its chat tab. */
+  /** Sidebar session click: select + navigate, and reveal the session pane. */
   const handleSidebarSessionSelect = useCallback(
     (session: ProjectSession) => {
       handleSessionSelect(session);
-      openChatTab(session.id, {
-        provider: session.__provider,
-        title: getSessionTitle(session),
-        activate: true,
-      });
+      sessionPane.setOpen(true);
     },
-    [handleSessionSelect, openChatTab],
+    [handleSessionSelect, sessionPane],
   );
 
-  /** New-session actions (sidebar/palette): reset chat + focus a pending tab. */
+  /** New-session actions (sidebar/palette): reset chat + reveal session pane. */
   const startNewChat = useCallback(
     (project: Project) => {
       handleNewSession(project);
-      openChatTab(null, { activate: true });
+      sessionPane.setView(NEW_SESSION_KEY, 'chat');
+      sessionPane.setOpen(true);
     },
-    [handleNewSession, openChatTab],
+    [handleNewSession, sessionPane],
   );
 
-  /** Session deletion also closes any tabs pointing at the session. */
-  const handleSessionDeleteWithTabs = useCallback(
-    (sessionIdToDelete: string) => {
-      closeTabsForSession(sessionIdToDelete);
-      handleSessionDelete(sessionIdToDelete);
-    },
-    [closeTabsForSession, handleSessionDelete],
-  );
-
-  /**
-   * Reactive sync (tab → session) for non-user-driven activations: restored
-   * workspaces (reload / project switch) where the active chat tab points at
-   * a session that isn't selected yet.
-   */
-  useEffect(() => {
-    if (activeTab?.kind !== 'chat' || !activeTab.sessionId) {
-      return;
-    }
-    if (activeTab.sessionId === selectedSession?.id || activeTab.sessionId === sessionId) {
-      return;
-    }
-    // A restored tab whose session provably belongs to ANOTHER project is
-    // poisoned state (persisted by the old project-swap race). Navigating to
-    // it would flip the selected project away — the clicked project's row
-    // collapses immediately ("can't expand"), and with two mutually-poisoned
-    // blobs the app navigates in an infinite loop. Close the tab instead;
-    // this also heals the bad blob on disk.
-    const owner = findSessionOwnerProjectId(projects, activeTab.sessionId);
-    if (owner && selectedProject && owner !== selectedProject.projectId) {
-      dbg('effect.tab->session.healCrossProject', {
-        tab: activeTab.id,
-        session: activeTab.sessionId.slice(0, 8),
-        owner,
-        project: selectedProject.projectId,
-      });
-      closeTab(activeTab.id);
-      return;
-    }
-    dbg('effect.tab->session.navigate', {
-      activeTabSession: activeTab.sessionId.slice(0, 8),
-      selectedSession: selectedSession?.id?.slice(0, 8) ?? null,
-      urlSession: sessionId?.slice(0, 8) ?? null,
-      project: selectedProject?.projectId,
-    });
-    navigate(`/session/${activeTab.sessionId}`);
-  }, [activeTab, closeTab, navigate, projects, selectedProject, selectedSession?.id, sessionId]);
-
-  /**
-   * Reactive sync (session → tab): deep links and first-message adoption.
-   * When a session becomes selected with no chat tab owning it, either adopt
-   * the active pending tab (new-session flow) or open a tab for it.
-   */
-  useEffect(() => {
-    const sid = selectedSession?.id;
-    if (!sid) {
-      return;
-    }
-    if (findChatTabBySession(sid)) {
-      return;
-    }
-    const pending = workspaceTabs.find((tab) => tab.kind === 'chat' && tab.sessionId === null);
-    if (pending && activeId === pending.id) {
-      dbg('effect.session->tab.adopt', {
-        session: sid.slice(0, 8),
-        project: selectedProject?.projectId,
-      });
-      adoptPendingSession(sid, selectedSession.__provider, getSessionTitle(selectedSession));
-      return;
-    }
-    dbg('effect.session->tab.openChat', {
-      session: sid.slice(0, 8),
-      project: selectedProject?.projectId,
-      activeId,
-      tabs: workspaceTabs.length,
-    });
-    openChatTab(sid, {
-      provider: selectedSession.__provider,
-      title: getSessionTitle(selectedSession),
-      activate: true,
-    });
-  }, [activeId, adoptPendingSession, findChatTabBySession, openChatTab, selectedProject?.projectId, selectedSession, workspaceTabs]);
-
-  /** Command palette tab navigation mapped onto the workspace model. */
+  /** Command palette navigation mapped onto the new session-pane / tab model. */
   const handleShowTab = useCallback(
     (tab: AppTab) => {
       if (tab === 'chat') {
-        openChatTab(selectedSession?.id ?? null, { activate: true });
+        sessionPane.setView(currentSessionKey, 'chat');
+        sessionPane.setOpen(true);
         return;
       }
       if (tab === 'shell') {
-        openShellTab({
-          sessionId: selectedSession?.id ?? null,
-          provider: selectedSession?.__provider,
-        });
+        sessionPane.setView(currentSessionKey, 'terminal');
+        sessionPane.setOpen(true);
         return;
       }
       if (tab === 'files') {
@@ -480,7 +263,7 @@ function AppContentInner() {
       }
       setActive(tab);
     },
-    [openChatTab, openShellTab, selectedSession?.__provider, selectedSession?.id, setActive, showFilesSidebar],
+    [sessionPane, currentSessionKey, setActive, showFilesSidebar],
   );
 
   const workspace: WorkspaceApi = useMemo(
@@ -489,12 +272,11 @@ function AppContentInner() {
       activeId,
       activeTab,
       activePanel,
-      activateTab,
+      activateTab: setActive,
       closeTab,
-      openShellTab,
       openFileTab,
     }),
-    [activateTab, activeId, activePanel, activeTab, closeTab, openFileTab, openShellTab, workspaceTabs],
+    [activeId, activePanel, activeTab, closeTab, openFileTab, setActive, workspaceTabs],
   );
 
   useEffect(() => {
@@ -514,15 +296,14 @@ function AppContentInner() {
 
       setSidebarOpen(false);
       void refreshProjectsSilently();
+      sessionPane.setOpen(true);
 
       if (typeof message.sessionId === 'string' && message.sessionId) {
-        // Focus (or create) the chat tab for the notified session.
-        openChatTab(message.sessionId, { activate: true });
+        // Reveal the notified session in the session pane.
         navigate(`/session/${message.sessionId}`);
         return;
       }
 
-      openChatTab(null, { activate: true });
       navigate('/');
     };
 
@@ -531,11 +312,11 @@ function AppContentInner() {
     return () => {
       navigator.serviceWorker.removeEventListener('message', handleServiceWorkerMessage);
     };
-  }, [navigate, openChatTab, refreshProjectsSilently, setSidebarOpen]);
+  }, [navigate, refreshProjectsSilently, setSidebarOpen, sessionPane]);
 
-  // Pending tool permissions are recovered through the `chat.subscribe` flow:
-  // the `chat_subscribed` ack carries them on session open and on reconnect,
-  // so no separate permission-recovery message is needed here.
+  // Permission recovery is handled by upstream's chat.subscribe flow: the
+  // `chat_subscribed` ack carries pending approvals on session open and on
+  // reconnect, so no separate request is needed here.
 
   // Adjust the app container to stay above the virtual keyboard on iOS Safari.
   // On Chrome for Android the layout viewport already shrinks when the keyboard opens,
@@ -561,8 +342,8 @@ function AppContentInner() {
     ...sidebarSharedProps,
     onSessionSelect: handleSidebarSessionSelect,
     onNewSession: startNewChat,
-    onSessionDelete: handleSessionDeleteWithTabs,
-    processingSessions,
+    onSessionDelete: handleSessionDelete,
+    processingSessions: activeSessions,
     view: sidebarView,
     onViewChange: setSidebarView,
     onFileOpen: (filePath: string) => {
@@ -636,12 +417,16 @@ function AppContentInner() {
           onNavigateToSession={(targetSessionId: string, options) =>
             navigate(`/session/${targetSessionId}`, { replace: Boolean(options?.replace) })
           }
-          onSessionEstablished={(targetSessionId, context) =>
-            registerOptimisticSession({ sessionId: targetSessionId, ...context })
-          }
-          onShowSettings={openSettings}
+          onShowSettings={() => setShowSettings(true)}
           externalMessageUpdate={externalMessageUpdate}
           newSessionTrigger={newSessionTrigger}
+          sessionView={sessionView}
+          onSessionViewChange={onSessionViewChange}
+          sessionPaneOpen={sessionPane.isOpen}
+          onOpenSessionPane={() => sessionPane.setOpen(true)}
+          onCloseSessionPane={() => sessionPane.setOpen(false)}
+          sessionPaneWidth={sessionPane.width}
+          onSessionPaneWidthChange={sessionPane.setWidth}
         />
       </div>
 
