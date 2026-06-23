@@ -9,19 +9,16 @@ import type { ChatMessage } from '../types/types';
 import { createCachedDiffCalculator, type DiffCalculator } from '../utils/messageTransforms';
 
 import { normalizedToChatMessages } from './useChatMessages';
-import { dbg } from '../../../utils/debugLog';
 
 const MESSAGES_PER_PAGE = 20;
 const INITIAL_VISIBLE_MESSAGES = 100;
-// How often to re-poll a session's processing state while a turn is believed in
-// flight, so a dropped terminal event can't pin the "Processing" banner open.
-const STUCK_PROCESSING_RECHECK_MS = 12_000;
 
 interface UseChatSessionStateArgs {
   selectedProject: Project | null;
   selectedSession: ProjectSession | null;
   ws: WebSocket | null;
   sendMessage: (message: unknown) => void;
+  autoScrollToBottom?: boolean;
   externalMessageUpdate?: number;
   newSessionTrigger?: number;
   processingSessions?: SessionActivityMap;
@@ -87,9 +84,6 @@ function chatMessageToNormalized(
     kind: 'text',
     role: msg.type === 'user' ? 'user' : 'assistant',
     content: msg.content || '',
-    // Keep attachment references on the local echo so the user bubble shows
-    // its images immediately, before the server-backed copy replaces it.
-    images: Array.isArray(msg.images) && msg.images.length > 0 ? msg.images : undefined,
   } as NormalizedMessage;
 }
 
@@ -102,6 +96,7 @@ export function useChatSessionState({
   selectedSession,
   ws,
   sendMessage,
+  autoScrollToBottom,
   externalMessageUpdate,
   newSessionTrigger,
   processingSessions,
@@ -126,11 +121,14 @@ export function useChatSessionState({
   const [viewHiddenCount, setViewHiddenCount] = useState(0);
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
-  const wasNearTopRef = useRef(false);
   const [searchTarget, setSearchTarget] = useState<{ timestamp?: string; uuid?: string; snippet?: string } | null>(null);
   const searchScrollActiveRef = useRef(false);
   const isLoadingSessionRef = useRef(false);
   const isLoadingMoreRef = useRef(false);
+  // Guards the self-heal backstop so it re-fetches at most once per stuck
+  // episode (keyed by session id) instead of looping. Reset once the view
+  // recovers, so a later stuck episode in the same session can heal again.
+  const selfHealRefetchedRef = useRef<string | null>(null);
   const allMessagesLoadedRef = useRef(false);
   const topLoadLockRef = useRef(false);
   const pendingScrollRestoreRef = useRef<ScrollRestoreState | null>(null);
@@ -164,7 +162,7 @@ export function useChatSessionState({
      *
      * Why this is essential:
      * - Chat keeps local state that is not fully derived from `selectedSession`:
-     *   `currentSessionId`, `pendingMessages`, streaming/status flags, message
+     *   `currentSessionId`, `pendingUserMessage`, streaming/status flags, message
      *   pagination/scroll bookkeeping, and provider-specific sessionStorage keys.
      * - If the user clicks New Session while already on the same route with no
      *   selected session, parent state updates can be idempotent and this local
@@ -191,7 +189,6 @@ export function useChatSessionState({
     setShowLoadAllOverlay(false);
     setViewHiddenCount(0);
     setSearchTarget(null);
-    wasNearTopRef.current = false;
     searchScrollActiveRef.current = false;
     topLoadLockRef.current = false;
     pendingScrollRestoreRef.current = null;
@@ -241,8 +238,8 @@ export function useChatSessionState({
   }
 
   useEffect(() => {
-    if (pendingMessages.length === 0) {
-      flushedPendingMessagesRef.current = null;
+    if (!pendingUserMessage) {
+      flushedPendingUserMessageRef.current = null;
       return;
     }
 
@@ -250,21 +247,19 @@ export function useChatSessionState({
       return;
     }
 
-    if (flushedPendingMessagesRef.current === pendingMessages) {
+    if (flushedPendingUserMessageRef.current === pendingUserMessage) {
       return;
     }
 
     const prov = (localStorage.getItem('selected-provider') as LLMProvider) || 'claude';
-    for (const pending of pendingMessages) {
-      const normalized = chatMessageToNormalized(pending, activeSessionId, prov);
-      if (normalized) {
-        sessionStore.appendRealtime(activeSessionId, normalized);
-      }
+    const normalized = chatMessageToNormalized(pendingUserMessage, activeSessionId, prov);
+    if (normalized) {
+      sessionStore.appendRealtime(activeSessionId, normalized);
     }
 
-    flushedPendingMessagesRef.current = pendingMessages;
-    setPendingMessages([]);
-  }, [activeSessionId, pendingMessages, sessionStore]);
+    flushedPendingUserMessageRef.current = pendingUserMessage;
+    setPendingUserMessage(null);
+  }, [activeSessionId, pendingUserMessage, sessionStore]);
 
   const storeMessages = activeSessionId ? sessionStore.getMessages(activeSessionId) : [];
 
@@ -276,17 +271,14 @@ export function useChatSessionState({
   }
 
   const chatMessages = useMemo(() => {
-    const tNorm = performance.now();
     const all = normalizedToChatMessages(storeMessages);
-    dbg('chatMessages.normalized', { dur_ms: Math.round(performance.now() - tNorm), inCount: storeMessages.length, outCount: all.length });
-    // Show pending messages when no session data exists yet (new session,
-    // pre-backend-response): the just-sent user message and any early errors.
-    if (pendingMessages.length > 0 && all.length === 0) {
-      return pendingMessages;
+    // Show pending user message when no session data exists yet (new session, pre-backend-response)
+    if (pendingUserMessage && all.length === 0) {
+      return [pendingUserMessage];
     }
     if (viewHiddenCount > 0 && viewHiddenCount < all.length) return all.slice(0, -viewHiddenCount);
     return all;
-  }, [storeMessages, viewHiddenCount, pendingMessages]);
+  }, [storeMessages, viewHiddenCount, pendingUserMessage]);
 
   /* ---------------------------------------------------------------- */
   /*  addMessage / clearMessages / rewindMessages                     */
@@ -294,8 +286,8 @@ export function useChatSessionState({
 
   const addMessage = useCallback((msg: ChatMessage) => {
     if (!activeSessionId) {
-      // No session yet — buffer as pending until the backend creates one
-      setPendingMessages((previous) => [...previous, msg]);
+      // No session yet — show as pending until the backend creates one
+      setPendingUserMessage(msg);
       return;
     }
     const prov = (localStorage.getItem('selected-provider') as LLMProvider) || 'claude';
@@ -348,34 +340,12 @@ export function useChatSessionState({
         const slot = await sessionStore.fetchMore(selectedSession.id, {
           limit: MESSAGES_PER_PAGE,
         });
-        if (!slot) return false;
-        if (slot.serverMessages.length === 0) {
-          if (!slot.hasMore) {
-            setHasMoreMessages(false);
-            allMessagesLoadedRef.current = true;
-            setAllMessagesLoaded(true);
-            if (loadAllOverlayTimerRef.current) {
-              clearTimeout(loadAllOverlayTimerRef.current);
-              loadAllOverlayTimerRef.current = null;
-            }
-            setShowLoadAllOverlay(false);
-          }
-          return false;
-        }
+        if (!slot || slot.serverMessages.length === 0) return false;
 
         pendingScrollRestoreRef.current = { height: previousScrollHeight, top: previousScrollTop };
         setHasMoreMessages(slot.hasMore);
         setTotalMessages(slot.total);
         setVisibleMessageCount((prev) => prev + MESSAGES_PER_PAGE);
-        if (!slot.hasMore) {
-          allMessagesLoadedRef.current = true;
-          setAllMessagesLoaded(true);
-          if (loadAllOverlayTimerRef.current) {
-            clearTimeout(loadAllOverlayTimerRef.current);
-            loadAllOverlayTimerRef.current = null;
-          }
-          setShowLoadAllOverlay(false);
-        }
         return true;
       } finally {
         isLoadingMoreRef.current = false;
@@ -391,25 +361,8 @@ export function useChatSessionState({
     const nearBottom = isNearBottom();
     setIsUserScrolledUp(!nearBottom);
 
-    const scrolledNearTop = container.scrollTop < 100;
-
-    // "Load all" prompt: appear (with fade-in) when the user reaches the top
-    if (scrolledNearTop && hasMoreMessages && !allMessagesLoadedRef.current) {
-      if (!wasNearTopRef.current) {
-        wasNearTopRef.current = true;
-        if (loadAllOverlayTimerRef.current) clearTimeout(loadAllOverlayTimerRef.current);
-
-        setShowLoadAllOverlay(true);
-        loadAllOverlayTimerRef.current = setTimeout(() => {
-          setShowLoadAllOverlay(false);
-          loadAllOverlayTimerRef.current = null;
-        }, 2500);
-      }
-    } else if (!scrolledNearTop) {
-      wasNearTopRef.current = false;
-    }
-
     if (!allMessagesLoadedRef.current) {
+      const scrolledNearTop = container.scrollTop < 100;
       if (!scrolledNearTop) { topLoadLockRef.current = false; return; }
       if (topLoadLockRef.current) {
         if (container.scrollTop > 20) topLoadLockRef.current = false;
@@ -418,7 +371,7 @@ export function useChatSessionState({
       const didLoad = await loadOlderMessages(container);
       if (didLoad) topLoadLockRef.current = true;
     }
-  }, [hasMoreMessages, isNearBottom, loadOlderMessages]);
+  }, [isNearBottom, loadOlderMessages]);
 
   useLayoutEffect(() => {
     if (!pendingScrollRestoreRef.current || !scrollContainerRef.current) return;
@@ -437,7 +390,6 @@ export function useChatSessionState({
     }
     topLoadLockRef.current = false;
     pendingScrollRestoreRef.current = null;
-    wasNearTopRef.current = false;
     setIsUserScrolledUp(false);
   }, [selectedProject?.projectId, selectedSession?.id]);
 
@@ -544,7 +496,6 @@ export function useChatSessionState({
     setLoadAllJustFinished(false);
     setShowLoadAllOverlay(false);
     setViewHiddenCount(0);
-    wasNearTopRef.current = false;
     if (loadAllOverlayTimerRef.current) clearTimeout(loadAllOverlayTimerRef.current);
     if (loadAllFinishedTimerRef.current) clearTimeout(loadAllFinishedTimerRef.current);
 
@@ -565,7 +516,6 @@ export function useChatSessionState({
 
     // Fetch from server → store updates → chatMessages re-derives automatically
     setIsLoadingSessionMessages(true);
-    dbg('chat.session.select', { sessionId: selectedSessionId, limit: MESSAGES_PER_PAGE });
     sessionStore.fetchFromServer(selectedSessionId, {
       limit: MESSAGES_PER_PAGE,
       offset: 0,
@@ -576,10 +526,8 @@ export function useChatSessionState({
         if (slot.tokenUsage) setTokenBudget(slot.tokenUsage as Record<string, unknown>);
       }
       setIsLoadingSessionMessages(false);
-      dbg('chat.session.loaded', { sessionId: selectedSession.id, msgCount: slot?.merged?.length ?? 0, total: slot?.total ?? null });
-    }).catch((err) => {
+    }).catch(() => {
       setIsLoadingSessionMessages(false);
-      dbg('chat.session.loadError', { sessionId: selectedSession.id, message: (err as Error)?.message });
     });
   }, [
     resetStreamingState,
@@ -602,7 +550,7 @@ export function useChatSessionState({
         if (!isProcessing) {
           await sessionStore.refreshFromServer(selectedSession.id);
 
-          if (isNearBottom()) {
+          if (Boolean(autoScrollToBottom) && isNearBottom()) {
             setTimeout(() => scrollToBottom(), 200);
           }
         }
@@ -613,6 +561,7 @@ export function useChatSessionState({
 
     reloadExternalMessages();
   }, [
+    autoScrollToBottom,
     externalMessageUpdate,
     isNearBottom,
     scrollToBottom,
@@ -622,45 +571,46 @@ export function useChatSessionState({
     isProcessing,
   ]);
 
-  // Ask the backend whether the active session still has a turn in flight. The
-  // reply (a `session-status` frame) drives isLoading through the realtime
-  // handler, reconciling a stale "Processing" banner when a live `complete` was
-  // missed (socket asleep on mobile, dropped during a reconnect window). The
-  // check also re-attaches this socket as the session writer server-side, so a
-  // later completion still streams here.
-  const recheckSessionStatus = useCallback(() => {
-    if (!ws || !selectedSession) return;
-    const provider =
-      (selectedSession.__provider as LLMProvider) ||
-      (localStorage.getItem('selected-provider') as LLMProvider) ||
-      'claude';
-    sendMessage({ type: 'check-session-status', sessionId: selectedSession.id, provider });
-  }, [ws, sendMessage, selectedSession]);
-
-  // Re-check when the tab regains focus/visibility — the usual moment a missed
-  // terminal surfaces (returning to a tab that streamed while backgrounded).
+  // Self-heal a stuck-empty chat. The pane renders purely from the store's
+  // merged list, but that list can be emptied mid-session without an automatic
+  // refetch: a WS reconnect during an active run skips the external refresh
+  // above (it bails while `isProcessing`), and an optimistic rewind truncates
+  // `serverMessages`. The only other recovery is the run's terminal `complete`
+  // event, so a long-running session in a long-lived tab could stay blank until
+  // a manual reload (the shell view is unaffected — it never reads history).
+  // When the server reports a non-empty transcript (`total > 0`) but we're
+  // rendering nothing, re-fetch once — exactly what a manual reload does.
   useEffect(() => {
-    const onVisible = () => {
-      if (document.visibilityState === 'visible') recheckSessionStatus();
-    };
-    document.addEventListener('visibilitychange', onVisible);
-    window.addEventListener('focus', recheckSessionStatus);
-    return () => {
-      document.removeEventListener('visibilitychange', onVisible);
-      window.removeEventListener('focus', recheckSessionStatus);
-    };
-  }, [recheckSessionStatus]);
+    if (!selectedSession || !selectedProject) return;
 
-  // Watchdog: while a turn is believed in flight, poll status so a lost
-  // `complete` self-heals within one interval rather than hanging forever. The
-  // first tick is a full interval out, by which point a genuinely-running turn
-  // has registered as active server-side — so this never false-clears a real
-  // turn right after send.
-  useEffect(() => {
-    if (!isLoading || !selectedSession || !ws) return;
-    const id = window.setInterval(recheckSessionStatus, STUCK_PROCESSING_RECHECK_MS);
-    return () => window.clearInterval(id);
-  }, [isLoading, selectedSession, ws, recheckSessionStatus]);
+    const sid = selectedSession.id;
+    const slot = sessionStore.getSessionSlot(sid);
+    const mergedLen = slot?.merged.length ?? 0;
+
+    if (mergedLen > 0) {
+      // Healthy again — re-arm the backstop for any future stuck episode.
+      selfHealRefetchedRef.current = null;
+      return;
+    }
+
+    // The initial load owns the empty window; don't race it.
+    if (isLoadingSessionMessages || isLoadingMoreMessages) return;
+
+    // Only act when the server says there IS a transcript to show. A genuinely
+    // empty session (`total === 0`) is correctly blank, not stuck.
+    if (!slot || slot.total <= 0) return;
+
+    if (selfHealRefetchedRef.current === sid) return;
+    selfHealRefetchedRef.current = sid;
+    void sessionStore.refreshFromServer(sid);
+  }, [
+    chatMessages.length,
+    isLoadingMoreMessages,
+    isLoadingSessionMessages,
+    selectedProject,
+    selectedSession,
+    sessionStore,
+  ]);
 
   // Search navigation target
   useEffect(() => {
@@ -784,9 +734,10 @@ export function useChatSessionState({
   }, [chatMessages, visibleMessageCount]);
 
   useEffect(() => {
-    const container = scrollContainerRef.current;
-    if (!container) return;
-    scrollPositionRef.current = { height: container.scrollHeight, top: container.scrollTop };
+    if (!autoScrollToBottom && scrollContainerRef.current) {
+      const container = scrollContainerRef.current;
+      scrollPositionRef.current = { height: container.scrollHeight, top: container.scrollTop };
+    }
   });
 
   useEffect(() => {
@@ -794,8 +745,8 @@ export function useChatSessionState({
     if (isLoadingMoreRef.current || isLoadingMoreMessages || pendingScrollRestoreRef.current) return;
     if (searchScrollActiveRef.current) return;
 
-    if (!isUserScrolledUp) {
-      setTimeout(() => scrollToBottom(), 50);
+    if (autoScrollToBottom) {
+      if (!isUserScrolledUp) setTimeout(() => scrollToBottom(), 50);
       return;
     }
 
@@ -805,7 +756,7 @@ export function useChatSessionState({
     const newHeight = container.scrollHeight;
     const heightDiff = newHeight - prevHeight;
     if (heightDiff > 0 && prevTop > 0) container.scrollTop = prevTop + heightDiff;
-  }, [chatMessages.length, isLoadingMoreMessages, isUserScrolledUp, scrollToBottom]);
+  }, [autoScrollToBottom, chatMessages.length, isLoadingMoreMessages, isUserScrolledUp, scrollToBottom]);
 
   useEffect(() => {
     const container = scrollContainerRef.current;
@@ -814,8 +765,23 @@ export function useChatSessionState({
     return () => container.removeEventListener('scroll', handleScroll);
   }, [handleScroll]);
 
-  // "Load all" overlay visibility is driven by scroll-to-top in handleScroll;
-  // timers are cleared on session change via the reset effect above.
+  // "Load all" overlay
+  const prevLoadingRef = useRef(false);
+  useEffect(() => {
+    const wasLoading = prevLoadingRef.current;
+    prevLoadingRef.current = isLoadingMoreMessages;
+
+    if (wasLoading && !isLoadingMoreMessages && hasMoreMessages) {
+      if (loadAllOverlayTimerRef.current) clearTimeout(loadAllOverlayTimerRef.current);
+      setShowLoadAllOverlay(true);
+      loadAllOverlayTimerRef.current = setTimeout(() => setShowLoadAllOverlay(false), 2000);
+    }
+    if (!hasMoreMessages && !isLoadingMoreMessages) {
+      if (loadAllOverlayTimerRef.current) clearTimeout(loadAllOverlayTimerRef.current);
+      setShowLoadAllOverlay(false);
+    }
+    return () => { if (loadAllOverlayTimerRef.current) clearTimeout(loadAllOverlayTimerRef.current); };
+  }, [isLoadingMoreMessages, hasMoreMessages]);
 
   const loadAllMessages = useCallback(async () => {
     if (!selectedSession || !selectedProject) return;
@@ -825,10 +791,6 @@ export function useChatSessionState({
     isLoadingMoreRef.current = true;
     setIsLoadingAllMessages(true);
     setShowLoadAllOverlay(true);
-    if (loadAllOverlayTimerRef.current) {
-      clearTimeout(loadAllOverlayTimerRef.current);
-      loadAllOverlayTimerRef.current = null;
-    }
 
     const container = scrollContainerRef.current;
     const previousScrollHeight = container ? container.scrollHeight : 0;
@@ -855,11 +817,7 @@ export function useChatSessionState({
 
         setLoadAllJustFinished(true);
         if (loadAllFinishedTimerRef.current) clearTimeout(loadAllFinishedTimerRef.current);
-        loadAllFinishedTimerRef.current = setTimeout(() => {
-          setLoadAllJustFinished(false);
-          setShowLoadAllOverlay(false);
-          loadAllFinishedTimerRef.current = null;
-        }, 2500);
+        loadAllFinishedTimerRef.current = setTimeout(() => { setLoadAllJustFinished(false); setShowLoadAllOverlay(false); }, 1000);
       } else {
         allMessagesLoadedRef.current = false;
         setShowLoadAllOverlay(false);
