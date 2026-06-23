@@ -9,7 +9,10 @@ import { getLanguageExtensions } from '../code-editor/utils/editorExtensions';
 import MarkdownPreview from '../code-editor/view/subcomponents/markdown/MarkdownPreview';
 
 type ShareMeta = { name: string; size: number; mime: string; expiresAt: string | null };
-type RenderResult = { type: 'svg'; svg: string } | { type: 'url'; url: string };
+type RenderResult =
+  | { type: 'svg'; svg: string }
+  | { type: 'url'; url: string }
+  | { type: 'html'; url: string };
 
 const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'ico']);
 const DIAGRAM_EXTS = new Set(['puml', 'plantuml', 'iuml', 'wsd', 'dbml']);
@@ -70,8 +73,10 @@ export default function SharedFileViewer() {
         const html = e === 'html' || e === 'htm';
         const text = e === 'md' || e === 'markdown' || diagram || html || isTextMime(metaData.mime);
 
-        // Diagrams: ask the server for the rendered artifact.
-        if (diagram) {
+        // Diagrams and HTML: ask the server for the rendered artifact. For HTML
+        // this is the preview entry URL whose `/kit/...` resources resolve
+        // server-side (sketch-style pages aren't self-contained).
+        if (diagram || html) {
           const renderRes = await api.shareRender(shareId);
           if (!cancelled && renderRes.ok) {
             setRender(await renderRes.json());
@@ -218,15 +223,25 @@ export default function SharedFileViewer() {
           </div>
         )}
 
-        {/* HTML: render the page in a sandboxed iframe (no same-origin, so the
-            untrusted document gets an opaque origin and can't reach the app). */}
-        {isHtml && mode === 'rendered' && content !== null && (
-          <iframe
-            title={meta?.name}
-            srcDoc={content}
-            sandbox="allow-scripts allow-popups allow-forms allow-modals"
-            className="h-full w-full border-0 bg-white"
-          />
+        {/* HTML: render through the server preview route so sketch-style pages
+            resolve their root-absolute `/kit/...` resources. Falls back to a
+            srcDoc iframe for self-contained HTML if the render call didn't land. */}
+        {isHtml && mode === 'rendered' && (
+          render?.type === 'html' ? (
+            <iframe
+              title={meta?.name}
+              src={render.url}
+              sandbox="allow-scripts allow-same-origin allow-popups allow-forms allow-modals"
+              className="h-full w-full border-0 bg-white"
+            />
+          ) : content !== null ? (
+            <iframe
+              title={meta?.name}
+              srcDoc={content}
+              sandbox="allow-scripts allow-popups allow-forms allow-modals"
+              className="h-full w-full border-0 bg-white"
+            />
+          ) : null
         )}
 
         {/* Source / code highlight */}
