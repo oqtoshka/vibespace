@@ -125,6 +125,10 @@ export function useChatSessionState({
   const searchScrollActiveRef = useRef(false);
   const isLoadingSessionRef = useRef(false);
   const isLoadingMoreRef = useRef(false);
+  // Guards the self-heal backstop so it re-fetches at most once per stuck
+  // episode (keyed by session id) instead of looping. Reset once the view
+  // recovers, so a later stuck episode in the same session can heal again.
+  const selfHealRefetchedRef = useRef<string | null>(null);
   const allMessagesLoadedRef = useRef(false);
   const topLoadLockRef = useRef(false);
   const pendingScrollRestoreRef = useRef<ScrollRestoreState | null>(null);
@@ -565,6 +569,47 @@ export function useChatSessionState({
     selectedSession,
     sessionStore,
     isProcessing,
+  ]);
+
+  // Self-heal a stuck-empty chat. The pane renders purely from the store's
+  // merged list, but that list can be emptied mid-session without an automatic
+  // refetch: a WS reconnect during an active run skips the external refresh
+  // above (it bails while `isProcessing`), and an optimistic rewind truncates
+  // `serverMessages`. The only other recovery is the run's terminal `complete`
+  // event, so a long-running session in a long-lived tab could stay blank until
+  // a manual reload (the shell view is unaffected — it never reads history).
+  // When the server reports a non-empty transcript (`total > 0`) but we're
+  // rendering nothing, re-fetch once — exactly what a manual reload does.
+  useEffect(() => {
+    if (!selectedSession || !selectedProject) return;
+
+    const sid = selectedSession.id;
+    const slot = sessionStore.getSessionSlot(sid);
+    const mergedLen = slot?.merged.length ?? 0;
+
+    if (mergedLen > 0) {
+      // Healthy again — re-arm the backstop for any future stuck episode.
+      selfHealRefetchedRef.current = null;
+      return;
+    }
+
+    // The initial load owns the empty window; don't race it.
+    if (isLoadingSessionMessages || isLoadingMoreMessages) return;
+
+    // Only act when the server says there IS a transcript to show. A genuinely
+    // empty session (`total === 0`) is correctly blank, not stuck.
+    if (!slot || slot.total <= 0) return;
+
+    if (selfHealRefetchedRef.current === sid) return;
+    selfHealRefetchedRef.current = sid;
+    void sessionStore.refreshFromServer(sid);
+  }, [
+    chatMessages.length,
+    isLoadingMoreMessages,
+    isLoadingSessionMessages,
+    selectedProject,
+    selectedSession,
+    sessionStore,
   ]);
 
   // Search navigation target
