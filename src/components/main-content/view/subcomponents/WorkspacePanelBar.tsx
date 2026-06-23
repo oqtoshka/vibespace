@@ -2,11 +2,10 @@ import {
   ClipboardCheck,
   GitBranch,
   MonitorPlay,
-  Plus,
-  Terminal,
   type LucideIcon,
 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+
 import { Tooltip, Pill } from '../../../../shared/view/ui';
 import type { WorkspacePanel } from '../../../../types/workspace';
 import type { WorkspaceApi } from '../../types/types';
@@ -16,7 +15,6 @@ import PluginIcon from '../../../plugins/view/PluginIcon';
 type WorkspacePanelBarProps = {
   workspace: WorkspaceApi;
   shouldShowTasksTab: boolean;
-  onNewShell: () => void;
 };
 
 type PanelDefinition =
@@ -35,13 +33,11 @@ const TASKS_PANEL: PanelDefinition = {
   icon: ClipboardCheck,
 };
 
-/** Fixed actions in the header's trailing corner: panel toggles (git, tasks,
- * plugins) plus the new-shell button. Icon-only — these don't scroll with the
- * workspace tabs. */
+/** Fixed panel toggles in the header's trailing corner: git, tasks, browser,
+ * plugins. Icon-only — these don't scroll with the workspace tabs. */
 export default function WorkspacePanelBar({
   workspace,
   shouldShowTasksTab,
-  onNewShell,
 }: WorkspacePanelBarProps) {
   const { t } = useTranslation();
   const { plugins } = usePlugins();
@@ -60,13 +56,6 @@ export default function WorkspacePanelBar({
 
   return (
     <div className="flex items-center gap-1">
-      <Tooltip content={t('mainContent.newShell', { defaultValue: 'New shell' })} position="bottom">
-        <Pill isActive={false} onClick={onNewShell} className="px-2 py-[5px]">
-          <Terminal className="h-3.5 w-3.5" strokeWidth={1.8} />
-          <Plus className="-ml-1 h-3 w-3" strokeWidth={2.2} />
-        </Pill>
-      </Tooltip>
-
       {panels.map((panel) => {
         const isActive = panel.id === workspace.activeId;
         const displayLabel = panel.kind === 'builtin' ? t(panel.labelKey) : panel.label;
