@@ -1,0 +1,322 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>VibeSpace layout redesign — sketch</title>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#161922; --panel2:#1b1f2a; --border:#2a2f3c;
+    --muted:#8b93a7; --fg:#e6e9ef; --accent:#6ea8fe; --accent2:#7c5cff;
+    --ok:#3ddc97; --chip:#222838; --chipActive:#2f3a57;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font:13px/1.45 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:#0a0c10;color:var(--fg)}
+  h1{font-size:18px;margin:0 0 4px}
+  h2{font-size:14px;margin:26px 0 8px;color:var(--accent)}
+  p.note{color:var(--muted);margin:4px 0 0;max-width:900px}
+  .wrap{max-width:1180px;margin:0 auto;padding:22px}
+  .controls{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 6px;align-items:center}
+  .controls .lbl{color:var(--muted);margin-right:4px}
+  button.ctl{background:var(--chip);color:var(--fg);border:1px solid var(--border);border-radius:7px;padding:6px 11px;cursor:pointer}
+  button.ctl.on{background:var(--chipActive);border-color:var(--accent);color:#fff}
+  button.ctl:hover{border-color:var(--accent)}
+
+  /* ---- mock app frame ---- */
+  .frame{height:560px;border:1px solid var(--border);border-radius:12px;overflow:hidden;display:flex;background:var(--bg);box-shadow:0 10px 40px rgba(0,0,0,.4)}
+  .frame.mobile{max-width:390px;height:680px;margin:0 auto}
+
+  /* sidebar */
+  .sidebar{width:210px;flex:0 0 auto;background:var(--panel);border-right:1px solid var(--border);display:flex;flex-direction:column}
+  .sb-top{display:flex;gap:6px;padding:10px;border-bottom:1px solid var(--border)}
+  .sb-seg{display:flex;background:var(--chip);border-radius:7px;padding:2px;flex:1}
+  .sb-seg span{flex:1;text-align:center;padding:4px 0;border-radius:5px;color:var(--muted);font-size:12px}
+  .sb-seg span.on{background:var(--chipActive);color:#fff}
+  .sb-list{padding:8px;overflow:auto}
+  .sb-item{padding:7px 9px;border-radius:7px;color:var(--muted);display:flex;align-items:center;gap:7px;margin-bottom:2px;cursor:default}
+  .sb-item.sel{background:var(--chipActive);color:#fff}
+  .sb-item .dot{width:6px;height:6px;border-radius:50%;background:var(--ok);box-shadow:0 0 6px var(--ok)}
+  .ico{width:14px;height:14px;flex:0 0 auto;opacity:.85}
+
+  /* main */
+  .main{flex:1;min-width:0;display:flex;flex-direction:column}
+
+  /* panes row */
+  .panes{flex:1;display:flex;min-height:0}
+  .pane{display:flex;flex-direction:column;min-width:0;min-height:0}
+  .session-pane{flex:0 0 46%;border-right:1px solid var(--border);background:var(--bg)}
+  .files-pane{flex:1;background:var(--panel)}
+  .divider{width:6px;flex:0 0 auto;background:linear-gradient(var(--border),var(--border)) center/2px 40px no-repeat;cursor:col-resize}
+
+  /* session pane header w/ chat|terminal switch + close */
+  .pane-head{display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid var(--border);background:var(--panel2)}
+  .seg{display:inline-flex;background:var(--chip);border-radius:8px;padding:2px}
+  .seg button{border:0;background:transparent;color:var(--muted);padding:5px 12px;border-radius:6px;cursor:pointer;display:flex;align-items:center;gap:6px;font:inherit}
+  .seg button.on{background:var(--chipActive);color:#fff}
+  .pane-head .spacer{flex:1}
+  .iconbtn{background:transparent;border:1px solid transparent;color:var(--muted);border-radius:6px;padding:4px 6px;cursor:pointer}
+  .iconbtn:hover{border-color:var(--border);color:var(--fg)}
+  .sess-label{color:var(--muted);font-size:12px;display:flex;align-items:center;gap:6px;min-width:0}
+  .sess-label b{color:var(--fg);font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+  /* chat body */
+  .chat-body{flex:1;overflow:auto;padding:14px;display:flex;flex-direction:column;gap:12px}
+  .msg{max-width:88%}
+  .msg .who{font-size:11px;color:var(--muted);margin-bottom:3px}
+  .bubble{padding:9px 11px;border-radius:10px;background:var(--panel2);border:1px solid var(--border)}
+  .msg.me{align-self:flex-end;text-align:right}
+  .msg.me .bubble{background:#1d2740;border-color:#2c3a5c}
+  .composer{border-top:1px solid var(--border);padding:10px;display:flex;gap:8px}
+  .composer .box{flex:1;background:var(--panel2);border:1px solid var(--border);border-radius:9px;padding:9px 11px;color:var(--muted)}
+  .composer .send{background:var(--accent);color:#06122b;border:0;border-radius:9px;padding:0 14px;font-weight:600;cursor:pointer}
+
+  /* terminal body */
+  .term-body{flex:1;background:#0a0d12;color:#cfe3ff;font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;padding:12px;overflow:auto}
+  .term-body .pr{color:var(--ok)}
+  .term-body .dim{color:var(--muted)}
+
+  /* files pane */
+  .tabstrip{display:flex;align-items:center;gap:4px;padding:6px 8px;border-bottom:1px solid var(--border);background:var(--panel2);overflow-x:auto}
+  .tab{display:flex;align-items:center;gap:7px;padding:6px 9px;border-radius:8px;background:var(--chip);color:var(--muted);white-space:nowrap;cursor:pointer;border:1px solid transparent}
+  .tab.on{background:var(--bg);color:var(--fg);border-color:var(--border)}
+  .tab .x{opacity:.5;margin-left:2px}
+  .tab .x:hover{opacity:1}
+  .editor{flex:1;display:flex;background:var(--bg);overflow:auto}
+  .gutter{padding:12px 8px;color:#465065;text-align:right;font:12px/1.6 ui-monospace,monospace;user-select:none;background:var(--panel)}
+  .code{padding:12px;font:12px/1.6 ui-monospace,monospace;white-space:pre;color:#cdd6e6}
+  .code .k{color:#c792ea}.code .s{color:#c3e88d}.code .c{color:#5b657a}.code .f{color:#82aaff}
+
+  .empty{flex:1;display:flex;align-items:center;justify-content:center;color:var(--muted);text-align:center;padding:20px}
+  .empty .big{font-size:13px}
+
+  /* mobile top switch */
+  .m-switch{display:none}
+  .frame.mobile .m-switch{display:flex;gap:6px;padding:8px;border-bottom:1px solid var(--border);background:var(--panel2)}
+  .frame.mobile .panes{flex-direction:column}
+  .frame.mobile .session-pane,.frame.mobile .files-pane{flex:1;border-right:0}
+  .frame.mobile .divider{display:none}
+
+  .legend{display:flex;gap:16px;flex-wrap:wrap;color:var(--muted);margin-top:10px;font-size:12px}
+  .legend b{color:var(--fg)}
+  .tag{display:inline-block;font-size:11px;color:var(--accent);border:1px solid var(--border);border-radius:999px;padding:1px 8px;margin-left:6px}
+  code{background:#11151d;border:1px solid var(--border);border-radius:5px;padding:1px 5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>VibeSpace layout redesign <span class="tag">interactive sketch</span></h1>
+  <p class="note">
+    Sessions (chat ⇄ terminal) live in a dedicated <b>session pane</b>; only <b>files</b> open as tabs, in a separate <b>files pane</b>.
+    The chat/terminal choice is remembered <b>per session</b>. Click the controls below to walk through every state.
+  </p>
+
+  <div class="controls">
+    <span class="lbl">State:</span>
+    <button class="ctl on" data-state="split">Split (session + files)</button>
+    <button class="ctl" data-state="nofiles">No files open → session full width</button>
+    <button class="ctl" data-state="sessionclosed">Session pane closed → files only</button>
+    <button class="ctl" data-state="mobile">Mobile (single column)</button>
+  </div>
+  <div class="controls">
+    <span class="lbl">Session view:</span>
+    <button class="ctl on" id="vChat">Chat</button>
+    <button class="ctl" id="vTerm">Terminal</button>
+    <span class="lbl" style="margin-left:14px">Active session:</span>
+    <button class="ctl on" data-sess="A">Session A</button>
+    <button class="ctl" data-sess="B">Session B</button>
+  </div>
+
+  <!-- ============ MOCK ============ -->
+  <div class="frame" id="frame">
+    <!-- sidebar -->
+    <div class="sidebar">
+      <div class="sb-top">
+        <div class="sb-seg"><span class="on">Sessions</span><span>Files</span></div>
+      </div>
+      <div class="sb-list">
+        <div class="sb-item sel" id="rowA"><span class="dot"></span><span>refactor auth flow</span></div>
+        <div class="sb-item" id="rowB"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg><span>fix websocket reconnect</span></div>
+        <div class="sb-item"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg><span>write release notes</span></div>
+        <div class="sb-item" style="margin-top:8px;color:var(--accent)"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M12 5v14M5 12h14"/></svg><span>New session</span></div>
+      </div>
+    </div>
+
+    <!-- main -->
+    <div class="main">
+      <!-- mobile-only top switch -->
+      <div class="m-switch">
+        <div class="seg" style="flex:1">
+          <button class="on" id="mSession" style="flex:1;justify-content:center">Session</button>
+          <button id="mFiles" style="flex:1;justify-content:center">Files</button>
+        </div>
+      </div>
+
+      <div class="panes" id="panes">
+        <!-- SESSION PANE -->
+        <div class="pane session-pane" id="sessionPane">
+          <div class="pane-head">
+            <div class="seg">
+              <button class="on" id="segChat"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>Chat</button>
+              <button id="segTerm"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M4 17l6-6-6-6M12 19h8"/></svg>Terminal</button>
+            </div>
+            <span class="sess-label">·&nbsp;<b id="sessName">refactor auth flow</b></span>
+            <div class="spacer"></div>
+            <button class="iconbtn" title="Close session pane (show files only)" id="closeSession">✕</button>
+          </div>
+
+          <!-- chat -->
+          <div class="pane" id="chatView" style="flex:1">
+            <div class="chat-body">
+              <div class="msg me"><div class="who">you</div><div class="bubble" id="chatQ">Extract the token refresh into a hook and add retry.</div></div>
+              <div class="msg"><div class="who">claude · opus-4.8</div><div class="bubble">On it — I'll pull the refresh logic out of <code>AuthProvider</code> into <code>useTokenRefresh()</code> and wrap the call with backoff. Opening the file…</div></div>
+              <div class="msg"><div class="who">claude</div><div class="bubble">Edited <code>src/auth/useTokenRefresh.ts</code> · click to open in the files pane →</div></div>
+            </div>
+            <div class="composer"><div class="box">Message…</div><button class="send">Send</button></div>
+          </div>
+
+          <!-- terminal -->
+          <div class="pane" id="termView" style="flex:1;display:none">
+            <div class="term-body">
+<span class="dim"># terminal bound to this session's cwd / worktree</span>
+<span class="pr">~/projects/ai/vibespace (refactor-auth) $</span> npm run build
+<span class="dim">vite v5  building for production…</span>
+✓ 412 modules transformed.
+<span class="pr">~/projects/ai/vibespace (refactor-auth) $</span> <span style="background:#cfe3ff;color:#0a0d12">&nbsp;</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="divider" id="divider"></div>
+
+        <!-- FILES PANE -->
+        <div class="pane files-pane" id="filesPane">
+          <div class="tabstrip" id="tabstrip">
+            <div class="tab on"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/></svg>useTokenRefresh.ts<span class="x">✕</span></div>
+            <div class="tab"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/></svg>AuthProvider.tsx<span class="x">✕</span></div>
+            <div class="tab"><svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/></svg>README.md<span class="x">✕</span></div>
+          </div>
+          <div class="editor" id="editor">
+            <div class="gutter">1
+2
+3
+4
+5
+6
+7
+8
+9</div>
+<div class="code"><span class="k">import</span> { useState, useCallback } <span class="k">from</span> <span class="s">'react'</span>;
+
+<span class="c">// extracted from AuthProvider; adds backoff retry</span>
+<span class="k">export function</span> <span class="f">useTokenRefresh</span>() {
+  <span class="k">const</span> [token, setToken] = <span class="f">useState</span>(<span class="k">null</span>);
+  <span class="k">const</span> refresh = <span class="f">useCallback</span>(<span class="k">async</span> () => {
+    <span class="c">// …retry with exponential backoff</span>
+  }, []);
+}</div>
+          </div>
+          <div class="empty" id="filesEmpty" style="display:none">
+            <div>
+              <div class="big">No files open</div>
+              <div style="margin-top:6px">Open a file from the tree or a chat tool result.<br/>The session pane expands to fill this space.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="legend">
+    <span><b>Session pane</b> — chat ⇄ terminal switch, remembered per session.</span>
+    <span><b>Files pane</b> — the only place tabs live.</span>
+    <span><b>✕ on session head</b> — collapses the session pane (files-only).</span>
+    <span><b>Divider</b> — drag to resize (persisted).</span>
+  </div>
+
+  <h2>What changes vs. today</h2>
+  <p class="note">
+    • <b>Tabs become files-only.</b> <code>useWorkspaceTabs</code> stops holding chat/shell tabs; the tab strip renders file tabs only.<br/>
+    • <b>New per-session view state</b> <code>{ [sessionId]: 'chat' | 'terminal' }</code> drives the session-pane switch (persisted per project).<br/>
+    • <b>Two panes</b> with a draggable, persisted divider. Files-pane collapses to 0 when no files are open (session full width); session-pane has a close button (files-only).<br/>
+    • <b>One terminal per session</b> (default assumption) — bound to the session's cwd/worktree, lazily started on first reveal. (Say the word if you want multiple shells per session instead.)<br/>
+    • <b>Mobile</b> = single column with a Session/Files top switch (default assumption).
+  </p>
+</div>
+
+<script>
+  const $ = s => document.querySelector(s);
+  const frame = $('#frame');
+  const sessionPane = $('#sessionPane'), filesPane = $('#filesPane'), divider = $('#divider');
+  const editor = $('#editor'), tabstrip = $('#tabstrip'), filesEmpty = $('#filesEmpty');
+  const chatView = $('#chatView'), termView = $('#termView');
+
+  // per-session remembered view + content
+  const sessions = {
+    A:{name:'refactor auth flow', view:'chat', q:'Extract the token refresh into a hook and add retry.'},
+    B:{name:'fix websocket reconnect', view:'terminal', q:'Why does the socket drop after 60s idle?'}
+  };
+  let cur='A', state='split';
+
+  function applyView(){
+    const v = sessions[cur].view;
+    const chat = v==='chat';
+    chatView.style.display = chat?'flex':'none';
+    termView.style.display = chat?'none':'flex';
+    $('#segChat').classList.toggle('on', chat);
+    $('#segTerm').classList.toggle('on', !chat);
+    $('#vChat').classList.toggle('on', chat);
+    $('#vTerm').classList.toggle('on', !chat);
+    $('#sessName').textContent = sessions[cur].name;
+    $('#chatQ').textContent = sessions[cur].q;
+  }
+  function applyState(){
+    frame.classList.toggle('mobile', state==='mobile');
+    // reset
+    sessionPane.style.display='flex'; filesPane.style.display='flex'; divider.style.display='';
+    sessionPane.style.flex='0 0 46%';
+    editor.style.display='flex'; tabstrip.style.display='flex'; filesEmpty.style.display='none';
+
+    if(state==='nofiles'){
+      // session takes whole width, files pane hidden
+      filesPane.style.display='none'; divider.style.display='none';
+      sessionPane.style.flex='1';
+    } else if(state==='sessionclosed'){
+      sessionPane.style.display='none'; divider.style.display='none';
+      filesPane.style.flex='1';
+    } else if(state==='mobile'){
+      // single column controlled by m-switch; default show session
+      divider.style.display='none';
+      showMobile('session');
+    }
+    document.querySelectorAll('[data-state]').forEach(b=>b.classList.toggle('on', b.dataset.state===state));
+  }
+  function showMobile(which){
+    sessionPane.style.display = which==='session'?'flex':'none';
+    filesPane.style.display = which==='files'?'flex':'none';
+    $('#mSession').classList.toggle('on', which==='session');
+    $('#mFiles').classList.toggle('on', which==='files');
+  }
+
+  document.querySelectorAll('[data-state]').forEach(b=>b.onclick=()=>{state=b.dataset.state;applyState();});
+  document.querySelectorAll('[data-sess]').forEach(b=>b.onclick=()=>{
+    cur=b.dataset.sess;
+    document.querySelectorAll('[data-sess]').forEach(x=>x.classList.toggle('on',x===b));
+    $('#rowA').classList.toggle('sel',cur==='A'); $('#rowB').classList.toggle('sel',cur==='B');
+    applyView();
+  });
+  $('#segChat').onclick=$('#vChat').onclick=()=>{sessions[cur].view='chat';applyView();};
+  $('#segTerm').onclick=$('#vTerm').onclick=()=>{sessions[cur].view='terminal';applyView();};
+  $('#closeSession').onclick=()=>{state='sessionclosed';applyState();};
+  $('#mSession').onclick=()=>showMobile('session');
+  $('#mFiles').onclick=()=>showMobile('files');
+
+  // crude drag on divider
+  let drag=null;
+  divider.addEventListener('pointerdown',e=>{drag={x:e.clientX,w:sessionPane.getBoundingClientRect().width};divider.setPointerCapture(e.pointerId);});
+  divider.addEventListener('pointermove',e=>{if(!drag)return;const w=Math.max(240,Math.min(drag.w+(e.clientX-drag.x),frame.clientWidth-260));sessionPane.style.flex='0 0 '+w+'px';});
+  divider.addEventListener('pointerup',()=>drag=null);
+
+  applyView(); applyState();
+</script>
+</body>
+</html>

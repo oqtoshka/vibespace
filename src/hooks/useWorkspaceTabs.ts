@@ -1,26 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { LLMProvider } from '../types/app';
+
 import { dbg } from '../utils/debugLog';
 import type { CodeEditorDiffInfo } from '../components/code-editor/types/types';
 import { isPanelId, type WorkspacePanel, type WorkspaceTab } from '../types/workspace';
 
 /** Compact tab summary for debug logs (avoids dumping full objects). */
 function summarizeTabs(tabs: WorkspaceTab[]): string {
-  return tabs
-    .map((tab) =>
-      tab.kind === 'chat'
-        ? `chat:${tab.sessionId ? tab.sessionId.slice(0, 8) : 'pending'}`
-        : tab.kind === 'shell'
-          ? `shell:${tab.shellId.slice(0, 8)}`
-          : `file:${tab.name}`,
-    )
-    .join(',');
+  return tabs.map((tab) => `file:${tab.name}`).join(',');
 }
 
 /**
- * Per-project VSCode-like workspace tabs: chat sessions, live shells and
- * opened files become persistent, closable tabs; Files/Git/Tasks/plugins
- * remain singleton panels sharing the same selection space.
+ * Per-project VSCode-like workspace tabs — files only. Chat and terminal live
+ * in the dedicated session pane (toggled per session); Files/Git/Tasks/plugins
+ * remain singleton panels sharing the same selection space as file tabs.
  *
  * Persistence: one localStorage blob per project under
  * `workspace-tabs:<projectId>`. The legacy global `activeTab` key is
@@ -33,40 +25,22 @@ function summarizeTabs(tabs: WorkspaceTab[]): string {
 
 type WorkspaceState = {
   tabs: WorkspaceTab[];
+  /** A file tab id, a panel id, or null when nothing is selected (right pane collapsed). */
   activeId: string | null;
 };
 
 type PersistedWorkspaceState = WorkspaceState & { version: 1 };
-
-export type OpenChatTabOptions = {
-  provider?: LLMProvider;
-  title?: string;
-  activate?: boolean;
-};
-
-export type OpenShellTabOptions = {
-  sessionId?: string | null;
-  provider?: LLMProvider;
-  title?: string;
-};
 
 export type UseWorkspaceTabsResult = {
   tabs: WorkspaceTab[];
   activeId: string | null;
   /** Resolved active workspace tab, or null when a panel (or nothing) is active. */
   activeTab: WorkspaceTab | null;
-  /** Active panel id, or null when a workspace tab is active. */
+  /** Active panel id, or null when a file tab (or nothing) is active. */
   activePanel: WorkspacePanel | null;
-  openChatTab: (sessionId: string | null, opts?: OpenChatTabOptions) => string;
-  openShellTab: (opts?: OpenShellTabOptions) => string;
   openFileTab: (path: string, name?: string, diffInfo?: CodeEditorDiffInfo | null) => string;
   setActive: (id: string) => void;
   closeTab: (id: string) => void;
-  /** Mutates the pending (sessionId === null) chat tab into a real session. */
-  adoptPendingSession: (sessionId: string, provider?: LLMProvider, title?: string) => void;
-  findChatTabBySession: (sessionId: string) => WorkspaceTab | undefined;
-  /** Closes chat/shell tabs whose session no longer exists. */
-  closeTabsForSession: (sessionId: string) => void;
 };
 
 const STORAGE_PREFIX = 'workspace-tabs:';
@@ -94,19 +68,14 @@ function generateTabId(): string {
   return `tab_${random}`;
 }
 
-function generateShellId(): string {
-  return `sh_${generateTabId().slice(4)}`;
-}
-
 function fileNameFromPath(path: string): string {
   const normalized = path.replace(/\\/g, '/');
   return normalized.split('/').pop() || path;
 }
 
-/** Seeds a new project with one pending chat tab so the app opens on chat. */
+/** Fresh project state: no file tabs, nothing active (session pane fills the view). */
 function seedState(): WorkspaceState {
-  const pendingChat: WorkspaceTab = { id: generateTabId(), kind: 'chat', sessionId: null };
-  return { tabs: [pendingChat], activeId: pendingChat.id };
+  return { tabs: [], activeId: null };
 }
 
 function isValidTab(value: unknown): value is WorkspaceTab {
@@ -117,16 +86,8 @@ function isValidTab(value: unknown): value is WorkspaceTab {
   if (typeof tab.id !== 'string' || !tab.id.startsWith('tab_')) {
     return false;
   }
-  if (tab.kind === 'chat') {
-    return tab.sessionId === null || typeof tab.sessionId === 'string';
-  }
-  if (tab.kind === 'shell') {
-    return typeof tab.shellId === 'string' && (tab.sessionId === null || typeof tab.sessionId === 'string');
-  }
-  if (tab.kind === 'file') {
-    return typeof tab.path === 'string' && typeof tab.name === 'string';
-  }
-  return false;
+  // Only file tabs survive now; legacy chat/shell tabs are dropped on load.
+  return tab.kind === 'file' && typeof tab.path === 'string' && typeof tab.name === 'string';
 }
 
 function loadState(projectId: string): WorkspaceState {
@@ -140,14 +101,11 @@ function loadState(projectId: string): WorkspaceState {
       return seedState();
     }
     const tabs = parsed.tabs.filter(isValidTab);
-    if (tabs.length === 0) {
-      return seedState();
-    }
     const activeId =
       typeof parsed.activeId === 'string' &&
         (isPanelId(parsed.activeId) || tabs.some((tab) => tab.id === parsed.activeId))
         ? parsed.activeId
-        : tabs[0].id;
+        : (tabs[0]?.id ?? null);
     return { tabs, activeId };
   } catch {
     // Corrupted blob — reset this project's workspace.
@@ -185,13 +143,8 @@ export function useWorkspaceTabs({ projectId }: { projectId: string | null }): U
   }, []);
 
   // Swap to the new project's tabs synchronously during render (not in an
-  // effect): an effect-based swap commits one render where the caller's
-  // selectedProject is the new project but tabs/activeTab still belong to the
-  // old one. AppContent's tab→session sync then navigates to the OLD
-  // project's session, URL hydration re-selects the old project, and the two
-  // ping-pong across projects (visibly auto-expanding each one in the
-  // sidebar). Setting state during render makes React re-render immediately,
-  // so no mismatched pairing ever reaches effects or the DOM.
+  // effect) so no render ever pairs the new project with the old project's
+  // tabs.
   if (stateProjectIdRef.current !== projectId) {
     dbg('tabs.swap', {
       from: stateProjectIdRef.current,
@@ -210,71 +163,15 @@ export function useWorkspaceTabs({ projectId }: { projectId: string | null }): U
     }
   }, [projectId, state]);
 
-  const openChatTab = useCallback(
-    (sessionId: string | null, opts?: OpenChatTabOptions): string => {
-      const previous = stateRef.current;
-      const activate = opts?.activate ?? true;
-      const existing = previous.tabs.find(
-        (tab) => tab.kind === 'chat' && tab.sessionId === sessionId,
-      );
-
-      if (existing) {
-        const tabs =
-          opts?.title && existing.kind === 'chat' && existing.title !== opts.title
-            ? previous.tabs.map((tab) => (tab.id === existing.id ? { ...tab, title: opts.title } : tab))
-            : previous.tabs;
-        applyState({ tabs, activeId: activate ? existing.id : previous.activeId });
-        return existing.id;
-      }
-
-      const tab: WorkspaceTab = {
-        id: generateTabId(),
-        kind: 'chat',
-        sessionId,
-        provider: opts?.provider,
-        title: opts?.title,
-      };
-      dbg('tabs.openChat', {
-        sessionId: sessionId ? sessionId.slice(0, 8) : 'pending',
-        activate,
-        project: stateProjectIdRef.current,
-        newId: tab.id,
-      });
-      applyState({
-        tabs: [...previous.tabs, tab],
-        activeId: activate ? tab.id : previous.activeId,
-      });
-      return tab.id;
-    },
-    [applyState],
-  );
-
-  const openShellTab = useCallback(
-    (opts?: OpenShellTabOptions): string => {
-      const previous = stateRef.current;
-      const tab: WorkspaceTab = {
-        id: generateTabId(),
-        kind: 'shell',
-        shellId: generateShellId(),
-        sessionId: opts?.sessionId ?? null,
-        provider: opts?.provider,
-        title: opts?.title,
-      };
-      applyState({ tabs: [...previous.tabs, tab], activeId: tab.id });
-      return tab.id;
-    },
-    [applyState],
-  );
-
   const openFileTab = useCallback(
     (path: string, name?: string, diffInfo: CodeEditorDiffInfo | null = null): string => {
       const previous = stateRef.current;
-      const existing = previous.tabs.find((tab) => tab.kind === 'file' && tab.path === path);
+      const existing = previous.tabs.find((tab) => tab.path === path);
 
       if (existing) {
         // Re-opens refresh the diff (e.g. a newer quick-diff from chat).
         const tabs = previous.tabs.map((tab) =>
-          tab.id === existing.id && tab.kind === 'file' ? { ...tab, diffInfo } : tab,
+          tab.id === existing.id ? { ...tab, diffInfo } : tab,
         );
         applyState({ tabs, activeId: existing.id });
         return existing.id;
@@ -315,18 +212,13 @@ export function useWorkspaceTabs({ projectId }: { projectId: string | null }): U
       if (index === -1) {
         return;
       }
-      let tabs = previous.tabs.filter((tab) => tab.id !== id);
+      const tabs = previous.tabs.filter((tab) => tab.id !== id);
       let activeId = previous.activeId;
-      if (tabs.length === 0) {
-        // Closing the last tab falls back to a fresh pending chat tab
-        // (chat is the app's home surface).
-        const seeded = seedState();
-        tabs = seeded.tabs;
-        activeId = activeId === id ? seeded.activeId : activeId;
-      } else if (activeId === id) {
-        // Prefer the left neighbor, then right.
+      if (activeId === id) {
+        // Prefer the left neighbor, then right; null collapses the right pane
+        // (the session pane then fills the view).
         const neighbor = tabs[index - 1] ?? tabs[index];
-        activeId = neighbor.id;
+        activeId = neighbor ? neighbor.id : null;
       }
       dbg('tabs.close', {
         closed: id,
@@ -336,60 +228,6 @@ export function useWorkspaceTabs({ projectId }: { projectId: string | null }): U
         before: summarizeTabs(previous.tabs),
         after: summarizeTabs(tabs),
       });
-      applyState({ tabs, activeId });
-    },
-    [applyState],
-  );
-
-  const adoptPendingSession = useCallback(
-    (sessionId: string, provider?: LLMProvider, title?: string) => {
-      const previous = stateRef.current;
-      const pending = previous.tabs.find((tab) => tab.kind === 'chat' && tab.sessionId === null);
-      if (!pending) {
-        return;
-      }
-      const existing = previous.tabs.find(
-        (tab) => tab.kind === 'chat' && tab.sessionId === sessionId,
-      );
-      if (existing) {
-        // Another tab already owns the session: drop the pending tab.
-        const tabs = previous.tabs.filter((tab) => tab.id !== pending.id);
-        const activeId = previous.activeId === pending.id ? existing.id : previous.activeId;
-        applyState({ tabs, activeId });
-        return;
-      }
-      const tabs = previous.tabs.map((tab) =>
-        tab.id === pending.id ? { ...tab, sessionId, provider, title } : tab,
-      );
-      applyState({ ...previous, tabs });
-    },
-    [applyState],
-  );
-
-  const findChatTabBySession = useCallback(
-    (sessionId: string) => stateRef.current.tabs.find((tab) => tab.kind === 'chat' && tab.sessionId === sessionId),
-    [],
-  );
-
-  const closeTabsForSession = useCallback(
-    (sessionId: string) => {
-      const previous = stateRef.current;
-      const removed = previous.tabs.filter(
-        (tab) => (tab.kind === 'chat' || tab.kind === 'shell') && tab.sessionId === sessionId,
-      );
-      if (removed.length === 0) {
-        return;
-      }
-      const removedIds = new Set(removed.map((tab) => tab.id));
-      let tabs = previous.tabs.filter((tab) => !removedIds.has(tab.id));
-      let activeId = previous.activeId;
-      if (tabs.length === 0) {
-        const seeded = seedState();
-        tabs = seeded.tabs;
-        activeId = activeId && removedIds.has(activeId) ? seeded.activeId : activeId;
-      } else if (activeId && removedIds.has(activeId)) {
-        activeId = tabs[0].id;
-      }
       applyState({ tabs, activeId });
     },
     [applyState],
@@ -410,13 +248,8 @@ export function useWorkspaceTabs({ projectId }: { projectId: string | null }): U
     activeId: state.activeId,
     activeTab,
     activePanel,
-    openChatTab,
-    openShellTab,
     openFileTab,
     setActive,
     closeTab,
-    adoptPendingSession,
-    findChatTabBySession,
-    closeTabsForSession,
   };
 }

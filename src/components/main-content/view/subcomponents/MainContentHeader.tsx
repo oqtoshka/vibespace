@@ -1,5 +1,10 @@
 import { useCallback, useRef, useState, useEffect } from 'react';
+import { PanelLeft } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
+
 import type { MainContentHeaderProps } from '../../types/types';
+import { Tooltip, Pill } from '../../../../shared/view/ui';
+
 import MobileMenuButton from './MobileMenuButton';
 import WorkspaceTabStrip from './WorkspaceTabStrip';
 import WorkspacePanelBar from './WorkspacePanelBar';
@@ -14,8 +19,10 @@ export default function MainContentHeader({
   isMobile,
   onMenuClick,
   onCloseTab,
-  onNewShell,
+  sessionPaneOpen,
+  onToggleSessionPane,
 }: MainContentHeaderProps) {
+  const { t } = useTranslation();
   const scrollRef = useRef<HTMLDivElement>(null);
   const [canScrollLeft, setCanScrollLeft] = useState(false);
   const [canScrollRight, setCanScrollRight] = useState(false);
@@ -43,6 +50,21 @@ export default function MainContentHeader({
       <div className="flex items-center gap-2">
         {isMobile && <MobileMenuButton onMenuClick={onMenuClick} />}
 
+        {!isMobile && (
+          <Tooltip
+            content={
+              sessionPaneOpen
+                ? t('sessionPane.close', { defaultValue: 'Hide session pane' })
+                : t('sessionPane.show', { defaultValue: 'Show session' })
+            }
+            position="bottom"
+          >
+            <Pill isActive={sessionPaneOpen} onClick={onToggleSessionPane} className="px-2 py-[5px]">
+              <PanelLeft className="h-3.5 w-3.5" strokeWidth={sessionPaneOpen ? 2.2 : 1.8} />
+            </Pill>
+          </Tooltip>
+        )}
+
         <div className="relative min-w-0 flex-1 overflow-hidden">
           {canScrollLeft && (
             <div className="pointer-events-none absolute inset-y-0 left-0 z-10 w-6 bg-gradient-to-r from-background to-transparent" />
@@ -67,7 +89,6 @@ export default function MainContentHeader({
           <WorkspacePanelBar
             workspace={workspace}
             shouldShowTasksTab={shouldShowTasksTab}
-            onNewShell={onNewShell}
           />
           <OpenInTerminalButton
             selectedProject={selectedProject}

@@ -1,24 +1,26 @@
-import React, { useCallback, useEffect, useMemo, useRef } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { PointerEvent as ReactPointerEvent } from 'react';
+import { MessageSquare, FileCode } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 
-import ChatInterface from '../../chat/view/ChatInterface';
-import StandaloneShell from '../../standalone-shell/view/StandaloneShell';
 import GitPanel from '../../git-panel/view/GitPanel';
 import PluginTabContent from '../../plugins/view/PluginTabContent';
 import { BrowserUsePanel } from '../../browser-use';
+import SessionPane from '../../session-pane/view/SessionPane';
 import type { MainContentProps } from '../types/types';
+import type { ChatInterfaceProps } from '../../chat/types/types';
 import { useTaskMaster } from '../../../contexts/TaskMasterContext';
 import { usePaletteOpsRegister } from '../../../contexts/PaletteOpsContext';
 import { useTasksSettings } from '../../../contexts/TasksSettingsContext';
 import { useUiPreferences } from '../../../hooks/useUiPreferences';
+import { SESSION_PANE_MIN_WIDTH } from '../../../hooks/useSessionPane';
 import CodeEditor from '../../code-editor/view/CodeEditor';
 import type { CodeEditorDiffInfo } from '../../code-editor/types/types';
-import type { ShellController } from '../../shell/view/Shell';
-import type { Project, ProjectSession } from '../../../types/app';
+import type { Project } from '../../../types/app';
 import { TaskMasterPanel } from '../../task-master';
 
 import MainContentHeader from './subcomponents/MainContentHeader';
 import MainContentStateView from './subcomponents/MainContentStateView';
-import ErrorBoundary from './ErrorBoundary';
 
 type TaskMasterContextValue = {
   currentProject?: Project | null;
@@ -30,6 +32,63 @@ type TasksSettingsContextValue = {
   isTaskMasterInstalled: boolean | null;
   isTaskMasterReady: boolean | null;
 };
+
+/** Minimum width the files pane keeps when the split is active. */
+const FILES_PANE_MIN_WIDTH = 260;
+
+/** Draggable column resizer between the session and files panes. */
+function PaneDivider({
+  containerRef,
+  onWidthChange,
+}: {
+  containerRef: React.RefObject<HTMLDivElement | null>;
+  onWidthChange: (width: number) => void;
+}) {
+  const dragRef = useRef<{ startX: number; startWidth: number } | null>(null);
+
+  const onPointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const sessionPane = event.currentTarget.previousElementSibling as HTMLElement | null;
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    } catch {
+      // Best-effort capture.
+    }
+    dragRef.current = {
+      startX: event.clientX,
+      startWidth: sessionPane?.getBoundingClientRect().width ?? SESSION_PANE_MIN_WIDTH,
+    };
+  }, []);
+
+  const onPointerMove = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      const drag = dragRef.current;
+      if (!drag) {
+        return;
+      }
+      const total = containerRef.current?.getBoundingClientRect().width ?? window.innerWidth;
+      const max = Math.max(SESSION_PANE_MIN_WIDTH, total - FILES_PANE_MIN_WIDTH);
+      const next = Math.min(max, Math.max(SESSION_PANE_MIN_WIDTH, drag.startWidth + (event.clientX - drag.startX)));
+      onWidthChange(next);
+    },
+    [containerRef, onWidthChange],
+  );
+
+  const onPointerEnd = useCallback(() => {
+    dragRef.current = null;
+  }, []);
+
+  return (
+    <div
+      className="relative z-10 flex w-1.5 flex-shrink-0 cursor-col-resize touch-none items-center justify-center bg-border/40 hover:bg-accent/60"
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerEnd}
+      onPointerCancel={onPointerEnd}
+    >
+      <div className="h-8 w-0.5 rounded-full bg-muted-foreground/50" />
+    </div>
+  );
+}
 
 function MainContent({
   selectedProject,
@@ -48,7 +107,15 @@ function MainContent({
   onShowSettings,
   externalMessageUpdate,
   newSessionTrigger,
+  sessionView,
+  onSessionViewChange,
+  sessionPaneOpen,
+  onOpenSessionPane,
+  onCloseSessionPane,
+  sessionPaneWidth,
+  onSessionPaneWidthChange,
 }: MainContentProps) {
+  const { t } = useTranslation();
   const { preferences } = useUiPreferences();
   const { autoExpandTools, showRawParameters, showThinking, autoScrollToBottom, sendByCtrlEnter } = preferences;
 
@@ -57,71 +124,24 @@ function MainContent({
 
   const shouldShowTasksTab = Boolean(tasksEnabled && isTaskMasterInstalled);
 
-  const { activeTab, activePanel, activeId } = workspace;
+  const { activePanel, activeId } = workspace;
 
-  // Imperative shell controllers so closing a shell tab can kill its PTY
-  // before the Shell component unmounts.
-  const shellControllersRef = useRef(new Map<string, ShellController>());
-
-  // Tabs the user has visited this app run. Hidden shell tabs restored from
-  // localStorage don't auto-connect until first activated (avoids a WS/PTY
-  // reattach storm on reload); mutated during render so the activating tab
-  // connects on the same pass.
-  const activatedTabIdsRef = useRef(new Set<string>());
-  if (activeId) {
-    activatedTabIdsRef.current.add(activeId);
-  }
+  // Mobile shows one pane at a time, switched from the header.
+  const [mobileView, setMobileView] = useState<'session' | 'files'>('session');
 
   const handleFileOpen = useCallback(
     (filePath: string, diffInfo: CodeEditorDiffInfo | null = null) => {
       workspace.openFileTab(filePath, undefined, diffInfo);
-    },
-    [workspace],
-  );
-
-  const handleCloseTab = useCallback(
-    (id: string) => {
-      const tab = workspace.tabs.find((candidate) => candidate.id === id);
-      if (tab?.kind === 'shell') {
-        shellControllersRef.current.get(id)?.kill();
+      if (isMobile) {
+        setMobileView('files');
       }
-      workspace.closeTab(id);
     },
-    [workspace],
+    [workspace, isMobile],
   );
-
-  const handleNewShell = useCallback(() => {
-    workspace.openShellTab({
-      sessionId: selectedSession?.id ?? null,
-      provider: selectedSession?.__provider,
-    });
-  }, [selectedSession?.__provider, selectedSession?.id, workspace]);
-
-  // Synthetic per-tab sessions: each shell tab is pinned to the session it
-  // was opened with (immutable), so useShellRuntime's session-change
-  // disconnect never fires for a given tab.
-  const shellTabSessions = useMemo(() => {
-    const sessions = new Map<string, ProjectSession | null>();
-    for (const tab of workspace.tabs) {
-      if (tab.kind !== 'shell') {
-        continue;
-      }
-      sessions.set(
-        tab.id,
-        tab.sessionId
-          ? { id: tab.sessionId, __provider: tab.provider, summary: tab.title ?? '' }
-          : null,
-      );
-    }
-    return sessions;
-  }, [workspace.tabs]);
 
   useEffect(() => {
-    // Identify projects by DB `projectId`; the TaskMaster context uses the
-    // same identifier to key its internal maps.
     const selectedProjectId = selectedProject?.projectId;
     const currentProjectId = currentProject?.projectId;
-
     if (selectedProject && selectedProjectId !== currentProjectId) {
       setCurrentProject?.(selectedProject);
     }
@@ -140,13 +160,62 @@ function MainContent({
     openFile: handleFileOpen,
   });
 
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  const chatProps: ChatInterfaceProps | null = useMemo(() => {
+    if (!selectedProject) {
+      return null;
+    }
+    return {
+      selectedProject,
+      selectedSession,
+      ws,
+      sendMessage,
+      onFileOpen: handleFileOpen,
+      onInputFocusChange,
+      onSessionProcessing,
+      onSessionIdle,
+      processingSessions,
+      onNavigateToSession,
+      onShowSettings,
+      autoExpandTools,
+      showRawParameters,
+      showThinking,
+      autoScrollToBottom,
+      sendByCtrlEnter,
+      externalMessageUpdate,
+      newSessionTrigger,
+      onShowAllTasks: tasksEnabled ? () => workspace.activateTab('tasks') : null,
+    };
+  }, [
+    selectedProject, selectedSession, ws, sendMessage, handleFileOpen, onInputFocusChange,
+    onSessionProcessing, onSessionIdle, processingSessions, onNavigateToSession, onShowSettings,
+    autoExpandTools, showRawParameters, showThinking, autoScrollToBottom, sendByCtrlEnter,
+    externalMessageUpdate, newSessionTrigger, tasksEnabled, workspace,
+  ]);
+
   if (isLoading) {
     return <MainContentStateView mode="loading" isMobile={isMobile} onMenuClick={onMenuClick} />;
   }
 
-  if (!selectedProject) {
+  if (!selectedProject || !chatProps) {
     return <MainContentStateView mode="empty" isMobile={isMobile} onMenuClick={onMenuClick} />;
   }
+
+  const rightHasContent = workspace.tabs.length > 0 || activePanel !== null;
+
+  // Pane visibility. Desktop: session pane shown when open; files pane shown
+  // when it has content. Mobile: exactly one shown, governed by the switch.
+  const sessionVisible = isMobile ? mobileView === 'session' : sessionPaneOpen;
+  const filesVisible = isMobile ? mobileView === 'files' : rightHasContent;
+  const showDivider = !isMobile && sessionPaneOpen && rightHasContent;
+
+  // Desktop session-pane width: fixed basis only when both panes share the row.
+  const sessionStyle =
+    !isMobile && sessionPaneOpen && rightHasContent && sessionPaneWidth !== null
+      ? { flex: `0 0 ${sessionPaneWidth}px` }
+      : undefined;
+  const sessionGrow = !sessionStyle; // fill remaining space when alone
 
   return (
     <div className="flex h-full flex-col">
@@ -157,75 +226,57 @@ function MainContent({
         shouldShowTasksTab={shouldShowTasksTab}
         isMobile={isMobile}
         onMenuClick={onMenuClick}
-        onCloseTab={handleCloseTab}
-        onNewShell={handleNewShell}
+        onCloseTab={workspace.closeTab}
+        sessionPaneOpen={sessionPaneOpen}
+        onToggleSessionPane={sessionPaneOpen ? onCloseSessionPane : onOpenSessionPane}
       />
 
-      <div className="flex min-h-0 flex-1 overflow-hidden">
-        <div className="flex min-h-0 min-w-[200px] flex-1 flex-col overflow-hidden">
-          {/* Single chat surface: every chat tab points into this instance,
-              driven by selectedSession. Kept mounted so chat state survives
-              tab switches. */}
-          <div className={`h-full ${activeTab?.kind === 'chat' ? 'block' : 'hidden'}`}>
-            <ErrorBoundary showDetails>
-              <ChatInterface
-                selectedProject={selectedProject}
-                selectedSession={selectedSession}
-                ws={ws}
-                sendMessage={sendMessage}
-                onFileOpen={handleFileOpen}
-                onInputFocusChange={onInputFocusChange}
-                onSessionProcessing={onSessionProcessing}
-                onSessionIdle={onSessionIdle}
-                processingSessions={processingSessions}
-                onNavigateToSession={onNavigateToSession}
-                onShowSettings={onShowSettings}
-                autoExpandTools={autoExpandTools}
-                showRawParameters={showRawParameters}
-                showThinking={showThinking}
-                autoScrollToBottom={autoScrollToBottom}
-                sendByCtrlEnter={sendByCtrlEnter}
-                externalMessageUpdate={externalMessageUpdate}
-                newSessionTrigger={newSessionTrigger}
-                onShowAllTasks={tasksEnabled ? () => workspace.activateTab('tasks') : null}
-              />
-            </ErrorBoundary>
-          </div>
+      {isMobile && (
+        <div className="flex flex-shrink-0 gap-1 border-b border-border/60 bg-card/40 px-2 py-1.5">
+          <button
+            type="button"
+            onClick={() => setMobileView('session')}
+            className={`flex flex-1 items-center justify-center gap-1.5 rounded-md py-1.5 text-xs font-medium ${
+              mobileView === 'session' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground'
+            }`}
+          >
+            <MessageSquare className="h-3.5 w-3.5" />
+            {t('sessionPane.session', { defaultValue: 'Session' })}
+          </button>
+          <button
+            type="button"
+            onClick={() => setMobileView('files')}
+            className={`flex flex-1 items-center justify-center gap-1.5 rounded-md py-1.5 text-xs font-medium ${
+              mobileView === 'files' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground'
+            }`}
+          >
+            <FileCode className="h-3.5 w-3.5" />
+            {t('sessionPane.files', { defaultValue: 'Files' })}
+          </button>
+        </div>
+      )}
 
-          {/* All shell tabs stay mounted (live PTYs); only the active one is
-              visible. Hidden tabs skip terminal fitting (0×0 guard). */}
-          {workspace.tabs.map((tab) => {
-            if (tab.kind !== 'shell') {
-              return null;
-            }
-            const isTabActive = activeId === tab.id;
-            return (
-              <div key={tab.id} className={`h-full w-full overflow-hidden ${isTabActive ? 'block' : 'hidden'}`}>
-                <StandaloneShell
-                  project={selectedProject}
-                  session={shellTabSessions.get(tab.id) ?? null}
-                  shellId={tab.shellId}
-                  showHeader={false}
-                  isActive={isTabActive}
-                  autoConnect={activatedTabIdsRef.current.has(tab.id)}
-                  onRegisterController={(controller) => {
-                    if (controller) {
-                      shellControllersRef.current.set(tab.id, controller);
-                    } else {
-                      shellControllersRef.current.delete(tab.id);
-                    }
-                  }}
-                />
-              </div>
-            );
-          })}
+      <div ref={containerRef} className="flex min-h-0 flex-1 overflow-hidden">
+        {/* SESSION PANE — kept mounted so chat/terminal state survives toggles. */}
+        <div
+          className={`min-h-0 ${sessionGrow ? 'flex-1' : ''} ${sessionVisible ? 'flex' : 'hidden'}`}
+          style={sessionStyle}
+        >
+          <SessionPane
+            selectedProject={selectedProject}
+            selectedSession={selectedSession}
+            view={sessionView}
+            onViewChange={onSessionViewChange}
+            onClose={onCloseSessionPane}
+            chatProps={chatProps}
+          />
+        </div>
 
-          {/* File tabs: kept-mounted editors so unsaved edits survive tab
-              switches (lost on close — accepted for now). */}
+        {showDivider && <PaneDivider containerRef={containerRef} onWidthChange={onSessionPaneWidthChange} />}
+
+        {/* FILES PANE — file tabs + singleton panels. */}
+        <div className={`min-h-0 min-w-[200px] flex-1 flex-col overflow-hidden ${filesVisible ? 'flex' : 'hidden'}`}>
           {workspace.tabs.map((tab) => {
-            if (tab.kind !== 'file') {
-              return null;
-            }
             const isTabActive = activeId === tab.id;
             return (
               <div key={tab.id} className={`h-full overflow-hidden ${isTabActive ? 'block' : 'hidden'}`}>
@@ -236,7 +287,7 @@ function MainContent({
                     projectId: selectedProject.projectId,
                     diffInfo: tab.diffInfo ?? null,
                   }}
-                  onClose={() => handleCloseTab(tab.id)}
+                  onClose={() => workspace.closeTab(tab.id)}
                   projectPath={selectedProject.path}
                   isSidebar
                   onFileOpen={handleFileOpen}
@@ -271,6 +322,21 @@ function MainContent({
             </div>
           )}
         </div>
+
+        {/* Both panes hidden (session closed + nothing open): offer a way back. */}
+        {!sessionVisible && !filesVisible && (
+          <div className="flex flex-1 flex-col items-center justify-center gap-3 text-muted-foreground">
+            <p className="text-sm">{t('sessionPane.allHidden', { defaultValue: 'Nothing open' })}</p>
+            <button
+              type="button"
+              onClick={onOpenSessionPane}
+              className="flex items-center gap-1.5 rounded-lg border border-border px-3 py-1.5 text-sm hover:bg-foreground/5"
+            >
+              <MessageSquare className="h-4 w-4" />
+              {t('sessionPane.show', { defaultValue: 'Show session' })}
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
