@@ -936,9 +936,55 @@ app.get('/api/share/:shareId/render', async (req, res) => {
             const code = encodePlantUmlSource(inlined);
             return res.json({ type: 'url', url: `${PLANTUML_SERVER_URL}/svg/${code}` });
         }
+        if (ext === 'html' || ext === 'htm') {
+            // Sketch-style HTML loads resources from root-absolute paths (`/kit/...`);
+            // point the iframe at the share preview route, which serves the entry
+            // file and those resources with references rewritten. See the route below.
+            const projectRoot = await projectsDb.getProjectPathById(result.share.project_id);
+            const { entryRel } = await resolvePreviewModel(result.resolved, projectRoot);
+            return res.json({ type: 'html', url: `/api/share/${req.params.shareId}/preview/${encodeURI(entryRel)}` });
+        }
         return res.status(400).json({ error: 'No renderer for this file type' });
     } catch (error) {
         res.status(500).json({ error: error.message });
+    }
+});
+
+// Public (no auth): serve a shared HTML entry and its root-absolute resources
+// (`/kit/...`) so sketch-style pages render in the share iframe — the public
+// analogue of the authenticated /preview-fs route. The shareId is the
+// capability; resolvePreviewAssetPath constrains every asset to the project root.
+app.get('/api/share/:shareId/preview/*', async (req, res) => {
+    try {
+        const result = await resolveShare(req.params.shareId);
+        if (result.error) return res.status(result.status).send(result.error);
+        const projectRoot = await projectsDb.getProjectPathById(result.share.project_id);
+        if (!projectRoot) return res.status(404).send('Not found');
+
+        const { webRoot, aliases } = await resolvePreviewModel(result.resolved, projectRoot);
+        const reqPath = `/${req.params[0] || ''}`;
+        const target = resolvePreviewAssetPath(reqPath, webRoot, aliases, projectRoot);
+        if (!target) return res.status(403).send('Path outside project');
+
+        let stat;
+        try {
+            stat = await fsPromises.stat(target);
+        } catch {
+            return res.status(404).send('Not found');
+        }
+        if (stat.isDirectory()) return res.status(404).send('Not found');
+
+        const assetBase = `/api/share/${req.params.shareId}/preview`;
+        if (isTextAsset(target)) {
+            const text = await fsPromises.readFile(target, 'utf8');
+            res.type(mime.lookup(target) || 'text/plain');
+            return res.send(rewriteAssetReferences(text, aliases, assetBase));
+        }
+        res.type(mime.lookup(target) || 'application/octet-stream');
+        return res.send(await fsPromises.readFile(target));
+    } catch (error) {
+        console.error('Error serving share preview asset:', error);
+        res.status(500).send('Preview error');
     }
 });
 
