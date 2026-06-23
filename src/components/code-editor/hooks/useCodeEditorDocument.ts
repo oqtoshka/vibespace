@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../../../utils/api';
 import { useProjectFilesWatch, type FileChange } from '../../../hooks/useProjectFilesWatch';
 import type { CodeEditorFile } from '../types/types';
-import { isBinaryFile } from '../utils/binaryFile';
+import { isBinaryFile, isImageFile } from '../utils/binaryFile';
 
 type UseCodeEditorDocumentParams = {
   file: CodeEditorFile;
@@ -47,8 +47,9 @@ export const useCodeEditorDocument = ({ file, projectPath }: UseCodeEditorDocume
         }
         setIsBinary(false);
 
-        // Check if file is binary by extension
-        if (isBinaryFile(fileName)) {
+        // Check if file is binary by extension. Images are rendered inline by
+        // CodeEditorImageView, so they skip the text read too.
+        if (isBinaryFile(fileName) || isImageFile(fileName)) {
           setIsBinary(true);
           if (!silent) {
             setLoading(false);

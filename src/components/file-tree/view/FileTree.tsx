@@ -11,8 +11,8 @@ import { useFileTreeOperations } from '../hooks/useFileTreeOperations';
 import { useFileTreeSearch } from '../hooks/useFileTreeSearch';
 import { useFileTreeViewMode } from '../hooks/useFileTreeViewMode';
 import { useFileTreeUpload } from '../hooks/useFileTreeUpload';
-import type { FileTreeImageSelection, FileTreeNode } from '../types/types';
-import { formatFileSize, formatRelativeTime, isImageFile } from '../utils/fileTreeUtils';
+import type { FileTreeNode } from '../types/types';
+import { formatFileSize, formatRelativeTime } from '../utils/fileTreeUtils';
 import { Project } from '../../../types/app';
 import { ScrollArea, Input } from '../../../shared/view/ui';
 
@@ -21,7 +21,6 @@ import FileTreeDetailedColumns from './FileTreeDetailedColumns';
 import FileTreeHeader from './FileTreeHeader';
 import FileTreeLoadingState from './FileTreeLoadingState';
 import FileTreeUploadProgress from './FileTreeUploadProgress';
-import ImageViewer from './ImageViewer';
 
 
 type FileTreeProps = {
@@ -33,7 +32,6 @@ type FileTreeProps = {
 
 export default function FileTree({ selectedProject, isActive = true, onFileOpen }: FileTreeProps) {
   const { t } = useTranslation();
-  const [selectedImage, setSelectedImage] = useState<FileTreeImageSelection | null>(null);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
   const newItemInputRef = useRef<HTMLInputElement>(null);
   const renameInputRef = useRef<HTMLInputElement>(null);
@@ -151,21 +149,9 @@ export default function FileTree({ selectedProject, isActive = true, onFileOpen 
         return;
       }
 
-      if (isImageFile(item.name) && selectedProject) {
-        setSelectedImage({
-          name: item.name,
-          path: item.path,
-          projectPath: selectedProject.path,
-          // Image URL uses the DB projectId so ImageViewer can hit the
-          // /api/projects/:projectId/files/content endpoint directly.
-          projectId: selectedProject.projectId,
-        });
-        return;
-      }
-
       onFileOpen?.(item.path);
     },
-    [expandedDirs, loadDirectory, onFileOpen, selectedProject, toggleDirectory],
+    [expandedDirs, loadDirectory, onFileOpen, toggleDirectory],
   );
 
   const formatRelativeTimeLabel = useCallback(
@@ -278,13 +264,6 @@ export default function FileTree({ selectedProject, isActive = true, onFileOpen 
           operationLoading={operationLoading}
         />
       </ScrollArea>
-
-      {selectedImage && (
-        <ImageViewer
-          file={selectedImage}
-          onClose={() => setSelectedImage(null)}
-        />
-      )}
 
       {/* Delete Confirmation Dialog */}
       {operations.deleteConfirmation.isOpen && operations.deleteConfirmation.item && (

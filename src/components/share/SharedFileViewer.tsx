@@ -36,8 +36,9 @@ export default function SharedFileViewer() {
   const isImage = IMAGE_EXTS.has(ext);
   const isMarkdown = ext === 'md' || ext === 'markdown';
   const isDiagram = DIAGRAM_EXTS.has(ext);
-  const isText = isMarkdown || isDiagram || isTextMime(meta?.mime);
-  const isPreviewable = isPdf || isImage || isMarkdown || isDiagram;
+  const isHtml = ext === 'html' || ext === 'htm';
+  const isText = isMarkdown || isDiagram || isHtml || isTextMime(meta?.mime);
+  const isPreviewable = isPdf || isImage || isMarkdown || isDiagram || isHtml;
 
   useEffect(() => {
     let cancelled = false;
@@ -66,7 +67,8 @@ export default function SharedFileViewer() {
         const diagram = DIAGRAM_EXTS.has(e);
         const pdf = e === 'pdf';
         const image = IMAGE_EXTS.has(e);
-        const text = e === 'md' || e === 'markdown' || diagram || isTextMime(metaData.mime);
+        const html = e === 'html' || e === 'htm';
+        const text = e === 'md' || e === 'markdown' || diagram || html || isTextMime(metaData.mime);
 
         // Diagrams: ask the server for the rendered artifact.
         if (diagram) {
@@ -137,7 +139,7 @@ export default function SharedFileViewer() {
     );
   }
 
-  const showToggle = (isMarkdown || isDiagram) && content !== null;
+  const showToggle = (isMarkdown || isDiagram || isHtml) && content !== null;
   const downloadUrl = api.shareContentUrl(shareId, { download: true });
 
   return (
@@ -216,8 +218,20 @@ export default function SharedFileViewer() {
           </div>
         )}
 
+        {/* HTML: render the page in a sandboxed iframe (no same-origin, so the
+            untrusted document gets an opaque origin and can't reach the app). */}
+        {isHtml && mode === 'rendered' && content !== null && (
+          <iframe
+            title={meta?.name}
+            srcDoc={content}
+            sandbox="allow-scripts allow-popups allow-forms allow-modals"
+            className="h-full w-full border-0 bg-white"
+          />
+        )}
+
         {/* Source / code highlight */}
-        {((isText && !isMarkdown && !isDiagram) || ((isMarkdown || isDiagram) && mode === 'raw')) &&
+        {((isText && !isMarkdown && !isDiagram && !isHtml) ||
+          ((isMarkdown || isDiagram || isHtml) && mode === 'raw')) &&
           content !== null && (
             <CodeMirror
               value={content}

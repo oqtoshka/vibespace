@@ -1,11 +1,9 @@
 import { EditorView } from '@codemirror/view';
 import { unifiedMergeView } from '@codemirror/merge';
 import type { Extension } from '@codemirror/state';
-import { useCallback, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-
 import { usePaletteOps } from '../../../contexts/PaletteOpsContext';
-import { useTheme } from '../../../contexts/ThemeContext';
 import { useCodeEditorDocument } from '../hooks/useCodeEditorDocument';
 import { useCodeEditorSettings } from '../hooks/useCodeEditorSettings';
 import { useEditorKeyboardShortcuts } from '../hooks/useEditorKeyboardShortcuts';
@@ -13,13 +11,14 @@ import type { CodeEditorFile } from '../types/types';
 import { createMinimapExtension, createScrollToFirstChunkExtension, getLanguageExtensions } from '../utils/editorExtensions';
 import { getEditorStyles } from '../utils/editorStyles';
 import { createEditorToolbarPanelExtension } from '../utils/editorToolbarPanel';
-
 import CodeEditorFooter from './subcomponents/CodeEditorFooter';
 import CodeEditorHeader from './subcomponents/CodeEditorHeader';
 import CodeEditorLoadingState from './subcomponents/CodeEditorLoadingState';
 import CodeEditorSurface from './subcomponents/CodeEditorSurface';
 import CodeEditorBinaryFile from './subcomponents/CodeEditorBinaryFile';
-import CodeEditorMediaPreview from './subcomponents/CodeEditorMediaPreview';
+import CodeEditorPdfView from './subcomponents/CodeEditorPdfView';
+import CodeEditorImageView from './subcomponents/CodeEditorImageView';
+import { isImageFile } from '../utils/binaryFile';
 
 type CodeEditorProps = {
   file: CodeEditorFile;
@@ -73,6 +72,8 @@ export default function CodeEditor({
     return extension === 'pdf';
   }, [file.name]);
 
+  const isImage = useMemo(() => isImageFile(file.name), [file.name]);
+
   // Custom formats with a project renderer (e.g. *.flow.json → flow diagram).
   const isCustomRenderFile = useMemo(() => file.name.toLowerCase().endsWith('.flow.json'), [file.name]);
 
@@ -83,10 +84,8 @@ export default function CodeEditor({
   // A diff view (git/quick-diff) opens in the editor so the changes are visible.
   const [previewMode, setPreviewMode] = useState(() => isPreviewable && !file.diffInfo);
 
-  // The code editor follows the app-wide theme; it has no theme of its own.
-  const { isDarkMode } = useTheme();
-
   const {
+    isDarkMode,
     wordWrap,
     minimapEnabled,
     showLineNumbers,
@@ -101,8 +100,6 @@ export default function CodeEditor({
     saveSuccess,
     saveError,
     isBinary,
-    previewKind,
-    fileProjectId,
     handleSave,
     handleDownload,
   } = useCodeEditorDocument({
@@ -202,26 +199,30 @@ export default function CodeEditor({
     );
   }
 
-  // Natively previewable media (image/pdf/audio/video) is rendered inline
-  // instead of showing the generic "cannot be displayed" placeholder.
-  if (previewKind) {
+  // PDFs are detected as binary (so no text read happens) but render inline in
+  // the browser's native PDF viewer rather than the "cannot be displayed" screen.
+  if (isBinary && isPdfFile) {
     return (
-      <CodeEditorMediaPreview
+      <CodeEditorPdfView
         file={file}
-        kind={previewKind}
-        projectId={fileProjectId}
         isSidebar={isSidebar}
         isFullscreen={isFullscreen}
         onClose={onClose}
         onToggleFullscreen={() => setIsFullscreen((previous) => !previous)}
-        labels={{
-          loading: t('filePreview.loading', 'Loading preview...'),
-          error: t('filePreview.error', 'Unable to display this file.'),
-          openInNewTab: t('filePreview.openInNewTab', 'Open in new tab'),
-          fullscreen: t('actions.fullscreen', 'Fullscreen'),
-          exitFullscreen: t('actions.exitFullscreen', 'Exit fullscreen'),
-          close: t('actions.close', 'Close'),
-        }}
+      />
+    );
+  }
+
+  // Images render inline in their own viewer rather than the "cannot be
+  // displayed" binary screen. They're flagged binary so no text read happens.
+  if (isBinary && isImage) {
+    return (
+      <CodeEditorImageView
+        file={file}
+        isSidebar={isSidebar}
+        isFullscreen={isFullscreen}
+        onClose={onClose}
+        onToggleFullscreen={() => setIsFullscreen((previous) => !previous)}
       />
     );
   }

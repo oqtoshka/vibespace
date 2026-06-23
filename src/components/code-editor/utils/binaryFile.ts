@@ -1,4 +1,4 @@
-// Binary file extensions (images are handled by ImageViewer, not here)
+// Binary file extensions (images are handled by isImageFile / CodeEditorImageView)
 const BINARY_EXTENSIONS = [
   // Archives
   'zip', 'tar', 'gz', 'rar', '7z', 'bz2', 'xz',
@@ -19,4 +19,12 @@ const BINARY_EXTENSIONS = [
 export const isBinaryFile = (filename: string): boolean => {
   const ext = filename.split('.').pop()?.toLowerCase();
   return BINARY_EXTENSIONS.includes(ext ?? '');
+};
+
+// Image files render inline in their own viewer rather than the text editor.
+const IMAGE_EXTENSIONS = ['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp', 'ico', 'bmp', 'avif'];
+
+export const isImageFile = (filename: string): boolean => {
+  const ext = filename.split('.').pop()?.toLowerCase();
+  return IMAGE_EXTENSIONS.includes(ext ?? '');
 };
