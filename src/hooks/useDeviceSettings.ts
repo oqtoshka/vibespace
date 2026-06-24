@@ -30,7 +30,12 @@ const getIsPWA = (): boolean => {
 
 export function useDeviceSettings(options: UseDeviceSettingsOptions = {}) {
   const {
-    mobileBreakpoint = 768,
+    // The desktop layout nests two horizontal splits (sidebar + session pane +
+    // files pane), so it needs ~870px to fit without clipping. A portrait tablet
+    // (~800px) used to squeak past the old 768px threshold into that cramped
+    // layout and overflow the chat off-screen; 1024px (Tailwind `lg`) routes
+    // those widths to the full-width mobile layout with the drawer sidebar.
+    mobileBreakpoint = 1024,
     trackMobile = true,
     trackPWA = true
   } = options;
