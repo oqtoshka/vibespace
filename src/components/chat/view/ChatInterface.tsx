@@ -288,6 +288,15 @@ function ChatInterface({
         return;
       }
 
+      // Don't swallow Escape when an xterm terminal owns focus — the key must
+      // reach the running program (e.g. to dismiss a CLI menu). xterm's hidden
+      // textarea lives inside the `.xterm` root, so the keydown target is
+      // within it whenever the terminal is focused.
+      const target = event.target as HTMLElement | null;
+      if (target && typeof target.closest === 'function' && target.closest('.xterm')) {
+        return;
+      }
+
       event.preventDefault();
       handleAbortSession();
     };
