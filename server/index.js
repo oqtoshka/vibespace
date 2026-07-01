@@ -1707,6 +1707,79 @@ app.post('/api/projects/:projectId/files/upload', authenticateToken, uploadFiles
 // Chat image uploads moved to POST /api/assets/images (server/modules/assets),
 // which stores them in the global ~/.cloudcli/assets folder.
 
+// Terminal image paste: unlike upload-images (which inlines base64 and
+// deletes the temp file), this persists the file on disk and returns its
+// absolute path so it can be typed into a PTY for a CLI to read.
+app.post('/api/projects/:projectId/upload-terminal-image', authenticateToken, async (req, res) => {
+    try {
+        const multer = (await import('multer')).default;
+        const path = (await import('path')).default;
+        const fs = (await import('fs')).promises;
+        const os = (await import('os')).default;
+
+        const uploadDir = path.join(os.tmpdir(), 'vibespace-terminal-images', String(req.user.id));
+
+        const storage = multer.diskStorage({
+            destination: async (req, file, cb) => {
+                await fs.mkdir(uploadDir, { recursive: true });
+                cb(null, uploadDir);
+            },
+            filename: (req, file, cb) => {
+                const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+                const sanitizedName = file.originalname.replace(/[^a-zA-Z0-9.-]/g, '_');
+                cb(null, uniqueSuffix + '-' + sanitizedName);
+            }
+        });
+
+        const fileFilter = (req, file, cb) => {
+            const allowedMimes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/svg+xml'];
+            if (allowedMimes.includes(file.mimetype)) {
+                cb(null, true);
+            } else {
+                cb(new Error('Invalid file type. Only JPEG, PNG, GIF, WebP, and SVG are allowed.'));
+            }
+        };
+
+        const upload = multer({
+            storage,
+            fileFilter,
+            limits: {
+                fileSize: 5 * 1024 * 1024, // 5MB
+                files: 1
+            }
+        });
+
+        upload.single('image')(req, res, async (err) => {
+            if (err) {
+                return res.status(400).json({ error: err.message });
+            }
+
+            if (!req.file) {
+                return res.status(400).json({ error: 'No image file provided' });
+            }
+
+            // Opportunistic cleanup: drop this user's pasted images older than 24h.
+            try {
+                const entries = await fs.readdir(uploadDir);
+                const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+                await Promise.all(entries.map(async (entry) => {
+                    const entryPath = path.join(uploadDir, entry);
+                    if (entryPath === req.file.path) return;
+                    const stat = await fs.stat(entryPath).catch(() => null);
+                    if (stat && stat.isFile() && stat.mtimeMs < cutoff) {
+                        await fs.unlink(entryPath).catch(() => { });
+                    }
+                }));
+            } catch { /* cleanup is best-effort */ }
+
+            res.json({ path: req.file.path });
+        });
+    } catch (error) {
+        console.error('Error in terminal image upload endpoint:', error);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
 // Get token usage for a specific session. `projectId` is the DB primary key;
 // the Claude branch below resolves it to an absolute path via the DB.
 app.get('/api/projects/:projectId/sessions/:sessionId/token-usage', authenticateToken, async (req, res) => {
