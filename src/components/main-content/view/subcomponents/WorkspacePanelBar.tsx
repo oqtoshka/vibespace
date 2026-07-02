@@ -64,7 +64,7 @@ export default function WorkspacePanelBar({
           <Tooltip key={panel.id} content={displayLabel} position="bottom">
             <Pill
               isActive={isActive}
-              onClick={() => workspace.activateTab(panel.id)}
+              onClick={() => (isActive ? workspace.closePanel() : workspace.activateTab(panel.id))}
               className="px-2.5 py-[5px]"
             >
               {panel.kind === 'builtin' ? (
