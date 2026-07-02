@@ -422,18 +422,25 @@ async function handleImages(command, images, cwd) {
     tempDir = path.join(workingDir, '.tmp', 'images', Date.now().toString());
     await fs.mkdir(tempDir, { recursive: true });
 
-    // Save each image to a temp file
+    // Save each attachment to a temp file. Keep the original filename
+    // (sanitized, index-prefixed against collisions) so non-image files keep a
+    // meaningful name/extension; fall back to the mime type for pasted blobs.
     for (const [index, image] of images.entries()) {
       // Extract base64 data and mime type
       const matches = image.data.match(/^data:([^;]+);base64,(.+)$/);
       if (!matches) {
-        console.error('Invalid image data format');
+        console.error('Invalid attachment data format');
         continue;
       }
 
       const [, mimeType, base64Data] = matches;
-      const extension = mimeType.split('/')[1] || 'png';
-      const filename = `image_${index}.${extension}`;
+      const originalName = typeof image.name === 'string'
+        ? path.basename(image.name).replace(/[^\w.\-]/g, '_')
+        : '';
+      const fallbackExtension = (mimeType.split('/')[1] || 'bin').split('+')[0];
+      const filename = originalName && originalName !== '_'
+        ? `${index}_${originalName}`
+        : `file_${index}.${fallbackExtension}`;
       const filepath = path.join(tempDir, filename);
 
       // Write base64 data to file
@@ -441,10 +448,10 @@ async function handleImages(command, images, cwd) {
       tempImagePaths.push(filepath);
     }
 
-    // Include the full image paths in the prompt
+    // Include the full attachment paths in the prompt
     let modifiedCommand = command;
     if (tempImagePaths.length > 0 && command && command.trim()) {
-      const imageNote = `\n\n[Images provided at the following paths:]\n${tempImagePaths.map((p, i) => `${i + 1}. ${p}`).join('\n')}`;
+      const imageNote = `\n\n[Attached files are available at the following paths (read them if relevant):]\n${tempImagePaths.map((p, i) => `${i + 1}. ${p}`).join('\n')}`;
       modifiedCommand = command + imageNote;
     }
 

@@ -108,6 +108,7 @@
     "disabled": "입력 비활성화",
     "attachFiles": "파일 첨부",
     "attachImages": "이미지 첨부",
+    "attachFiles": "파일 첨부",
     "send": "전송",
     "stop": "중지",
     "hintText": {
