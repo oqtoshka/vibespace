@@ -21,7 +21,6 @@ export default function TerminalPaneButton({ isOpen, onToggle }: TerminalPaneBut
       <PillBar>
         <Pill isActive={isOpen} onClick={onToggle} className="px-2.5 py-[5px]">
           <SquareTerminal className="h-3.5 w-3.5" strokeWidth={isOpen ? 2.2 : 1.8} />
-          <span className="hidden lg:inline">{t('tabs.terminal', 'Terminal')}</span>
         </Pill>
       </PillBar>
     </Tooltip>

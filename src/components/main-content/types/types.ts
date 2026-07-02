@@ -16,6 +16,7 @@ export type WorkspaceApi = {
   activePanel: WorkspacePanel | null;
   activateTab: (id: string) => void;
   closeTab: (id: string) => void;
+  closePanel: () => void;
   openFileTab: (path: string, name?: string, diffInfo?: CodeEditorDiffInfo | null) => string;
 };
 
