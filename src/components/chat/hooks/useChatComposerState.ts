@@ -85,6 +85,11 @@ export interface QueuedMessage {
 // Cap the pending queue so a runaway loop can't accumulate unbounded sends.
 const MAX_QUEUED_MESSAGES = 20;
 
+// Attachment caps — mirrored by the server's upload-images endpoint limits.
+const MAX_ATTACHMENT_MB = 20;
+const MAX_ATTACHMENT_BYTES = MAX_ATTACHMENT_MB * 1024 * 1024;
+const MAX_ATTACHMENT_COUNT = 10;
+
 interface CommandExecutionResult {
   type: 'builtin' | 'custom';
   action?: string;
@@ -224,6 +229,8 @@ export function useChatComposerState({
 
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const inputHighlightRef = useRef<HTMLDivElement>(null);
+  const textareaLineHeightRef = useRef<number | null>(null);
+  const lastAutosizedInputRef = useRef<string | null>(null);
   const handleSubmitRef = useRef<
     ((event: FormEvent<HTMLFormElement> | MouseEvent | TouchEvent | KeyboardEvent<HTMLTextAreaElement>) => Promise<void>) | null
   >(null);
@@ -477,6 +484,24 @@ export function useChatComposerState({
     inputHighlightRef.current.scrollLeft = target.scrollLeft;
   }, []);
 
+  const resizeTextarea = useCallback((target: HTMLTextAreaElement) => {
+    target.style.height = 'auto';
+    const nextHeight = Math.max(22, target.scrollHeight);
+    target.style.height = `${nextHeight}px`;
+
+    let lineHeight = textareaLineHeightRef.current;
+    if (!lineHeight) {
+      lineHeight = parseInt(window.getComputedStyle(target).lineHeight);
+      textareaLineHeightRef.current = Number.isFinite(lineHeight) ? lineHeight : 24;
+    }
+
+    const expanded = nextHeight > (textareaLineHeightRef.current || 24) * 2;
+    setIsTextareaExpanded((previous) => previous === expanded ? previous : expanded);
+    lastAutosizedInputRef.current = target.value;
+  }, []);
+
+  // Any file type is attachable (claude reads them from temp paths, opencode
+  // takes them via `-f`); oversized images still get downscaled before upload.
   const handleImageFiles = useCallback((files: File[]) => {
     const validFiles = files.filter((file) => {
       try {
@@ -485,15 +510,11 @@ export function useChatComposerState({
           return false;
         }
 
-        if (!file.type || !file.type.startsWith('image/')) {
-          return false;
-        }
-
-        if (!file.size || file.size > 5 * 1024 * 1024) {
+        if (!file.size || file.size > MAX_ATTACHMENT_BYTES) {
           const fileName = file.name || 'Unknown file';
           setImageErrors((previous) => {
             const next = new Map(previous);
-            next.set(fileName, 'File too large (max 5MB)');
+            next.set(fileName, `File too large (max ${MAX_ATTACHMENT_MB}MB)`);
             return next;
           });
           return false;
@@ -507,7 +528,7 @@ export function useChatComposerState({
     });
 
     if (validFiles.length > 0) {
-      setAttachedImages((previous) => [...previous, ...validFiles].slice(0, 5));
+      setAttachedImages((previous) => [...previous, ...validFiles].slice(0, MAX_ATTACHMENT_COUNT));
     }
   }, []);
 
@@ -516,7 +537,7 @@ export function useChatComposerState({
       const items = Array.from(event.clipboardData.items);
 
       items.forEach((item) => {
-        if (!item.type.startsWith('image/')) {
+        if (item.kind !== 'file') {
           return;
         }
         const file = item.getAsFile();
@@ -526,22 +547,15 @@ export function useChatComposerState({
       });
 
       if (items.length === 0 && event.clipboardData.files.length > 0) {
-        const files = Array.from(event.clipboardData.files);
-        const imageFiles = files.filter((file) => file.type.startsWith('image/'));
-        if (imageFiles.length > 0) {
-          handleImageFiles(imageFiles);
-        }
+        handleImageFiles(Array.from(event.clipboardData.files));
       }
     },
     [handleImageFiles],
   );
 
   const { getRootProps, getInputProps, isDragActive, open } = useDropzone({
-    accept: {
-      'image/*': ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg'],
-    },
-    maxSize: 5 * 1024 * 1024,
-    maxFiles: 5,
+    maxSize: MAX_ATTACHMENT_BYTES,
+    maxFiles: MAX_ATTACHMENT_COUNT,
     onDrop: handleImageFiles,
     noClick: true,
     noKeyboard: true,
@@ -979,6 +993,17 @@ export function useChatComposerState({
     ],
   );
 
+  // A voice transcript either fills the input (to edit before sending) or, when the
+  // user tapped "stop and send", is submitted straight away. Mirror the value into
+  // inputValueRef synchronously so handleSubmit reads the new text, not the stale state.
+  const handleVoiceTranscript = useCallback((text: string, send?: boolean) => {
+    const base = inputValueRef.current.trim();
+    const next = base ? `${base} ${text}` : text;
+    setInput(next);
+    inputValueRef.current = next;
+    if (send) handleSubmitRef.current?.(createFakeSubmitEvent());
+  }, [setInput]);
+
   useEffect(() => {
     inputValueRef.current = input;
   }, [input]);
@@ -1010,13 +1035,13 @@ export function useChatComposerState({
     if (!textareaRef.current) {
       return;
     }
-    // Re-run when input changes so restored drafts get the same autosize behavior as typed text.
-    textareaRef.current.style.height = 'auto';
-    textareaRef.current.style.height = `${Math.max(22, textareaRef.current.scrollHeight)}px`;
-    const lineHeight = parseInt(window.getComputedStyle(textareaRef.current).lineHeight);
-    const expanded = textareaRef.current.scrollHeight > lineHeight * 2;
-    setIsTextareaExpanded(expanded);
-  }, [input]);
+    if (lastAutosizedInputRef.current === input) {
+      return;
+    }
+    // Re-run for restored drafts and programmatic input changes. User typing is
+    // already resized in onInput, so this avoids doing the same forced layout twice.
+    resizeTextarea(textareaRef.current);
+  }, [input, resizeTextarea]);
 
   useEffect(() => {
     if (!textareaRef.current || input.trim()) {
@@ -1098,15 +1123,11 @@ export function useChatComposerState({
   const handleTextareaInput = useCallback(
     (event: FormEvent<HTMLTextAreaElement>) => {
       const target = event.currentTarget;
-      target.style.height = 'auto';
-      target.style.height = `${Math.max(22, target.scrollHeight)}px`;
+      resizeTextarea(target);
       setCursorPosition(target.selectionStart);
       syncInputOverlayScroll(target);
-
-      const lineHeight = parseInt(window.getComputedStyle(target).lineHeight);
-      setIsTextareaExpanded(target.scrollHeight > lineHeight * 2);
     },
-    [setCursorPosition, syncInputOverlayScroll],
+    [resizeTextarea, setCursorPosition, syncInputOverlayScroll],
   );
 
   const handleClearInput = useCallback(() => {
@@ -1217,6 +1238,7 @@ export function useChatComposerState({
     isDragActive,
     openImagePicker: open,
     handleSubmit,
+    handleVoiceTranscript,
     handleInputChange,
     handleKeyDown,
     handlePaste,
