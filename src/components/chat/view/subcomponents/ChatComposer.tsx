@@ -1,4 +1,6 @@
 import { useTranslation } from 'react-i18next';
+import { useMemo } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
   ChangeEvent,
   ClipboardEvent,
@@ -9,10 +11,12 @@ import type {
   RefObject,
   TouchEvent,
 } from 'react';
-import { ImageIcon, MessageSquareIcon, XIcon, ArrowDownIcon, Clock3 } from 'lucide-react';
+import { MessageSquareIcon, XIcon, ArrowDownIcon, Clock3, Loader2, PaperclipIcon } from 'lucide-react';
 
 import type { QueuedMessage } from '../../hooks/useChatComposerState';
 
+import { useVoiceInput } from '../../hooks/useVoiceInput';
+import { useVoiceAvailable } from '../../hooks/useVoiceAvailable';
 import type { SessionActivity } from '../../../../hooks/useSessionProtection';
 import type { PendingPermissionRequest, PermissionMode } from '../../types/types';
 import {
@@ -29,6 +33,7 @@ import {
 import CommandMenu from './CommandMenu';
 import ActivityIndicator from './ActivityIndicator';
 import ImageAttachment from './ImageAttachment';
+import VoiceInputButton from './VoiceInputButton';
 import PermissionRequestsBanner from './PermissionRequestsBanner';
 import TokenUsageSummary from './TokenUsageSummary';
 
@@ -65,9 +70,6 @@ interface ChatComposerProps {
   onToggleCommandMenu: () => void;
   hasInput: boolean;
   onClearInput: () => void;
-  isUserScrolledUp: boolean;
-  hasMessages: boolean;
-  onScrollToBottom: () => void;
   onSubmit: (event: FormEvent<HTMLFormElement> | MouseEvent<HTMLButtonElement> | TouchEvent<HTMLButtonElement>) => void;
   isDragActive: boolean;
   attachedImages: File[];
@@ -91,12 +93,14 @@ interface ChatComposerProps {
   renderInputWithMentions: (text: string) => ReactNode;
   textareaRef: RefObject<HTMLTextAreaElement>;
   input: string;
+  onVoiceTranscript?: (text: string, send?: boolean) => void;
   onInputChange: (event: ChangeEvent<HTMLTextAreaElement>) => void;
   onTextareaClick: (event: MouseEvent<HTMLTextAreaElement>) => void;
   onTextareaKeyDown: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
   onTextareaPaste: (event: ClipboardEvent<HTMLTextAreaElement>) => void;
   onTextareaScrollSync: (target: HTMLTextAreaElement) => void;
   onTextareaInput: (event: FormEvent<HTMLTextAreaElement>) => void;
+  isInputFocused?: boolean;
   onInputFocusChange?: (focused: boolean) => void;
   placeholder: string;
   isTextareaExpanded: boolean;
@@ -120,9 +124,6 @@ export default function ChatComposer({
   onToggleCommandMenu,
   hasInput,
   onClearInput,
-  isUserScrolledUp,
-  hasMessages,
-  onScrollToBottom,
   onSubmit,
   isDragActive,
   attachedImages,
@@ -146,12 +147,14 @@ export default function ChatComposer({
   renderInputWithMentions,
   textareaRef,
   input,
+  onVoiceTranscript,
   onInputChange,
   onTextareaClick,
   onTextareaKeyDown,
   onTextareaPaste,
   onTextareaScrollSync,
   onTextareaInput,
+  isInputFocused = false,
   onInputFocusChange,
   placeholder,
   isTextareaExpanded,
@@ -160,12 +163,38 @@ export default function ChatComposer({
   onRemoveQueuedMessage,
 }: ChatComposerProps) {
   const { t } = useTranslation('chat');
-  const textareaRect = textareaRef.current?.getBoundingClientRect();
-  const commandMenuPosition = {
-    top: textareaRect ? Math.max(16, textareaRect.top - 316) : 0,
-    left: textareaRect ? textareaRect.left : 16,
-    bottom: textareaRect ? window.innerHeight - textareaRect.top + 8 : 90,
-  };
+  const commandMenuPosition = useMemo(() => {
+    if (!isCommandMenuOpen) {
+      return { top: 0, left: 16, bottom: 90 };
+    }
+    const textareaRect = textareaRef.current?.getBoundingClientRect();
+    return {
+      top: textareaRect ? Math.max(16, textareaRect.top - 316) : 0,
+      left: textareaRect ? textareaRect.left : 16,
+      bottom: textareaRect ? window.innerHeight - textareaRect.top + 8 : 90,
+    };
+  }, [input, isCommandMenuOpen, textareaRef]);
+
+  // Voice state is hosted here (not in the mic button) so the main Send button can stop
+  // recording and send the transcript in one tap, the way the mic button drops it in the box.
+  const voiceAvailable = useVoiceAvailable();
+  const [voiceError, setVoiceError] = useState<string | null>(null);
+  const voiceErrorTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const handleVoiceError = useCallback((msg: string) => {
+    setVoiceError(msg);
+    if (voiceErrorTimer.current) clearTimeout(voiceErrorTimer.current);
+    voiceErrorTimer.current = setTimeout(() => setVoiceError(null), 4000);
+  }, []);
+  useEffect(() => () => {
+    if (voiceErrorTimer.current) clearTimeout(voiceErrorTimer.current);
+  }, []);
+  const noopTranscript = useCallback(() => {}, []);
+  const { state: voiceState, toggle: voiceToggle, stop: voiceStop } = useVoiceInput(
+    onVoiceTranscript ?? noopTranscript,
+    handleVoiceError,
+  );
+  const isRecording = voiceState === 'recording';
+  const isTranscribing = voiceState === 'transcribing';
 
   // Detect if the AskUserQuestion interactive panel is active
   const hasQuestionPanel = pendingPermissionRequests.some(
@@ -174,15 +203,18 @@ export default function ChatComposer({
 
   // Hide the thinking/status bar while any permission request is pending
   const hasPendingPermissions = pendingPermissionRequests.length > 0;
+  const hasActivityIndicator = Boolean(activity && !hasPendingPermissions);
 
   return (
-    <div className="flex-shrink-0 p-2 pb-2 sm:p-4 sm:pb-4 md:p-4 md:pb-6">
+    <div className="chat-composer-shell relative flex-shrink-0 px-2 pb-2 pt-0 sm:px-4 sm:pb-4 md:px-4 md:pb-6">
       {!hasPendingPermissions && (
-        <ActivityIndicator activity={activity} onAbort={onAbortSession} />
+        <div className="pointer-events-none absolute bottom-full left-1/2 z-10 w-[calc(100%-1rem)] max-w-[54.25rem] -translate-x-1/2 translate-y-px bg-transparent sm:w-[calc(100%-2rem)]">
+          <ActivityIndicator activity={activity} onAbort={onAbortSession} isInputFocused={isInputFocused} />
+        </div>
       )}
 
       {pendingPermissionRequests.length > 0 && (
-        <div className="mx-auto mb-3 max-w-4xl">
+        <div className="mx-auto mb-3 max-w-[54.25rem]">
           <PermissionRequestsBanner
             pendingPermissionRequests={pendingPermissionRequests}
             handlePermissionDecision={handlePermissionDecision}
@@ -191,19 +223,7 @@ export default function ChatComposer({
         </div>
       )}
 
-      {!hasQuestionPanel && <div className="relative mx-auto max-w-4xl">
-        {isUserScrolledUp && hasMessages && (
-          <div className="absolute -top-10 left-0 right-0 z-10 flex justify-center">
-            <button
-              type="button"
-              onClick={onScrollToBottom}
-              className="flex h-8 w-8 items-center justify-center rounded-full border border-border/50 bg-card text-muted-foreground shadow-sm transition-all duration-200 hover:bg-accent hover:text-foreground"
-              title={t('input.scrollToBottom', { defaultValue: 'Scroll to bottom' })}
-            >
-              <ArrowDownIcon className="h-4 w-4" />
-            </button>
-          </div>
-        )}
+      {!hasQuestionPanel && <div className="relative mx-auto max-w-[54.25rem]">
         {showFileDropdown && filteredFiles.length > 0 && (
           <div className="absolute bottom-full left-0 right-0 z-50 mb-2 max-h-48 overflow-y-auto rounded-xl border border-border/50 bg-card/95 shadow-lg backdrop-blur-md">
             {filteredFiles.map((file, index) => (
@@ -244,7 +264,10 @@ export default function ChatComposer({
         <PromptInput
           onSubmit={onSubmit as (event: FormEvent<HTMLFormElement>) => void}
           status={isLoading ? 'streaming' : 'ready'}
-          className={isTextareaExpanded ? 'chat-input-expanded' : ''}
+          className={[
+            isTextareaExpanded ? 'chat-input-expanded' : '',
+            hasActivityIndicator ? 'rounded-t-none' : '',
+          ].filter(Boolean).join(' ')}
           {...getRootProps()}
         >
           {isDragActive && (
@@ -258,7 +281,7 @@ export default function ChatComposer({
                     d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"
                   />
                 </svg>
-                <p className="text-sm font-medium">Drop images here</p>
+                <p className="text-sm font-medium">Drop files here</p>
               </div>
             </div>
           )}
@@ -278,7 +301,7 @@ export default function ChatComposer({
                     {queued.images.length > 0 && (
                       <span className="flex-shrink-0 opacity-70">
                         {queued.images.length}
-                        <ImageIcon className="ml-0.5 inline h-3 w-3" />
+                        <PaperclipIcon className="ml-0.5 inline h-3 w-3" />
                       </span>
                     )}
                     {onRemoveQueuedMessage && (
@@ -343,16 +366,20 @@ export default function ChatComposer({
         <PromptInputFooter>
           <PromptInputTools>
             <PromptInputButton
-              tooltip={{ content: t('input.attachImages') }}
+              tooltip={{ content: t('input.attachFiles', { defaultValue: 'Attach files' }) }}
               onClick={openImagePicker}
             >
-              <ImageIcon />
+              <PaperclipIcon />
             </PromptInputButton>
+
+            {onVoiceTranscript && voiceAvailable && (
+              <VoiceInputButton state={voiceState} onToggle={voiceToggle} errorMsg={voiceError} />
+            )}
 
             <button
               type="button"
               onClick={onModeSwitch}
-              className={`rounded-lg border p-2 text-xs font-medium transition-all duration-200 sm:px-2.5 sm:py-1 ${
+              className={`inline-flex h-8 items-center rounded-lg border px-2 text-xs font-medium transition-all duration-200 sm:px-2.5 ${
                 permissionMode === 'default'
                   ? 'border-border/60 bg-muted/50 text-muted-foreground hover:bg-muted'
                   : permissionMode === 'acceptEdits'
@@ -427,10 +454,21 @@ export default function ChatComposer({
               {sendByCtrlEnter ? t('input.hintText.ctrlEnter') : t('input.hintText.enter')}
             </div>
             <PromptInputSubmit
-              onClick={isLoading ? onAbortSession : undefined}
-              disabled={!isLoading && !input.trim()}
+              onClick={
+                isLoading
+                  ? onAbortSession
+                  : isRecording
+                    ? (e: MouseEvent<HTMLButtonElement>) => {
+                        e.preventDefault();
+                        voiceStop({ send: true });
+                      }
+                    : undefined
+              }
+              disabled={isLoading ? false : isRecording ? false : isTranscribing ? true : !input.trim()}
               className="h-10 w-10 sm:h-10 sm:w-10"
-            />
+            >
+              {isTranscribing ? <Loader2 className="h-4 w-4 animate-spin" /> : undefined}
+            </PromptInputSubmit>
           </div>
         </PromptInputFooter>
       </PromptInput>
