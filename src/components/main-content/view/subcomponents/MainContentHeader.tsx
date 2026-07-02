@@ -8,7 +8,7 @@ import { Tooltip, Pill } from '../../../../shared/view/ui';
 import MobileMenuButton from './MobileMenuButton';
 import WorkspaceTabStrip from './WorkspaceTabStrip';
 import WorkspacePanelBar from './WorkspacePanelBar';
-import OpenInTerminalButton from './OpenInTerminalButton';
+import TerminalPaneButton from './TerminalPaneButton';
 
 export default function MainContentHeader({
   workspace,
@@ -21,6 +21,8 @@ export default function MainContentHeader({
   onCloseTab,
   sessionPaneOpen,
   onToggleSessionPane,
+  terminalPaneOpen,
+  onToggleTerminalPane,
 }: MainContentHeaderProps) {
   const { t } = useTranslation();
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -90,10 +92,7 @@ export default function MainContentHeader({
             workspace={workspace}
             shouldShowTasksTab={shouldShowTasksTab}
           />
-          <OpenInTerminalButton
-            selectedProject={selectedProject}
-            selectedSession={selectedSession}
-          />
+          <TerminalPaneButton isOpen={terminalPaneOpen} onToggle={onToggleTerminalPane} />
         </div>
       </div>
     </div>

@@ -341,9 +341,19 @@ export function handleShellConnection(
 
         const shellCommand = buildShellCommand(data, dependencies);
         const resumeSessionId = resolveResumeSessionId(data, dependencies);
-        const shell = os.platform() === 'win32' ? 'powershell.exe' : 'bash';
-        const shellArgs =
-          os.platform() === 'win32' ? ['-Command', shellCommand] : ['-c', shellCommand];
+        // Plain shell with no initial command (the bottom terminal pane):
+        // spawn the user's login shell interactively — `bash -c ''` would
+        // exit immediately, and $SHELL preserves the user's zsh/fish setup.
+        const isInteractiveShell = !shellCommand;
+        const isWindows = os.platform() === 'win32';
+        const shell = isWindows
+          ? 'powershell.exe'
+          : isInteractiveShell
+            ? process.env.SHELL || 'bash'
+            : 'bash';
+        const shellArgs = isInteractiveShell
+          ? (isWindows ? [] : ['-l'])
+          : (isWindows ? ['-Command', shellCommand] : ['-c', shellCommand]);
         const termCols = readNumber(data.cols, 80);
         const termRows = readNumber(data.rows, 24);
         const prioritizedPath = prioritizeUserNpmGlobalBin(process.env);
