@@ -41,6 +41,8 @@ export type UseWorkspaceTabsResult = {
   openFileTab: (path: string, name?: string, diffInfo?: CodeEditorDiffInfo | null) => string;
   setActive: (id: string) => void;
   closeTab: (id: string) => void;
+  /** Deactivates the active panel (git/browser/…), falling back to the last file tab. */
+  closePanel: () => void;
 };
 
 const STORAGE_PREFIX = 'workspace-tabs:';
@@ -233,6 +235,18 @@ export function useWorkspaceTabs({ projectId }: { projectId: string | null }): U
     [applyState],
   );
 
+  const closePanel = useCallback(() => {
+    const previous = stateRef.current;
+    if (!previous.activeId || !isPanelId(previous.activeId)) {
+      return;
+    }
+    // Panels aren't tabs, so there's no neighbor to pick — fall back to the
+    // last file tab; null collapses the right pane like closing the last tab.
+    const fallback = previous.tabs[previous.tabs.length - 1]?.id ?? null;
+    dbg('tabs.closePanel', { closed: previous.activeId, newActive: fallback, project: stateProjectIdRef.current });
+    applyState({ ...previous, activeId: fallback });
+  }, [applyState]);
+
   const activeTab = useMemo(
     () => state.tabs.find((tab) => tab.id === state.activeId) ?? null,
     [state.activeId, state.tabs],
@@ -251,5 +265,6 @@ export function useWorkspaceTabs({ projectId }: { projectId: string | null }): U
     openFileTab,
     setActive,
     closeTab,
+    closePanel,
   };
 }

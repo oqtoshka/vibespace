@@ -210,6 +210,7 @@ function AppContentInner() {
     openFileTab,
     setActive,
     closeTab,
+    closePanel,
   } = tabs;
 
   // Current session's chat/terminal view (remembered per session).
@@ -274,9 +275,10 @@ function AppContentInner() {
       activePanel,
       activateTab: setActive,
       closeTab,
+      closePanel,
       openFileTab,
     }),
-    [activeId, activePanel, activeTab, closeTab, openFileTab, setActive, workspaceTabs],
+    [activeId, activePanel, activeTab, closePanel, closeTab, openFileTab, setActive, workspaceTabs],
   );
 
   useEffect(() => {
