@@ -15,6 +15,7 @@ import { useTasksSettings } from '../../../contexts/TasksSettingsContext';
 import { useUiPreferences } from '../../../hooks/useUiPreferences';
 import { SESSION_PANE_MIN_WIDTH } from '../../../hooks/useSessionPane';
 import CodeEditor from '../../code-editor/view/CodeEditor';
+import StandaloneShell from '../../standalone-shell/view/StandaloneShell';
 import type { CodeEditorDiffInfo } from '../../code-editor/types/types';
 import type { Project } from '../../../types/app';
 import { TaskMasterPanel } from '../../task-master';
@@ -35,6 +36,70 @@ type TasksSettingsContextValue = {
 
 /** Minimum width the files pane keeps when the split is active. */
 const FILES_PANE_MIN_WIDTH = 260;
+
+/** Bottom terminal pane height bounds + persistence. */
+const TERMINAL_PANE_MIN_HEIGHT = 120;
+const TERMINAL_PANE_DEFAULT_HEIGHT = 280;
+const TERMINAL_PANE_HEIGHT_KEY = 'terminal-pane-height';
+
+function readStoredTerminalPaneHeight(): number {
+  try {
+    const stored = Number(window.localStorage.getItem(TERMINAL_PANE_HEIGHT_KEY));
+    if (Number.isFinite(stored) && stored >= TERMINAL_PANE_MIN_HEIGHT) {
+      return stored;
+    }
+  } catch {
+    // Storage unavailable — fall through to the default.
+  }
+  return TERMINAL_PANE_DEFAULT_HEIGHT;
+}
+
+/** Draggable row resizer above the bottom terminal pane. */
+function TerminalPaneDivider({ onHeightChange }: { onHeightChange: (height: number) => void }) {
+  const dragRef = useRef<{ startY: number; startHeight: number } | null>(null);
+
+  const onPointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const terminalPane = event.currentTarget.nextElementSibling as HTMLElement | null;
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    } catch {
+      // Best-effort capture.
+    }
+    dragRef.current = {
+      startY: event.clientY,
+      startHeight: terminalPane?.getBoundingClientRect().height ?? TERMINAL_PANE_DEFAULT_HEIGHT,
+    };
+  }, []);
+
+  const onPointerMove = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      const drag = dragRef.current;
+      if (!drag) {
+        return;
+      }
+      const max = Math.max(TERMINAL_PANE_MIN_HEIGHT, window.innerHeight * 0.7);
+      const next = Math.min(max, Math.max(TERMINAL_PANE_MIN_HEIGHT, drag.startHeight + (drag.startY - event.clientY)));
+      onHeightChange(next);
+    },
+    [onHeightChange],
+  );
+
+  const onPointerEnd = useCallback(() => {
+    dragRef.current = null;
+  }, []);
+
+  return (
+    <div
+      className="relative z-10 flex h-1.5 flex-shrink-0 cursor-row-resize touch-none items-center justify-center bg-border/40 hover:bg-accent/60"
+      onPointerDown={onPointerDown}
+      onPointerMove={onPointerMove}
+      onPointerUp={onPointerEnd}
+      onPointerCancel={onPointerEnd}
+    >
+      <div className="h-0.5 w-8 rounded-full bg-muted-foreground/50" />
+    </div>
+  );
+}
 
 /** Draggable column resizer between the session and files panes. */
 function PaneDivider({
@@ -128,6 +193,30 @@ function MainContent({
 
   // Mobile shows one pane at a time, switched from the header.
   const [mobileView, setMobileView] = useState<'session' | 'files'>('session');
+
+  // Bottom terminal pane: a plain interactive shell in the project folder.
+  // Once opened it stays mounted (hidden on close) so the PTY survives toggles.
+  const [terminalPaneOpen, setTerminalPaneOpen] = useState(false);
+  const [terminalPaneMounted, setTerminalPaneMounted] = useState(false);
+  const [terminalPaneHeight, setTerminalPaneHeight] = useState(readStoredTerminalPaneHeight);
+
+  const toggleTerminalPane = useCallback(() => {
+    setTerminalPaneOpen((previous) => {
+      if (!previous) {
+        setTerminalPaneMounted(true);
+      }
+      return !previous;
+    });
+  }, []);
+
+  const handleTerminalPaneHeightChange = useCallback((height: number) => {
+    setTerminalPaneHeight(height);
+    try {
+      window.localStorage.setItem(TERMINAL_PANE_HEIGHT_KEY, String(Math.round(height)));
+    } catch {
+      // Storage unavailable — height just won't persist.
+    }
+  }, []);
 
   const handleFileOpen = useCallback(
     (filePath: string, diffInfo: CodeEditorDiffInfo | null = null) => {
@@ -229,6 +318,8 @@ function MainContent({
         onCloseTab={workspace.closeTab}
         sessionPaneOpen={sessionPaneOpen}
         onToggleSessionPane={sessionPaneOpen ? onCloseSessionPane : onOpenSessionPane}
+        terminalPaneOpen={terminalPaneOpen}
+        onToggleTerminalPane={toggleTerminalPane}
       />
 
       {isMobile && (
@@ -338,6 +429,27 @@ function MainContent({
           </div>
         )}
       </div>
+
+      {/* BOTTOM TERMINAL PANE — plain interactive shell in the project folder. */}
+      {terminalPaneMounted && (
+        <>
+          {terminalPaneOpen && <TerminalPaneDivider onHeightChange={handleTerminalPaneHeightChange} />}
+          <div
+            className={`flex-shrink-0 overflow-hidden border-t border-border/60 ${terminalPaneOpen ? '' : 'hidden'}`}
+            style={{ height: terminalPaneHeight }}
+          >
+            <StandaloneShell
+              key={selectedProject.projectId}
+              project={selectedProject}
+              isPlainShell
+              isActive={terminalPaneOpen}
+              title={t('tabs.terminal', { defaultValue: 'Terminal' })}
+              onClose={toggleTerminalPane}
+              shellId={`sh_term_${selectedProject.projectId}`}
+            />
+          </div>
+        </>
+      )}
     </div>
   );
 }

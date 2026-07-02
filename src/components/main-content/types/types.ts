@@ -87,6 +87,8 @@ export type MainContentHeaderProps = {
   onCloseTab: (id: string) => void;
   sessionPaneOpen: boolean;
   onToggleSessionPane: () => void;
+  terminalPaneOpen: boolean;
+  onToggleTerminalPane: () => void;
 };
 
 export type MainContentStateViewProps = {
