@@ -69,7 +69,7 @@ export default function DbmlPreview({ content, projectId, path }: DbmlPreviewPro
   );
 
   return (
-    <div className="h-full overflow-auto bg-white dark:bg-gray-900">
+    <div className="h-full overflow-auto bg-background">
       <div className="flex min-h-full items-start justify-center p-6">
         {status === 'error' ? (
           <div className="mt-12 max-w-md text-center text-sm text-gray-500 dark:text-gray-400">

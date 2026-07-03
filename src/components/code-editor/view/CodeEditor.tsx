@@ -1,9 +1,10 @@
 import { EditorView } from '@codemirror/view';
 import { unifiedMergeView } from '@codemirror/merge';
 import type { Extension } from '@codemirror/state';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { usePaletteOps } from '../../../contexts/PaletteOpsContext';
+import { useTheme } from '../../../contexts/ThemeContext';
 import { useCodeEditorDocument } from '../hooks/useCodeEditorDocument';
 import { useCodeEditorSettings } from '../hooks/useCodeEditorSettings';
 import { useEditorKeyboardShortcuts } from '../hooks/useEditorKeyboardShortcuts';
@@ -19,6 +20,7 @@ import CodeEditorBinaryFile from './subcomponents/CodeEditorBinaryFile';
 import CodeEditorPdfView from './subcomponents/CodeEditorPdfView';
 import CodeEditorImageView from './subcomponents/CodeEditorImageView';
 import { isImageFile } from '../utils/binaryFile';
+import { detectApiSpecKind } from '../utils/apiSpec';
 
 type CodeEditorProps = {
   file: CodeEditorFile;
@@ -77,15 +79,10 @@ export default function CodeEditor({
   // Custom formats with a project renderer (e.g. *.flow.json → flow diagram).
   const isCustomRenderFile = useMemo(() => file.name.toLowerCase().endsWith('.flow.json'), [file.name]);
 
-  const isPreviewable = isMarkdownFile || isPlantUmlFile || isHtmlFile || isCustomRenderFile || isDbmlFile;
-
-  // Default previewable files (markdown, PlantUML, HTML) to their rendered
-  // preview when opened normally — via the file tree or a markdown link jump.
-  // A diff view (git/quick-diff) opens in the editor so the changes are visible.
-  const [previewMode, setPreviewMode] = useState(() => isPreviewable && !file.diffInfo);
-
+  // Theme moved to the app-wide ThemeContext; the editor-settings hook now
+  // only owns editor-local preferences (wrap, minimap, line numbers, font).
+  const { isDarkMode } = useTheme();
   const {
-    isDarkMode,
     wordWrap,
     minimapEnabled,
     showLineNumbers,
@@ -106,6 +103,30 @@ export default function CodeEditor({
     file,
     projectPath,
   });
+
+  // OpenAPI/Swagger/AsyncAPI documents are plain .yaml/.yml/.json files, so
+  // detection sniffs the loaded content rather than the extension.
+  const apiSpecKind = useMemo(() => detectApiSpecKind(file.name, content), [file.name, content]);
+
+  const isPreviewable = isMarkdownFile || isPlantUmlFile || isHtmlFile || isCustomRenderFile || isDbmlFile || apiSpecKind !== null;
+
+  // Default previewable files (markdown, PlantUML, HTML) to their rendered
+  // preview when opened normally — via the file tree or a markdown link jump.
+  // A diff view (git/quick-diff) opens in the editor so the changes are visible.
+  const [previewMode, setPreviewMode] = useState(() => isPreviewable && !file.diffInfo);
+
+  // Spec detection can't feed the initializer above — content arrives after
+  // mount — so flip the preview on once when a spec is recognized, without
+  // fighting a later manual toggle back to the editor.
+  const specAutoPreviewed = useRef(false);
+  useEffect(() => {
+    if (apiSpecKind && !specAutoPreviewed.current) {
+      specAutoPreviewed.current = true;
+      if (!file.diffInfo) {
+        setPreviewMode(true);
+      }
+    }
+  }, [apiSpecKind, file.diffInfo]);
 
   const minimapExtension = useMemo(
     () => (
@@ -304,6 +325,7 @@ export default function CodeEditor({
               isDbmlFile={isDbmlFile}
               isHtmlFile={isHtmlFile}
               isCustomRenderFile={isCustomRenderFile}
+              apiSpecKind={apiSpecKind}
               isDarkMode={isDarkMode}
               fontSize={fontSize}
               showLineNumbers={showLineNumbers}

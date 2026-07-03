@@ -1,6 +1,7 @@
 import { Download, Maximize2, Minimize2, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../../../../utils/api';
+import { useFileDiskVersion } from '../../../../hooks/useFileDiskVersion';
 import type { CodeEditorFile } from '../../types/types';
 
 type CodeEditorImageViewProps = {
@@ -33,6 +34,9 @@ export default function CodeEditorImageView({
 
   const projectId = file.projectId;
   const filePath = file.path;
+  // Re-fetch when the image is rewritten on disk (e.g. an agent regenerates
+  // it); the old frame stays up until the new bytes arrive.
+  const diskVersion = useFileDiskVersion(projectId, filePath);
 
   useEffect(() => {
     let cancelled = false;
@@ -64,7 +68,7 @@ export default function CodeEditorImageView({
         objectUrlRef.current = null;
       }
     };
-  }, [projectId, filePath]);
+  }, [projectId, filePath, diskVersion]);
 
   const handleDownload = () => {
     if (!objectUrl) return;
@@ -85,7 +89,7 @@ export default function CodeEditorImageView({
             <p className="mt-1">{errorMessage}</p>
           </div>
         </div>
-      ) : status === 'loading' ? (
+      ) : status === 'loading' && !objectUrl ? (
         <div className="flex h-full w-full items-center justify-center text-sm text-muted-foreground">
           Loading image…
         </div>

@@ -726,6 +726,24 @@ app.post('/api/projects/:projectId/plantuml', authenticateToken, async (req, res
     }
 });
 
+// Inline PlantUML render (```plantuml fences in markdown previews and chat):
+// there's no file anchoring the source, so no `!include` resolution — just
+// encode the snippet and return a render URL for the configured server.
+app.post('/api/plantuml', authenticateToken, async (req, res) => {
+    try {
+        const content = typeof req.body?.content === 'string' ? req.body.content : '';
+        const format = req.body?.format === 'png' ? 'png' : 'svg';
+        if (!content.trim()) {
+            return res.status(400).json({ error: 'Empty diagram' });
+        }
+        const code = encodePlantUmlSource(content);
+        res.json({ url: `${PLANTUML_SERVER_URL}/${format}/${code}` });
+    } catch (error) {
+        console.error('Error building inline PlantUML render:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
 // DBML preview: render a `.dbml` file's schema into an ER diagram (SVG) using
 // @softwaretechnik/dbml-renderer (the graphviz-via-wasm renderer the VSCode DBML
 // extensions use). `content` carries the live editor text so unsaved edits

@@ -167,6 +167,14 @@ export const api = {
       body: JSON.stringify({ path, content }),
       signal,
     }),
+  // Encodes an inline PlantUML snippet (markdown/chat fenced block) into a
+  // render URL for the configured PlantUML server. No include resolution.
+  renderInlinePlantUml: ({ content, signal } = {}) =>
+    authenticatedFetch('/api/plantuml', {
+      method: 'POST',
+      body: JSON.stringify({ content }),
+      signal,
+    }),
   // Renders a .dbml file's schema into an ER diagram (SVG) server-side.
   renderDbml: (projectId, { path, content, signal } = {}) =>
     authenticatedFetch(`/api/projects/${projectId}/dbml`, {
