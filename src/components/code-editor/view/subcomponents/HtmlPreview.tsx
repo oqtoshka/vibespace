@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from '../../../../utils/api';
+import { useFileDiskVersion } from '../../../../hooks/useFileDiskVersion';
 
 /**
  * Renders an HTML file as a live page, mirroring the markdown/PlantUML preview.
@@ -12,6 +13,9 @@ import { api } from '../../../../utils/api';
  * iframe's subresource requests authenticate.
  *
  * The served page renders from disk, so unsaved editor edits show after a save.
+ * When the entry file itself is rewritten on disk (a save here, or an agent
+ * editing it), the iframe reloads with a fresh cache-buster; subresource-only
+ * changes still need a manual preview re-toggle.
  */
 
 type HtmlPreviewProps = {
@@ -22,6 +26,7 @@ type HtmlPreviewProps = {
 export default function HtmlPreview({ projectId, path }: HtmlPreviewProps) {
   const [entryUrl, setEntryUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const diskVersion = useFileDiskVersion(projectId, path);
 
   useEffect(() => {
     if (!projectId || !path) {
@@ -51,11 +56,11 @@ export default function HtmlPreview({ projectId, path }: HtmlPreviewProps) {
     return () => {
       active = false;
     };
-  }, [projectId, path]);
+  }, [projectId, path, diskVersion]);
 
   if (error) {
     return (
-      <div className="flex h-full items-center justify-center bg-white dark:bg-gray-900">
+      <div className="flex h-full items-center justify-center bg-background">
         <div className="max-w-md text-center text-sm text-gray-500 dark:text-gray-400">
           <p className="font-medium text-gray-700 dark:text-gray-300">Couldn’t preview this page</p>
           <p className="mt-1">{error}</p>
