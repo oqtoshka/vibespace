@@ -4,6 +4,8 @@ import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneDark as prismOneDark, oneLight as prismOneLight } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { copyTextToClipboard } from '../../../../../utils/clipboard';
 import { useTheme } from '../../../../../contexts/ThemeContext';
+import MermaidDiagram from '../../../../markdown/MermaidDiagram';
+import PlantUmlDiagram from '../../../../markdown/PlantUmlDiagram';
 
 type MarkdownCodeBlockProps = {
   inline?: boolean;
@@ -26,7 +28,7 @@ export default function MarkdownCodeBlock({
   if (shouldRenderInline) {
     return (
       <code
-        className={`whitespace-pre-wrap break-words rounded-md border border-gray-200 bg-gray-100 px-1.5 py-0.5 font-mono text-[0.9em] text-gray-900 dark:border-gray-700 dark:bg-gray-800/60 dark:text-gray-100 ${className || ''}`}
+        className={`whitespace-pre-wrap break-words rounded-md border border-border bg-muted px-1.5 py-0.5 font-mono text-[0.9em] text-foreground ${className || ''}`}
         {...props}
       >
         {children}
@@ -37,7 +39,7 @@ export default function MarkdownCodeBlock({
   const languageMatch = /language-(\w+)/.exec(className || '');
   const language = languageMatch ? languageMatch[1] : 'text';
 
-  return (
+  const highlightedBlock = (
     <div className="group relative my-2">
       {language !== 'text' && (
         <div className="absolute left-3 top-2 z-10 text-xs font-medium uppercase text-gray-400">{language}</div>
@@ -73,4 +75,15 @@ export default function MarkdownCodeBlock({
       </SyntaxHighlighter>
     </div>
   );
+
+  // Diagram fences render as diagrams; invalid source falls back to the
+  // highlighted block above.
+  if (language === 'mermaid') {
+    return <MermaidDiagram source={rawContent} fallback={highlightedBlock} />;
+  }
+  if (language === 'plantuml' || language === 'puml') {
+    return <PlantUmlDiagram source={rawContent} fallback={highlightedBlock} />;
+  }
+
+  return highlightedBlock;
 }

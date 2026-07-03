@@ -78,7 +78,7 @@ export default function CustomRenderPreview({ content, projectId, path, onFileOp
 
   if (status === 'error') {
     return (
-      <div className="flex h-full items-center justify-center bg-white dark:bg-gray-900">
+      <div className="flex h-full items-center justify-center bg-background">
         <div className="max-w-lg whitespace-pre-wrap text-center text-sm text-gray-500 dark:text-gray-400">
           <p className="font-medium text-gray-700 dark:text-gray-300">Couldn’t render this file</p>
           <p className="mt-1">{errorMessage}</p>

@@ -1,6 +1,7 @@
 import { Download, Maximize2, Minimize2, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
 import { api } from '../../../../utils/api';
+import { useFileDiskVersion } from '../../../../hooks/useFileDiskVersion';
 import type { CodeEditorFile } from '../../types/types';
 
 type CodeEditorPdfViewProps = {
@@ -33,6 +34,8 @@ export default function CodeEditorPdfView({
 
   const projectId = file.projectId;
   const filePath = file.path;
+  // Re-fetch when the PDF is rewritten on disk (e.g. a regenerated export).
+  const diskVersion = useFileDiskVersion(projectId, filePath);
 
   useEffect(() => {
     let cancelled = false;
@@ -64,7 +67,7 @@ export default function CodeEditorPdfView({
         objectUrlRef.current = null;
       }
     };
-  }, [projectId, filePath]);
+  }, [projectId, filePath, diskVersion]);
 
   const handleDownload = () => {
     if (!objectUrl) return;

@@ -8,9 +8,11 @@ import { oneDark, oneLight } from 'react-syntax-highlighter/dist/esm/styles/pris
 import { useTranslation } from 'react-i18next';
 import { normalizeInlineCodeFences } from '../../utils/chatFormatting';
 import { copyTextToClipboard } from '../../../../utils/clipboard';
+import { resolveMarkdownLinkPath } from '../../../../utils/markdownLinks';
 import { usePaletteOps } from '../../../../contexts/PaletteOpsContext';
 import { useTheme } from '../../../../contexts/ThemeContext';
-import { resolveMarkdownLinkPath } from '../../../../utils/markdownLinks';
+import MermaidDiagram from '../../../markdown/MermaidDiagram';
+import PlantUmlDiagram from '../../../markdown/PlantUmlDiagram';
 
 type MarkdownProps = {
   children: React.ReactNode;
@@ -85,7 +87,7 @@ const CodeBlock = ({ node, inline, className, children, ...props }: CodeBlockPro
   const match = /language-(\w+)/.exec(className || '');
   const language = match ? match[1] : 'text';
 
-  return (
+  const highlightedBlock = (
     <div className="group relative my-2">
       {language && language !== 'text' && (
         <div className="absolute left-3 top-2 z-10 text-xs font-medium uppercase text-gray-400">{language}</div>
@@ -158,6 +160,17 @@ const CodeBlock = ({ node, inline, className, children, ...props }: CodeBlockPro
       </SyntaxHighlighter>
     </div>
   );
+
+  // Diagram fences render as diagrams; invalid source (e.g. a message still
+  // streaming in) falls back to the highlighted block above.
+  if (language === 'mermaid') {
+    return <MermaidDiagram source={raw} fallback={highlightedBlock} />;
+  }
+  if (language === 'plantuml' || language === 'puml') {
+    return <PlantUmlDiagram source={raw} fallback={highlightedBlock} />;
+  }
+
+  return highlightedBlock;
 };
 
 const markdownComponents = {
@@ -196,8 +209,27 @@ export function Markdown({ children, className, onFileOpen = null }: MarkdownPro
     () => ({
       ...markdownComponents,
       a: ({ href, children: linkChildren }: { href?: string; children?: React.ReactNode }) => {
-        // Prefer the href when it is a real path; otherwise fall back to the
-        // link text, since models often emit `[src/foo.ts]()` with an empty href.
+        // Chat messages have no source file, so relative links resolve against
+        // the project root (the server resolves non-absolute paths there).
+        const internalPath = onFileOpen ? resolveMarkdownLinkPath(href, null) : null;
+        if (internalPath) {
+          return (
+            <a
+              href={href}
+              className="text-blue-600 hover:underline dark:text-blue-400"
+              onClick={(event) => {
+                event.preventDefault();
+                onFileOpen?.(internalPath);
+              }}
+            >
+              {linkChildren}
+            </a>
+          );
+        }
+
+        // No onFileOpen (or the href didn't resolve): fall back to the palette
+        // route. Prefer the href when it is a real path; otherwise the link
+        // text, since models often emit `[src/foo.ts]()` with an empty href.
         const linkText = childrenToText(linkChildren);
         const fileRef = looksLikeFilePath(href) ? href : looksLikeFilePath(linkText) ? linkText : undefined;
 
@@ -217,50 +249,13 @@ export function Markdown({ children, className, onFileOpen = null }: MarkdownPro
         }
 
         return (
-          <a
-            href={href}
-            className="text-blue-600 hover:underline dark:text-blue-400"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            {linkChildren}
-          </a>
-        );
-      },
-    }),
-    [openFileInEditor],
-  );
-
-  const components = useMemo(
-    () => ({
-      ...markdownComponents,
-      a: ({ href, children: linkChildren }: { href?: string; children?: React.ReactNode }) => {
-        // Chat messages have no source file, so relative links resolve against
-        // the project root (the server resolves non-absolute paths there).
-        const internalPath = onFileOpen ? resolveMarkdownLinkPath(href, null) : null;
-        if (internalPath) {
-          return (
-            <a
-              href={href}
-              className="text-blue-600 hover:underline dark:text-blue-400"
-              onClick={(event) => {
-                event.preventDefault();
-                onFileOpen?.(internalPath);
-              }}
-            >
-              {linkChildren}
-            </a>
-          );
-        }
-
-        return (
           <a href={href} className="text-blue-600 hover:underline dark:text-blue-400" target="_blank" rel="noopener noreferrer">
             {linkChildren}
           </a>
         );
       },
     }),
-    [onFileOpen],
+    [onFileOpen, openFileInEditor],
   );
 
   return (
