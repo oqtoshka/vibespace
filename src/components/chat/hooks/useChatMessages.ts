@@ -111,7 +111,11 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
 
       case 'tool_use': {
         const tr = msg.toolResult || (msg.toolId ? toolResultMap.get(msg.toolId) : null);
-        const isSubagentContainer = msg.toolName === 'Task';
+        // Both the classic `Task` tool and the newer `Agent` tool (FleetView)
+        // spawn subagents whose transcript lands in agent-<id>.jsonl; treat both
+        // as subagent containers so their conversation is nested/threaded rather
+        // than leaking the subagent's prompt as a fake user message.
+        const isSubagentContainer = msg.toolName === 'Task' || msg.toolName === 'Agent';
 
         // Build child tools from subagentTools
         const childTools: SubagentChildTool[] = [];

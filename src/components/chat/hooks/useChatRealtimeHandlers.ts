@@ -151,6 +151,18 @@ export function useChatRealtimeHandlers({
         case 'protocol_error': {
           console.error('[Chat] Protocol error:', msg.code, msg.error);
           if (sid) {
+            if (msg.code === 'RUN_IN_PROGRESS') {
+              // Not a real failure — a run IS active for this session, the
+              // client just thought it was idle (state-desync). Reflect the
+              // truth (processing, interruptible) rather than dropping the
+              // spinner, and hand the just-rejected send back to the composer
+              // so it re-queues instead of vanishing. No error bubble.
+              onSessionProcessing?.(sid, { canInterrupt: true });
+              window.dispatchEvent(
+                new CustomEvent('vibespace:run-in-progress', { detail: { sessionId: sid } }),
+              );
+              return;
+            }
             // Surface the failure in the conversation and stop the spinner —
             // the run never started (or was rejected), so no `complete` follows.
             onSessionIdle?.(sid);

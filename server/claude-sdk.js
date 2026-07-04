@@ -790,6 +790,19 @@ function handleTaskMessage(session, message) {
         const resumeWriter = session.acquireResumeRun?.();
         if (resumeWriter) {
           session.writer = resumeWriter;
+          // A server-initiated resume has no client `chat.send` behind it, so
+          // nothing has told the viewing clients this session is processing
+          // again. Emit a `status` up front so the UI flips out of "idle" the
+          // moment the auto-resumed turn begins streaming — otherwise new
+          // messages appear while the composer still shows "send", and a user
+          // send races into a RUN_IN_PROGRESS rejection (state-desync bug).
+          resumeWriter.send(createNormalizedMessage({
+            kind: 'status',
+            text: 'Resuming — background task finished',
+            canInterrupt: true,
+            sessionId: session.sessionId,
+            provider: 'claude',
+          }));
         }
         session.turnActive = true;
         session.turnStartTime = Date.now();
@@ -1019,6 +1032,12 @@ async function runSessionLoop(session) {
         if (transformedMessage.parentToolUseId && !msg.parentToolUseId) {
           msg.parentToolUseId = transformedMessage.parentToolUseId;
         }
+        // Subagent-internal (sidechain) messages don't belong in the main
+        // thread — the subagent's prompt would otherwise render as if the user
+        // typed it. They stay available via the subagent thread viewer, which
+        // reads the subagent transcript directly. Keep the parent Task card
+        // (no parentToolUseId) so the subagent is still represented inline.
+        if (msg.parentToolUseId) continue;
         session.writer.send(msg);
       }
 
@@ -1454,6 +1473,58 @@ async function abortClaudeSDKSession(sessionId) {
 }
 
 /**
+ * Returns the authoritative set of background jobs currently running for a
+ * session — the ground truth the client can't reliably derive from the message
+ * stream (some task completions are delivered as internal transcript entries the
+ * UI never sees, leaving derived tasks stuck "running"). Empty when the session
+ * isn't live in memory (e.g. after a server restart the jobs are gone).
+ * @param {string} sessionId - App/provider session identifier
+ * @returns {Array<{taskId: string, description: string}>}
+ */
+function getClaudeSDKBackgroundTasks(sessionId) {
+  const session = getSession(sessionId);
+  if (!session || !session.pendingTasks) return [];
+  const out = [];
+  for (const [taskId, task] of session.pendingTasks.entries()) {
+    out.push({ taskId, description: (task && task.description) || '' });
+  }
+  return out;
+}
+
+/**
+ * Cancels a single background bash job by its task id, without touching the
+ * model's turn or the session. Uses the SDK's `stopTask` control request
+ * (`{subtype:"stop_task"}`) — the same mechanism Claude Code's KillShell uses —
+ * so only the targeted job dies; other jobs and the agent keep running.
+ * @param {string} sessionId - App/provider session identifier
+ * @param {string} taskId - Background task id (as announced at launch)
+ * @returns {Promise<boolean>} True if the request was dispatched to a live session
+ */
+async function stopClaudeSDKTask(sessionId, taskId) {
+  const session = getSession(sessionId);
+  if (!session) {
+    console.log(`stopTask: session ${sessionId} not found`);
+    return false;
+  }
+  if (!taskId || typeof session.instance?.stopTask !== 'function') {
+    console.warn(`stopTask: session ${sessionId} cannot stop task ${taskId} (no stopTask support)`);
+    return false;
+  }
+  try {
+    console.log(`[claude bg] session ${sessionId}: stopping background task ${taskId}`);
+    await session.instance.stopTask(taskId);
+    // Reconcile local bookkeeping; the SDK also emits a task_updated/killed the
+    // stream loop already handles, but dropping it here avoids a spurious
+    // auto-resume if that event races.
+    session.pendingTasks?.delete(taskId);
+    return true;
+  } catch (error) {
+    console.error(`stopTask for ${sessionId}/${taskId} failed:`, error?.message || error);
+    return false;
+  }
+}
+
+/**
  * Checks if an SDK session has a turn actively processing (drives the UI
  * "processing" indicator). A persistent session that is alive but idle between
  * turns reports false.
@@ -1527,6 +1598,8 @@ function reconnectSessionWriter(sessionId, newRawWs) {
 export {
   queryClaudeSDK,
   abortClaudeSDKSession,
+  stopClaudeSDKTask,
+  getClaudeSDKBackgroundTasks,
   isClaudeSDKSessionActive,
   isClaudeSDKSessionAlive,
   getActiveClaudeSDKSessions,
