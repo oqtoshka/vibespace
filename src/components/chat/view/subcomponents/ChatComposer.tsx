@@ -36,6 +36,8 @@ import ImageAttachment from './ImageAttachment';
 import VoiceInputButton from './VoiceInputButton';
 import PermissionRequestsBanner from './PermissionRequestsBanner';
 import TokenUsageSummary from './TokenUsageSummary';
+import BackgroundTasksIndicator from './BackgroundTasksIndicator';
+import type { BackgroundTask } from '../../hooks/useBackgroundTasks';
 
 interface MentionableFile {
   name: string;
@@ -66,6 +68,8 @@ interface ChatComposerProps {
   onModeSwitch: () => void;
   tokenBudget: Record<string, unknown> | null;
   onShowTokenUsage: () => void;
+  backgroundTasks: BackgroundTask[];
+  backgroundRunningCount: number;
   slashCommandsCount: number;
   onToggleCommandMenu: () => void;
   hasInput: boolean;
@@ -119,6 +123,8 @@ export default function ChatComposer({
   permissionMode,
   onModeSwitch,
   tokenBudget,
+  backgroundTasks,
+  backgroundRunningCount,
   onShowTokenUsage,
   slashCommandsCount,
   onToggleCommandMenu,
@@ -417,6 +423,8 @@ export default function ChatComposer({
             </button>
 
             <TokenUsageSummary usage={tokenBudget} onClick={onShowTokenUsage} />
+
+            <BackgroundTasksIndicator tasks={backgroundTasks} runningCount={backgroundRunningCount} />
 
             <PromptInputButton
               tooltip={{ content: t('input.showAllCommands') }}

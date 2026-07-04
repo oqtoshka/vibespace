@@ -12,6 +12,7 @@ import { useChatProviderState } from '../hooks/useChatProviderState';
 import { useChatSessionState } from '../hooks/useChatSessionState';
 import { useChatRealtimeHandlers } from '../hooks/useChatRealtimeHandlers';
 import { useChatComposerState } from '../hooks/useChatComposerState';
+import { useBackgroundTasks } from '../hooks/useBackgroundTasks';
 import { useSessionStore } from '../../../stores/useSessionStore';
 
 import ChatMessagesPane from './subcomponents/ChatMessagesPane';
@@ -319,6 +320,7 @@ function ChatInterface({
   }), [pendingPermissionRequests, handlePermissionDecision]);
 
   const { activeWorktree } = useActiveWorktree(selectedProject?.projectId ?? null);
+  const { tasks: backgroundTasks, runningCount: backgroundRunningCount } = useBackgroundTasks(chatMessages, isProcessing);
 
   if (!selectedProject) {
     const selectedProviderLabel =
@@ -426,6 +428,8 @@ function ChatInterface({
           onModeSwitch={cyclePermissionMode}
           tokenBudget={tokenBudget}
           onShowTokenUsage={showCostModal}
+          backgroundTasks={backgroundTasks}
+          backgroundRunningCount={backgroundRunningCount}
           slashCommandsCount={slashCommandsCount}
           onToggleCommandMenu={handleToggleCommandMenu}
           hasInput={Boolean(input.trim())}
