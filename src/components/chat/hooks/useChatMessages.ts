@@ -13,48 +13,6 @@ function formatToolResultContent(content: unknown): string {
   return toolUseErrorMatch ? toolUseErrorMatch[1] : text;
 }
 
-type ParsedTaskNotification = {
-  status: string;
-  summary: string;
-  result: string;
-};
-
-/**
- * Parses a background-agent `<task-notification>` block.
- *
- * The harness injects these as user-role messages when a background task stops.
- * Newer notifications carry extra fields (`<tool-use-id>`, `<note>`, `<usage>`,
- * and a `<result>` markdown payload) that the previous single-shot regex could
- * not match, so the whole raw XML block leaked through as plain user text.
- * Fields are extracted independently so the block renders as an assistant
- * notification plus, when present, the agent's markdown result.
- */
-function parseTaskNotification(content: string): ParsedTaskNotification | null {
-  if (!content.trimStart().startsWith('<task-notification>')) {
-    return null;
-  }
-
-  const statusMatch = /<status>([\s\S]*?)<\/status>/.exec(content);
-  const summaryMatch = /<summary>([\s\S]*?)<\/summary>/.exec(content);
-
-  let result = '';
-  const resultOpen = content.indexOf('<result>');
-  if (resultOpen !== -1) {
-    const afterOpen = content.slice(resultOpen + '<result>'.length);
-    const closeIndex = afterOpen.indexOf('</result>');
-    result =
-      closeIndex === -1
-        ? afterOpen.replace(/<\/task-notification>\s*$/, '').trim()
-        : afterOpen.slice(0, closeIndex).trim();
-  }
-
-  return {
-    status: statusMatch?.[1]?.trim() || 'completed',
-    summary: summaryMatch?.[1]?.trim() || 'Background task finished',
-    result,
-  };
-}
-
 /**
  * Convert NormalizedMessage[] from the session store into ChatMessage[]
  * that the existing UI components expect.
@@ -100,37 +58,40 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
     switch (msg.kind) {
       case 'text': {
         const content = msg.content || '';
-        const images = Array.isArray(msg.images) && msg.images.length > 0 ? msg.images : undefined;
-        if (!content.trim() && !images) continue;
+        if (!content.trim()) continue;
 
         if (msg.role === 'user') {
-          // Parse task notifications
-          const taskNotif = parseTaskNotification(content);
-          if (taskNotif) {
+          // Parse background-task completion notifications. Extract fields
+          // individually so we tolerate field order and the optional
+          // <tool-use-id> line the harness includes (the old strict regex
+          // missed those, leaking raw XML into the transcript).
+          const notifBlocks = [...content.matchAll(/<task-notification>([\s\S]*?)<\/task-notification>/g)];
+          if (notifBlocks.length > 0) {
+            // A message can batch several completions — capture them all.
+            const taskNotifications = notifBlocks.map((block) => {
+              const body = block[1];
+              return {
+                taskId: body.match(/<task-id>([^<]*)<\/task-id>/)?.[1]?.trim(),
+                status: body.match(/<status>([^<]*)<\/status>/)?.[1]?.trim() || 'completed',
+                summary: body.match(/<summary>([^<]*)<\/summary>/)?.[1]?.trim(),
+              };
+            });
+            const last = taskNotifications[taskNotifications.length - 1];
             converted.push({
               type: 'assistant',
-              content: taskNotif.summary,
+              content: last.summary || 'Background task finished',
               timestamp: msg.timestamp,
               isTaskNotification: true,
-              taskStatus: taskNotif.status,
+              taskStatus: last.status,
+              taskId: taskNotifications[0].taskId,
+              taskNotifications,
               ...sharedMetadata,
             });
-            // Render the agent's result as a normal assistant message so its
-            // markdown displays correctly instead of leaking raw XML.
-            if (taskNotif.result) {
-              converted.push({
-                type: 'assistant',
-                content: formatUsageLimitText(unescapeWithMathProtection(decodeHtmlEntities(taskNotif.result))),
-                timestamp: msg.timestamp,
-                ...sharedMetadata,
-              });
-            }
           } else {
             converted.push({
               type: 'user',
               content: unescapeWithMathProtection(decodeHtmlEntities(content)),
               timestamp: msg.timestamp,
-              images,
               ...sharedMetadata,
             });
           }
