@@ -101,6 +101,134 @@ async function parseAgentTools(filePath: string): Promise<AnyRecord[]> {
   return tools;
 }
 
+export type SubagentConversationEntry =
+  | { type: 'user' | 'assistant' | 'thinking'; content: string; timestamp?: string }
+  | {
+    type: 'tool';
+    toolId?: string;
+    toolName: string;
+    toolInput: unknown;
+    toolResult: { content: string; isError: boolean } | null;
+    timestamp?: string;
+  };
+
+function stringifyPartContent(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content.map((part: AnyRecord) => (typeof part?.text === 'string' ? part.text : '')).join('\n');
+  }
+  return content == null ? '' : JSON.stringify(content);
+}
+
+/**
+ * Reads a subagent's full transcript (`agent-<agentId>.jsonl`) into an ordered,
+ * render-ready conversation: the launching prompt, the subagent's text/thinking,
+ * and its tool calls with results matched in. Powers the subagent thread viewer.
+ */
+export async function getSubagentConversation(
+  sessionId: string,
+  agentId: string,
+): Promise<{ found: boolean; messages: SubagentConversationEntry[] }> {
+  const jsonLPath = sessionsDb.getSessionById(sessionId)?.jsonl_path;
+  if (!jsonLPath) {
+    return { found: false, messages: [] };
+  }
+
+  const projectDir = path.dirname(jsonLPath);
+  const agentFileName = `agent-${agentId}.jsonl`;
+  const candidateDirs = [path.join(projectDir, sessionId, 'subagents'), projectDir];
+
+  let agentFilePath: string | null = null;
+  for (const dir of candidateDirs) {
+    const candidate = path.join(dir, agentFileName);
+    try {
+      await fsp.access(candidate);
+      agentFilePath = candidate;
+      break;
+    } catch {
+      // not here — try the next layout
+    }
+  }
+  if (!agentFilePath) {
+    return { found: false, messages: [] };
+  }
+
+  const messages: SubagentConversationEntry[] = [];
+  const toolsById = new Map<string, Extract<SubagentConversationEntry, { type: 'tool' }>>();
+
+  try {
+    const rl = readline.createInterface({
+      input: fs.createReadStream(agentFilePath),
+      crlfDelay: Infinity,
+    });
+
+    for await (const line of rl) {
+      if (!line.trim()) continue;
+      let entry: AnyRecord;
+      try {
+        entry = JSON.parse(line) as AnyRecord;
+      } catch {
+        continue;
+      }
+
+      const message = entry.message as AnyRecord | undefined;
+      const role = message?.role;
+      const timestamp = typeof entry.timestamp === 'string' ? entry.timestamp : undefined;
+
+      if (role === 'assistant') {
+        const content = message?.content;
+        if (typeof content === 'string') {
+          if (content.trim()) messages.push({ type: 'assistant', content, timestamp });
+        } else if (Array.isArray(content)) {
+          for (const part of content as AnyRecord[]) {
+            if (part.type === 'text' && typeof part.text === 'string' && part.text.trim()) {
+              messages.push({ type: 'assistant', content: part.text, timestamp });
+            } else if (part.type === 'thinking' && typeof part.thinking === 'string' && part.thinking.trim()) {
+              messages.push({ type: 'thinking', content: part.thinking, timestamp });
+            } else if (part.type === 'tool_use') {
+              const tool: Extract<SubagentConversationEntry, { type: 'tool' }> = {
+                type: 'tool',
+                toolId: typeof part.id === 'string' ? part.id : undefined,
+                toolName: typeof part.name === 'string' ? part.name : 'tool',
+                toolInput: part.input,
+                toolResult: null,
+                timestamp,
+              };
+              messages.push(tool);
+              if (tool.toolId) toolsById.set(tool.toolId, tool);
+            }
+          }
+        }
+      } else if (role === 'user') {
+        const content = message?.content;
+        if (typeof content === 'string') {
+          if (content.trim()) messages.push({ type: 'user', content, timestamp });
+        } else if (Array.isArray(content)) {
+          for (const part of content as AnyRecord[]) {
+            if (part.type === 'tool_result') {
+              const tool = typeof part.tool_use_id === 'string' ? toolsById.get(part.tool_use_id) : undefined;
+              if (tool) {
+                tool.toolResult = {
+                  content: stringifyPartContent(part.content),
+                  isError: Boolean(part.is_error),
+                };
+              }
+            } else if (part.type === 'text' && typeof part.text === 'string' && part.text.trim()) {
+              messages.push({ type: 'user', content: part.text, timestamp });
+            }
+          }
+        }
+      }
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(`Error reading subagent conversation ${agentFilePath}:`, message);
+    return { found: false, messages: [] };
+  }
+
+  return { found: true, messages };
+}
+
 async function getSessionMessages(
   sessionId: string,
   providerSessionId: string,
@@ -154,7 +282,13 @@ async function getSessionMessages(
 
       try {
         const entry = JSON.parse(line) as AnyRecord;
-        if (entry.sessionId === providerSessionId) {
+        // Sidechain rows are a subagent's own conversation (its prompt + turns).
+        // In the legacy flat layout they share the parent's sessionId and would
+        // otherwise render in the main thread — the subagent prompt showing up
+        // as a fake user message. They're surfaced via the subagent thread
+        // viewer instead. (Newer layout keeps them in agent-*.jsonl already.)
+        const isSidechain = entry.isSidechain === true || (entry.message as AnyRecord | undefined)?.isSidechain === true;
+        if (entry.sessionId === providerSessionId && !isSidechain) {
           messages.push(entry);
         }
       } catch {

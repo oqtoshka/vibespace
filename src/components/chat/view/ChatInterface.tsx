@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
-import { TreePine } from 'lucide-react';
+import { ArrowDownIcon, TreePine } from 'lucide-react';
 
 import { useTasksSettings } from '../../../contexts/TasksSettingsContext';
 import { useActiveWorktree } from '../../../hooks/useActiveWorktree';
@@ -13,6 +13,8 @@ import { useChatSessionState } from '../hooks/useChatSessionState';
 import { useChatRealtimeHandlers } from '../hooks/useChatRealtimeHandlers';
 import { useChatComposerState } from '../hooks/useChatComposerState';
 import { useBackgroundTasks } from '../hooks/useBackgroundTasks';
+import { useSubagents } from '../hooks/useSubagents';
+import { BackgroundTasksProvider } from '../context/BackgroundTasksContext';
 import { useSessionStore } from '../../../stores/useSessionStore';
 
 import ChatMessagesPane from './subcomponents/ChatMessagesPane';
@@ -33,10 +35,8 @@ function ChatInterface({
   onNavigateToSession,
   onSessionEstablished,
   onShowSettings,
-  autoExpandTools,
   showRawParameters,
   showThinking,
-  autoScrollToBottom,
   sendByCtrlEnter,
   externalMessageUpdate,
   newSessionTrigger,
@@ -127,7 +127,6 @@ function ChatInterface({
     selectedSession,
     ws,
     sendMessage,
-    autoScrollToBottom,
     externalMessageUpdate,
     newSessionTrigger,
     processingSessions,
@@ -176,6 +175,7 @@ function ChatInterface({
     isDragActive,
     openImagePicker,
     handleSubmit,
+    handleVoiceTranscript,
     handleInputChange,
     handleKeyDown,
     handlePaste,
@@ -187,7 +187,7 @@ function ChatInterface({
     handlePermissionDecision,
     handleGrantToolPermission,
     handleInputFocusChange,
-    isInputFocused: _isInputFocused,
+    isInputFocused,
     commandModalPayload,
     closeCommandModal,
     showCostModal,
@@ -246,6 +246,7 @@ function ChatInterface({
     selectedSession,
     currentSessionId,
     setTokenBudget,
+    pendingPermissionRequests,
     setPendingPermissionRequests,
     streamTimerRef,
     accumulatedStreamRef,
@@ -320,7 +321,32 @@ function ChatInterface({
   }), [pendingPermissionRequests, handlePermissionDecision]);
 
   const { activeWorktree } = useActiveWorktree(selectedProject?.projectId ?? null);
-  const { tasks: backgroundTasks, runningCount: backgroundRunningCount } = useBackgroundTasks(chatMessages, isProcessing);
+  const { tasks: backgroundTasks, runningCount: backgroundRunningCount } = useBackgroundTasks(
+    chatMessages,
+    isProcessing,
+    selectedSession?.id ?? null,
+  );
+
+  const { subagents, runningCount: subagentRunningCount } = useSubagents(chatMessages);
+
+  const cancelBackgroundTask = useCallback(
+    (taskId: string) => {
+      const targetSessionId = selectedSession?.id;
+      if (!targetSessionId || !taskId) return;
+      sendMessage({ type: 'chat.stop-task', sessionId: targetSessionId, taskId });
+    },
+    [selectedSession?.id, sendMessage],
+  );
+
+  const backgroundTasksContextValue = useMemo(
+    () => ({
+      tasksById: new Map(backgroundTasks.map((task) => [task.id, task])),
+      cancelTask: cancelBackgroundTask,
+      // Only Claude's SDK exposes a task-level stop.
+      canCancel: provider === 'claude',
+    }),
+    [backgroundTasks, cancelBackgroundTask, provider],
+  );
 
   if (!selectedProject) {
     const selectedProviderLabel =
@@ -357,7 +383,8 @@ function ChatInterface({
 
   return (
     <PermissionContext.Provider value={permissionContextValue}>
-      <div className="flex h-full flex-col">
+      <BackgroundTasksProvider value={backgroundTasksContextValue}>
+      <div className="flex h-full min-h-0 flex-col">
         {worktreeLabel && (
           <div className="flex flex-shrink-0 items-center gap-1.5 border-b border-amber-500/20 bg-amber-500/5 px-3 py-1 text-xs text-amber-700 dark:text-amber-400">
             <TreePine className="h-3 w-3 flex-shrink-0" />
@@ -409,7 +436,6 @@ function ChatInterface({
           onFileOpen={onFileOpen}
           onShowSettings={onShowSettings}
           onGrantToolPermission={handleGrantToolPermission}
-          autoExpandTools={autoExpandTools}
           showRawParameters={showRawParameters}
           showThinking={showThinking}
           selectedProject={selectedProject}
@@ -417,7 +443,22 @@ function ChatInterface({
           rewindDisabled={isProcessing}
         />
 
-        <ChatComposer
+        <div className="relative flex-shrink-0">
+          {isUserScrolledUp && chatMessages.length > 0 && (
+            <div className="pointer-events-none absolute -top-11 left-0 right-0 z-20 flex justify-center">
+              <button
+                type="button"
+                onClick={scrollToBottomAndReset}
+                aria-label={t('input.scrollToBottom', { defaultValue: 'Scroll to bottom' })}
+                className="pointer-events-auto flex h-8 w-8 items-center justify-center rounded-full border border-border/50 bg-card text-muted-foreground shadow-sm transition-all duration-200 hover:bg-accent hover:text-foreground"
+                title={t('input.scrollToBottom', { defaultValue: 'Scroll to bottom' })}
+              >
+                <ArrowDownIcon className="h-4 w-4" aria-hidden />
+              </button>
+            </div>
+          )}
+
+          <ChatComposer
           pendingPermissionRequests={pendingPermissionRequests}
           handlePermissionDecision={handlePermissionDecision}
           handleGrantToolPermission={handleGrantToolPermission}
@@ -430,13 +471,13 @@ function ChatInterface({
           onShowTokenUsage={showCostModal}
           backgroundTasks={backgroundTasks}
           backgroundRunningCount={backgroundRunningCount}
+          subagents={subagents}
+          subagentRunningCount={subagentRunningCount}
+          sessionId={selectedSession?.id ?? null}
           slashCommandsCount={slashCommandsCount}
           onToggleCommandMenu={handleToggleCommandMenu}
           hasInput={Boolean(input.trim())}
           onClearInput={handleClearInput}
-          isUserScrolledUp={isUserScrolledUp}
-          hasMessages={chatMessages.length > 0}
-          onScrollToBottom={scrollToBottomAndReset}
           onSubmit={handleSubmit}
           isDragActive={isDragActive}
           attachedImages={attachedImages}
@@ -464,12 +505,14 @@ function ChatInterface({
           renderInputWithMentions={renderInputWithMentions}
           textareaRef={textareaRef}
           input={input}
+          onVoiceTranscript={handleVoiceTranscript}
           onInputChange={handleInputChange}
           onTextareaClick={handleTextareaClick}
           onTextareaKeyDown={handleKeyDown}
           onTextareaPaste={handlePaste}
           onTextareaScrollSync={syncInputOverlayScroll}
           onTextareaInput={handleTextareaInput}
+          isInputFocused={isInputFocused}
           onInputFocusChange={handleInputFocusChange}
           placeholder={t('input.placeholder', {
             provider:
@@ -488,6 +531,7 @@ function ChatInterface({
           queuedMessages={queuedMessages}
           onRemoveQueuedMessage={removeQueuedMessage}
         />
+        </div>
       </div>
 
       <QuickSettingsPanel />
@@ -502,6 +546,7 @@ function ChatInterface({
         currentSessionId={currentSessionId || selectedSession?.id || null}
         onSelectProviderModel={selectProviderModel}
       />
+      </BackgroundTasksProvider>
     </PermissionContext.Provider>
   );
 }
