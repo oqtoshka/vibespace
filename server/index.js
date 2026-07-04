@@ -198,6 +198,38 @@ app.use('/api', validateApiKey);
 // Authentication routes (public)
 app.use('/api/auth', authRoutes);
 
+// Read a background task's output file (Claude Code `run_in_background` writes to
+// <tmp>/claude-<uid>/<project>/<session>/tasks/<id>.output). Scoped hard to that
+// shape so it can't read arbitrary files: parent dir must be `tasks`, basename
+// must be `<id>.output`, and the path must sit under a `claude-` tmp namespace.
+app.get('/api/tasks/output', authenticateToken, async (req, res) => {
+    try {
+        const file = typeof req.query.path === 'string' ? req.query.path : '';
+        if (!file || file.includes('\0')) {
+            return res.status(400).json({ error: 'path is required' });
+        }
+        const resolved = path.resolve(file);
+        const base = path.basename(resolved);
+        const parent = path.basename(path.dirname(resolved));
+        if (parent !== 'tasks' || !/^[A-Za-z0-9_-]+\.output$/.test(base) || !/[\\/]claude-[^\\/]+[\\/]/.test(resolved)) {
+            return res.status(403).json({ error: 'Not a task output file' });
+        }
+        const content = await fsPromises.readFile(resolved, 'utf8');
+        // Cap the payload; tail is what matters for a running command.
+        const MAX = 200_000;
+        res.json({
+            content: content.length > MAX ? content.slice(-MAX) : content,
+            truncated: content.length > MAX,
+        });
+    } catch (error) {
+        if (error.code === 'ENOENT') {
+            return res.status(404).json({ error: 'Output not found' });
+        }
+        console.error('Error reading task output:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
 // HTML-preview asset route — MUST be registered before the /api/projects Bearer
 // guard below, because iframe subresource requests (`<script src="/kit/...">`)
 // can't send the app's Authorization header. It authenticates instead via a

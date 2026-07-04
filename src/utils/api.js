@@ -198,6 +198,9 @@ export const api = {
       body: JSON.stringify({ path, content }),
       signal,
     }),
+  // Reads a background task's output file.
+  taskOutput: (filePath, { signal } = {}) =>
+    authenticatedFetch(`/api/tasks/output?path=${encodeURIComponent(filePath)}`, { signal }),
   // `dir` scopes the listing to a subdirectory (lazy tree loading), `depth`
   // bounds the walk (omit for the full deep tree), `meta: 0` skips per-entry
   // stat metadata for path-only consumers.
