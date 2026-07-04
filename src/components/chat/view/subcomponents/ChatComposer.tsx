@@ -37,7 +37,9 @@ import VoiceInputButton from './VoiceInputButton';
 import PermissionRequestsBanner from './PermissionRequestsBanner';
 import TokenUsageSummary from './TokenUsageSummary';
 import BackgroundTasksIndicator from './BackgroundTasksIndicator';
+import SubagentsIndicator from './SubagentsIndicator';
 import type { BackgroundTask } from '../../hooks/useBackgroundTasks';
+import type { Subagent } from '../../hooks/useSubagents';
 
 interface MentionableFile {
   name: string;
@@ -70,6 +72,9 @@ interface ChatComposerProps {
   onShowTokenUsage: () => void;
   backgroundTasks: BackgroundTask[];
   backgroundRunningCount: number;
+  subagents: Subagent[];
+  subagentRunningCount: number;
+  sessionId: string | null;
   slashCommandsCount: number;
   onToggleCommandMenu: () => void;
   hasInput: boolean;
@@ -125,6 +130,9 @@ export default function ChatComposer({
   tokenBudget,
   backgroundTasks,
   backgroundRunningCount,
+  subagents,
+  subagentRunningCount,
+  sessionId,
   onShowTokenUsage,
   slashCommandsCount,
   onToggleCommandMenu,
@@ -425,6 +433,7 @@ export default function ChatComposer({
             <TokenUsageSummary usage={tokenBudget} onClick={onShowTokenUsage} />
 
             <BackgroundTasksIndicator tasks={backgroundTasks} runningCount={backgroundRunningCount} />
+            <SubagentsIndicator subagents={subagents} runningCount={subagentRunningCount} sessionId={sessionId} />
 
             <PromptInputButton
               tooltip={{ content: t('input.showAllCommands') }}

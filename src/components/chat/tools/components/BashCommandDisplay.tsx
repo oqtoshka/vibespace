@@ -5,6 +5,8 @@ import { cn } from '../../../../lib/utils';
 import { copyTextToClipboard } from '../../../../utils/clipboard';
 import { ToolStatusBadge } from './ToolStatusBadge';
 import type { ToolStatus } from './ToolStatusBadge';
+import { parseBackgroundLaunch } from '../../hooks/useBackgroundTasks';
+import { BackgroundJobCard } from './BackgroundJobCard';
 
 interface BashCommandDisplayProps {
   command: string;
@@ -31,6 +33,10 @@ export const BashCommandDisplay: React.FC<BashCommandDisplayProps> = ({
   status,
   defaultOpen = false,
 }) => {
+  // A `run_in_background` launch: swap the raw "Command running in background…"
+  // acknowledgement for a live-monitorable card (streamed output + cancel).
+  const backgroundLaunch = parseBackgroundLaunch(output);
+
   const trimmedOutput = (output || '').replace(/\s+$/, '');
   const hasOutput = trimmedOutput.length > 0;
   const outputLineCount = hasOutput ? trimmedOutput.split('\n').length : 0;
@@ -62,6 +68,17 @@ export const BashCommandDisplay: React.FC<BashCommandDisplayProps> = ({
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
+
+  if (backgroundLaunch) {
+    return (
+      <BackgroundJobCard
+        command={command}
+        description={description}
+        taskId={backgroundLaunch.taskId}
+        outputFile={backgroundLaunch.outputFile}
+      />
+    );
+  }
 
   return (
     <div

@@ -14,6 +14,7 @@ import Database from 'better-sqlite3';
 
 import { AppError, WORKSPACES_ROOT, getOpenCodeDatabasePath, validateWorkspacePath } from '@/shared/utils.js';
 import { closeSessionsWatcher, initializeSessionsWatcher } from '@/modules/providers/index.js';
+import { getSubagentConversation } from '@/modules/providers/list/claude/claude-sessions.provider.js';
 import { createWebSocketServer } from '@/modules/websocket/index.js';
 import { chatRunRegistry } from '@/modules/websocket/services/chat-run-registry.service.js';
 
@@ -23,6 +24,9 @@ import { findAppRoot, getModuleDir } from './utils/runtime-paths.js';
 import {
     queryClaudeSDK,
     abortClaudeSDKSession,
+    stopClaudeSDKTask,
+    getClaudeSDKBackgroundTasks,
+    isClaudeSDKSessionAlive,
     resolveToolApproval,
     getPendingApprovalsForSession,
 } from './claude-sdk.js';
@@ -139,6 +143,12 @@ const wss = createWebSocketServer(server, {
             gemini: abortGeminiSession,
             opencode: abortOpenCodeSession,
         },
+        // Per-background-job cancel. Only Claude's SDK exposes a task-level stop
+        // (`stopTask`); other providers have no equivalent, so they're omitted
+        // and the handler no-ops for them.
+        stopTaskFns: {
+            claude: stopClaudeSDKTask,
+        },
         resolveToolApproval,
         getPendingApprovalsForSession,
     },
@@ -226,6 +236,57 @@ app.get('/api/tasks/output', authenticateToken, async (req, res) => {
             return res.status(404).json({ error: 'Output not found' });
         }
         console.error('Error reading task output:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Authoritative running-background-job set for a session. The client can't
+// reliably tell from the message stream which jobs are still running (some task
+// completions arrive as internal transcript entries it never sees), so it polls
+// this to reconcile — a "running" task absent here has actually finished.
+app.get('/api/sessions/:sessionId/background-tasks', authenticateToken, (req, res) => {
+    try {
+        const { sessionId } = req.params;
+        const session = sessionsDb.getSessionById(sessionId);
+        if (!session) {
+            return res.status(404).json({ error: 'Session not found' });
+        }
+        // Only Claude's SDK tracks background jobs; other providers report none.
+        if (session.provider !== 'claude') {
+            return res.json({ running: [], live: false });
+        }
+        const providerSessionId = session.provider_session_id || sessionId;
+        const running = getClaudeSDKBackgroundTasks(providerSessionId);
+        // `live` distinguishes "session in memory, 0 jobs" from "session not
+        // loaded" — the client only reconciles (marks stuck tasks done) when the
+        // session is live, so a cold session doesn't wrongly clear everything.
+        res.json({ running, live: isClaudeSDKSessionAlive(providerSessionId) });
+    } catch (error) {
+        console.error('Error listing background tasks:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// Full transcript of one subagent (Task) for the thread viewer — the prompt,
+// the subagent's replies/thinking, and its tool calls. Subagent conversations
+// are suppressed from the main thread, so this is how they're inspected.
+app.get('/api/sessions/:sessionId/subagents/:agentId', authenticateToken, async (req, res) => {
+    try {
+        const { sessionId, agentId } = req.params;
+        if (!/^[A-Za-z0-9_-]+$/.test(agentId)) {
+            return res.status(400).json({ error: 'Invalid agent id' });
+        }
+        const session = sessionsDb.getSessionById(sessionId);
+        if (!session) {
+            return res.status(404).json({ error: 'Session not found' });
+        }
+        const { found, messages } = await getSubagentConversation(sessionId, agentId);
+        if (!found) {
+            return res.status(404).json({ error: 'Subagent transcript not found' });
+        }
+        res.json({ messages });
+    } catch (error) {
+        console.error('Error reading subagent conversation:', error);
         res.status(500).json({ error: error.message });
     }
 });

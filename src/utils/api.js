@@ -201,6 +201,16 @@ export const api = {
   // Reads a background task's output file.
   taskOutput: (filePath, { signal } = {}) =>
     authenticatedFetch(`/api/tasks/output?path=${encodeURIComponent(filePath)}`, { signal }),
+  // Authoritative set of background jobs still running for a session (ground
+  // truth the client reconciles its message-derived tasks against).
+  backgroundTasks: (sessionId, { signal } = {}) =>
+    authenticatedFetch(`/api/sessions/${encodeURIComponent(sessionId)}/background-tasks`, { signal }),
+  // Reads a subagent's full conversation transcript for the thread viewer.
+  subagentConversation: (sessionId, agentId, { signal } = {}) =>
+    authenticatedFetch(
+      `/api/sessions/${encodeURIComponent(sessionId)}/subagents/${encodeURIComponent(agentId)}`,
+      { signal },
+    ),
   // `dir` scopes the listing to a subdirectory (lazy tree loading), `depth`
   // bounds the walk (omit for the full deep tree), `meta: 0` skips per-entry
   // stat metadata for path-only consumers.

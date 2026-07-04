@@ -235,6 +235,11 @@ export function useChatComposerState({
     ((event: FormEvent<HTMLFormElement> | MouseEvent | TouchEvent | KeyboardEvent<HTMLTextAreaElement>) => Promise<void>) | null
   >(null);
   const inputValueRef = useRef(input);
+  // Last send dispatched to the backend, kept so it can be re-queued (rather
+  // than lost) if the server rejects it with RUN_IN_PROGRESS — a state-desync
+  // where the client thought the session idle. Consumed one-shot by the
+  // 'vibespace:run-in-progress' listener below.
+  const lastSubmittedRef = useRef<{ sessionId: string; content: string; images: File[] } | null>(null);
   const selectedProjectId = selectedProject?.projectId;
 
   const handleBuiltInCommand = useCallback(
@@ -747,6 +752,12 @@ export function useChatComposerState({
                 ? opencodeModel
                 : claudeModel;
 
+      // Remember this send so the RUN_IN_PROGRESS recovery below can re-queue
+      // it if the backend rejects it (the client believed the session idle but
+      // a run was actually active). The original File[] is kept so a re-send
+      // re-uploads cleanly.
+      lastSubmittedRef.current = { sessionId: targetSessionId, content, images };
+
       // One message shape for every provider. The backend resolves the
       // provider, project path, and provider-native resume id from the
       // session row; `options` only carries composer-level preferences.
@@ -885,6 +896,31 @@ export function useChatComposerState({
       }
     });
   }, [isLoading, queuedMessages, runSubmit]);
+
+  // Recover from a RUN_IN_PROGRESS rejection: the realtime handler marks the
+  // session processing again and fires this event. Re-queue the just-rejected
+  // send so it isn't lost — the dequeue effect above auto-sends it once the
+  // (genuinely active) run completes. One-shot per rejection.
+  useEffect(() => {
+    const onRunInProgress = (event: Event) => {
+      const detail = (event as CustomEvent<{ sessionId?: string }>).detail;
+      const pending = lastSubmittedRef.current;
+      if (!pending || !detail?.sessionId || detail.sessionId !== pending.sessionId) {
+        return;
+      }
+      lastSubmittedRef.current = null;
+      setQueuedMessages((previous) => [
+        ...previous,
+        {
+          id: `requeued_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+          content: pending.content,
+          images: pending.images,
+        },
+      ].slice(-MAX_QUEUED_MESSAGES));
+    };
+    window.addEventListener('vibespace:run-in-progress', onRunInProgress);
+    return () => window.removeEventListener('vibespace:run-in-progress', onRunInProgress);
+  }, []);
 
   const removeQueuedMessage = useCallback((id: string) => {
     setQueuedMessages((previous) => previous.filter((message) => message.id !== id));

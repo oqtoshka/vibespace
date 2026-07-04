@@ -69,6 +69,12 @@ type ChatWebSocketDependencies = {
    * The Claude abort is async; the rest are sync — both shapes are accepted.
    */
   abortFns: Record<LLMProvider, (providerSessionId: string) => boolean | Promise<boolean>>;
+  /**
+   * Per-background-job cancel, keyed by provider id. Only providers with a
+   * task-level stop are present (Claude today); a missing entry means the
+   * provider has no such capability and the request no-ops.
+   */
+  stopTaskFns?: Partial<Record<LLMProvider, (providerSessionId: string, taskId: string) => boolean | Promise<boolean>>>;
   resolveToolApproval: (
     requestId: string,
     payload: {
@@ -270,6 +276,55 @@ async function handleChatAbort(
 }
 
 /**
+ * Handles `chat.stop-task`: cancels a single background bash job by its task id
+ * without ending the turn or the session. Unlike `chat.abort`, this does not
+ * require a *running* turn — background jobs routinely outlive their launching
+ * turn, so we address the persistent session directly by its provider id.
+ */
+async function handleChatStopTask(
+  ws: WebSocket,
+  data: AnyRecord,
+  dependencies: ChatWebSocketDependencies
+): Promise<void> {
+  const sessionId = readRequiredSessionId(data);
+  if (!sessionId) {
+    sendProtocolError(ws, 'SESSION_ID_REQUIRED', 'chat.stop-task requires a sessionId.');
+    return;
+  }
+
+  const taskId = typeof data.taskId === 'string' ? data.taskId.trim() : '';
+  if (!taskId) {
+    sendProtocolError(ws, 'TASK_ID_REQUIRED', 'chat.stop-task requires a taskId.', sessionId);
+    return;
+  }
+
+  const session = sessionsDb.getSessionById(sessionId);
+  if (!session) {
+    sendProtocolError(ws, 'SESSION_NOT_FOUND', `Session "${sessionId}" was not found.`, sessionId);
+    return;
+  }
+
+  const provider = session.provider as LLMProvider;
+  const stopFn = dependencies.stopTaskFns?.[provider];
+  // The persistent session is keyed by its provider-native id; fall back to a
+  // live run's captured id, then the DB mapping.
+  const providerSessionId =
+    chatRunRegistry.getRun(sessionId)?.providerSessionId ?? session.provider_session_id ?? null;
+
+  if (!stopFn || !providerSessionId) {
+    sendProtocolError(
+      ws,
+      'STOP_TASK_UNSUPPORTED',
+      `Cannot stop background tasks for provider "${provider}".`,
+      sessionId,
+    );
+    return;
+  }
+
+  await stopFn(providerSessionId, taskId);
+}
+
+/**
  * Handles `chat.subscribe`: for each requested session, reports whether a run
  * is processing, re-attaches the live stream to this socket, replays missed
  * events (seq > lastSeq), and includes pending permission requests.
@@ -407,6 +462,9 @@ export function handleChatConnection(
           return;
         case 'chat.abort':
           await handleChatAbort(ws, data, dependencies);
+          return;
+        case 'chat.stop-task':
+          await handleChatStopTask(ws, data, dependencies);
           return;
         case 'chat.subscribe':
           handleChatSubscribe(ws, data, dependencies);
