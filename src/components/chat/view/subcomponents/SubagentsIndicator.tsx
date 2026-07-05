@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import { Bot, CheckCircle2, ChevronDown, Loader2, XCircle } from 'lucide-react';
 
 import type { Subagent } from '../../hooks/useSubagents';
 import SubagentConversationModal from './SubagentConversationModal';
+import { AnchoredPopover } from './AnchoredPopover';
 
 type Props = {
   subagents: Subagent[];
@@ -24,25 +25,16 @@ function StatusIcon({ status }: { status: Subagent['status'] }) {
 export default function SubagentsIndicator({ subagents, runningCount, sessionId }: Props) {
   const [open, setOpen] = useState(false);
   const [selected, setSelected] = useState<Subagent | null>(null);
-  const ref = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    const onClickOutside = (event: MouseEvent) => {
-      if (ref.current && !ref.current.contains(event.target as Node)) {
-        setOpen(false);
-      }
-    };
-    document.addEventListener('mousedown', onClickOutside);
-    return () => document.removeEventListener('mousedown', onClickOutside);
-  }, []);
+  const anchorRef = useRef<HTMLButtonElement | null>(null);
 
   if (subagents.length === 0) return null;
 
   const label = runningCount > 0 ? `${runningCount} running` : `${subagents.length} ${subagents.length === 1 ? 'agent' : 'agents'}`;
 
   return (
-    <div className="relative" ref={ref}>
+    <div className="relative">
       <button
+        ref={anchorRef}
         type="button"
         onClick={() => setOpen((prev) => !prev)}
         className={`flex items-center gap-1 rounded-md px-1.5 py-1 text-xs transition-colors hover:bg-accent ${
@@ -56,35 +48,38 @@ export default function SubagentsIndicator({ subagents, runningCount, sessionId 
         <ChevronDown className={`h-3 w-3 transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
 
-      {open && (
-        <div className="absolute bottom-full right-0 z-50 mb-2 w-80 max-w-[85vw] overflow-hidden rounded-xl border border-border bg-card shadow-lg">
-          <div className="border-b border-border px-3 py-2 text-xs font-medium text-muted-foreground">Subagents</div>
-          <div className="max-h-80 overflow-y-auto">
-            {subagents.map((subagent) => (
-              <button
-                key={subagent.key}
-                type="button"
-                onClick={() => {
-                  setSelected(subagent);
-                  setOpen(false);
-                }}
-                className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-accent"
-              >
-                <StatusIcon status={subagent.status} />
-                <span className="min-w-0 flex-1 truncate" title={subagent.label}>{subagent.label}</span>
-                {subagent.subagentType && (
-                  <span className="flex-shrink-0 truncate text-[10px] text-muted-foreground/70">{subagent.subagentType}</span>
-                )}
-                {subagent.toolCount > 0 && (
-                  <span className="flex-shrink-0 text-[10px] tabular-nums text-muted-foreground/60">
-                    {subagent.toolCount} {subagent.toolCount === 1 ? 'tool' : 'tools'}
-                  </span>
-                )}
-              </button>
-            ))}
-          </div>
+      <AnchoredPopover
+        anchorRef={anchorRef}
+        open={open}
+        onClose={() => setOpen(false)}
+        className="w-80 max-w-[85vw] overflow-hidden rounded-xl border border-border bg-card shadow-lg"
+      >
+        <div className="border-b border-border px-3 py-2 text-xs font-medium text-muted-foreground">Subagents</div>
+        <div className="max-h-80 overflow-y-auto">
+          {subagents.map((subagent) => (
+            <button
+              key={subagent.key}
+              type="button"
+              onClick={() => {
+                setSelected(subagent);
+                setOpen(false);
+              }}
+              className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-accent"
+            >
+              <StatusIcon status={subagent.status} />
+              <span className="min-w-0 flex-1 truncate" title={subagent.label}>{subagent.label}</span>
+              {subagent.subagentType && (
+                <span className="flex-shrink-0 truncate text-[10px] text-muted-foreground/70">{subagent.subagentType}</span>
+              )}
+              {subagent.toolCount > 0 && (
+                <span className="flex-shrink-0 text-[10px] tabular-nums text-muted-foreground/60">
+                  {subagent.toolCount} {subagent.toolCount === 1 ? 'tool' : 'tools'}
+                </span>
+              )}
+            </button>
+          ))}
         </div>
-      )}
+      </AnchoredPopover>
 
       {selected && sessionId && (
         <SubagentConversationModal

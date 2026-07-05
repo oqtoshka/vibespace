@@ -48,6 +48,22 @@ const resolveCommandModel = async (provider, catalog, sessionId) => {
   return currentActiveModel?.model || catalog.DEFAULT;
 };
 
+// When the active model is the `default` alias, surface what it resolves to so
+// the UI can render `default (Opus 4.8 (1M context))` instead of a bare
+// `default`. The concrete model only lives in the option's human description
+// (e.g. "Use the default model (currently Opus 4.8 (1M context)) · …"), so we
+// parse it out of there — best-effort, falling back to the bare alias.
+const formatModelForDisplay = (catalog, model) => {
+  if (!model || model !== catalog?.DEFAULT) {
+    return model;
+  }
+  const defaultOption = catalog?.OPTIONS?.find((option) => option.value === catalog.DEFAULT);
+  const description = defaultOption?.description ?? "";
+  const match = /\bcurrently\s+(.+?)\)\s*(?:·|$)/i.exec(description);
+  const concrete = match?.[1]?.trim();
+  return concrete ? `${model} (${concrete})` : model;
+};
+
 export const executeModelsCommand = async (args, context) => {
   const currentProvider = readModelProvider(context?.provider);
   const result = await providerModelsService.getProviderModels(currentProvider);
@@ -327,7 +343,7 @@ Custom commands can be created in:
             }
           : {}),
         provider,
-        model,
+        model: formatModelForDisplay(catalog, model),
       },
     };
   },
@@ -369,7 +385,7 @@ Custom commands can be created in:
         packageName,
         uptime: uptimeFormatted,
         uptimeSeconds: Math.floor(uptime),
-        model,
+        model: formatModelForDisplay(statusCatalog, model),
         provider: statusProvider,
         nodeVersion: process.version,
         platform: process.platform,
