@@ -315,6 +315,7 @@ export default function Shell({
         sessionDisplayNameShort={sessionDisplayNameShort}
         onDisconnect={handleDisconnectShell}
         onRestart={handleRestartShell}
+        onSendEsc={() => sendInput('\x1b')}
         statusNewSessionText={t('shell.status.newSession')}
         statusInitializingText={t('shell.status.initializing')}
         statusRestartingText={t('shell.status.restarting')}
