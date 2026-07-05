@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   ChangeEvent,
   ClipboardEvent,
@@ -79,7 +79,8 @@ interface MentionableFile {
 export interface QueuedMessage {
   id: string;
   content: string;
-  images: File[];
+  /** How many images the queued message carries (already uploaded server-side). */
+  imageCount: number;
 }
 
 // Cap the pending queue so a runaway loop can't accumulate unbounded sends.
@@ -583,6 +584,92 @@ export function useChatComposerState({
     }
   }, [resetCommandMenuState, selectedProjectId]);
 
+  // Composer-level model preference for the active provider. Sent with every
+  // turn (live send or queued) as an option; the backend resolves the rest.
+  const activeModel = useMemo(() => {
+    switch (provider) {
+      case 'cursor':
+        return cursorModel;
+      case 'codex':
+        return codexModel;
+      case 'gemini':
+        return geminiModel;
+      case 'opencode':
+        return opencodeModel;
+      default:
+        return claudeModel;
+    }
+  }, [provider, cursorModel, codexModel, geminiModel, opencodeModel, claudeModel]);
+
+  const getToolsSettings = useCallback(() => {
+    try {
+      const settingsKey =
+        provider === 'cursor'
+          ? 'cursor-tools-settings'
+          : provider === 'codex'
+            ? 'codex-settings'
+            : provider === 'gemini'
+              ? 'gemini-settings'
+              : provider === 'opencode'
+                ? 'opencode-settings'
+                : 'claude-settings';
+      const savedSettings = safeLocalStorage.getItem(settingsKey);
+      if (savedSettings) {
+        return JSON.parse(savedSettings);
+      }
+    } catch (error) {
+      console.error('Error loading tools settings:', error);
+    }
+
+    return {
+      allowedTools: [],
+      disallowedTools: [],
+      skipPermissions: false,
+    };
+  }, [provider]);
+
+  // Upload composer attachments and return the server-side image descriptors
+  // (empty when there are none). Returns null on failure after surfacing an
+  // error bubble, so callers can abort without clearing the composer.
+  const uploadAttachedImages = useCallback(
+    async (images: File[]): Promise<unknown[] | null> => {
+      if (images.length === 0 || !selectedProject) {
+        return [];
+      }
+      // Phone photos routinely exceed the 5MB cap and the proxy body limit.
+      // Re-encode/bound them client-side before upload (no-op when already
+      // small, original kept on any decode/encode failure).
+      const filesToUpload = await downscaleImageFiles(images);
+      const formData = new FormData();
+      filesToUpload.forEach((file) => {
+        formData.append('images', file);
+      });
+
+      try {
+        const response = await authenticatedFetch(`/api/projects/${selectedProject.projectId}/upload-images`, {
+          method: 'POST',
+          headers: {},
+          body: formData,
+        });
+        if (!response.ok) {
+          throw new Error('Failed to upload images');
+        }
+        const result = await response.json();
+        return result.images;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unknown error';
+        console.error('Image upload failed:', error);
+        addMessage({
+          type: 'error',
+          content: `Failed to upload images: ${message}`,
+          timestamp: new Date(),
+        });
+        return null;
+      }
+    },
+    [selectedProject, addMessage],
+  );
+
   /**
    * Core send: uploads attachments, resolves (or allocates) the session, marks
    * it processing, and dispatches the unified chat.send. Returns false when the
@@ -595,40 +682,9 @@ export function useChatComposerState({
         return false;
       }
 
-      let uploadedImages: unknown[] = [];
-      if (images.length > 0) {
-        // Phone photos routinely exceed the 5MB cap and the proxy body limit.
-        // Re-encode/bound them client-side before upload (no-op when already
-        // small, original kept on any decode/encode failure).
-        const filesToUpload = await downscaleImageFiles(images);
-        const formData = new FormData();
-        filesToUpload.forEach((file) => {
-          formData.append('images', file);
-        });
-
-        try {
-          const response = await authenticatedFetch(`/api/projects/${selectedProject.projectId}/upload-images`, {
-            method: 'POST',
-            headers: {},
-            body: formData,
-          });
-
-          if (!response.ok) {
-            throw new Error('Failed to upload images');
-          }
-
-          const result = await response.json();
-          uploadedImages = result.images;
-        } catch (error) {
-          const message = error instanceof Error ? error.message : 'Unknown error';
-          console.error('Image upload failed:', error);
-          addMessage({
-            type: 'error',
-            content: `Failed to upload images: ${message}`,
-            timestamp: new Date(),
-          });
-          return false;
-        }
+      const uploadedImages = await uploadAttachedImages(images);
+      if (uploadedImages === null) {
+        return false;
       }
 
       const resolvedProjectPath = selectedProject.fullPath || selectedProject.path || '';
@@ -713,44 +769,8 @@ export function useChatComposerState({
       setIsUserScrolledUp(false);
       setTimeout(() => scrollToBottom(), 100);
 
-      const getToolsSettings = () => {
-        try {
-          const settingsKey =
-            provider === 'cursor'
-              ? 'cursor-tools-settings'
-              : provider === 'codex'
-                ? 'codex-settings'
-                : provider === 'gemini'
-                  ? 'gemini-settings'
-                  : provider === 'opencode'
-                    ? 'opencode-settings'
-                  : 'claude-settings';
-          const savedSettings = safeLocalStorage.getItem(settingsKey);
-          if (savedSettings) {
-            return JSON.parse(savedSettings);
-          }
-        } catch (error) {
-          console.error('Error loading tools settings:', error);
-        }
-
-        return {
-          allowedTools: [],
-          disallowedTools: [],
-          skipPermissions: false,
-        };
-      };
-
       const toolsSettings = getToolsSettings();
-      const model =
-        provider === 'cursor'
-          ? cursorModel
-          : provider === 'codex'
-            ? codexModel
-            : provider === 'gemini'
-              ? geminiModel
-              : provider === 'opencode'
-                ? opencodeModel
-                : claudeModel;
+      const model = activeModel;
 
       // Remember this send so the RUN_IN_PROGRESS recovery below can re-queue
       // it if the backend rejects it (the client believed the session idle but
@@ -782,12 +802,10 @@ export function useChatComposerState({
     },
     [
       selectedSession,
-      claudeModel,
-      codexModel,
+      activeModel,
+      getToolsSettings,
+      uploadAttachedImages,
       currentSessionId,
-      cursorModel,
-      geminiModel,
-      opencodeModel,
       onSessionProcessing,
       onSessionEstablished,
       permissionMode,
@@ -797,6 +815,70 @@ export function useChatComposerState({
       sendMessage,
       addMessage,
       setIsUserScrolledUp,
+    ],
+  );
+
+  /**
+   * Queue a message on the server for this session (shared across all clients
+   * viewing it; the server drains it when the current run finishes). Uploads
+   * attachments first, then dispatches `chat.queue-add` with the same options a
+   * live send would carry. Optimistically shows the item; the server's
+   * `queue_updated` broadcast reconciles it (matched by id).
+   */
+  const enqueueMessage = useCallback(
+    async (content: string, images: File[]): Promise<void> => {
+      const targetSessionId = selectedSession?.id || currentSessionId;
+      if (!targetSessionId || !selectedProject) {
+        return;
+      }
+
+      const uploadedImages = await uploadAttachedImages(images);
+      if (uploadedImages === null) {
+        return;
+      }
+
+      const resolvedProjectPath = selectedProject.fullPath || selectedProject.path || '';
+      const sessionWorktreePath = (selectedSession?.worktreePath as string | null | undefined) ?? null;
+      const effectiveCwd =
+        getSessionCwd(targetSessionId) ||
+        sessionWorktreePath ||
+        readActiveWorktree(selectedProject.projectId)?.path ||
+        resolvedProjectPath;
+
+      const toolsSettings = getToolsSettings();
+      const id = `queued_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
+      // Optimistic: show it immediately; the broadcast will replace this list.
+      setQueuedMessages((previous) =>
+        [...previous, { id, content, imageCount: images.length }].slice(-MAX_QUEUED_MESSAGES),
+      );
+
+      sendMessage({
+        type: 'chat.queue-add',
+        sessionId: targetSessionId,
+        id,
+        content,
+        options: {
+          cwd: effectiveCwd,
+          model: activeModel,
+          permissionMode: provider === 'codex' && permissionMode === 'plan' ? 'default' : permissionMode,
+          toolsSettings,
+          skipPermissions: toolsSettings?.skipPermissions || false,
+          sessionSummary: getNotificationSessionSummary(selectedSession, content),
+          images: uploadedImages,
+        },
+      });
+    },
+    [
+      selectedSession,
+      currentSessionId,
+      selectedProject,
+      uploadAttachedImages,
+      getToolsSettings,
+      activeModel,
+      permissionMode,
+      provider,
+      sendMessage,
     ],
   );
 
@@ -836,16 +918,12 @@ export function useChatComposerState({
         }
       }
 
-      // While a run is processing, queue the message instead of dropping it; the
-      // dequeue effect auto-sends queued items in order once the session goes
-      // idle. The composer clears immediately so the user can keep typing.
+      // While a run is processing, queue the message on the server instead of
+      // dropping it; the server sends queued items in order once the run
+      // finishes, and the queue is shared across every client viewing the
+      // session. The composer clears immediately so the user can keep typing.
       if (isLoading) {
-        const queued: QueuedMessage = {
-          id: `queued_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-          content: currentInput,
-          images: attachedImages,
-        };
-        setQueuedMessages((previous) => [...previous, queued].slice(-MAX_QUEUED_MESSAGES));
+        void enqueueMessage(currentInput, attachedImages);
         clearComposer();
         return;
       }
@@ -864,6 +942,7 @@ export function useChatComposerState({
     [
       attachedImages,
       clearComposer,
+      enqueueMessage,
       executeCommand,
       isLoading,
       runSubmit,
@@ -872,34 +951,14 @@ export function useChatComposerState({
     ],
   );
 
-  // Auto-send the next queued message once the session goes idle. The ref
-  // guards against the brief window after dispatch where `isLoading` has not
-  // yet flipped true — without it, a queue-state re-render would dequeue a
-  // second message before the first run started.
-  const awaitingProcessingRef = useRef(false);
-  useEffect(() => {
-    if (isLoading) {
-      awaitingProcessingRef.current = false;
-      return;
-    }
-    if (awaitingProcessingRef.current || queuedMessages.length === 0) {
-      return;
-    }
-    const next = queuedMessages[0];
-    awaitingProcessingRef.current = true;
-    setQueuedMessages((previous) => previous.slice(1));
-    void runSubmit(next.content, next.images).then((ok) => {
-      if (!ok) {
-        // Send failed (error already surfaced); release the guard so the
-        // remaining queue can still drain instead of stalling forever.
-        awaitingProcessingRef.current = false;
-      }
-    });
-  }, [isLoading, queuedMessages, runSubmit]);
+  // The server owns queue draining now: it sends the next queued message when a
+  // run completes (chaining until the queue empties), so there is no client
+  // auto-send effect. The client only adds/removes items and renders the
+  // server's `queue_updated` snapshot.
 
   // Recover from a RUN_IN_PROGRESS rejection: the realtime handler marks the
   // session processing again and fires this event. Re-queue the just-rejected
-  // send so it isn't lost — the dequeue effect above auto-sends it once the
+  // send on the server so it isn't lost — the server then sends it once the
   // (genuinely active) run completes. One-shot per rejection.
   useEffect(() => {
     const onRunInProgress = (event: Event) => {
@@ -909,22 +968,52 @@ export function useChatComposerState({
         return;
       }
       lastSubmittedRef.current = null;
-      setQueuedMessages((previous) => [
-        ...previous,
-        {
-          id: `requeued_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-          content: pending.content,
-          images: pending.images,
-        },
-      ].slice(-MAX_QUEUED_MESSAGES));
+      void enqueueMessage(pending.content, pending.images);
     };
     window.addEventListener('vibespace:run-in-progress', onRunInProgress);
     return () => window.removeEventListener('vibespace:run-in-progress', onRunInProgress);
-  }, []);
+  }, [enqueueMessage]);
 
-  const removeQueuedMessage = useCallback((id: string) => {
-    setQueuedMessages((previous) => previous.filter((message) => message.id !== id));
-  }, []);
+  // Render the server-owned queue for the currently-viewed session. The
+  // realtime handler forwards both the `chat_subscribed` snapshot and live
+  // `queue_updated` broadcasts here; ignore events for other sessions.
+  useEffect(() => {
+    const activeSessionId = selectedSession?.id || currentSessionId || null;
+    const onQueueUpdated = (event: Event) => {
+      const detail = (event as CustomEvent<{ sessionId?: string; queue?: Array<{ id: string; content: string; imageCount?: number }> }>).detail;
+      if (!detail?.sessionId || detail.sessionId !== activeSessionId) {
+        return;
+      }
+      const queue = Array.isArray(detail.queue) ? detail.queue : [];
+      setQueuedMessages(
+        queue.map((item) => ({
+          id: item.id,
+          content: item.content,
+          imageCount: typeof item.imageCount === 'number' ? item.imageCount : 0,
+        })),
+      );
+    };
+    window.addEventListener('vibespace:queue-updated', onQueueUpdated);
+    return () => window.removeEventListener('vibespace:queue-updated', onQueueUpdated);
+  }, [selectedSession?.id, currentSessionId]);
+
+  // Clear the visible queue when switching sessions; the new session's
+  // `chat_subscribed` snapshot repopulates it.
+  useEffect(() => {
+    setQueuedMessages([]);
+  }, [selectedSession?.id, currentSessionId]);
+
+  const removeQueuedMessage = useCallback(
+    (id: string) => {
+      const targetSessionId = selectedSession?.id || currentSessionId;
+      // Optimistic removal; the server broadcasts the authoritative queue.
+      setQueuedMessages((previous) => previous.filter((message) => message.id !== id));
+      if (targetSessionId) {
+        sendMessage({ type: 'chat.queue-remove', sessionId: targetSessionId, id });
+      }
+    },
+    [selectedSession?.id, currentSessionId, sendMessage],
+  );
 
   useEffect(() => {
     handleSubmitRef.current = handleSubmit;

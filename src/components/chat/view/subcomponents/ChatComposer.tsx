@@ -312,9 +312,9 @@ export default function ChatComposer({
                     <span className="min-w-0 flex-1 truncate" title={queued.content}>
                       {queued.content}
                     </span>
-                    {queued.images.length > 0 && (
+                    {queued.imageCount > 0 && (
                       <span className="flex-shrink-0 opacity-70">
-                        {queued.images.length}
+                        {queued.imageCount}
                         <PaperclipIcon className="ml-0.5 inline h-3 w-3" />
                       </span>
                     )}

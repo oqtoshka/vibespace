@@ -1,5 +1,3 @@
-import path from 'node:path';
-
 import type { WebSocket } from 'ws';
 
 import { sessionsDb } from '@/modules/database/index.js';
@@ -10,44 +8,12 @@ import {
   unsubscribeAllProjectFiles,
 } from '@/modules/websocket/services/project-files-watcher.service.js';
 import { connectedClients, WS_OPEN_STATE } from '@/modules/websocket/services/websocket-state.service.js';
-import { getGlobalImageAssetsDir, normalizeImageDescriptors } from '@/shared/image-attachments.js';
 import type {
   AnyRecord,
   AuthenticatedWebSocketRequest,
   LLMProvider,
 } from '@/shared/types.js';
-import { parseIncomingJsonObject } from '@/shared/utils.js';
-
-/**
- * Trust boundary for client-supplied image attachments: chat.send options come
- * straight from the browser, and the provider runtimes read the referenced
- * files off disk (Claude base64-encodes them into the prompt). Only images
- * that live directly inside the global upload store (`~/.cloudcli/assets`,
- * where POST /api/assets/images puts them) are allowed through — anything
- * else (absolute paths elsewhere, traversal, subdirectories) is dropped.
- *
- * Exported for tests; `assetsRootOverride` exists only for them.
- */
-export function filterImagesToUploadStore(images: unknown, assetsRootOverride?: string): AnyRecord[] {
-  const assetsRoot = path.resolve(assetsRootOverride ?? getGlobalImageAssetsDir());
-
-  return normalizeImageDescriptors(images).filter((descriptor) => {
-    // Relative paths are anchored in the store; absolute ones must already be in it.
-    const resolved = path.resolve(assetsRoot, descriptor.path);
-    const relative = path.relative(assetsRoot, resolved);
-    const isDirectChild =
-      relative.length > 0 &&
-      !relative.startsWith('..') &&
-      !path.isAbsolute(relative) &&
-      !relative.includes(path.sep) &&
-      !relative.includes('/');
-
-    if (!isDirectChild) {
-      console.warn(`[Chat] Dropping image outside the upload store: ${descriptor.path}`);
-    }
-    return isDirectChild;
-  });
-}
+import { createNormalizedMessage, parseIncomingJsonObject } from '@/shared/utils.js';
 
 /**
  * One provider runtime entry point. All five runtimes share this signature,
@@ -144,6 +110,133 @@ function readRequiredSessionId(data: AnyRecord): string | null {
   return sessionId.length > 0 ? sessionId : null;
 }
 
+type SessionRow = NonNullable<ReturnType<typeof sessionsDb.getSessionById>>;
+
+/**
+ * Builds the provider runtime options for a turn from the session row and the
+ * composer-level client options. The session row (not the client) is the source
+ * of truth for provider, project path, and the provider-native resume id; the
+ * client only contributes composer preferences (model, permissionMode, cwd,
+ * images, …). Shared by the live `chat.send` path and the server-initiated
+ * queue drain so both start runs identically.
+ */
+function buildRuntimeOptions(
+  session: SessionRow,
+  clientOptions: AnyRecord,
+  provider: LLMProvider,
+  appSessionId: string,
+): AnyRecord {
+  const runtimeOptions: AnyRecord = {
+    ...clientOptions,
+    sessionId: session.provider_session_id ?? undefined,
+    resume: Boolean(session.provider_session_id),
+    // Worktree-pinned sessions run in the worktree dir. The client sends `cwd`
+    // explicitly (live path); `session.worktree_path` is the headless fallback
+    // (e.g. background-job resume, a reload before the client rebinds cwd, or a
+    // server-drained queued message with no client behind it).
+    cwd: clientOptions.cwd ?? session.worktree_path ?? session.project_path ?? undefined,
+    projectPath: session.project_path ?? clientOptions.projectPath,
+  };
+
+  // Claude background-job auto-resume: when a `run_in_background` job finishes
+  // after its turn, the persistent session opens its OWN run for the resumed
+  // turn (server-initiated, no client send) so its output is sequenced/replayed
+  // and the session shows as processing again.
+  if (provider === 'claude') {
+    runtimeOptions.acquireResumeRun = () => chatRunRegistry.startResumeRun(appSessionId);
+  }
+
+  return runtimeOptions;
+}
+
+/**
+ * Sends the next queued message for a session, if any, once its run has
+ * finished. The server (not any single browser) owns draining so the shared
+ * queue works across clients: this fires from the registry's run-complete
+ * handler and, recursively, from each drained run's own completion — chaining
+ * until the queue empties.
+ */
+async function drainQueue(appSessionId: string): Promise<void> {
+  const dependencies = drainDependencies;
+  if (!dependencies) {
+    return;
+  }
+  // A run may already be active (e.g. a background auto-resume beat us to it);
+  // the next completion re-fires this drain.
+  if (chatRunRegistry.isProcessing(appSessionId) || !chatRunRegistry.hasQueued(appSessionId)) {
+    return;
+  }
+
+  const item = chatRunRegistry.dequeueNext(appSessionId);
+  if (!item) {
+    return;
+  }
+
+  const session = sessionsDb.getSessionById(appSessionId);
+  const provider = session?.provider as LLMProvider | undefined;
+  const spawnFn = provider ? dependencies.spawnFns[provider] : undefined;
+  if (!session || !provider || !spawnFn) {
+    // Session or provider vanished — drop the item (it can't be delivered).
+    return;
+  }
+
+  const run = chatRunRegistry.startQueuedRun(appSessionId);
+  if (!run) {
+    // Lost the race to another run; retry this item on the next completion.
+    chatRunRegistry.requeueFront(appSessionId, item);
+    return;
+  }
+
+  const runtimeOptions = buildRuntimeOptions(session, item.options ?? {}, provider, appSessionId);
+
+  // Emit the queued prompt as a live user message so its bubble shows for every
+  // client (the normal send path adds this optimistically on the sending
+  // browser; a server-drained turn has no browser behind it). It is transient —
+  // the authoritative copy is the provider transcript, which replaces this on
+  // the next history load, so there is no lasting duplicate.
+  if (item.content.trim()) {
+    run.writer.send(
+      createNormalizedMessage({
+        kind: 'text',
+        role: 'user',
+        content: item.content,
+        provider,
+        sessionId: appSessionId,
+      }),
+    );
+  }
+
+  try {
+    await spawnFn(item.content, runtimeOptions, run.writer);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[Chat] Queued run for provider "${provider}" failed`, { sessionId: appSessionId, error: message });
+  } finally {
+    // Terminal complete flips the run to completed and re-fires the drain for
+    // the next queued item (if any).
+    chatRunRegistry.completeRun(appSessionId, { exitCode: 1 });
+  }
+}
+
+/**
+ * The chat dependencies captured for server-initiated queue draining. Set once
+ * (the object is stable across connections) so the registry's run-complete
+ * handler — which has no dependencies of its own — can spawn provider runtimes.
+ */
+let drainDependencies: ChatWebSocketDependencies | null = null;
+let drainHandlerRegistered = false;
+
+function ensureQueueDrainingRegistered(dependencies: ChatWebSocketDependencies): void {
+  drainDependencies = dependencies;
+  if (drainHandlerRegistered) {
+    return;
+  }
+  drainHandlerRegistered = true;
+  chatRunRegistry.setRunCompleteHandler((appSessionId) => {
+    void drainQueue(appSessionId);
+  });
+}
+
 /**
  * Handles `chat.send`: resolves the session row (provider, project path, and
  * provider-native id all come from the database — never from the client),
@@ -204,27 +297,7 @@ async function handleChatSend(
   // id their CLI/SDK understands for resume). Brand-new sessions have no
   // provider id yet, so the runtime starts fresh and announces one, which the
   // gateway writer captures and maps back to the app session id.
-  const runtimeOptions: AnyRecord = {
-    ...clientOptions,
-    // Image attachments are re-validated server-side: only files inside the
-    // global upload store may reach the provider runtimes' file reads.
-    images: filterImagesToUploadStore(clientOptions.images),
-    sessionId: session.provider_session_id ?? undefined,
-    resume: Boolean(session.provider_session_id),
-    // Worktree-pinned sessions run in the worktree dir. The client sends `cwd`
-    // explicitly (live path); `session.worktree_path` is the headless fallback
-    // (e.g. background-job resume, or a reload before the client rebinds cwd).
-    cwd: clientOptions.cwd ?? session.worktree_path ?? session.project_path ?? undefined,
-    projectPath: session.project_path ?? clientOptions.projectPath,
-  };
-
-  // Claude background-job auto-resume: when a `run_in_background` job finishes
-  // after its turn, the persistent session opens its OWN run for the resumed
-  // turn (server-initiated, no client send) so its output is sequenced/replayed
-  // and the session shows as processing again.
-  if (provider === 'claude') {
-    runtimeOptions.acquireResumeRun = () => chatRunRegistry.startResumeRun(sessionId);
-  }
+  const runtimeOptions = buildRuntimeOptions(session, clientOptions, provider, sessionId);
 
   try {
     await spawnFn(command, runtimeOptions, run.writer);
@@ -234,10 +307,8 @@ async function handleChatSend(
   } finally {
     // Safety net: a runtime that crashed (or resolved) without emitting its
     // terminal `complete` would otherwise leave the session stuck in
-    // "processing" forever on every connected client. Scoped to THIS run —
-    // a queued message can start the session's next run before this promise
-    // settles, and the session-keyed completeRun would kill that new run.
-    chatRunRegistry.completeRunIfCurrent(run, { exitCode: 1 });
+    // "processing" forever on every connected client.
+    chatRunRegistry.completeRun(sessionId, { exitCode: 1 });
   }
 }
 
@@ -325,6 +396,72 @@ async function handleChatStopTask(
 }
 
 /**
+ * Handles `chat.queue-add`: appends a message to the session's server-owned
+ * queue so it is shared across every client viewing the session and drained by
+ * the server when the current run finishes. If the session is idle when the add
+ * arrives (a race — the run finished between the client deciding to queue and
+ * this message landing), the drain fires immediately.
+ */
+function handleChatQueueAdd(
+  ws: WebSocket,
+  userId: string | number | null,
+  data: AnyRecord,
+): void {
+  const sessionId = readRequiredSessionId(data);
+  if (!sessionId) {
+    sendProtocolError(ws, 'SESSION_ID_REQUIRED', 'chat.queue-add requires a sessionId.');
+    return;
+  }
+
+  const session = sessionsDb.getSessionById(sessionId);
+  if (!session) {
+    sendProtocolError(ws, 'SESSION_NOT_FOUND', `Session "${sessionId}" was not found.`, sessionId);
+    return;
+  }
+
+  const content = typeof data.content === 'string' ? data.content : '';
+  const options = (data.options ?? {}) as AnyRecord;
+  const images = Array.isArray(options.images) ? options.images : [];
+  if (!content.trim() && images.length === 0) {
+    return;
+  }
+
+  const id = typeof data.id === 'string' && data.id.trim()
+    ? data.id.trim()
+    : `queued_${Date.now()}_${Math.round(Math.random() * 1e9).toString(36)}`;
+
+  chatRunRegistry.enqueue(sessionId, {
+    id,
+    content,
+    imageCount: images.length,
+    options,
+    userId,
+    createdAt: Date.now(),
+  });
+
+  if (!chatRunRegistry.isProcessing(sessionId)) {
+    void drainQueue(sessionId);
+  }
+}
+
+/**
+ * Handles `chat.queue-remove`: drops one pending message from the shared queue.
+ */
+function handleChatQueueRemove(ws: WebSocket, data: AnyRecord): void {
+  const sessionId = readRequiredSessionId(data);
+  if (!sessionId) {
+    sendProtocolError(ws, 'SESSION_ID_REQUIRED', 'chat.queue-remove requires a sessionId.');
+    return;
+  }
+  const id = typeof data.id === 'string' ? data.id.trim() : '';
+  if (!id) {
+    sendProtocolError(ws, 'QUEUE_ID_REQUIRED', 'chat.queue-remove requires an id.', sessionId);
+    return;
+  }
+  chatRunRegistry.removeQueued(sessionId, id);
+}
+
+/**
  * Handles `chat.subscribe`: for each requested session, reports whether a run
  * is processing, re-attaches the live stream to this socket, replays missed
  * events (seq > lastSeq), and includes pending permission requests.
@@ -382,6 +519,9 @@ function handleChatSubscribe(
       isProcessing,
       lastSeq: run?.lastSeq ?? 0,
       pendingPermissions,
+      // Server-owned message queue snapshot so a freshly-opened client sees any
+      // messages another browser queued for this session.
+      queue: chatRunRegistry.getQueueForClient(sessionId),
       timestamp: new Date().toISOString(),
     });
 
@@ -444,6 +584,10 @@ export function handleChatConnection(
   console.log('[INFO] Chat WebSocket connected');
   connectedClients.add(ws);
 
+  // Capture the provider spawn functions so the registry's run-complete handler
+  // can drain the server-owned message queue (it has no dependencies of its own).
+  ensureQueueDrainingRegistered(dependencies);
+
   const userId = readRequestUserId(request);
 
   ws.on('message', async (rawMessage) => {
@@ -465,6 +609,12 @@ export function handleChatConnection(
           return;
         case 'chat.stop-task':
           await handleChatStopTask(ws, data, dependencies);
+          return;
+        case 'chat.queue-add':
+          handleChatQueueAdd(ws, userId, data);
+          return;
+        case 'chat.queue-remove':
+          handleChatQueueRemove(ws, data);
           return;
         case 'chat.subscribe':
           handleChatSubscribe(ws, data, dependencies);
