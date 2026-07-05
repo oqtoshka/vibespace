@@ -8,6 +8,7 @@ type ShellHeaderProps = {
   sessionDisplayNameShort: string | null;
   onDisconnect: () => void;
   onRestart: () => void;
+  onSendEsc: () => void;
   statusNewSessionText: string;
   statusInitializingText: string;
   statusRestartingText: string;
@@ -26,6 +27,7 @@ export default function ShellHeader({
   sessionDisplayNameShort,
   onDisconnect,
   onRestart,
+  onSendEsc,
   statusNewSessionText,
   statusInitializingText,
   statusRestartingText,
@@ -53,6 +55,21 @@ export default function ShellHeader({
         </div>
 
         <div className="flex items-center gap-2">
+          {isConnected && (
+            <button
+              type="button"
+              // Desktop-only; mobile has the full shortcuts panel. Fallback for
+              // when a Vim-style browser extension (Vimium, SurfingKeys, …)
+              // grabs the physical Escape before it reaches the terminal.
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={onSendEsc}
+              className="hidden h-8 items-center rounded-md border border-gray-600/80 bg-gray-700/70 px-3 text-xs font-medium text-gray-100 transition-colors hover:border-blue-400/70 hover:bg-blue-600/80 hover:text-white focus:outline-none focus:ring-2 focus:ring-blue-400/70 focus:ring-offset-2 focus:ring-offset-gray-800 md:inline-flex"
+              title="Send Escape to the terminal"
+            >
+              Esc
+            </button>
+          )}
+
           {isConnected && (
             <button
               type="button"
