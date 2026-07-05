@@ -5,6 +5,7 @@ import { generateDisplayName } from '@/modules/projects/index.js';
 import { ChatSessionWriter } from '@/modules/websocket/services/chat-session-writer.service.js';
 import { connectedClients, WS_OPEN_STATE } from '@/modules/websocket/services/websocket-state.service.js';
 import type {
+  AnyRecord,
   LLMProvider,
   NormalizedMessage,
   RealtimeClientConnection,
@@ -61,6 +62,59 @@ const MAX_BUFFERED_EVENTS_PER_RUN = 5000;
  * path all consult it instead of asking each provider runtime individually.
  */
 const runs = new Map<string, ChatRun>();
+
+/**
+ * One message a client queued to send after the session's current run finishes.
+ *
+ * The queue lives on the server (not per-browser) so it is shared: every client
+ * viewing the session sees the same pending list, and the server — not any one
+ * browser — drains it when a run completes. `options` carries the full
+ * composer-level payload (model, permissionMode, cwd, serialized images, …) so
+ * a server-initiated drain can start the run with no client behind it.
+ */
+export type QueuedMessage = {
+  id: string;
+  content: string;
+  imageCount: number;
+  options: AnyRecord;
+  userId: string | number | null;
+  createdAt: number;
+};
+
+/** Pending messages per app session id, oldest first. */
+const queues = new Map<string, QueuedMessage[]>();
+
+/** Mirror of the client cap so a runaway loop can't grow the queue unbounded. */
+const MAX_QUEUED_MESSAGES = 20;
+
+/**
+ * Invoked whenever a run's terminal `complete` passes through the registry, so
+ * the websocket layer can drain the next queued message. Registered once by the
+ * chat websocket service (it owns the provider spawn functions the registry
+ * intentionally does not know about).
+ */
+let onRunCompleteHandler: ((appSessionId: string) => void) | null = null;
+
+/** The client-facing view of a queued item (no server-only bookkeeping). */
+function toClientQueued(item: QueuedMessage): { id: string; content: string; imageCount: number; createdAt: number } {
+  return { id: item.id, content: item.content, imageCount: item.imageCount, createdAt: item.createdAt };
+}
+
+/** Fan the current queue for a session out to every connected client. */
+function broadcastQueue(appSessionId: string): void {
+  const queue = queues.get(appSessionId) ?? [];
+  const payload = JSON.stringify({
+    kind: 'queue_updated',
+    sessionId: appSessionId,
+    queue: queue.map(toClientQueued),
+    timestamp: new Date().toISOString(),
+  });
+  connectedClients.forEach((client) => {
+    if (client.readyState === WS_OPEN_STATE) {
+      client.send(payload);
+    }
+  });
+}
 
 async function broadcastCanonicalSessionUpsert(appSessionId: string): Promise<void> {
   const row = sessionsDb.getSessionById(appSessionId);
@@ -150,6 +204,14 @@ function decorateAndRecordEvent(run: ChatRun, message: NormalizedMessage): Norma
     run.status = 'completed';
     run.completedAt = Date.now();
     evictRunLater(run.appSessionId);
+    // Drain the next queued message (if any) once this run has fully settled.
+    // Deferred a tick so the terminal `complete` is flushed to clients first,
+    // and so the drain's own startRun sees status === 'completed' here.
+    if (onRunCompleteHandler) {
+      const handler = onRunCompleteHandler;
+      const appSessionId = run.appSessionId;
+      setTimeout(() => handler(appSessionId), 0);
+    }
   }
 
   run.events.push(outbound);
@@ -194,6 +256,63 @@ function recordProviderSessionId(run: ChatRun, providerSessionId: string): void 
       error: message,
     });
   }
+}
+
+/**
+ * Builds a run whose outbound stream fans out to every connected client (no
+ * single originating socket) and registers it. Shared by the two
+ * server-initiated run kinds — background auto-resume and queue drain. Returns
+ * `null` when a run is already active for the session.
+ */
+function createBroadcastRun(appSessionId: string): ChatRun | null {
+  const existing = runs.get(appSessionId);
+  if (existing && existing.status === 'running') {
+    return null;
+  }
+
+  const row = sessionsDb.getSessionById(appSessionId);
+  const provider = (row?.provider as LLMProvider) ?? 'claude';
+  const providerSessionId = row?.provider_session_id ?? null;
+
+  // The ones viewing this session render the stream, the rest ignore a session
+  // id they don't track. A later `chat.subscribe` re-attaches a specific socket
+  // (replacing this broadcast) for replay.
+  const broadcast = {
+    readyState: WS_OPEN_STATE,
+    send: (data: string) => {
+      connectedClients.forEach((client) => {
+        if (client.readyState === WS_OPEN_STATE) {
+          client.send(data);
+        }
+      });
+    },
+  } as unknown as RealtimeClientConnection;
+
+  const run: ChatRun = {
+    appSessionId,
+    provider,
+    providerSessionId,
+    status: 'running',
+    lastSeq: 0,
+    events: [],
+    writer: null as unknown as ChatSessionWriter,
+    startedAt: Date.now(),
+    completedAt: null,
+  };
+
+  run.writer = new ChatSessionWriter({
+    connection: broadcast,
+    userId: null,
+    provider,
+    providerSessionId,
+    onProviderSessionId: (id) => {
+      recordProviderSessionId(run, id);
+    },
+    decorateOutboundEvent: (message) => decorateAndRecordEvent(run, message),
+  });
+
+  runs.set(appSessionId, run);
+  return run;
 }
 
 /**
@@ -257,55 +376,19 @@ export const chatRunRegistry = {
    * then keeps streaming to the current run instead).
    */
   startResumeRun(appSessionId: string): ChatSessionWriter | null {
-    const existing = runs.get(appSessionId);
-    if (existing && existing.status === 'running') {
-      return null;
-    }
+    return createBroadcastRun(appSessionId)?.writer ?? null;
+  },
 
-    const row = sessionsDb.getSessionById(appSessionId);
-    const provider = (row?.provider as LLMProvider) ?? 'claude';
-    const providerSessionId = row?.provider_session_id ?? null;
-
-    // No single originating socket for a server-initiated resume, so fan out to
-    // every connected client; the ones viewing this session render the stream,
-    // the rest ignore a session id they don't track. A later `chat.subscribe`
-    // re-attaches a specific socket (replacing this broadcast) for replay.
-    const broadcast = {
-      readyState: WS_OPEN_STATE,
-      send: (data: string) => {
-        connectedClients.forEach((client) => {
-          if (client.readyState === WS_OPEN_STATE) {
-            client.send(data);
-          }
-        });
-      },
-    } as unknown as RealtimeClientConnection;
-
-    const run: ChatRun = {
-      appSessionId,
-      provider,
-      providerSessionId,
-      status: 'running',
-      lastSeq: 0,
-      events: [],
-      writer: null as unknown as ChatSessionWriter,
-      startedAt: Date.now(),
-      completedAt: null,
-    };
-
-    run.writer = new ChatSessionWriter({
-      connection: broadcast,
-      userId: null,
-      provider,
-      providerSessionId,
-      onProviderSessionId: (id) => {
-        recordProviderSessionId(run, id);
-      },
-      decorateOutboundEvent: (message) => decorateAndRecordEvent(run, message),
-    });
-
-    runs.set(appSessionId, run);
-    return run.writer;
+  /**
+   * Opens a server-initiated run for draining a queued message (see
+   * `QueuedMessage`). Like `startResumeRun` there is no originating socket, so
+   * events fan out to every connected client; unlike it, the caller then feeds
+   * the queued command to the provider runtime against the returned run's
+   * writer. Returns `null` when a run is already active (the drain retries on
+   * the next completion).
+   */
+  startQueuedRun(appSessionId: string): ChatRun | null {
+    return createBroadcastRun(appSessionId);
   },
 
   getRun(appSessionId: string): ChatRun | undefined {
@@ -379,25 +462,85 @@ export const chatRunRegistry = {
   },
 
   /**
-   * Safety-net variant of `completeRun` scoped to one specific run: a no-op
-   * unless `run` is still the session's current, running run. A runtime
-   * promise can resolve after its own `complete` already streamed AND a new
-   * run has replaced it in the registry (a queued message sends within
-   * milliseconds of the previous turn ending) — the session-keyed
-   * `completeRun` would terminate that newer run.
+   * Registers the (single) handler the registry calls after any run completes,
+   * so the websocket layer can drain the next queued message.
    */
-  completeRunIfCurrent(run: ChatRun, opts: { exitCode: number; aborted?: boolean }): void {
-    if (runs.get(run.appSessionId) !== run || run.status !== 'running') {
-      return;
-    }
+  setRunCompleteHandler(handler: (appSessionId: string) => void): void {
+    onRunCompleteHandler = handler;
+  },
 
-    run.writer.sendComplete(opts);
+  /** Client-facing snapshot of the pending queue for a session (for subscribe). */
+  getQueueForClient(appSessionId: string): Array<{ id: string; content: string; imageCount: number; createdAt: number }> {
+    return (queues.get(appSessionId) ?? []).map(toClientQueued);
   },
 
   /**
-   * Test-only escape hatch: clears every tracked run.
+   * Appends a message to a session's queue (deduping by id so a retried add is
+   * idempotent) and broadcasts the new queue to all clients. Enforces the cap.
+   */
+  enqueue(appSessionId: string, item: QueuedMessage): void {
+    const queue = queues.get(appSessionId) ?? [];
+    if (queue.some((existing) => existing.id === item.id)) {
+      return;
+    }
+    const next = [...queue, item].slice(-MAX_QUEUED_MESSAGES);
+    queues.set(appSessionId, next);
+    broadcastQueue(appSessionId);
+  },
+
+  /** Removes one queued message by id and broadcasts the change. */
+  removeQueued(appSessionId: string, id: string): void {
+    const queue = queues.get(appSessionId);
+    if (!queue) {
+      return;
+    }
+    const next = queue.filter((item) => item.id !== id);
+    if (next.length === queue.length) {
+      return;
+    }
+    if (next.length === 0) {
+      queues.delete(appSessionId);
+    } else {
+      queues.set(appSessionId, next);
+    }
+    broadcastQueue(appSessionId);
+  },
+
+  /** Pops the oldest queued message (broadcasting the removal), or null. */
+  dequeueNext(appSessionId: string): QueuedMessage | null {
+    const queue = queues.get(appSessionId);
+    if (!queue || queue.length === 0) {
+      return null;
+    }
+    const [next, ...rest] = queue;
+    if (rest.length === 0) {
+      queues.delete(appSessionId);
+    } else {
+      queues.set(appSessionId, rest);
+    }
+    broadcastQueue(appSessionId);
+    return next;
+  },
+
+  /**
+   * Puts a message back at the front of the queue — used when a drain loses the
+   * race to another run and must retry the item on the next completion.
+   */
+  requeueFront(appSessionId: string, item: QueuedMessage): void {
+    const queue = queues.get(appSessionId) ?? [];
+    queues.set(appSessionId, [item, ...queue].slice(0, MAX_QUEUED_MESSAGES));
+    broadcastQueue(appSessionId);
+  },
+
+  hasQueued(appSessionId: string): boolean {
+    return (queues.get(appSessionId)?.length ?? 0) > 0;
+  },
+
+  /**
+   * Test-only escape hatch: clears every tracked run and queue.
    */
   clearAll(): void {
     runs.clear();
+    queues.clear();
   },
 };

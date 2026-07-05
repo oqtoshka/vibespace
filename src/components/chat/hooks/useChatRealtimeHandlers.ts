@@ -132,6 +132,17 @@ export function useChatRealtimeHandlers({
             });
           }
 
+          // Server-owned message queue snapshot for this session — hand it to
+          // the composer so a freshly-opened client shows what another browser
+          // queued.
+          if (Array.isArray(msg.queue)) {
+            window.dispatchEvent(
+              new CustomEvent('vibespace:queue-updated', {
+                detail: { sessionId: sid, queue: msg.queue },
+              }),
+            );
+          }
+
           const isViewedSession = sid === activeViewSessionId;
           if (isViewedSession && Array.isArray(msg.pendingPermissions)) {
             const nextPendingPermissionRequests = msg.pendingPermissions as PendingPermissionRequest[];
@@ -174,6 +185,19 @@ export function useChatRealtimeHandlers({
               kind: 'error',
               content: String(msg.error || 'Request failed'),
             } as NormalizedMessage);
+          }
+          return;
+        }
+
+        case 'queue_updated': {
+          // Server broadcast: the shared message queue for a session changed.
+          // Route to the composer, which renders/reconciles only its session.
+          if (sid) {
+            window.dispatchEvent(
+              new CustomEvent('vibespace:queue-updated', {
+                detail: { sessionId: sid, queue: Array.isArray(msg.queue) ? msg.queue : [] },
+              }),
+            );
           }
           return;
         }
