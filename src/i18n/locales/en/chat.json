@@ -117,7 +117,6 @@
     "disabled": "Input disabled",
     "attachFiles": "Attach files",
     "attachImages": "Attach images",
-    "attachFiles": "Attach files",
     "send": "Send",
     "stop": "Stop",
     "hintText": {
@@ -162,6 +161,11 @@
     "continue": {
       "title": "Continue your conversation",
       "description": "Ask questions about your code, request changes, or get help with development tasks"
+    },
+    "loadFailed": {
+      "title": "Couldn't load this conversation",
+      "description": "The message history failed to load. Check your connection and try again.",
+      "retry": "Retry"
     },
     "loading": {
       "olderMessages": "Loading older messages...",

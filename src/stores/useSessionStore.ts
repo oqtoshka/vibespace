@@ -602,6 +602,9 @@ export function useSessionStore() {
       slot.total = data.total ?? slot.serverMessages.length;
       slot.hasMore = Boolean(data.hasMore);
       slot.fetchedAt = Date.now();
+      // A successful refresh clears any earlier failed-fetch marker so the
+      // error indicator doesn't linger over healthy data.
+      slot.status = 'idle';
       // Only drop realtime rows the server transcript now owns. A blind clear
       // here caused the chat pane to flash "Continue your conversation" after
       // `complete` while JSONL / provider_session_id indexing was still behind.
@@ -613,6 +616,8 @@ export function useSessionStore() {
       notify(sessionId);
     } catch (error) {
       console.error(`[SessionStore] refresh failed for ${sessionId}:`, error);
+      slot.status = 'error';
+      notify(sessionId);
     }
   }, [getSlot, notify]);
 

@@ -108,7 +108,6 @@
     "disabled": "Input disabilitato",
     "attachFiles": "Allega file",
     "attachImages": "Allega immagini",
-    "attachFiles": "Allega file",
     "send": "Invia",
     "stop": "Ferma",
     "hintText": {
@@ -142,6 +141,11 @@
     "continue": {
       "title": "Continua la tua conversazione",
       "description": "Fai domande sul tuo codice, richiedi modifiche o chiedi aiuto con le attività di sviluppo"
+    },
+    "loadFailed": {
+      "title": "Impossibile caricare la conversazione",
+      "description": "Il caricamento della cronologia dei messaggi non è riuscito. Controlla la connessione e riprova.",
+      "retry": "Riprova"
     },
     "loading": {
       "olderMessages": "Caricamento messaggi precedenti...",
