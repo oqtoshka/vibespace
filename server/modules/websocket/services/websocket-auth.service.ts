@@ -54,12 +54,32 @@ export function verifyWebSocketClient(
     null;
 
   const user = dependencies.authenticateWebSocket(token);
+  const clientIp =
+    (request.headers['x-real-ip'] as string | undefined) ??
+    (request.headers['x-forwarded-for'] as string | undefined)?.split(',')[0]?.trim() ??
+    request.socket?.remoteAddress ??
+    'unknown';
+
   if (!user) {
-    console.log('[WARN] WebSocket authentication failed');
+    // Decode (without verifying) so the log says WHICH client keeps knocking
+    // with a dead token — stale tabs can loop for days and the bare WARN made
+    // them impossible to tell apart.
+    let tokenInfo = 'no-token';
+    if (token) {
+      try {
+        const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString());
+        tokenInfo = `user=${payload.username ?? '?'} exp=${
+          payload.exp ? new Date(payload.exp * 1000).toISOString() : '?'
+        }`;
+      } catch {
+        tokenInfo = 'malformed-token';
+      }
+    }
+    console.log(`[WARN] WebSocket authentication failed (${loggedUrl.pathname}, ip=${clientIp}, ${tokenInfo})`);
     return true;
   }
 
   request.user = user;
-  console.log('[OK] WebSocket authenticated for user:', user.username);
+  console.log(`[OK] WebSocket authenticated for user: ${user.username} (${loggedUrl.pathname}, ip=${clientIp})`);
   return true;
 }
