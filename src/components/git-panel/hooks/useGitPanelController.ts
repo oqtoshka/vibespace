@@ -769,6 +769,17 @@ export function useGitPanelController({
         return;
       }
 
+      // Git reports repo-relative paths, but the editor (tab identity,
+      // breadcrumbs, sibling browsing) expects an absolute path — a relative
+      // one renders truncated crumbs whose menus fail to load. Resolve against
+      // the active repo root (`selectedRepoPath` is project-relative; '' means
+      // the project root itself).
+      const projectRoot = (selectedProject.fullPath || '').replace(/\/+$/, '');
+      const repoRoot = selectedRepoPath ? `${projectRoot}/${selectedRepoPath}` : projectRoot;
+      const absolutePath = filePath.startsWith('/') || !repoRoot
+        ? filePath
+        : `${repoRoot}/${filePath}`;
+
       try {
         const response = await fetchWithAuth(
           withRepoParam(`/api/git/file-with-diff?project=${encodeURIComponent(selectedProject.projectId)}&file=${encodeURIComponent(filePath)}`),
@@ -777,20 +788,20 @@ export function useGitPanelController({
 
         if (data.error) {
           console.error('Error fetching file with diff:', data.error);
-          onFileOpen(filePath);
+          onFileOpen(absolutePath);
           return;
         }
 
-        onFileOpen(filePath, {
+        onFileOpen(absolutePath, {
           old_string: data.oldContent || '',
           new_string: data.currentContent || '',
         });
       } catch (error) {
         console.error('Error opening file:', error);
-        onFileOpen(filePath);
+        onFileOpen(absolutePath);
       }
     },
-    [onFileOpen, selectedProject, withRepoParam],
+    [onFileOpen, selectedProject, selectedRepoPath, withRepoParam],
   );
 
   const refreshAll = useCallback(() => {

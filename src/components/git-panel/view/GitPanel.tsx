@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useGitPanelController } from '../hooks/useGitPanelController';
 import { useRevertLocalCommit } from '../hooks/useRevertLocalCommit';
 import type { ConfirmationRequest, GitPanelProps, GitPanelView } from '../types/types';
@@ -13,8 +13,41 @@ import ConfirmActionModal from '../view/modals/ConfirmActionModal';
 import RepoPicker from '../view/RepoPicker';
 import WorktreePicker from '../view/WorktreePicker';
 
+// Remembers which tab (changes/history/branches) was open per project, so
+// closing and reopening the panel lands back where the user was.
+const viewStorageKey = (projectId: string) => `git-panel-view:${projectId}`;
+
+function readStoredView(projectId: string | undefined): GitPanelView {
+  if (!projectId) return 'changes';
+  try {
+    const stored = localStorage.getItem(viewStorageKey(projectId));
+    if (stored === 'changes' || stored === 'history' || stored === 'branches') {
+      return stored;
+    }
+  } catch {
+    // Storage unavailable — fall through to the default.
+  }
+  return 'changes';
+}
+
 export default function GitPanel({ selectedProject, isMobile = false, onFileOpen }: GitPanelProps) {
-  const [activeView, setActiveView] = useState<GitPanelView>('changes');
+  const [activeView, setActiveViewState] = useState<GitPanelView>(() => readStoredView(selectedProject?.projectId));
+
+  // Re-read the remembered tab when the panel switches to another project.
+  useEffect(() => {
+    setActiveViewState(readStoredView(selectedProject?.projectId));
+  }, [selectedProject?.projectId]);
+
+  const setActiveView = useCallback((view: GitPanelView) => {
+    setActiveViewState(view);
+    if (selectedProject?.projectId) {
+      try {
+        localStorage.setItem(viewStorageKey(selectedProject.projectId), view);
+      } catch {
+        // Storage unavailable — the tab just won't persist.
+      }
+    }
+  }, [selectedProject?.projectId]);
   const [wrapText, setWrapText] = useState(true);
   const [hasExpandedFiles, setHasExpandedFiles] = useState(false);
   const [confirmAction, setConfirmAction] = useState<ConfirmationRequest | null>(null);
@@ -197,7 +230,9 @@ export default function GitPanel({ selectedProject, isMobile = false, onFileOpen
               recentCommits={recentCommits}
               commitDiffs={commitDiffs}
               wrapText={wrapText}
+              storageScope={repoScopePath}
               onFetchCommitDiff={fetchCommitDiff}
+              onOpenFile={openFile}
             />
           )}
 
