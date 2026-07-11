@@ -9,6 +9,13 @@ import { handleShellConnection } from '@/modules/websocket/services/shell-websoc
 import { handleDesktopNotificationsConnection } from '@/modules/notifications/index.js';
 import type { AuthenticatedWebSocketRequest } from '@/shared/types.js';
 
+/**
+ * App-level close code for failed websocket authentication (expired/invalid
+ * JWT). Mirrored in `src/utils/authEvents.ts` — clients treat it as "re-login
+ * required" instead of retrying the same dead token forever.
+ */
+const WS_CLOSE_CODE_AUTH_FAILED = 4401;
+
 type WebSocketServerDependencies = {
   verifyClient: Parameters<typeof verifyWebSocketClient>[1];
   chat: Parameters<typeof handleChatConnection>[2];
@@ -51,6 +58,16 @@ export function createWebSocketServer(
     ws.on('error', stopHeartbeat);
 
     const incomingRequest = request as AuthenticatedWebSocketRequest;
+
+    // Auth failures are accepted at handshake (see websocket-auth.service) and
+    // closed here with a code the browser exposes, so clients can distinguish
+    // "token expired — re-login" from a transient drop worth retrying.
+    if (!incomingRequest.user) {
+      stopHeartbeat();
+      ws.close(WS_CLOSE_CODE_AUTH_FAILED, 'authentication failed');
+      return;
+    }
+
     const url = incomingRequest.url ?? '/';
     const pathname = new URL(url, 'http://localhost').pathname;
 

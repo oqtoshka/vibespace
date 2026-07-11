@@ -4,9 +4,16 @@ import type { FitAddon } from '@xterm/addon-fit';
 import type { Terminal } from '@xterm/xterm';
 
 import type { Project, ProjectSession } from '../../../types/app';
+import { IS_PLATFORM } from '../../../constants/config';
+import { AUTH_SESSION_EXPIRED_EVENT, WS_CLOSE_CODE_AUTH_FAILED } from '../../../utils/authEvents';
 import { getClaudeSettings } from '../../chat/utils/chatStorage';
 import { TERMINAL_INIT_DELAY_MS } from '../constants/constants';
 import { getShellWebSocketUrl, parseShellMessage, sendSocketMessage } from '../utils/socket';
+
+// Wait this long before auto-reconnecting after a connection attempt that
+// never reached OPEN. Without it, a failing handshake (server restarting,
+// proxy hiccup) makes the autoConnect effect retry in a zero-delay busy loop.
+const FAILED_CONNECT_RETRY_DELAY_MS = 3000;
 
 const ANSI_ESCAPE_REGEX =
   /(?:\u001B\[[0-?]*[ -/]*[@-~]|\u009B[0-?]*[ -/]*[@-~]|\u001B\][^\u0007\u001B]*(?:\u0007|\u001B\\)|\u009D[^\u0007\u009C]*(?:\u0007|\u009C)|\u001B[PX^_][^\u001B]*\u001B\\|[\u0090\u0098\u009E\u009F][^\u009C]*\u009C|\u001B[@-Z\\-_])/g;
@@ -58,6 +65,9 @@ export function useShellConnection({
   const connectingRef = useRef(false);
   const forceRestartOnInitRef = useRef(false);
   const suppressAutoConnectRef = useRef(false);
+  // Timestamp of the last connection attempt that closed without opening;
+  // gates the autoConnect effect so failed handshakes retry with a delay.
+  const lastFailedConnectAtRef = useRef(0);
 
   const handleProcessCompletion = useCallback(
     (output: string) => {
@@ -123,8 +133,11 @@ export function useShellConnection({
 
         const socket = new WebSocket(wsUrl);
         wsRef.current = socket;
+        let socketOpened = false;
 
         socket.onopen = () => {
+          socketOpened = true;
+          lastFailedConnectAtRef.current = 0;
           setIsConnected(true);
           setIsConnecting(false);
           connectingRef.current = false;
@@ -165,7 +178,21 @@ export function useShellConnection({
           handleSocketMessage(rawPayload);
         };
 
-        socket.onclose = () => {
+        socket.onclose = (event) => {
+          if (!socketOpened) {
+            lastFailedConnectAtRef.current = Date.now();
+          }
+
+          // Server refused our JWT — reconnecting with the same token would
+          // loop forever (and hold the "Connecting…" overlay up while doing
+          // it). Stop retrying and let AuthContext show the login screen.
+          if (event.code === WS_CLOSE_CODE_AUTH_FAILED) {
+            suppressAutoConnectRef.current = true;
+            if (!IS_PLATFORM) {
+              window.dispatchEvent(new CustomEvent(AUTH_SESSION_EXPIRED_EVENT));
+            }
+          }
+
           setIsConnected(false);
           setIsConnecting(false);
           connectingRef.current = false;
@@ -235,6 +262,15 @@ export function useShellConnection({
       isConnected
     ) {
       return;
+    }
+
+    const sinceFailure = Date.now() - lastFailedConnectAtRef.current;
+    if (lastFailedConnectAtRef.current > 0 && sinceFailure < FAILED_CONNECT_RETRY_DELAY_MS) {
+      const timeoutId = window.setTimeout(
+        () => connectToShell(),
+        FAILED_CONNECT_RETRY_DELAY_MS - sinceFailure,
+      );
+      return () => window.clearTimeout(timeoutId);
     }
 
     connectToShell();

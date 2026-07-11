@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState } 
 import { IS_PLATFORM } from '../../../constants/config';
 import { api } from '../../../utils/api';
 import { clearAuthToken, persistAuthToken, readAuthToken } from '../../../utils/authToken';
+import { AUTH_SESSION_EXPIRED_EVENT, AUTH_TOKEN_REFRESHED_EVENT } from '../../../utils/authEvents';
 import { AUTH_ERROR_MESSAGES } from '../constants';
 import type {
   AuthContextValue,
@@ -39,11 +40,37 @@ export function AuthProvider({ children }: AuthProviderProps) {
     persistAuthToken(nextToken);
   }, []);
 
+  // Keep the React token in sync with the fetch-layer's auto-refresh rotation
+  // (X-Refreshed-Token). Without this the WebSocket URL keeps the page-load
+  // token until it expires, after which every 3s reconnect fails with
+  // "jwt expired" while REST silently keeps working on the rotated token.
+  useEffect(() => {
+    const onRefreshed = (event: Event) => {
+      const nextToken = (event as CustomEvent<string>).detail;
+      if (nextToken) {
+        setToken(nextToken);
+      }
+    };
+    window.addEventListener(AUTH_TOKEN_REFRESHED_EVENT, onRefreshed);
+    return () => window.removeEventListener(AUTH_TOKEN_REFRESHED_EVENT, onRefreshed);
+  }, []);
+
   const clearSession = useCallback(() => {
     setUser(null);
     setToken(null);
     clearAuthToken();
   }, []);
+
+  // A response proved the stored JWT is dead (expired/invalid). Drop the
+  // session so the login screen renders, instead of leaving a hollow app
+  // where every fetch 401s — which used to surface as "empty chat history".
+  useEffect(() => {
+    const onExpired = () => {
+      clearSession();
+    };
+    window.addEventListener(AUTH_SESSION_EXPIRED_EVENT, onExpired);
+    return () => window.removeEventListener(AUTH_SESSION_EXPIRED_EVENT, onExpired);
+  }, [clearSession]);
 
   const checkOnboardingStatus = useCallback(async () => {
     try {
