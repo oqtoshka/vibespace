@@ -46,6 +46,7 @@ type CommitHistoryItemProps = {
   wrapText: boolean;
   graphRow?: CommitGraphRow;
   onToggle: () => void;
+  onOpenFile: (filePath: string) => void;
 };
 
 export default function CommitHistoryItem({
@@ -56,6 +57,7 @@ export default function CommitHistoryItem({
   wrapText,
   graphRow,
   onToggle,
+  onOpenFile,
 }: CommitHistoryItemProps) {
   const fileSummary = useMemo(() => {
     if (!diff) return null;
@@ -149,9 +151,12 @@ export default function CommitHistoryItem({
                 </p>
                 <div className="rounded-md border border-border/60">
                   {fileSummary.files.map((file, idx) => (
-                    <div
+                    <button
                       key={file.path}
-                      className={`flex items-center gap-2 px-2.5 py-1.5 text-xs ${
+                      type="button"
+                      onClick={() => onOpenFile(file.path)}
+                      title="Click to open file"
+                      className={`group flex w-full items-center gap-2 px-2.5 py-1.5 text-left text-xs transition-colors hover:bg-accent/50 ${
                         idx < fileSummary.files.length - 1 ? 'border-b border-border/40' : ''
                       }`}
                     >
@@ -160,11 +165,11 @@ export default function CommitHistoryItem({
                       >
                         {file.status}
                       </span>
-                      <span className="min-w-0 flex-1 truncate">
+                      <span className="min-w-0 flex-1 truncate group-hover:text-primary group-hover:underline">
                         {file.directory && (
-                          <span className="text-muted-foreground/60">{file.directory}</span>
+                          <span className="text-muted-foreground/60 group-hover:text-primary/70">{file.directory}</span>
                         )}
-                        <span className="font-medium text-foreground">{file.filename}</span>
+                        <span className="font-medium text-foreground group-hover:text-primary">{file.filename}</span>
                       </span>
                       <span className="flex-shrink-0 font-mono text-muted-foreground/60">
                         {file.insertions > 0 && (
@@ -175,7 +180,7 @@ export default function CommitHistoryItem({
                           <span className="text-red-600 dark:text-red-400">-{file.deletions}</span>
                         )}
                       </span>
-                    </div>
+                    </button>
                   ))}
                 </div>
               </div>
