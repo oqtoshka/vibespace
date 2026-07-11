@@ -250,6 +250,9 @@ export function handleShellConnection(
       if (data.type === 'init') {
         const projectPath = readString(data.projectPath, process.cwd());
         const sessionId = readString(data.sessionId) || null;
+        console.log(
+          `[INFO] Shell init: project=${projectPath} session=${sessionId ?? '-'} provider=${readString(data.provider, 'claude')} shellId=${readString(data.shellId) || '-'}`
+        );
         const hasSession = readBoolean(data.hasSession);
         const provider = readString(data.provider, 'claude');
         const initialCommand = readString(data.initialCommand);
