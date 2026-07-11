@@ -349,7 +349,6 @@ function Sidebar({
             restartRequired={restartRequired}
             releaseInfo={releaseInfo}
             latestVersion={latestVersion}
-            currentVersion={currentVersion}
             onShowVersionModal={() => setShowVersionModal(true)}
             onShowSettings={onShowSettings}
             projectListProps={projectListProps}
