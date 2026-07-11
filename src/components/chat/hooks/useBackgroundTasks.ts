@@ -110,13 +110,18 @@ export function deriveBackgroundTasks(
     let status: BackgroundTaskStatus;
     if (completion) {
       status = completion.exitCode !== null && completion.exitCode !== 0 ? 'failed' : 'completed';
-    } else if (serverRunning) {
-      // Server is the source of truth: running iff it says so; otherwise the job
-      // has finished (its completion just wasn't visible in the stream).
+    } else if (serverRunning && serverRunning.live) {
+      // The SDK session backing this chat is loaded, so its running set is
+      // authoritative: running iff it says so; otherwise the job has finished
+      // (its completion just wasn't visible in the stream).
       status = serverRunning.ids.has(id) ? 'running' : 'ended';
     } else {
-      // No authoritative data yet: a job survives its launching turn, so treat
-      // a live session's un-completed launches as running; an idle one as over.
+      // No trustworthy authoritative snapshot: either we haven't polled yet, or
+      // the backing SDK session isn't loaded (`live: false`) — so its empty
+      // running set is empty-by-absence, not proof the job finished. Don't let
+      // it clear a launched job to "done"; fall back to the stream heuristic —
+      // a job survives its launching turn, so a live session's un-completed
+      // launches are running, an idle one's are over.
       status = isSessionActive ? 'running' : 'ended';
     }
 

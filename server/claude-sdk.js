@@ -737,6 +737,34 @@ function endSession(session, reason = 'ended') {
 }
 
 /**
+ * Arms the hard-cap timer that bounds how long a live SDK subprocess may run.
+ * When it fires with background jobs still pending we re-arm instead of tearing
+ * the session down — the session is kept alive as long as its jobs run, since
+ * killing the subprocess would kill their child bash processes mid-flight and
+ * strand their output. Once the jobs finish and the turn settles, the ordinary
+ * idle reaper takes over. A genuinely wedged job therefore extends the cap in
+ * whole SESSION_MAX_LIFETIME_MS steps (each logged) rather than being silently
+ * killed — the original "don't leak a subprocess forever" intent still bounds a
+ * long-lived but job-free session.
+ */
+function armMaxLifetimeTimer(session) {
+  if (session.maxLifetimeTimer) {
+    clearTimeout(session.maxLifetimeTimer);
+    session.maxLifetimeTimer = null;
+  }
+  session.maxLifetimeTimer = setTimeout(() => {
+    if (session.pendingTasks.size > 0) {
+      console.log(`[claude bg] session ${session.sessionId}: max-lifetime reached with ${session.pendingTasks.size} background task(s) still running — extending`);
+      armMaxLifetimeTimer(session);
+      return;
+    }
+    endSession(session, 'max-lifetime');
+  }, SESSION_MAX_LIFETIME_MS);
+  // Don't let the cap timer keep the process alive / block shutdown.
+  session.maxLifetimeTimer.unref?.();
+}
+
+/**
  * Arms the idle teardown timer. Called whenever a turn ends with no background
  * jobs outstanding; cleared as soon as new work (a user turn or a job) arrives.
  */
@@ -1294,8 +1322,7 @@ async function startPersistentSession(command, options, ws) {
   if (sessionId) {
     registerSession(sessionId, session);
   }
-  session.maxLifetimeTimer = setTimeout(() => endSession(session, 'max-lifetime'), SESSION_MAX_LIFETIME_MS);
-  session.maxLifetimeTimer.unref?.();
+  armMaxLifetimeTimer(session);
 
   // Feed the first user turn, then run the loop for the session's whole life.
   // The returned promise resolves when this first turn completes; the loop keeps
