@@ -5,6 +5,7 @@ import MarkdownPreview from './markdown/MarkdownPreview';
 import PlantUmlPreview from './PlantUmlPreview';
 import DbmlPreview from './DbmlPreview';
 import HtmlPreview from './HtmlPreview';
+import CsvPreview from './CsvPreview';
 import CustomRenderPreview from './CustomRenderPreview';
 import ApiSpecPreview from './ApiSpecPreview';
 import type { ApiSpecKind } from '../../utils/apiSpec';
@@ -16,6 +17,7 @@ type CodeEditorSurfaceProps = {
   isMarkdownFile: boolean;
   isPlantUmlFile: boolean;
   isDbmlFile: boolean;
+  isCsvFile?: boolean;
   isHtmlFile: boolean;
   isCustomRenderFile: boolean;
   apiSpecKind?: ApiSpecKind | null;
@@ -24,6 +26,7 @@ type CodeEditorSurfaceProps = {
   showLineNumbers: boolean;
   extensions: Extension[];
   currentFilePath?: string | null;
+  fileName?: string;
   projectId?: string;
   onFileOpen?: ((filePath: string) => void) | null;
 };
@@ -35,6 +38,7 @@ export default function CodeEditorSurface({
   isMarkdownFile,
   isPlantUmlFile,
   isDbmlFile,
+  isCsvFile = false,
   isHtmlFile,
   isCustomRenderFile,
   apiSpecKind = null,
@@ -43,6 +47,7 @@ export default function CodeEditorSurface({
   showLineNumbers,
   extensions,
   currentFilePath = null,
+  fileName,
   projectId,
   onFileOpen = null,
 }: CodeEditorSurfaceProps) {
@@ -62,6 +67,10 @@ export default function CodeEditorSurface({
 
   if (previewMode && isDbmlFile) {
     return <DbmlPreview content={content} projectId={projectId} path={currentFilePath ?? ''} />;
+  }
+
+  if (previewMode && isCsvFile) {
+    return <CsvPreview content={content} fileName={fileName} />;
   }
 
   if (previewMode && isHtmlFile) {

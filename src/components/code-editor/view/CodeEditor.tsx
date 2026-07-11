@@ -69,6 +69,11 @@ export default function CodeEditor({
     return extension === 'dbml';
   }, [file.name]);
 
+  const isCsvFile = useMemo(() => {
+    const extension = file.name.split('.').pop()?.toLowerCase();
+    return extension === 'csv' || extension === 'tsv';
+  }, [file.name]);
+
   const isPdfFile = useMemo(() => {
     const extension = file.name.split('.').pop()?.toLowerCase();
     return extension === 'pdf';
@@ -108,7 +113,7 @@ export default function CodeEditor({
   // detection sniffs the loaded content rather than the extension.
   const apiSpecKind = useMemo(() => detectApiSpecKind(file.name, content), [file.name, content]);
 
-  const isPreviewable = isMarkdownFile || isPlantUmlFile || isHtmlFile || isCustomRenderFile || isDbmlFile || apiSpecKind !== null;
+  const isPreviewable = isMarkdownFile || isPlantUmlFile || isHtmlFile || isCustomRenderFile || isDbmlFile || isCsvFile || apiSpecKind !== null;
 
   // Default previewable files (markdown, PlantUML, HTML) to their rendered
   // preview when opened normally — via the file tree or a markdown link jump.
@@ -323,6 +328,7 @@ export default function CodeEditor({
               isMarkdownFile={isMarkdownFile}
               isPlantUmlFile={isPlantUmlFile}
               isDbmlFile={isDbmlFile}
+              isCsvFile={isCsvFile}
               isHtmlFile={isHtmlFile}
               isCustomRenderFile={isCustomRenderFile}
               apiSpecKind={apiSpecKind}
@@ -331,6 +337,7 @@ export default function CodeEditor({
               showLineNumbers={showLineNumbers}
               extensions={extensions}
               currentFilePath={file.path}
+              fileName={file.name}
               projectId={file.projectId}
               onFileOpen={onFileOpen}
             />
