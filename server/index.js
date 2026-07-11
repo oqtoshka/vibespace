@@ -1580,6 +1580,100 @@ app.put('/api/projects/:projectId/files/rename', authenticateToken, async (req, 
     }
 });
 
+// POST /api/projects/:projectId/files/move - Move files/directories into another directory
+// (drag-and-drop in the file tree). Accepts several sources at once; each is
+// moved independently so one conflict doesn't abort the rest.
+app.post('/api/projects/:projectId/files/move', authenticateToken, async (req, res) => {
+    try {
+        const { projectId } = req.params;
+        const { sourcePaths, targetDir } = req.body;
+
+        if (!Array.isArray(sourcePaths) || sourcePaths.length === 0 || typeof targetDir !== 'string') {
+            return res.status(400).json({ error: 'sourcePaths (non-empty array) and targetDir are required' });
+        }
+
+        const projectRoot = await projectsDb.getProjectPathById(projectId);
+        if (!projectRoot) {
+            return res.status(404).json({ error: 'Project not found' });
+        }
+
+        // Empty targetDir means the project root itself (which the
+        // path-under-root validator would reject as not strictly inside).
+        let resolvedTargetDir;
+        if (!targetDir || targetDir === '.' || targetDir === './') {
+            resolvedTargetDir = path.resolve(projectRoot);
+        } else {
+            const targetValidation = validatePathInProject(projectRoot, targetDir);
+            if (!targetValidation.valid) {
+                return res.status(403).json({ error: targetValidation.error });
+            }
+            resolvedTargetDir = targetValidation.resolved;
+        }
+
+        let targetStats;
+        try {
+            targetStats = await fsPromises.stat(resolvedTargetDir);
+        } catch {
+            return res.status(404).json({ error: 'Target directory not found' });
+        }
+        if (!targetStats.isDirectory()) {
+            return res.status(400).json({ error: 'Target is not a directory' });
+        }
+
+        const moved = [];
+        const failed = [];
+        for (const sourcePath of sourcePaths) {
+            const validation = validatePathInProject(projectRoot, String(sourcePath));
+            if (!validation.valid) {
+                failed.push({ path: sourcePath, error: validation.error });
+                continue;
+            }
+            const resolvedSource = validation.resolved;
+            const destination = path.join(resolvedTargetDir, path.basename(resolvedSource));
+
+            if (destination === resolvedSource) {
+                // Dropped into its own parent — nothing to do.
+                moved.push({ from: resolvedSource, to: destination });
+                continue;
+            }
+            if (resolvedTargetDir === resolvedSource || resolvedTargetDir.startsWith(resolvedSource + path.sep)) {
+                failed.push({ path: sourcePath, error: 'Cannot move a directory into itself' });
+                continue;
+            }
+
+            try {
+                await fsPromises.access(resolvedSource);
+            } catch {
+                failed.push({ path: sourcePath, error: 'Source not found' });
+                continue;
+            }
+
+            try {
+                await fsPromises.access(destination);
+                failed.push({ path: sourcePath, error: `"${path.basename(destination)}" already exists in the target folder` });
+                continue;
+            } catch {
+                // Destination free — proceed.
+            }
+
+            try {
+                await fsPromises.rename(resolvedSource, destination);
+                moved.push({ from: resolvedSource, to: destination });
+            } catch (error) {
+                failed.push({
+                    path: sourcePath,
+                    error: error.code === 'EXDEV' ? 'Cannot move across different filesystems' : error.message,
+                });
+            }
+        }
+
+        res.json({ success: failed.length === 0, moved, failed });
+    } catch (error) {
+        console.error('Error moving files:', error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
 // DELETE /api/projects/:projectId/files - Delete file or directory
 app.delete('/api/projects/:projectId/files', authenticateToken, async (req, res) => {
     try {

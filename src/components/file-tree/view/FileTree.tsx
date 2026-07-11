@@ -1,6 +1,7 @@
-import { useCallback, useState, useEffect, useRef } from 'react';
+import { useCallback, useMemo, useState, useEffect, useRef } from 'react';
+import type { DragEvent } from 'react';
 import { useTranslation } from 'react-i18next';
-import { AlertTriangle, Check, X, Loader2, Folder, Upload } from 'lucide-react';
+import { AlertTriangle, Check, X, Loader2, Folder, Trash2, Upload } from 'lucide-react';
 
 import { cn } from '../../../lib/utils';
 import { ICON_SIZE_CLASS, getFileIconData } from '../constants/fileIcons';
@@ -11,6 +12,12 @@ import { useFileTreeOperations } from '../hooks/useFileTreeOperations';
 import { useFileTreeSearch } from '../hooks/useFileTreeSearch';
 import { useFileTreeViewMode } from '../hooks/useFileTreeViewMode';
 import { useFileTreeUpload } from '../hooks/useFileTreeUpload';
+import {
+  FileTreeInteractionsContext,
+  INTERNAL_FILE_DND_TYPE,
+  type FileTreeInteractions,
+} from '../contexts/FileTreeInteractionsContext';
+import { api } from '../../../utils/api';
 import type { FileTreeNode } from '../types/types';
 import { formatFileSize, formatRelativeTime } from '../utils/fileTreeUtils';
 import { Project } from '../../../types/app';
@@ -107,13 +114,137 @@ export default function FileTree({ selectedProject, isActive = true, onFileOpen 
     showToast,
   });
 
+  // Moves triggered by dragging the tree's own rows onto a folder.
+  const handleMoveNodes = useCallback(
+    async (sourcePaths: string[], targetDir: string) => {
+      if (!selectedProject || sourcePaths.length === 0) return;
+      // Drop entries whose ancestor is also being moved — the ancestor's move
+      // carries them along, and moving them twice can only fail.
+      const roots = sourcePaths.filter(
+        (candidate) => !sourcePaths.some((other) => other !== candidate && candidate.startsWith(`${other}/`)),
+      );
+      try {
+        const response = await api.moveFiles(selectedProject.projectId, { sourcePaths: roots, targetDir });
+        const data = await response.json() as {
+          error?: string;
+          moved?: unknown[];
+          failed?: Array<{ path: string; error: string }>;
+        };
+        if (!response.ok) {
+          throw new Error(data.error || 'Failed to move');
+        }
+        const failed = data.failed ?? [];
+        if (failed.length > 0) {
+          showToast(failed.map((f) => f.error)[0] + (failed.length > 1 ? ` (+${failed.length - 1} more)` : ''), 'error');
+        } else {
+          const count = data.moved?.length ?? roots.length;
+          showToast(t('fileTree.toast.moved', 'Moved {{count}} item(s)', { count }), 'success');
+        }
+        refreshFiles();
+      } catch (err) {
+        showToast((err as Error).message, 'error');
+      }
+    },
+    [refreshFiles, selectedProject, showToast, t],
+  );
+
   // File upload (drag and drop)
   const upload = useFileTreeUpload({
     selectedProject,
     onRefresh: refreshFiles,
     showToast,
+    onMoveNodes: handleMoveNodes,
   });
   const operationLoading = operations.operationLoading || upload.operationLoading;
+
+  /* ------------------------------------------------------------------ */
+  /*  Row drag-and-drop + checkbox multi-select                          */
+  /* ------------------------------------------------------------------ */
+  const [draggingPaths, setDraggingPaths] = useState<string[] | null>(null);
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedPaths, setSelectedPaths] = useState<Set<string>>(new Set());
+  const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
+  const { setDropTarget } = upload;
+
+  const toggleSelectionMode = useCallback(() => {
+    setSelectionMode((current) => {
+      if (current) setSelectedPaths(new Set());
+      return !current;
+    });
+  }, []);
+
+  const parentDirOf = (itemPath: string) => itemPath.split('/').slice(0, -1).join('/');
+
+  const interactions = useMemo<FileTreeInteractions>(() => ({
+    dropTarget: upload.dropTarget,
+    isInternalDrag: draggingPaths !== null,
+    onNodeDragStart: (event: DragEvent, item) => {
+      // Dragging a selected row moves the whole selection; any other row
+      // moves just itself.
+      const paths = selectionMode && selectedPaths.has(item.path) ? [...selectedPaths] : [item.path];
+      event.dataTransfer.setData(INTERNAL_FILE_DND_TYPE, JSON.stringify(paths));
+      event.dataTransfer.effectAllowed = 'move';
+      setDraggingPaths(paths);
+    },
+    onNodeDragEnd: () => {
+      setDraggingPaths(null);
+      setDropTarget(null);
+    },
+    onNodeDragOver: (event: DragEvent, item) => {
+      event.preventDefault();
+      // Rows own the drop target; the container's dragover (empty space)
+      // resets it to the project root.
+      event.stopPropagation();
+      const target = item.type === 'directory' ? item.path : parentDirOf(item.path);
+      // Don't offer a dragged folder as its own destination.
+      if (draggingPaths?.includes(target)) {
+        setDropTarget(null);
+        return;
+      }
+      setDropTarget(target);
+    },
+    selectionMode,
+    selectedPaths,
+    toggleSelected: (item) => {
+      setSelectedPaths((current) => {
+        const next = new Set(current);
+        if (next.has(item.path)) {
+          next.delete(item.path);
+        } else {
+          next.add(item.path);
+        }
+        return next;
+      });
+    },
+  }), [draggingPaths, selectedPaths, selectionMode, setDropTarget, upload.dropTarget]);
+
+  const handleBulkDelete = useCallback(async () => {
+    if (!selectedProject || selectedPaths.size === 0) return;
+    // Skip paths whose ancestor is also selected — deleting the ancestor
+    // removes them anyway.
+    const paths = [...selectedPaths].filter(
+      (candidate) => ![...selectedPaths].some((other) => other !== candidate && candidate.startsWith(`${other}/`)),
+    );
+    let failures = 0;
+    for (const targetPath of paths) {
+      try {
+        const response = await api.deleteFile(selectedProject.projectId, { path: targetPath, type: 'file' });
+        if (!response.ok) failures += 1;
+      } catch {
+        failures += 1;
+      }
+    }
+    setBulkDeleteOpen(false);
+    setSelectedPaths(new Set());
+    setSelectionMode(false);
+    refreshFiles();
+    showToast(
+      failures > 0
+        ? t('fileTree.toast.bulkDeletePartial', 'Deleted {{ok}} of {{total}} items', { ok: paths.length - failures, total: paths.length })
+        : t('fileTree.toast.bulkDeleted', 'Deleted {{count}} item(s)', { count: paths.length }),
+      failures > 0 ? 'error' : 'success',
+    );
+  }, [refreshFiles, selectedPaths, selectedProject, showToast, t]);
 
   // Focus input when creating new item
   useEffect(() => {
@@ -174,12 +305,20 @@ export default function FileTree({ selectedProject, isActive = true, onFileOpen 
       onDragLeave={upload.handleDragLeave}
       onDrop={upload.handleDrop}
     >
-      {/* Drag overlay */}
-      {upload.isDragOver && (
-        <div className="absolute inset-0 z-50 flex items-center justify-center border-2 border-dashed border-blue-500 bg-blue-500/10">
-          <div className="flex items-center gap-3 rounded-lg bg-background/95 px-6 py-4 shadow-lg">
-            <Upload className="h-6 w-6 text-blue-500" />
-            <span className="text-sm font-medium">{t('fileTree.dropToUpload', 'Drop files to upload')}</span>
+      {/* Drag overlay — pointer-events-none so folder rows still receive
+          dragover and can claim the drop target; hidden for internal moves
+          where the row highlight is the only cue needed. */}
+      {upload.isDragOver && !draggingPaths && (
+        <div className="pointer-events-none absolute inset-0 z-50 flex items-end justify-center border-2 border-dashed border-blue-500 bg-blue-500/5 pb-6">
+          <div className="flex items-center gap-3 rounded-lg bg-background/95 px-6 py-3 shadow-lg">
+            <Upload className="h-5 w-5 text-blue-500" />
+            <span className="text-sm font-medium">
+              {upload.dropTarget
+                ? t('fileTree.dropToUploadInto', 'Drop to upload into {{folder}}', {
+                    folder: upload.dropTarget.split('/').pop(),
+                  })
+                : t('fileTree.dropToUpload', 'Drop files to upload')}
+            </span>
           </div>
         </div>
       )}
@@ -194,6 +333,8 @@ export default function FileTree({ selectedProject, isActive = true, onFileOpen 
         onNewFolder={() => operations.handleStartCreate('', 'directory')}
         onRefresh={refreshFiles}
         onCollapseAll={collapseAll}
+        selectionMode={selectionMode}
+        onToggleSelectionMode={toggleSelectionMode}
         loading={loading || isFullTreeLoading}
         operationLoading={operationLoading}
         isUploading={upload.uploadProgress?.status === 'uploading'}
@@ -201,6 +342,32 @@ export default function FileTree({ selectedProject, isActive = true, onFileOpen 
       />
 
       <FileTreeUploadProgress upload={upload.uploadProgress} />
+
+      {selectionMode && (
+        <div className="flex items-center justify-between border-b border-border/60 bg-accent/30 px-3 py-1.5">
+          <span className="text-xs text-muted-foreground">
+            {t('fileTree.selectedCount', '{{count}} selected', { count: selectedPaths.size })}
+          </span>
+          <div className="flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => setBulkDeleteOpen(true)}
+              disabled={selectedPaths.size === 0 || operationLoading}
+              className="flex items-center gap-1 rounded-md bg-red-600 px-2 py-1 text-xs text-white transition-colors hover:bg-red-700 disabled:opacity-50"
+            >
+              <Trash2 className="h-3 w-3" />
+              {t('fileTree.deleteSelected', 'Delete')}
+            </button>
+            <button
+              type="button"
+              onClick={toggleSelectionMode}
+              className="rounded-md px-2 py-1 text-xs transition-colors hover:bg-accent"
+            >
+              {t('common.cancel', 'Cancel')}
+            </button>
+          </div>
+        </div>
+      )}
 
       {viewMode === 'detailed' && filteredFiles.length > 0 && <FileTreeDetailedColumns />}
 
@@ -237,6 +404,7 @@ export default function FileTree({ selectedProject, isActive = true, onFileOpen 
           </div>
         )}
 
+        <FileTreeInteractionsContext.Provider value={interactions}>
         <FileTreeBody
           files={files}
           filteredFiles={filteredFiles}
@@ -263,6 +431,7 @@ export default function FileTree({ selectedProject, isActive = true, onFileOpen 
           renameInputRef={renameInputRef}
           operationLoading={operationLoading}
         />
+        </FileTreeInteractionsContext.Provider>
       </ScrollArea>
 
       {/* Delete Confirmation Dialog */}
@@ -299,6 +468,42 @@ export default function FileTree({ selectedProject, isActive = true, onFileOpen 
               </button>
               <button
                 onClick={operations.handleConfirmDelete}
+                disabled={operationLoading}
+                className="flex items-center gap-2 rounded-md bg-red-600 px-3 py-1.5 text-sm text-white transition-colors hover:bg-red-700 disabled:opacity-50"
+              >
+                {operationLoading && <Loader2 className="h-4 w-4 animate-spin" />}
+                {t('fileTree.delete.confirm', 'Delete')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Bulk Delete Confirmation Dialog */}
+      {bulkDeleteOpen && (
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/50">
+          <div className="mx-4 max-w-sm rounded-lg border border-border bg-background p-4 shadow-lg">
+            <div className="mb-4 flex items-center gap-3">
+              <div className="rounded-full bg-red-100 p-2 dark:bg-red-900/30">
+                <AlertTriangle className="h-5 w-5 text-red-600 dark:text-red-400" />
+              </div>
+              <h3 className="font-medium text-foreground">
+                {t('fileTree.bulkDelete.title', 'Delete {{count}} item(s)', { count: selectedPaths.size })}
+              </h3>
+            </div>
+            <p className="mb-4 text-sm text-muted-foreground">
+              {t('fileTree.bulkDelete.warning', 'The selected files and folders (including their contents) will be permanently deleted.')}
+            </p>
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setBulkDeleteOpen(false)}
+                disabled={operationLoading}
+                className="rounded-md px-3 py-1.5 text-sm transition-colors hover:bg-accent"
+              >
+                {t('common.cancel', 'Cancel')}
+              </button>
+              <button
+                onClick={handleBulkDelete}
                 disabled={operationLoading}
                 className="flex items-center gap-2 rounded-md bg-red-600 px-3 py-1.5 text-sm text-white transition-colors hover:bg-red-700 disabled:opacity-50"
               >

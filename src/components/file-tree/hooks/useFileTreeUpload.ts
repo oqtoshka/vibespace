@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { DragEvent } from 'react';
 
 import { IS_PLATFORM } from '../../../constants/config';
+import { INTERNAL_FILE_DND_TYPE } from '../contexts/FileTreeInteractionsContext';
 import type { Project } from '../../../types/app';
 import { isValidRefreshedToken } from '../../../utils/api';
 import {
@@ -14,6 +15,8 @@ type UseFileTreeUploadOptions = {
   selectedProject: Project | null;
   onRefresh: () => void;
   showToast: (message: string, type: 'success' | 'error') => void;
+  /** Handles drops of the tree's OWN rows (move), as opposed to OS file uploads. */
+  onMoveNodes?: (sourcePaths: string[], targetDir: string) => Promise<void> | void;
 };
 
 export type FileTreeUploadProgressState = {
@@ -246,6 +249,7 @@ export const useFileTreeUpload = ({
   selectedProject,
   onRefresh,
   showToast,
+  onMoveNodes,
 }: UseFileTreeUploadOptions) => {
   const [isDragOver, setIsDragOver] = useState(false);
   const [dropTarget, setDropTarget] = useState<string | null>(null);
@@ -391,6 +395,9 @@ export const useFileTreeUpload = ({
   const handleDragOver = useCallback((e: DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
+    // Rows stop propagation after claiming the drop target, so reaching the
+    // container means the pointer is over empty space — target the root.
+    setDropTarget(null);
   }, []);
 
   const handleDragLeave = useCallback((e: DragEvent) => {
@@ -411,6 +418,23 @@ export const useFileTreeUpload = ({
 
       const targetPath = dropTarget || '';
 
+      // A drag that started on one of our own rows is a move, not an upload.
+      if (e.dataTransfer.types.includes(INTERNAL_FILE_DND_TYPE)) {
+        setDropTarget(null);
+        try {
+          const payload = JSON.parse(e.dataTransfer.getData(INTERNAL_FILE_DND_TYPE)) as unknown;
+          const sourcePaths = Array.isArray(payload)
+            ? payload.filter((entry): entry is string => typeof entry === 'string' && entry.length > 0)
+            : [];
+          if (sourcePaths.length > 0) {
+            await onMoveNodes?.(sourcePaths, targetPath);
+          }
+        } catch (err) {
+          console.error('Move drop error:', err);
+        }
+        return;
+      }
+
       try {
         const files = await collectDroppedFiles(e.dataTransfer);
         await uploadFiles(files, targetPath);
@@ -422,7 +446,7 @@ export const useFileTreeUpload = ({
         setDropTarget(null);
       }
     },
-    [dropTarget, setUploadError, showToast, uploadFiles],
+    [dropTarget, onMoveNodes, setUploadError, showToast, uploadFiles],
   );
 
   const handleItemDragOver = useCallback((e: DragEvent, itemPath: string) => {

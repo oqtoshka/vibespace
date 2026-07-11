@@ -1,6 +1,6 @@
 import { useRef } from 'react';
 import type { ChangeEvent } from 'react';
-import { ChevronDown, Eye, FileText, FolderPlus, List, Loader2, RefreshCw, Search, TableProperties, Upload, X } from 'lucide-react';
+import { ChevronDown, Eye, FileText, FolderPlus, List, ListChecks, Loader2, RefreshCw, Search, TableProperties, Upload, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { Button, Input } from '../../../shared/view/ui';
@@ -19,6 +19,9 @@ type FileTreeHeaderProps = {
   onUploadFiles?: (files: FileList) => void;
   onRefresh?: () => void;
   onCollapseAll?: () => void;
+  /** Checkbox multi-select mode for bulk actions. */
+  selectionMode?: boolean;
+  onToggleSelectionMode?: () => void;
   // Loading state
   loading?: boolean;
   operationLoading?: boolean;
@@ -36,6 +39,8 @@ export default function FileTreeHeader({
   onUploadFiles,
   onRefresh,
   onCollapseAll,
+  selectionMode,
+  onToggleSelectionMode,
   loading,
   operationLoading,
   isUploading,
@@ -152,6 +157,18 @@ export default function FileTreeHeader({
               aria-label={t('fileTree.collapseAll', 'Collapse All')}
             >
               <ChevronDown className="h-3.5 w-3.5" />
+            </Button>
+          )}
+          {onToggleSelectionMode && (
+            <Button
+              variant={selectionMode ? 'default' : 'ghost'}
+              size="sm"
+              className="h-7 w-7 p-0"
+              onClick={onToggleSelectionMode}
+              title={t('fileTree.selectMultiple', 'Select multiple')}
+              aria-label={t('fileTree.selectMultiple', 'Select multiple')}
+            >
+              <ListChecks className="h-3.5 w-3.5" />
             </Button>
           )}
           {/* Divider */}
