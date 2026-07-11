@@ -1,6 +1,5 @@
 import { useTranslation } from 'react-i18next';
-import { memo, useCallback, useEffect, useMemo, useRef } from 'react';
-import { dbg } from '../../../../utils/debugLog';
+import { memo, useCallback, useMemo } from 'react';
 import type { Dispatch, RefObject, SetStateAction } from 'react';
 
 import type { ChatMessage } from '../../types/types';
@@ -25,8 +24,9 @@ interface ChatMessagesPaneProps {
   isLoadingSessionMessages: boolean;
   /** True while the viewed session has an active provider run in flight. */
   isProcessing?: boolean;
-  /** True while ChatComposer's floating activity/stop tab is rendered above the input. */
-  hasActivityIndicator?: boolean;
+  /** Last history fetch failed with nothing rendered — show a retry state. */
+  historyLoadFailed?: boolean;
+  onRetryLoadHistory?: () => void;
   chatMessages: ChatMessage[];
   selectedSession: ProjectSession | null;
   currentSessionId: string | null;
@@ -39,6 +39,8 @@ interface ChatMessagesPaneProps {
   setCursorModel: (model: string) => void;
   codexModel: string;
   setCodexModel: (model: string) => void;
+  geminiModel: string;
+  setGeminiModel: (model: string) => void;
   opencodeModel: string;
   setOpenCodeModel: (model: string) => void;
   providerModelCatalog: Partial<Record<LLMProvider, ProviderModelsDefinition>>;
@@ -76,7 +78,8 @@ function ChatMessagesPane({
   onTouchMove,
   isLoadingSessionMessages,
   isProcessing = false,
-  hasActivityIndicator = false,
+  historyLoadFailed = false,
+  onRetryLoadHistory,
   chatMessages,
   selectedSession,
   currentSessionId,
@@ -89,6 +92,8 @@ function ChatMessagesPane({
   setCursorModel,
   codexModel,
   setCodexModel,
+  geminiModel,
+  setGeminiModel,
   opencodeModel,
   setOpenCodeModel,
   providerModelCatalog,
@@ -124,30 +129,6 @@ function ChatMessagesPane({
     () => groupConsecutiveTools(visibleMessages, Boolean(showThinking)),
     [visibleMessages, showThinking],
   );
-
-  const renderCountRef = useRef(0);
-  renderCountRef.current += 1;
-  useEffect(() => {
-    dbg('messagesPane.render', {
-      n: renderCountRef.current,
-      loading: isLoadingSessionMessages,
-      visibleCount: visibleMessages.length,
-      chatCount: chatMessages.length,
-      sessionId: selectedSession?.id ?? null,
-    });
-  });
-  useEffect(() => {
-    if (!visibleMessages.length) return;
-    let bytes = 0;
-    for (const m of visibleMessages) {
-      bytes += (m.content || '').length;
-      const tr = (m as any).toolResult;
-      if (tr?.content) bytes += String(tr.content).length;
-      const ti = (m as any).toolInput;
-      if (ti) bytes += (typeof ti === 'string' ? ti.length : JSON.stringify(ti).length);
-    }
-    dbg('messagesPane.payloadSummary', { msgs: visibleMessages.length, totalContentChars: bytes });
-  }, [visibleMessages]);
 
   // Stable, deterministic keys for the messages rendered this pass.
   //
@@ -189,16 +170,32 @@ function ChatMessagesPane({
       ref={scrollContainerRef}
       onWheel={onWheel}
       onTouchMove={onTouchMove}
-      className={`chat-messages-pane relative flex min-h-0 flex-1 flex-col overflow-y-auto overflow-x-hidden pt-3 sm:pt-4 ${
-        hasActivityIndicator ? 'pb-12 sm:pb-14' : 'pb-3 sm:pb-4'
-      }`}
+      className="chat-messages-pane relative min-h-0 flex-1 overflow-y-auto overflow-x-hidden py-3 sm:py-4"
     >
-      <div className="mx-auto flex w-full max-w-[54.25rem] flex-1 flex-col px-4">
+      <div className="mx-auto w-full max-w-[54.25rem] space-y-3 px-4 sm:space-y-4">
       {(isLoadingSessionMessages || isProcessing) && chatMessages.length === 0 ? (
         <div className="mt-8 text-center text-gray-500 dark:text-gray-400">
           <div className="flex items-center justify-center space-x-2">
             <div className="h-4 w-4 animate-spin rounded-full border-b-2 border-gray-400" />
             <p>{t('session.loading.sessionMessages')}</p>
+          </div>
+        </div>
+      ) : chatMessages.length === 0 && historyLoadFailed ? (
+        <div className="flex h-full items-center justify-center">
+          <div className="max-w-[34.25rem] px-6 text-center">
+            <p className="mb-1.5 text-lg font-semibold text-foreground">
+              {t('session.loadFailed.title')}
+            </p>
+            <p className="mb-4 text-sm leading-relaxed text-muted-foreground">
+              {t('session.loadFailed.description')}
+            </p>
+            <button
+              type="button"
+              onClick={onRetryLoadHistory}
+              className="inline-flex items-center rounded-md border border-border bg-accent/40 px-3 py-1.5 text-sm font-medium text-foreground transition-colors hover:bg-accent"
+            >
+              {t('session.loadFailed.retry')}
+            </button>
           </div>
         </div>
       ) : chatMessages.length === 0 ? (
@@ -214,6 +211,8 @@ function ChatMessagesPane({
           setCursorModel={setCursorModel}
           codexModel={codexModel}
           setCodexModel={setCodexModel}
+          geminiModel={geminiModel}
+          setGeminiModel={setGeminiModel}
           opencodeModel={opencodeModel}
           setOpenCodeModel={setOpenCodeModel}
           providerModelCatalog={providerModelCatalog}
@@ -224,9 +223,7 @@ function ChatMessagesPane({
           setInput={setInput}
         />
       ) : (
-        // mt-auto pushes a short conversation down so it hugs the composer
-        // (Telegram-style), while a long one overflows and scrolls normally.
-        <div className="mt-auto space-y-3 sm:space-y-4">
+        <>
           {/* Loading indicator for older messages (hide when load-all is active) */}
           {isLoadingMoreMessages && !isLoadingAllMessages && !allMessagesLoaded && (
             <div className="py-3 text-center text-gray-500 dark:text-gray-400">
@@ -322,7 +319,7 @@ function ChatMessagesPane({
               );
             });
           })()}
-        </div>
+        </>
       )}
       </div>
     </div>

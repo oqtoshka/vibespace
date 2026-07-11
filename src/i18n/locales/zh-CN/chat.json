@@ -108,7 +108,6 @@
     "disabled": "输入已禁用",
     "attachFiles": "附加文件",
     "attachImages": "附加图片",
-    "attachFiles": "附加文件",
     "send": "发送",
     "stop": "停止",
     "hintText": {
@@ -142,6 +141,11 @@
     "continue": {
       "title": "继续您的对话",
       "description": "询问有关代码的问题、请求更改或获取开发任务的帮助"
+    },
+    "loadFailed": {
+      "title": "无法加载此对话",
+      "description": "消息历史加载失败。请检查连接后重试。",
+      "retry": "重试"
     },
     "loading": {
       "olderMessages": "正在加载更早的消息...",

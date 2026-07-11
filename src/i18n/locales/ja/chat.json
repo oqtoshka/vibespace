@@ -108,7 +108,6 @@
     "disabled": "入力無効",
     "attachFiles": "ファイルを添付",
     "attachImages": "画像を添付",
-    "attachFiles": "ファイルを添付",
     "send": "送信",
     "stop": "停止",
     "hintText": {
@@ -139,6 +138,11 @@
     "continue": {
       "title": "会話を続ける",
       "description": "コードについて質問したり、変更をリクエストしたり、開発タスクのサポートを受けられます"
+    },
+    "loadFailed": {
+      "title": "会話を読み込めませんでした",
+      "description": "メッセージ履歴の読み込みに失敗しました。接続を確認して再試行してください。",
+      "retry": "再試行"
     },
     "loading": {
       "olderMessages": "過去のメッセージを読み込んでいます...",

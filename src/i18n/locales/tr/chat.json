@@ -108,7 +108,6 @@
     "disabled": "Girdi devre dışı",
     "attachFiles": "Dosya ekle",
     "attachImages": "Resim ekle",
-    "attachFiles": "Dosya ekle",
     "send": "Gönder",
     "stop": "Durdur",
     "hintText": {
@@ -142,6 +141,11 @@
     "continue": {
       "title": "Konuşmana devam et",
       "description": "Kodun hakkında soru sor, değişiklik iste veya geliştirme görevlerinde yardım al"
+    },
+    "loadFailed": {
+      "title": "Konuşma yüklenemedi",
+      "description": "Mesaj geçmişi yüklenemedi. Bağlantını kontrol edip tekrar dene.",
+      "retry": "Tekrar dene"
     },
     "loading": {
       "olderMessages": "Eski mesajlar yükleniyor...",

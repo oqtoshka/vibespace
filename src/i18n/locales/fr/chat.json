@@ -109,7 +109,6 @@
     "disabled": "Saisie désactivée",
     "attachFiles": "Joindre des fichiers",
     "attachImages": "Joindre des images",
-    "attachFiles": "Joindre des fichiers",
     "send": "Envoyer",
     "stop": "Arrêter",
     "hintText": {
@@ -144,6 +143,11 @@
     "continue": {
       "title": "Continuer votre conversation",
       "description": "Posez des questions sur votre code, demandez des modifications ou obtenez de l'aide pour vos tâches de développement"
+    },
+    "loadFailed": {
+      "title": "Impossible de charger cette conversation",
+      "description": "L'historique des messages n'a pas pu être chargé. Vérifiez votre connexion et réessayez.",
+      "retry": "Réessayer"
     },
     "loading": {
       "olderMessages": "Chargement des messages précédents...",

@@ -280,6 +280,31 @@ export function useChatSessionState({
     return all;
   }, [storeMessages, viewHiddenCount, pendingUserMessage]);
 
+  // Last history fetch for the visible session failed and nothing is rendered —
+  // drives an explicit retryable error state instead of the misleading
+  // "Continue your conversation" empty screen.
+  const historyLoadFailed = Boolean(
+    activeSessionId
+    && storeMessages.length === 0
+    && sessionStore.getSessionSlot(activeSessionId)?.status === 'error',
+  );
+
+  const retryLoadMessages = useCallback(() => {
+    if (!activeSessionId) return;
+    setIsLoadingSessionMessages(true);
+    void sessionStore.fetchFromServer(activeSessionId, {
+      limit: MESSAGES_PER_PAGE,
+      offset: 0,
+    }).then(slot => {
+      if (slot) {
+        setHasMoreMessages(slot.hasMore);
+        setTotalMessages(slot.total);
+      }
+    }).finally(() => {
+      setIsLoadingSessionMessages(false);
+    });
+  }, [activeSessionId, sessionStore]);
+
   /* ---------------------------------------------------------------- */
   /*  addMessage / clearMessages / rewindMessages                     */
   /* ---------------------------------------------------------------- */
@@ -596,9 +621,12 @@ export function useChatSessionState({
     // The initial load owns the empty window; don't race it.
     if (isLoadingSessionMessages || isLoadingMoreMessages) return;
 
-    // Only act when the server says there IS a transcript to show. A genuinely
-    // empty session (`total === 0`) is correctly blank, not stuck.
-    if (!slot || slot.total <= 0) return;
+    // Act when the server says there IS a transcript to show (`total > 0`), or
+    // when the last fetch failed outright (`status === 'error'`, so `total` is
+    // a meaningless 0 — e.g. a transient network drop or a 5xx). A genuinely
+    // empty session (successful fetch, `total === 0`) is correctly blank.
+    if (!slot) return;
+    if (slot.total <= 0 && slot.status !== 'error') return;
 
     if (selfHealRefetchedRef.current === sid) return;
     selfHealRefetchedRef.current = sid;
@@ -848,6 +876,8 @@ export function useChatSessionState({
     setCurrentSessionId,
     isLoadingSessionMessages,
     isLoadingMoreMessages,
+    historyLoadFailed,
+    retryLoadMessages,
     hasMoreMessages,
     totalMessages,
     isUserScrolledUp,
