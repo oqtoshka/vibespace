@@ -284,6 +284,11 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify({ oldPath, newName }),
     }),
+  moveFiles: (projectId, { sourcePaths, targetDir }) =>
+    authenticatedFetch(`/api/projects/${projectId}/files/move`, {
+      method: 'POST',
+      body: JSON.stringify({ sourcePaths, targetDir }),
+    }),
 
   deleteFile: (projectId, { path, type }) =>
     authenticatedFetch(`/api/projects/${projectId}/files`, {

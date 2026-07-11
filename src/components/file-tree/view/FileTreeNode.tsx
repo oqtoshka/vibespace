@@ -1,6 +1,7 @@
-import type { ReactNode, RefObject } from 'react';
+import type { DragEvent, ReactNode, RefObject } from 'react';
 import { ChevronRight, Folder, FolderOpen, Loader2 } from 'lucide-react';
 import { cn } from '../../../lib/utils';
+import { useFileTreeInteractions } from '../contexts/FileTreeInteractionsContext';
 import type { FileTreeNode as FileTreeNodeType, FileTreeViewMode } from '../types/types';
 import { Input } from '../../../shared/view/ui';
 import FileContextMenu from './FileContextMenu';
@@ -94,6 +95,10 @@ export default function FileTreeNode({
   const isOpen = isDirectory && expandedDirs.has(item.path);
   const hasChildren = Boolean(isDirectory && item.children && item.children.length > 0);
   const isRenaming = renamingItem?.path === item.path;
+  const interactions = useFileTreeInteractions();
+  const isSelected = interactions.selectionMode && interactions.selectedPaths.has(item.path);
+  // Directories take drops directly; a file row proxies to its parent folder.
+  const isDropTarget = isDirectory && interactions.dropTarget === item.path;
 
   const nameClassName = cn(
     'text-[13px] leading-tight truncate',
@@ -109,7 +114,35 @@ export default function FileTreeNode({
       : 'group flex items-center gap-1.5 py-[3px] pr-2 cursor-pointer rounded-sm hover:bg-accent/60 transition-colors duration-100',
     isDirectory && isOpen && 'border-l-2 border-primary/30',
     (isDirectory && !isOpen) || !isDirectory ? 'border-l-2 border-transparent' : '',
+    isDropTarget && 'bg-primary/10 ring-1 ring-inset ring-primary/50',
+    isSelected && 'bg-accent/70',
   );
+
+  const handleRowClick = () => {
+    if (interactions.selectionMode) {
+      interactions.toggleSelected(item);
+      return;
+    }
+    onItemClick(item);
+  };
+
+  const dragProps = {
+    draggable: !isRenaming,
+    onDragStart: (event: DragEvent) => interactions.onNodeDragStart(event, item),
+    onDragEnd: () => interactions.onNodeDragEnd(),
+    onDragOver: (event: DragEvent) => interactions.onNodeDragOver(event, item),
+  };
+
+  const selectionCheckbox = interactions.selectionMode ? (
+    <input
+      type="checkbox"
+      checked={isSelected}
+      onChange={() => interactions.toggleSelected(item)}
+      onClick={(event) => event.stopPropagation()}
+      className="h-3.5 w-3.5 flex-shrink-0 cursor-pointer accent-primary"
+      aria-label={`Select ${item.name}`}
+    />
+  ) : null;
 
   // Render rename input if this item is being renamed
   if (isRenaming && setRenameValue && handleConfirmRename && handleCancelRename) {
@@ -146,11 +179,13 @@ export default function FileTreeNode({
     <div
       className={rowClassName}
       style={{ paddingLeft: `${level * 16 + 4}px` }}
-      onClick={() => onItemClick(item)}
+      onClick={handleRowClick}
+      {...dragProps}
     >
       {viewMode === 'detailed' ? (
         <>
           <div className="col-span-5 flex min-w-0 items-center gap-1.5">
+            {selectionCheckbox}
             <TreeItemIcon item={item} isOpen={isOpen} renderFileIcon={renderFileIcon} />
             <span className={nameClassName}>{item.name}</span>
           </div>
@@ -163,6 +198,7 @@ export default function FileTreeNode({
       ) : viewMode === 'compact' ? (
         <>
           <div className="flex min-w-0 items-center gap-1.5">
+            {selectionCheckbox}
             <TreeItemIcon item={item} isOpen={isOpen} renderFileIcon={renderFileIcon} />
             <span className={nameClassName}>{item.name}</span>
           </div>
@@ -177,6 +213,7 @@ export default function FileTreeNode({
         </>
       ) : (
         <>
+          {selectionCheckbox}
           <TreeItemIcon item={item} isOpen={isOpen} renderFileIcon={renderFileIcon} />
           <span className={nameClassName}>{item.name}</span>
         </>
