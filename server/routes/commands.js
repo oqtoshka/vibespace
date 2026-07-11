@@ -194,6 +194,12 @@ const builtInCommands = [
     metadata: { type: "builtin" },
   },
   {
+    name: "/compact",
+    description: "Compact the conversation into a summary to free up context",
+    namespace: "builtin",
+    metadata: { type: "builtin" },
+  },
+  {
     name: "/memory",
     description: "Open CLAUDE.md memory file for editing",
     namespace: "builtin",
@@ -218,6 +224,17 @@ const builtInCommands = [
  * Each handler returns { type: 'builtin', action: string, data: any }
  */
 const builtInHandlers = {
+  // Provider-native commands: forwarded verbatim as the next prompt (the
+  // Claude CLI/SDK executes them itself); listed here only so the command
+  // menu knows about them.
+  "/compact": async (args) => ({
+    type: "builtin",
+    action: "passthrough",
+    data: {
+      prompt: ["/compact", ...args].join(" ").trim(),
+    },
+  }),
+
   "/help": async (args, context) => {
     const helpText = `# Claude Code Commands
 

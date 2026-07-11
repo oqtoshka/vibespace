@@ -232,6 +232,9 @@ export function useChatComposerState({
   const inputHighlightRef = useRef<HTMLDivElement>(null);
   const textareaLineHeightRef = useRef<number | null>(null);
   const lastAutosizedInputRef = useRef<string | null>(null);
+  // Lets handleBuiltInCommand (defined earlier) dispatch a provider-native
+  // command without re-entering the slash interception in handleSubmit.
+  const runSubmitRef = useRef<((content: string, images: File[]) => Promise<boolean>) | null>(null);
   const handleSubmitRef = useRef<
     ((event: FormEvent<HTMLFormElement> | MouseEvent | TouchEvent | KeyboardEvent<HTMLTextAreaElement>) => Promise<void>) | null
   >(null);
@@ -299,6 +302,16 @@ export function useChatComposerState({
         case 'config':
           onShowSettings?.();
           break;
+
+        case 'passthrough': {
+          // Provider-native command (e.g. /compact): send it verbatim as the
+          // next prompt — the provider CLI executes it itself.
+          const prompt = typeof data?.prompt === 'string' ? data.prompt : '';
+          if (prompt) {
+            void runSubmitRef.current?.(prompt, []);
+          }
+          break;
+        }
 
         default:
           console.warn('Unknown built-in command action:', action);
@@ -1017,7 +1030,8 @@ export function useChatComposerState({
 
   useEffect(() => {
     handleSubmitRef.current = handleSubmit;
-  }, [handleSubmit]);
+    runSubmitRef.current = runSubmit;
+  }, [handleSubmit, runSubmit]);
 
   /**
    * Rewind / edit-in-place: re-send an edited past user message, dropping that
