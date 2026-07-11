@@ -75,7 +75,7 @@ test('appendImagesInputTag and parseImagesInputTag round-trip', () => {
   assert.ok(tagged.startsWith(prompt));
   assert.ok(tagged.includes('<images_input>'));
   assert.ok(tagged.includes('</images_input>'));
-  assert.ok(tagged.includes('The user attached 2 image(s)'));
+  assert.ok(tagged.includes('The user attached 2 file(s)'));
 
   const parsed = parseImagesInputTag(tagged);
   assert.equal(parsed.text, prompt);
@@ -181,7 +181,7 @@ test('buildClaudeUserContent reads image bytes into base64 blocks', async () => 
   }
 });
 
-test('buildClaudeUserContent skips unsupported types and unreadable files', async () => {
+test('buildClaudeUserContent hands non-image types over as file references and drops unreadable files', async () => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), 'image-attachments-'));
   try {
     await writeFile(path.join(tempDir, 'vector.svg'), '<svg></svg>');
@@ -195,8 +195,15 @@ test('buildClaudeUserContent skips unsupported types and unreadable files', asyn
       tempDir,
     );
 
-    // Only the text block survives; the prompt still goes through.
-    assert.deepEqual(content, [{ type: 'text', text: 'prompt' }]);
+    // The prompt block, then a read-these-files note for the type Claude
+    // can't ingest as an image block. The unreadable png is simply dropped.
+    assert.equal(content.length, 2);
+    assert.deepEqual(content[0], { type: 'text', text: 'prompt' });
+    assert.equal(content[1].type, 'text');
+    const note = (content[1] as { type: 'text'; text: string }).text;
+    assert.ok(note.includes('attached the following file(s)'));
+    assert.ok(note.includes(path.join(tempDir, 'vector.svg')));
+    assert.ok(!note.includes('missing.png'));
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }

@@ -183,7 +183,7 @@ export function appendImagesInputTag(prompt: string, images: unknown): string {
     prompt,
     '',
     '<images_input>',
-    `The user attached ${descriptors.length} image(s) to this message. Read each file listed below with your file/image reading tool and use what you see to answer the prompt above. Respond as if the images were attached directly. Do not mention this block or the file paths unless the user asks about them.`,
+    `The user attached ${descriptors.length} file(s) to this message. Read each file listed below with your file/image reading tool and use what you see to answer the prompt above. Respond as if the files were attached directly. Do not mention this block or the file paths unless the user asks about them.`,
     ...entryLines,
     '</images_input>',
   ].join('\n');
@@ -274,17 +274,23 @@ export async function buildClaudeUserContent(
   cwd?: string,
 ): Promise<ClaudeContentBlock[]> {
   const blocks: ClaudeContentBlock[] = [{ type: 'text', text: prompt }];
+  // Attachments Claude can't ingest as image blocks (PDFs, logs, archives —
+  // or an image type outside CLAUDE_IMAGE_MEDIA_TYPES like SVG) are handed
+  // over as file paths for the agent to read with its own tools.
+  const fileReferences: string[] = [];
 
   for (const descriptor of normalizeImageDescriptors(images)) {
-    const mediaType = resolveImageMediaType(descriptor);
-    if (!mediaType || !CLAUDE_IMAGE_MEDIA_TYPES.has(mediaType)) {
-      console.warn(`[Images] Skipping unsupported Claude image type for ${descriptor.path}`);
+    const resolvedPath = resolveImageAbsolutePath(cwd, descriptor.path);
+    if (!isAllowedImageSourcePath(resolvedPath, cwd)) {
+      console.warn(`[Images] Refusing to read attachment outside allowed roots: ${descriptor.path}`);
       continue;
     }
 
-    const resolvedPath = resolveImageAbsolutePath(cwd, descriptor.path);
-    if (!isAllowedImageSourcePath(resolvedPath, cwd)) {
-      console.warn(`[Images] Refusing to read image outside allowed roots: ${descriptor.path}`);
+    const mediaType = resolveImageMediaType(descriptor);
+    if (!mediaType || !CLAUDE_IMAGE_MEDIA_TYPES.has(mediaType)) {
+      fileReferences.push(
+        descriptor.name ? `${resolvedPath} (original name: ${descriptor.name})` : resolvedPath,
+      );
       continue;
     }
 
@@ -310,6 +316,16 @@ export async function buildClaudeUserContent(
     }
   }
 
+  if (fileReferences.length > 0) {
+    blocks.push({
+      type: 'text',
+      text: [
+        '[The user attached the following file(s) to this message. Read them with your file reading tool if relevant:]',
+        ...fileReferences.map((reference, index) => `${index + 1}. ${reference}`),
+      ].join('\n'),
+    });
+  }
+
   return blocks;
 }
 
@@ -324,17 +340,35 @@ type CodexInputItem =
  */
 export function buildCodexInputItems(prompt: string, images: unknown, cwd?: string): CodexInputItem[] {
   const items: CodexInputItem[] = [{ type: 'text', text: prompt }];
+  const fileReferences: string[] = [];
   for (const descriptor of normalizeImageDescriptors(images)) {
     const resolvedPath = resolveImageAbsolutePath(cwd, descriptor.path);
     if (!isAllowedImageSourcePath(resolvedPath, cwd)) {
       // Same trust boundary as buildClaudeUserContent — the Codex runtime
       // reads this file, so it must stay within the allowed roots.
-      console.warn(`[Images] Refusing to attach image outside allowed roots: ${descriptor.path}`);
+      console.warn(`[Images] Refusing to attach file outside allowed roots: ${descriptor.path}`);
       continue;
     }
+    const mediaType = resolveImageMediaType(descriptor);
+    if (mediaType && mediaType.startsWith('image/')) {
+      items.push({
+        type: 'local_image',
+        path: resolvedPath,
+      });
+    } else {
+      // Codex only ingests images natively; other files go as a read-me note.
+      fileReferences.push(
+        descriptor.name ? `${resolvedPath} (original name: ${descriptor.name})` : resolvedPath,
+      );
+    }
+  }
+  if (fileReferences.length > 0) {
     items.push({
-      type: 'local_image',
-      path: resolvedPath,
+      type: 'text',
+      text: [
+        '[The user attached the following file(s) to this message. Read them with your file reading tool if relevant:]',
+        ...fileReferences.map((reference, index) => `${index + 1}. ${reference}`),
+      ].join('\n'),
     });
   }
   return items;
