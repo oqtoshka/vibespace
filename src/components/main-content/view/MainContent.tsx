@@ -350,7 +350,7 @@ function MainContent({
       <div ref={containerRef} className="flex min-h-0 flex-1 overflow-hidden">
         {/* SESSION PANE — kept mounted so chat/terminal state survives toggles. */}
         <div
-          className={`min-h-0 ${sessionGrow ? 'flex-1' : ''} ${sessionVisible ? 'flex' : 'hidden'}`}
+          className={`min-h-0 min-w-0 ${sessionGrow ? 'flex-1' : ''} ${sessionVisible ? 'flex' : 'hidden'}`}
           style={sessionStyle}
         >
           <SessionPane
