@@ -10,7 +10,6 @@ type SidebarFooterProps = {
   restartRequired: boolean;
   releaseInfo: ReleaseInfo | null;
   latestVersion: string | null;
-  currentVersion: string;
   onShowVersionModal: () => void;
   onShowSettings: () => void;
   t: TFunction;
@@ -21,7 +20,6 @@ export default function SidebarFooter({
   restartRequired,
   releaseInfo,
   latestVersion,
-  currentVersion,
   onShowVersionModal,
   onShowSettings,
   t,
@@ -115,7 +113,7 @@ export default function SidebarFooter({
             rel="noopener noreferrer"
             className="text-[10px] text-muted-foreground/40 transition-colors hover:text-muted-foreground"
           >
-            VibeSpace v{currentVersion} – {t('branding.openSource')}
+            VibeSpace – {t('branding.openSource')}
           </a>
         </div>
       )}
