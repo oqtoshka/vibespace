@@ -7,7 +7,6 @@ import multer from 'multer';
 import {
   buildStoredImageRecords,
   ensureImageAssetsDir,
-  isAllowedImageMimeType,
   resolveImageAssetFile,
 } from '@/modules/assets/services/image-assets.service.js';
 
@@ -28,24 +27,22 @@ const storage = multer.diskStorage({
   },
 });
 
+// Any file type is accepted: attachments are handed to the providers as file
+// paths (images become native image inputs, everything else a read-this-file
+// note), so nothing in the pipeline is image-specific anymore. Caps mirrored
+// client-side (MAX_ATTACHMENT_MB / MAX_ATTACHMENT_COUNT in the composer).
 const upload = multer({
   storage,
-  fileFilter: (req, file, cb) => {
-    if (isAllowedImageMimeType(file.mimetype)) {
-      cb(null, true);
-    } else {
-      cb(new Error('Invalid file type. Only JPEG, PNG, GIF, WebP, and SVG are allowed.'));
-    }
-  },
   limits: {
-    fileSize: 5 * 1024 * 1024, // 5MB
-    files: 5,
+    fileSize: 20 * 1024 * 1024, // 20MB
+    files: 10,
   },
 });
 
 /**
- * Stores chat image attachments in the global `~/.cloudcli/assets` folder and
- * returns their absolute paths for use in provider prompts and chat history.
+ * Stores chat attachments (any file type) in the global `~/.vibespace/assets`
+ * folder and returns their absolute paths for use in provider prompts and
+ * chat history.
  */
 router.post('/images', (req, res) => {
   upload.array('images', 5)(req, res, (err: unknown) => {
@@ -87,7 +84,10 @@ router.get('/images/:filename', async (req, res) => {
   // fetches assets as blobs and shows them through <img>, where SVG scripts
   // never execute.
   res.setHeader('X-Content-Type-Options', 'nosniff');
-  if (contentType === 'image/svg+xml') {
+  // Only safe raster images may render inline; SVG (script-capable) and every
+  // non-image type download instead, so a stored file can never become a page.
+  const inlineSafe = /^image\/(jpeg|png|gif|webp|avif)$/.test(String(contentType));
+  if (!inlineSafe) {
     res.setHeader('Content-Disposition', 'attachment');
   }
   const fileStream = fsSync.createReadStream(resolved);
