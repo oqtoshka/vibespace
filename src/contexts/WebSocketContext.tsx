@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useAuth } from '../components/auth/context/AuthContext';
 import { IS_PLATFORM } from '../constants/config';
+import { AUTH_SESSION_EXPIRED_EVENT, WS_CLOSE_CODE_AUTH_FAILED } from '../utils/authEvents';
 
 /**
  * One frame received from the chat websocket. The server guarantees every
@@ -146,9 +147,17 @@ const useWebSocketProviderState = (): WebSocketContextType => {
         }
       };
 
-      websocket.onclose = () => {
+      websocket.onclose = (event) => {
         setIsConnected(false);
         wsRef.current = null;
+
+        // The server rejected our JWT — retrying with the same token would
+        // loop forever. Hand off to AuthContext so the login screen renders;
+        // a successful login changes `token`, which reconnects via the effect.
+        if (event.code === WS_CLOSE_CODE_AUTH_FAILED && !IS_PLATFORM) {
+          window.dispatchEvent(new CustomEvent(AUTH_SESSION_EXPIRED_EVENT));
+          return;
+        }
 
         // Attempt to reconnect after 3 seconds
         reconnectTimeoutRef.current = setTimeout(() => {

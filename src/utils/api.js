@@ -1,5 +1,24 @@
 import { IS_PLATFORM } from "../constants/config";
 import { persistAuthToken } from "./authToken";
+import { AUTH_TOKEN_REFRESHED_EVENT, AUTH_SESSION_EXPIRED_EVENT } from "./authEvents";
+
+/**
+ * Decide whether a failed response means the JWT session itself is dead (vs a
+ * route-level authorization error). The auth middleware answers 401 for a
+ * missing/unknown-user token and 403 with `{ error: 'Invalid token' }` for an
+ * expired/invalid one; other 403s (path outside project, permission denied, …)
+ * must NOT log the user out.
+ */
+const detectExpiredSession = async (response) => {
+  if (response.status === 401) return true;
+  if (response.status !== 403) return false;
+  try {
+    const body = await response.clone().json();
+    return body?.error === 'Invalid token';
+  } catch {
+    return false;
+  }
+};
 
 // Only accept a refreshed token that has this app's issued JWT shape
 // (three base64url segments). An attacker-injected/malformed header value
@@ -33,10 +52,20 @@ export const authenticatedFetch = (url, options = {}) => {
       ...defaultHeaders,
       ...options.headers,
     },
-  }).then((response) => {
+  }).then(async (response) => {
     const refreshedToken = response.headers.get('X-Refreshed-Token');
     if (isValidRefreshedToken(refreshedToken)) {
       persistAuthToken(refreshedToken);
+      // Let AuthContext pick up the rotated token so consumers holding the
+      // React copy (e.g. the WebSocket URL) don't keep using the stale one
+      // until it expires and every reconnect starts failing.
+      window.dispatchEvent(new CustomEvent(AUTH_TOKEN_REFRESHED_EVENT, { detail: refreshedToken }));
+    }
+    if (!IS_PLATFORM && !response.ok && await detectExpiredSession(response)) {
+      // The stored token is dead — every subsequent call would fail the same
+      // way, leaving hollow UI (empty chat history, dead websocket). Surface
+      // it once so AuthContext can clear the session and show the login form.
+      window.dispatchEvent(new CustomEvent(AUTH_SESSION_EXPIRED_EVENT));
     }
     return response;
   });
