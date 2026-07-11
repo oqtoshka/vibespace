@@ -14,6 +14,8 @@ import type { Project } from '../../../../types/app';
 import { ToolRenderer, shouldHideToolResult } from '../../tools';
 import { Reasoning, ReasoningTrigger, ReasoningContent } from '../../../../shared/view/ui';
 
+import { authenticatedFetch } from '../../../../utils/api';
+import ChatMessageImages from './ChatMessageImages';
 import { Markdown } from './Markdown';
 import MessageCopyControl from './MessageCopyControl';
 import { dbg } from '../../../../utils/debugLog';
@@ -81,6 +83,45 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
   const [editDraft, setEditDraft] = useState('');
   const editTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const userCopyContent = String(message.content || '');
+
+  // Split user-turn attachments: images (by data URL, mime type, or file
+  // extension for path-based asset records) render as picture cards via
+  // ChatMessageImages; everything else gets a download card.
+  const allAttachments = message.type === 'user' && Array.isArray(message.images) ? message.images : [];
+  const isImageAttachment = (img: (typeof allAttachments)[number]) =>
+    img.data?.startsWith('data:image/')
+    || img.mimeType?.startsWith('image/')
+    || (!img.data && !img.mimeType && /\.(jpe?g|png|gif|webp|avif|svg)$/i.test(img.path || ''));
+  const imageAttachments = allAttachments.filter(isImageAttachment);
+  const fileAttachments = allAttachments.filter((img) => !isImageAttachment(img) && (img.data || img.path));
+
+  // Path-based attachments live behind the authenticated assets route, so a
+  // bare <a href> can't fetch them — download through fetch + object URL.
+  const downloadFileAttachment = async (img: (typeof allAttachments)[number]) => {
+    const displayName = img.name || (img.path || '').split(/[\\/]/).pop() || 'attachment';
+    if (img.data) {
+      const anchor = document.createElement('a');
+      anchor.href = img.data;
+      anchor.download = displayName;
+      anchor.click();
+      return;
+    }
+    const filename = (img.path || '').split(/[\\/]/).pop() || '';
+    if (!filename) return;
+    try {
+      const response = await authenticatedFetch(`/api/assets/images/${encodeURIComponent(filename)}`);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const blob = await response.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      anchor.href = objectUrl;
+      anchor.download = displayName;
+      anchor.click();
+      setTimeout(() => URL.revokeObjectURL(objectUrl), 10_000);
+    } catch (error) {
+      console.error('Failed to download attachment:', error);
+    }
+  };
   const canRewind = message.type === 'user'
     && Boolean(onRewind)
     && typeof message.uuid === 'string'
@@ -143,101 +184,112 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
       className={`chat-message ${message.type} ${isGrouped ? 'grouped' : ''} ${message.type === 'user' ? 'flex justify-end px-3 sm:px-0' : 'px-3 sm:px-0'}`}
     >
       {message.type === 'user' ? (
-        /* User message bubble on the right */
+        /* User turn on the right: claude.ai-style attachment cards above the bubble */
         <div className="flex w-full items-end space-x-0 sm:w-auto sm:max-w-[85%] sm:space-x-3 md:max-w-md lg:max-w-lg xl:max-w-xl">
-          <div className="group flex-1 rounded-2xl rounded-br-md bg-blue-600 px-3 py-2 text-white shadow-sm sm:flex-initial sm:px-4">
-            {isEditing ? (
-              <div className="flex flex-col gap-2">
-                <textarea
-                  ref={editTextareaRef}
-                  value={editDraft}
-                  onChange={(e) => {
-                    setEditDraft(e.target.value);
-                    e.target.style.height = 'auto';
-                    e.target.style.height = `${e.target.scrollHeight}px`;
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Escape') {
-                      e.preventDefault();
-                      cancelEdit();
-                    } else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-                      e.preventDefault();
-                      saveEdit();
-                    }
-                  }}
-                  dir="auto"
-                  rows={1}
-                  className="w-full resize-none rounded-lg bg-blue-500/40 px-2 py-1.5 text-sm text-white placeholder-blue-200 outline-none ring-1 ring-blue-300/40 focus:ring-blue-200 sm:min-w-[18rem]"
-                  placeholder={t('editMessagePlaceholder', { defaultValue: 'Edit your message…' })}
-                />
-                <div className="flex items-center justify-end gap-2 text-xs">
-                  <button
-                    type="button"
-                    onClick={cancelEdit}
-                    className="rounded px-2 py-1 text-blue-100 transition-colors hover:bg-blue-500/50"
-                  >
-                    {t('cancel', { defaultValue: 'Cancel' })}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={saveEdit}
-                    disabled={!editDraft.trim()}
-                    className="rounded bg-white/90 px-2 py-1 font-medium text-blue-700 transition-colors hover:bg-white disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    {t('saveAndResend', { defaultValue: 'Save & resend' })}
-                  </button>
-                </div>
+          <div className="flex min-w-0 flex-1 flex-col items-end gap-2 sm:flex-initial">
+            {/* Path-based (assets store) and legacy data-URL images both render
+                through ChatMessageImages; non-image data-URL attachments from
+                older sessions keep the download-card fallback below. */}
+            {imageAttachments.length > 0 && (
+              <ChatMessageImages
+                images={imageAttachments}
+                projectId={selectedProject?.projectId}
+              />
+            )}
+            {fileAttachments.length > 0 && (
+              <div className="flex max-w-full flex-wrap justify-end gap-2">
+                {fileAttachments.map((img, idx) => {
+                  const displayName = img.name || (img.path || '').split(/[\\/]/).pop() || 'attachment';
+                  return (
+                    <button
+                      key={`${displayName}-${idx}`}
+                      type="button"
+                      onClick={() => void downloadFileAttachment(img)}
+                      className="flex items-center gap-2 rounded-lg border border-border/60 bg-muted/40 px-2.5 py-2 text-xs text-foreground transition-colors hover:bg-muted"
+                      title={displayName}
+                    >
+                      <PaperclipIcon className="h-3.5 w-3.5 flex-shrink-0" />
+                      <span className="min-w-0 max-w-48 truncate">{displayName}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+            {isEditing || userCopyContent.trim().length > 0 || !message.images?.length ? (
+              <div className="group max-w-full rounded-2xl rounded-br-md bg-blue-600 px-3 py-2 text-white shadow-sm sm:px-4">
+                {isEditing ? (
+                  <div className="flex flex-col gap-2">
+                    <textarea
+                      ref={editTextareaRef}
+                      value={editDraft}
+                      onChange={(e) => {
+                        setEditDraft(e.target.value);
+                        e.target.style.height = 'auto';
+                        e.target.style.height = `${e.target.scrollHeight}px`;
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Escape') {
+                          e.preventDefault();
+                          cancelEdit();
+                        } else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+                          e.preventDefault();
+                          saveEdit();
+                        }
+                      }}
+                      dir="auto"
+                      rows={1}
+                      className="w-full resize-none rounded-lg bg-blue-500/40 px-2 py-1.5 text-sm text-white placeholder-blue-200 outline-none ring-1 ring-blue-300/40 focus:ring-blue-200 sm:min-w-[18rem]"
+                      placeholder={t('editMessagePlaceholder', { defaultValue: 'Edit your message…' })}
+                    />
+                    <div className="flex items-center justify-end gap-2 text-xs">
+                      <button
+                        type="button"
+                        onClick={cancelEdit}
+                        className="rounded px-2 py-1 text-blue-100 transition-colors hover:bg-blue-500/50"
+                      >
+                        {t('cancel', { defaultValue: 'Cancel' })}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={saveEdit}
+                        disabled={!editDraft.trim()}
+                        className="rounded bg-white/90 px-2 py-1 font-medium text-blue-700 transition-colors hover:bg-white disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {t('saveAndResend', { defaultValue: 'Save & resend' })}
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <div dir="auto" className="whitespace-pre-wrap break-words font-serif text-sm">
+                      {message.content}
+                    </div>
+                    <div className="mt-1 flex items-center justify-end gap-1 text-xs text-blue-100">
+                      {canRewind && (
+                        <button
+                          type="button"
+                          onClick={beginEdit}
+                          disabled={rewindDisabled}
+                          title={t('editMessage', { defaultValue: 'Edit message' })}
+                          aria-label={t('editMessage', { defaultValue: 'Edit message' })}
+                          className="rounded p-0.5 text-blue-100 opacity-0 transition-opacity hover:bg-blue-500/50 focus:opacity-100 group-hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-30"
+                        >
+                          <PencilIcon className="h-3.5 w-3.5" />
+                        </button>
+                      )}
+                      {shouldShowUserCopyControl && (
+                        <MessageCopyControl content={userCopyContent} messageType="user" />
+                      )}
+                      <span>{formattedTime}</span>
+                    </div>
+                  </>
+                )}
               </div>
             ) : (
-              <>
-                <div dir="auto" className="whitespace-pre-wrap break-words font-serif text-sm">
-                  {message.content}
-                </div>
-                {message.images && message.images.length > 0 && (
-                  <div className="mt-2 grid grid-cols-2 gap-2">
-                    {message.images.map((img, idx) => (
-                      img.data.startsWith('data:image/') ? (
-                        <img
-                          key={img.name || idx}
-                          src={img.data}
-                          alt={img.name}
-                          className="h-auto max-w-full cursor-pointer rounded-lg transition-opacity hover:opacity-90"
-                          onClick={() => window.open(img.data, '_blank')}
-                        />
-                      ) : (
-                        <a
-                          key={img.name || idx}
-                          href={img.data}
-                          download={img.name}
-                          className="flex items-center gap-2 rounded-lg bg-blue-500/40 px-2.5 py-2 text-xs text-blue-50 transition-colors hover:bg-blue-500/60"
-                          title={img.name}
-                        >
-                          <PaperclipIcon className="h-3.5 w-3.5 flex-shrink-0" />
-                          <span className="min-w-0 truncate">{img.name}</span>
-                        </a>
-                      )
-                    ))}
-                  </div>
-                )}
-                <div className="mt-1 flex items-center justify-end gap-1 text-xs text-blue-100">
-                  {canRewind && (
-                    <button
-                      type="button"
-                      onClick={beginEdit}
-                      disabled={rewindDisabled}
-                      title={t('editMessage', { defaultValue: 'Edit message' })}
-                      aria-label={t('editMessage', { defaultValue: 'Edit message' })}
-                      className="rounded p-0.5 text-blue-100 opacity-0 transition-opacity hover:bg-blue-500/50 focus:opacity-100 group-hover:opacity-100 disabled:cursor-not-allowed disabled:opacity-30"
-                    >
-                      <PencilIcon className="h-3.5 w-3.5" />
-                    </button>
-                  )}
-                  {shouldShowUserCopyControl && (
-                    <MessageCopyControl content={userCopyContent} messageType="user" />
-                  )}
-                  <span>{formattedTime}</span>
-                </div>
-              </>
+              /* Attachment-only turn: no text bubble, but the timestamp still shows */
+              <div className="flex items-center justify-end gap-1 text-xs text-muted-foreground">
+                <span>{formattedTime}</span>
+              </div>
             )}
           </div>
           {!isGrouped && (
@@ -281,9 +333,7 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
                         ? t('messageTypes.cursor')
                         : provider === 'codex'
                           ? t('messageTypes.codex')
-                          : provider === 'gemini'
-                            ? t('messageTypes.gemini')
-                            : provider === 'opencode'
+                          : provider === 'opencode'
                               ? t('messageTypes.opencode', { defaultValue: 'OpenCode' })
                               : t('messageTypes.claude'))}
               </div>
