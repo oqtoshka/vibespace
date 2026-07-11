@@ -373,8 +373,13 @@ class ShellMobileSelectionCore implements MobileTerminalSelectionManager {
       return;
     }
 
-    // Plain one-finger scrolling: xterm moves the viewport itself; we only
-    // record the finger velocity so we can add inertia when the touch ends.
+    // Plain one-finger scrolling. xterm has no reliable native touch
+    // scrolling of its own — its viewport touch handlers only fire when the
+    // touch lands on the scrollbar strip, so finger-drags over the screen
+    // element used to scroll only sometimes. Drive the viewport directly from
+    // the finger delta (preventDefault stops the browser from panning the
+    // page instead) and record the velocity for inertia on release.
+    event.preventDefault();
     this.recordScrollSample(touch);
   };
 
@@ -754,12 +759,21 @@ class ShellMobileSelectionCore implements MobileTerminalSelectionManager {
     const now = performance.now();
 
     if (this.lastScrollTouchY !== null) {
+      // Positive when the finger moves up, matching how xterm increases
+      // scrollTop, so both the 1:1 scroll and the inertia continue in the
+      // same direction.
+      const deltaY = this.lastScrollTouchY - touch.clientY;
       const dt = now - this.lastScrollTouchTime;
       if (dt > 0) {
-        // Positive when the finger moves up, matching how xterm increases
-        // scrollTop, so the inertia continues in the same direction.
-        const velocity = (this.lastScrollTouchY - touch.clientY) / dt;
+        const velocity = deltaY / dt;
         this.scrollVelocity = this.scrollVelocity * 0.4 + velocity * 0.6;
+      }
+
+      if (deltaY !== 0) {
+        const viewport = this.getViewportElement();
+        if (viewport) {
+          viewport.scrollTop += deltaY;
+        }
       }
     }
 
