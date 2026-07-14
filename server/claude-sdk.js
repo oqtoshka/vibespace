@@ -19,6 +19,7 @@ import path from 'path';
 import os from 'os';
 import { CLAUDE_FALLBACK_MODELS } from './modules/providers/list/claude/claude-models.provider.js';
 import { providerModelsService } from './modules/providers/services/provider-models.service.js';
+import { buildClaudeUserContent, getGlobalImageAssetsDir, normalizeImageDescriptors } from './shared/image-attachments.js';
 import { resolveClaudeCodeExecutablePath } from './shared/claude-cli-path.js';
 import {
   createNotificationEvent,
@@ -185,6 +186,20 @@ function matchesToolPermission(entry, toolName, input) {
 }
 
 /**
+ * Validates a requested reasoning-effort value against the efforts the selected
+ * model actually advertises; returns undefined for "default" or anything the
+ * model doesn't support so the SDK falls back to its own default.
+ */
+function resolveClaudeEffort(model, effort, modelsDefinition = CLAUDE_FALLBACK_MODELS) {
+  const selectedModel = modelsDefinition?.OPTIONS?.find((option) => option.value === model) || null;
+  const allowedEfforts = selectedModel?.effort?.values
+    ?.map((value) => value.value) || [];
+  return typeof effort === 'string' && effort !== 'default' && allowedEfforts.includes(effort)
+    ? effort
+    : undefined;
+}
+
+/**
  * Maps CLI options to SDK-compatible options format
  * @param {Object} options - CLI options
  * @returns {Object} SDK-compatible options
@@ -206,6 +221,12 @@ function mapCliOptionsToSDK(options = {}) {
   if (cwd) {
     sdkOptions.cwd = cwd;
   }
+
+  // Non-image attachments reach the agent as "read this file" path references
+  // into the global assets store (~/.vibespace/assets), which lives outside
+  // every project cwd — without this grant the Read tool trips an
+  // out-of-directory permission prompt on each attachment.
+  sdkOptions.additionalDirectories = [getGlobalImageAssetsDir()];
 
   // Map permission mode
   if (permissionMode && permissionMode !== 'default') {
@@ -251,6 +272,15 @@ function mapCliOptionsToSDK(options = {}) {
   sdkOptions.model = options.model || CLAUDE_FALLBACK_MODELS.DEFAULT;
   // Model logged at query start below
 
+  const resolvedEffort = resolveClaudeEffort(
+    sdkOptions.model,
+    options.effort,
+    options.effortModels || CLAUDE_FALLBACK_MODELS,
+  );
+  if (resolvedEffort) {
+    sdkOptions.effort = resolvedEffort;
+  }
+
   // Map system prompt configuration
   sdkOptions.systemPrompt = {
     type: 'preset',
@@ -273,16 +303,12 @@ function mapCliOptionsToSDK(options = {}) {
  * Adds a session to the active sessions map
  * @param {string} sessionId - Session identifier
  * @param {Object} queryInstance - SDK query instance
- * @param {Array<string>} tempImagePaths - Temp image file paths for cleanup
- * @param {string} tempDir - Temp directory for cleanup
  */
-function addSession(sessionId, queryInstance, tempImagePaths = [], tempDir = null, writer = null) {
+function addSession(sessionId, queryInstance, writer = null) {
   activeSessions.set(sessionId, {
     instance: queryInstance,
     startTime: Date.now(),
     status: 'active',
-    tempImagePaths,
-    tempDir,
     writer
   });
 }
@@ -401,99 +427,17 @@ function extractTokenBudget(sdkMessage) {
 }
 
 /**
- * Handles image processing for SDK queries
- * Saves base64 images to temporary files and returns modified prompt with file paths
- * @param {string} command - Original user prompt
- * @param {Array} images - Array of image objects with base64 data
- * @param {string} cwd - Working directory for temp file creation
- * @returns {Promise<Object>} {modifiedCommand, tempImagePaths, tempDir}
+ * Builds the user-turn content for the streaming input: the plain prompt when
+ * there are no attachments, or a text block plus one base64 `image` block per
+ * attachment. Descriptors are `{ path, name?, mimeType? }` records pointing at
+ * the global `~/.vibespace/assets` store; paths outside the allowed roots are
+ * refused inside buildClaudeUserContent.
  */
-async function handleImages(command, images, cwd) {
-  const tempImagePaths = [];
-  let tempDir = null;
-
-  if (!images || images.length === 0) {
-    return { modifiedCommand: command, tempImagePaths, tempDir };
+async function buildTurnContent(command, images, cwd) {
+  if (normalizeImageDescriptors(images).length === 0) {
+    return command;
   }
-
-  try {
-    // Create temp directory in the project directory
-    const workingDir = cwd || process.cwd();
-    tempDir = path.join(workingDir, '.tmp', 'images', Date.now().toString());
-    await fs.mkdir(tempDir, { recursive: true });
-
-    // Save each attachment to a temp file. Keep the original filename
-    // (sanitized, index-prefixed against collisions) so non-image files keep a
-    // meaningful name/extension; fall back to the mime type for pasted blobs.
-    for (const [index, image] of images.entries()) {
-      // Extract base64 data and mime type
-      const matches = image.data.match(/^data:([^;]+);base64,(.+)$/);
-      if (!matches) {
-        console.error('Invalid attachment data format');
-        continue;
-      }
-
-      const [, mimeType, base64Data] = matches;
-      const originalName = typeof image.name === 'string'
-        ? path.basename(image.name).replace(/[^\w.\-]/g, '_')
-        : '';
-      const fallbackExtension = (mimeType.split('/')[1] || 'bin').split('+')[0];
-      const filename = originalName && originalName !== '_'
-        ? `${index}_${originalName}`
-        : `file_${index}.${fallbackExtension}`;
-      const filepath = path.join(tempDir, filename);
-
-      // Write base64 data to file
-      await fs.writeFile(filepath, Buffer.from(base64Data, 'base64'));
-      tempImagePaths.push(filepath);
-    }
-
-    // Include the full attachment paths in the prompt
-    let modifiedCommand = command;
-    if (tempImagePaths.length > 0 && command && command.trim()) {
-      const imageNote = `\n\n[Attached files are available at the following paths (read them if relevant):]\n${tempImagePaths.map((p, i) => `${i + 1}. ${p}`).join('\n')}`;
-      modifiedCommand = command + imageNote;
-    }
-
-    // Images processed
-    return { modifiedCommand, tempImagePaths, tempDir };
-  } catch (error) {
-    console.error('Error processing images for SDK:', error);
-    return { modifiedCommand: command, tempImagePaths, tempDir };
-  }
-}
-
-/**
- * Cleans up temporary image files
- * @param {Array<string>} tempImagePaths - Array of temp file paths to delete
- * @param {Array<string>|string|null} tempDirs - Temp directory(ies) to remove
- */
-async function cleanupTempFiles(tempImagePaths, tempDirs) {
-  const dirs = Array.isArray(tempDirs) ? tempDirs : (tempDirs ? [tempDirs] : []);
-
-  if ((!tempImagePaths || tempImagePaths.length === 0) && dirs.length === 0) {
-    return;
-  }
-
-  try {
-    // Delete individual temp files
-    for (const imagePath of (tempImagePaths || [])) {
-      await fs.unlink(imagePath).catch(err =>
-        console.error(`Failed to delete temp image ${imagePath}:`, err)
-      );
-    }
-
-    // Delete temp directories
-    for (const dir of dirs) {
-      await fs.rm(dir, { recursive: true, force: true }).catch(err =>
-        console.error(`Failed to delete temp directory ${dir}:`, err)
-      );
-    }
-
-    // Temp files cleaned
-  } catch (error) {
-    console.error('Error during temp file cleanup:', error);
-  }
+  return await buildClaudeUserContent(command, images, cwd);
 }
 
 /**
@@ -1102,7 +1046,6 @@ function finalizeSession(session) {
   if (session.sessionId && getSession(session.sessionId) === session) {
     removeSession(session.sessionId);
   }
-  void cleanupTempFiles(session.tempImagePaths, session.tempDirs);
 }
 
 /**
@@ -1197,12 +1140,8 @@ async function reuseSession(session, command, options, ws) {
     console.warn(`setModel during reuse for ${session.sessionId} failed:`, err?.message || err);
   }
 
-  // Persist any attached images and append their paths to the prompt.
-  const imageResult = await handleImages(command, options.images, options.cwd);
-  if (imageResult.tempImagePaths.length > 0) {
-    session.tempImagePaths.push(...imageResult.tempImagePaths);
-    if (imageResult.tempDir) session.tempDirs.push(imageResult.tempDir);
-  }
+  // Attachments ride along as content blocks read from the assets store.
+  const turnContent = await buildTurnContent(command, options.images, options.cwd);
 
   clearIdleTimer(session);
   session.turnActive = true;
@@ -1210,7 +1149,7 @@ async function reuseSession(session, command, options, ws) {
   if (options.sessionSummary) session.sessionSummary = options.sessionSummary;
 
   const turnPromise = beginTurn(session);
-  const pushed = session.input.push(makeUserMessage(imageResult.modifiedCommand));
+  const pushed = session.input.push(makeUserMessage(turnContent));
   if (!pushed) {
     // Stream closed out from under us (raced teardown) — fall back to a fresh
     // session so the message isn't dropped.
@@ -1229,15 +1168,22 @@ async function startPersistentSession(command, options, ws) {
   const { sessionId, sessionSummary } = options;
 
   const resolvedModel = await providerModelsService.resolveResumeModel('claude', sessionId, options.model);
-  const sdkOptions = mapCliOptionsToSDK({ ...options, model: resolvedModel || options.model });
+  // Validate any requested reasoning effort against the live model catalog
+  // (falls back to the static definition when the catalog can't be loaded).
+  let effortModels = CLAUDE_FALLBACK_MODELS;
+  try {
+    effortModels = (await providerModelsService.getProviderModels('claude')).models;
+  } catch (error) {
+    console.warn('[Claude SDK] Unable to load provider models for effort validation:', error?.message || error);
+  }
+  const sdkOptions = mapCliOptionsToSDK({ ...options, model: resolvedModel || options.model, effortModels });
 
   const mcpServers = await loadMcpConfig(options.cwd);
   if (mcpServers) {
     sdkOptions.mcpServers = mcpServers;
   }
 
-  const imageResult = await handleImages(command, options.images, options.cwd);
-  const finalCommand = imageResult.modifiedCommand;
+  const firstTurnContent = await buildTurnContent(command, options.images, options.cwd);
 
   const input = createInputController();
   const session = {
@@ -1265,8 +1211,6 @@ async function startPersistentSession(command, options, ws) {
     sessionCreatedSent: false,
     currentTurn: null,
     pendingTasks: new Map(),
-    tempImagePaths: [...imageResult.tempImagePaths],
-    tempDirs: imageResult.tempDir ? [imageResult.tempDir] : [],
     idleTimer: null,
     maxLifetimeTimer: null,
     ended: false,
@@ -1329,7 +1273,7 @@ async function startPersistentSession(command, options, ws) {
   // running in the background for later turns and background-job resumes.
   console.log('Starting persistent streaming session for:', sessionId || 'NEW');
   const turnPromise = beginTurn(session);
-  input.push(makeUserMessage(finalCommand));
+  input.push(makeUserMessage(firstTurnContent));
   void runSessionLoop(session);
   return turnPromise;
 }
