@@ -119,7 +119,7 @@ class ShellMobileSelectionCore implements MobileTerminalSelectionManager {
   private lastZoomTime = 0;
 
   private viewportElement: HTMLElement | null = null;
-  private lastScrollTouchY: number | null = null;
+  private lastScrollTouch: TouchCoords | null = null;
   private lastScrollTouchTime = 0;
   private scrollVelocity = 0;
   private inertiaFrame: number | null = null;
@@ -373,12 +373,13 @@ class ShellMobileSelectionCore implements MobileTerminalSelectionManager {
       return;
     }
 
-    // Plain one-finger scrolling. xterm has no reliable native touch
-    // scrolling of its own — its viewport touch handlers only fire when the
-    // touch lands on the scrollbar strip, so finger-drags over the screen
-    // element used to scroll only sometimes. Drive the viewport directly from
-    // the finger delta (preventDefault stops the browser from panning the
-    // page instead) and record the velocity for inertia on release.
+    // Plain one-finger scrolling. xterm's own touch handlers cover the plain
+    // buffer (they drive viewport.scrollTop 1:1), but they bail out entirely
+    // when the running app enables mouse reporting (claude, vim with mouse)
+    // and scrollTop is a no-op in the alternate buffer — the cases a TUI
+    // session actually hits. recordScrollSample routes those through
+    // synthetic wheel events so they follow the same pipeline a trackpad
+    // uses. preventDefault stops the browser from panning the page instead.
     event.preventDefault();
     this.recordScrollSample(touch);
   };
@@ -750,34 +751,68 @@ class ShellMobileSelectionCore implements MobileTerminalSelectionManager {
   }
 
   private resetScrollTracking(): void {
-    this.lastScrollTouchY = null;
+    this.lastScrollTouch = null;
     this.lastScrollTouchTime = 0;
     this.scrollVelocity = 0;
+  }
+
+  /**
+   * True when driving viewport.scrollTop cannot scroll and the wheel pipeline
+   * is the one that works (it's what a trackpad goes through): either the
+   * running app enabled mouse reporting (xterm forwards wheel as mouse
+   * buttons 64/65 and skips its own touch scrolling entirely), or the
+   * alternate buffer is active (no scrollback — xterm turns wheel into
+   * arrow-key sequences instead).
+   */
+  private needsSyntheticWheel(): boolean {
+    return (
+      this.terminal.element?.classList.contains('enable-mouse-events') === true ||
+      this.terminal.buffer.active.type === 'alternate'
+    );
+  }
+
+  private dispatchSyntheticWheel(deltaY: number): void {
+    const element = this.terminal.element;
+    if (!element || deltaY === 0) {
+      return;
+    }
+
+    // Anchor the event at the finger so mouse-report coordinates are valid.
+    const point = this.lastScrollTouch;
+    const rect = element.getBoundingClientRect();
+    element.dispatchEvent(
+      new WheelEvent('wheel', {
+        bubbles: true,
+        cancelable: true,
+        clientX: point?.clientX ?? rect.left + rect.width / 2,
+        clientY: point?.clientY ?? rect.top + rect.height / 2,
+        deltaY,
+        deltaMode: WheelEvent.DOM_DELTA_PIXEL,
+      }),
+    );
   }
 
   private recordScrollSample(touch: TouchCoords): void {
     const now = performance.now();
 
-    if (this.lastScrollTouchY !== null) {
-      // Positive when the finger moves up, matching how xterm increases
-      // scrollTop, so both the 1:1 scroll and the inertia continue in the
-      // same direction.
-      const deltaY = this.lastScrollTouchY - touch.clientY;
+    if (this.lastScrollTouch !== null) {
+      // Positive when the finger moves up, matching both scrollTop growth and
+      // wheel deltaY, so the 1:1 scroll and the inertia share a direction.
+      const deltaY = this.lastScrollTouch.clientY - touch.clientY;
       const dt = now - this.lastScrollTouchTime;
       if (dt > 0) {
         const velocity = deltaY / dt;
         this.scrollVelocity = this.scrollVelocity * 0.4 + velocity * 0.6;
       }
 
-      if (deltaY !== 0) {
-        const viewport = this.getViewportElement();
-        if (viewport) {
-          viewport.scrollTop += deltaY;
-        }
+      if (deltaY !== 0 && this.needsSyntheticWheel()) {
+        this.dispatchSyntheticWheel(deltaY);
       }
+      // Otherwise xterm's own touchmove handler already scrolled the
+      // viewport 1:1 with this finger move; scrolling here too would double it.
     }
 
-    this.lastScrollTouchY = touch.clientY;
+    this.lastScrollTouch = touch;
     this.lastScrollTouchTime = now;
   }
 
@@ -799,11 +834,6 @@ class ShellMobileSelectionCore implements MobileTerminalSelectionManager {
   }
 
   private startInertia(initialVelocity: number): void {
-    const viewport = this.getViewportElement();
-    if (!viewport) {
-      return;
-    }
-
     this.cancelInertia();
 
     let velocity = clamp(
@@ -823,12 +853,24 @@ class ShellMobileSelectionCore implements MobileTerminalSelectionManager {
         return;
       }
 
-      const before = viewport.scrollTop;
-      viewport.scrollTop = before + velocity * dt;
-      if (viewport.scrollTop === before) {
-        // Reached the top or bottom of the buffer.
-        this.inertiaFrame = null;
-        return;
+      if (this.needsSyntheticWheel()) {
+        // Mouse-reporting / alt-buffer sessions: keep feeding the wheel
+        // pipeline; there is no scroll edge to detect, friction ends it.
+        this.dispatchSyntheticWheel(velocity * dt);
+      } else {
+        const viewport = this.getViewportElement();
+        if (!viewport) {
+          this.inertiaFrame = null;
+          return;
+        }
+
+        const before = viewport.scrollTop;
+        viewport.scrollTop = before + velocity * dt;
+        if (viewport.scrollTop === before) {
+          // Reached the top or bottom of the buffer.
+          this.inertiaFrame = null;
+          return;
+        }
       }
 
       this.inertiaFrame = window.requestAnimationFrame(step);
