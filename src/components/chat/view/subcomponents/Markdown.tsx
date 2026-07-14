@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
@@ -9,6 +9,7 @@ import { useTranslation } from 'react-i18next';
 import { normalizeInlineCodeFences } from '../../utils/chatFormatting';
 import { copyTextToClipboard } from '../../../../utils/clipboard';
 import { resolveMarkdownLinkPath } from '../../../../utils/markdownLinks';
+import { projectFileExists } from '../../../../utils/projectFileLookup';
 import { usePaletteOps } from '../../../../contexts/PaletteOpsContext';
 import { useTheme } from '../../../../contexts/ThemeContext';
 import MermaidDiagram from '../../../markdown/MermaidDiagram';
@@ -19,7 +20,28 @@ type MarkdownProps = {
   className?: string;
   /** Opens an in-project file when a relative link is clicked (resolves against project root). */
   onFileOpen?: ((filePath: string) => void) | null;
+  /** Enables clickable inline-code file paths (existence-checked per project). */
+  projectId?: string | null;
+  /** Absolute project root, used to relativize absolute paths the model emits. */
+  projectPath?: string | null;
 };
+
+/**
+ * Lets the statically-defined markdown component overrides (CodeBlock) reach
+ * the per-message project context without threading props through
+ * react-markdown.
+ */
+type MarkdownFileContextValue = {
+  projectId: string | null;
+  projectPath: string | null;
+  openFile: ((filePath: string) => void) | null;
+};
+
+const MarkdownFileContext = createContext<MarkdownFileContextValue>({
+  projectId: null,
+  projectPath: null,
+  openFile: null,
+});
 
 // Links to the wider web (or in-page anchors) keep normal browser navigation;
 // everything else is treated as a workspace file reference.
@@ -56,6 +78,116 @@ const childrenToText = (children: React.ReactNode): string => {
   return '';
 };
 
+/**
+ * Reduces an inline-code span to a project-root-relative path candidate, or
+ * null when the text can't be a workspace file reference. Deliberately strict
+ * (no spaces, no parens, no out-of-project absolutes) — whatever passes is
+ * still verified against the real file tree before becoming clickable.
+ */
+function extractInlinePathCandidate(raw: string, projectPath?: string | null): string | null {
+  const trimmed = raw.trim();
+  if (!trimmed || trimmed.length > 512 || /\s/.test(trimmed)) {
+    return null;
+  }
+
+  let cleaned = stripLineSuffix(trimmed).replace(/\\/g, '/');
+  if (isExternalHref(cleaned) || /["'`<>|()]/.test(cleaned)) {
+    return null;
+  }
+
+  if (projectPath) {
+    const normalizedRoot = projectPath.replace(/\\/g, '/').replace(/\/+$/, '');
+    if (normalizedRoot && cleaned.startsWith(`${normalizedRoot}/`)) {
+      cleaned = cleaned.slice(normalizedRoot.length + 1);
+    }
+  }
+
+  // Home-anchored or absolute paths that didn't match the project root can't
+  // be resolved by the project file API.
+  if (cleaned.startsWith('~') || cleaned.startsWith('/')) {
+    return null;
+  }
+
+  cleaned = cleaned.replace(/^\.\//, '');
+  if (!cleaned || cleaned.endsWith('/') || cleaned.split('/').includes('..')) {
+    return null;
+  }
+
+  // Must read as a path: contain a separator or end in a file extension.
+  if (!cleaned.includes('/') && !/\.[a-z0-9]{1,8}$/i.test(cleaned)) {
+    return null;
+  }
+
+  return cleaned;
+}
+
+const INLINE_CODE_CLASS =
+  'whitespace-pre-wrap break-words rounded-md border border-gray-200 bg-gray-100 px-1.5 py-0.5 font-mono text-[0.9em] text-gray-900 dark:border-gray-700 dark:bg-gray-800/60 dark:text-gray-100';
+
+type InlineCodeProps = {
+  codeText: string;
+  className?: string;
+  children?: React.ReactNode;
+};
+
+/**
+ * Inline code span that turns into a file link when its text names a real
+ * project file (agents reference files as `src/foo.ts` far more often than as
+ * markdown links). Existence is verified through a cached directory listing,
+ * so `Object.keys`-style tokens stay plain code.
+ */
+function InlineCode({ codeText, className, children, ...props }: InlineCodeProps) {
+  const { projectId, projectPath, openFile } = useContext(MarkdownFileContext);
+  const candidate = useMemo(
+    () => (projectId && openFile ? extractInlinePathCandidate(codeText, projectPath) : null),
+    [codeText, openFile, projectId, projectPath],
+  );
+  const [verifiedPath, setVerifiedPath] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!candidate || !projectId) {
+      setVerifiedPath(null);
+      return;
+    }
+    let cancelled = false;
+    void projectFileExists(projectId, candidate).then((exists) => {
+      if (!cancelled) {
+        setVerifiedPath(exists ? candidate : null);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [candidate, projectId]);
+
+  if (!verifiedPath || !openFile) {
+    return (
+      <code className={`${INLINE_CODE_CLASS} ${className || ''}`} {...props}>
+        {children}
+      </code>
+    );
+  }
+
+  return (
+    <code
+      className={`${INLINE_CODE_CLASS} cursor-pointer underline decoration-dotted underline-offset-2 hover:text-blue-600 dark:hover:text-blue-400 ${className || ''}`}
+      role="link"
+      tabIndex={0}
+      title={verifiedPath}
+      onClick={() => openFile(verifiedPath)}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          openFile(verifiedPath);
+        }
+      }}
+      {...props}
+    >
+      {children}
+    </code>
+  );
+}
+
 type CodeBlockProps = {
   node?: any;
   inline?: boolean;
@@ -74,13 +206,9 @@ const CodeBlock = ({ node, inline, className, children, ...props }: CodeBlockPro
 
   if (shouldInline) {
     return (
-      <code
-        className={`whitespace-pre-wrap break-words rounded-md border border-gray-200 bg-gray-100 px-1.5 py-0.5 font-mono text-[0.9em] text-gray-900 dark:border-gray-700 dark:bg-gray-800/60 dark:text-gray-100 ${className || ''
-          }`}
-        {...props}
-      >
+      <InlineCode codeText={raw} className={className} {...props}>
         {children}
-      </code>
+      </InlineCode>
     );
   }
 
@@ -199,11 +327,26 @@ const markdownComponents = {
   ),
 };
 
-export function Markdown({ children, className, onFileOpen = null }: MarkdownProps) {
+export function Markdown({
+  children,
+  className,
+  onFileOpen = null,
+  projectId = null,
+  projectPath = null,
+}: MarkdownProps) {
   const content = normalizeInlineCodeFences(String(children ?? ''));
   const remarkPlugins = useMemo(() => [remarkGfm, remarkMath], []);
   const rehypePlugins = useMemo(() => [rehypeKatex], []);
   const { openFileInEditor } = usePaletteOps();
+
+  const fileContext = useMemo<MarkdownFileContextValue>(
+    () => ({
+      projectId,
+      projectPath,
+      openFile: onFileOpen ?? openFileInEditor ?? null,
+    }),
+    [onFileOpen, openFileInEditor, projectId, projectPath],
+  );
 
   const components = useMemo(
     () => ({
@@ -259,10 +402,12 @@ export function Markdown({ children, className, onFileOpen = null }: MarkdownPro
   );
 
   return (
-    <div className={className}>
-      <ReactMarkdown remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} components={components as any}>
-        {content}
-      </ReactMarkdown>
-    </div>
+    <MarkdownFileContext.Provider value={fileContext}>
+      <div className={className}>
+        <ReactMarkdown remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} components={components as any}>
+          {content}
+        </ReactMarkdown>
+      </div>
+    </MarkdownFileContext.Provider>
   );
 }
