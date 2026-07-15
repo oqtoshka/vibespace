@@ -23,14 +23,8 @@ export function isExternalHref(href: string): boolean {
  *   preserving its absolute/relative form. Query strings and fragments are
  *   stripped; percent-encoding (e.g. `%20`) is decoded.
  */
-export function resolveMarkdownLinkPath(
-  href: string | undefined,
-  currentFilePath?: string | null,
-): string | null {
-  if (!href || href.startsWith('#') || isExternalHref(href)) {
-    return null;
-  }
-
+/** Strips the query string / fragment and decodes percent-encoding. */
+export function stripHrefDecorations(href: string): string | null {
   let target = href.split('#')[0].split('?')[0];
   if (!target) {
     return null;
@@ -40,6 +34,22 @@ export function resolveMarkdownLinkPath(
     target = decodeURIComponent(target);
   } catch {
     // Keep the raw value when the href contains stray percent signs.
+  }
+
+  return target || null;
+}
+
+export function resolveMarkdownLinkPath(
+  href: string | undefined,
+  currentFilePath?: string | null,
+): string | null {
+  if (!href || href.startsWith('#') || isExternalHref(href)) {
+    return null;
+  }
+
+  const target = stripHrefDecorations(href);
+  if (!target) {
+    return null;
   }
 
   if (target.startsWith('/')) {

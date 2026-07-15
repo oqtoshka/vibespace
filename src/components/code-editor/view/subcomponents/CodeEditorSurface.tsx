@@ -1,6 +1,9 @@
 import CodeMirror from '@uiw/react-codemirror';
 import { oneDark } from '@codemirror/theme-one-dark';
 import type { Extension } from '@codemirror/state';
+
+import type { ApiSpecKind } from '../../utils/apiSpec';
+
 import MarkdownPreview from './markdown/MarkdownPreview';
 import PlantUmlPreview from './PlantUmlPreview';
 import DbmlPreview from './DbmlPreview';
@@ -8,7 +11,6 @@ import HtmlPreview from './HtmlPreview';
 import CsvPreview from './CsvPreview';
 import CustomRenderPreview from './CustomRenderPreview';
 import ApiSpecPreview from './ApiSpecPreview';
-import type { ApiSpecKind } from '../../utils/apiSpec';
 
 type CodeEditorSurfaceProps = {
   content: string;
@@ -55,7 +57,12 @@ export default function CodeEditorSurface({
     return (
       <div className="h-full overflow-y-auto bg-background">
         <div className="prose prose-sm mx-auto max-w-4xl max-w-none px-8 py-6 dark:prose-invert prose-headings:font-semibold prose-a:text-blue-600 prose-code:text-sm prose-pre:bg-gray-900 prose-img:rounded-lg dark:prose-a:text-blue-400">
-          <MarkdownPreview content={content} currentFilePath={currentFilePath} onFileOpen={onFileOpen} />
+          <MarkdownPreview
+            content={content}
+            currentFilePath={currentFilePath}
+            onFileOpen={onFileOpen}
+            projectId={projectId}
+          />
         </div>
       </div>
     );
