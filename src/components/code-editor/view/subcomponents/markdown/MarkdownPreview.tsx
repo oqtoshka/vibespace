@@ -4,7 +4,11 @@ import ReactMarkdown from 'react-markdown';
 import rehypeKatex from 'rehype-katex';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
+
+import { splitMarkdownFrontmatter } from '../../../../../utils/markdownFrontmatter';
 import { resolveMarkdownLinkPath } from '../../../../../utils/markdownLinks';
+
+import FrontmatterCard from './FrontmatterCard';
 import MarkdownCodeBlock from './MarkdownCodeBlock';
 
 type MarkdownPreviewProps = {
@@ -44,6 +48,7 @@ const staticMarkdownPreviewComponents: Components = {
 export default function MarkdownPreview({ content, currentFilePath = null, onFileOpen = null }: MarkdownPreviewProps) {
   const remarkPlugins = useMemo(() => [remarkGfm, remarkMath], []);
   const rehypePlugins = useMemo(() => [rehypeKatex], []);
+  const { frontmatter, body } = useMemo(() => splitMarkdownFrontmatter(content), [content]);
 
   const components: Components = useMemo(
     () => ({
@@ -87,12 +92,15 @@ export default function MarkdownPreview({ content, currentFilePath = null, onFil
   );
 
   return (
-    <ReactMarkdown
-      remarkPlugins={remarkPlugins}
-      rehypePlugins={rehypePlugins}
-      components={components}
-    >
-      {content}
-    </ReactMarkdown>
+    <>
+      {frontmatter && <FrontmatterCard frontmatter={frontmatter} />}
+      <ReactMarkdown
+        remarkPlugins={remarkPlugins}
+        rehypePlugins={rehypePlugins}
+        components={components}
+      >
+        {body}
+      </ReactMarkdown>
+    </>
   );
 }

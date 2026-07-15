@@ -197,7 +197,8 @@
     "remark-math": "^6.0.0",
     "tailwind-merge": "^3.3.1",
     "web-push": "^3.6.7",
-    "ws": "^8.14.2"
+    "ws": "^8.14.2",
+    "yaml": "^2.8.2"
   },
   "devDependencies": {
     "@commitlint/cli": "^20.5.0",
