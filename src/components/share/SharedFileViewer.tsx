@@ -2,8 +2,9 @@ import CodeMirror from '@uiw/react-codemirror';
 import { oneDark } from '@codemirror/theme-one-dark';
 import DOMPurify from 'dompurify';
 import { AlertCircle, Code2, Download, Eye, FileWarning, Loader2 } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
+
 import { api } from '../../utils/api';
 import { getLanguageExtensions } from '../code-editor/utils/editorExtensions';
 import MarkdownPreview from '../code-editor/view/subcomponents/markdown/MarkdownPreview';
@@ -117,6 +118,13 @@ export default function SharedFileViewer() {
     [meta],
   );
 
+  // Images referenced from shared markdown load through the public
+  // share-preview route (the viewer has no auth token to fetch blobs with).
+  const resolveShareImageUrl = useCallback(
+    (assetPath: string) => api.sharePreviewUrl(shareId, assetPath),
+    [shareId],
+  );
+
   if (status === 'loading') {
     return (
       <div className="flex h-screen w-screen items-center justify-center bg-background text-muted-foreground">
@@ -197,7 +205,12 @@ export default function SharedFileViewer() {
         {isMarkdown && mode === 'rendered' && content !== null && (
           <div className="h-full overflow-y-auto bg-white dark:bg-gray-900">
             <div className="prose prose-sm mx-auto max-w-none px-8 py-6 dark:prose-invert prose-headings:font-semibold prose-a:text-blue-600 prose-code:text-sm prose-pre:bg-gray-900 prose-img:rounded-lg dark:prose-a:text-blue-400">
-              <MarkdownPreview content={content} currentFilePath={null} onFileOpen={null} />
+              <MarkdownPreview
+                content={content}
+                currentFilePath={null}
+                onFileOpen={null}
+                resolveImageUrl={resolveShareImageUrl}
+              />
             </div>
           </div>
         )}
@@ -212,8 +225,8 @@ export default function SharedFileViewer() {
             )}
             {sanitizedSvg && (
               <div
-                className="inline-block rounded-lg bg-white p-4 shadow-sm ring-1 ring-gray-200 [&_svg]:max-w-full dark:ring-gray-700"
-                // eslint-disable-next-line react/no-danger
+                className="inline-block rounded-lg bg-white p-4 shadow-sm ring-1 ring-gray-200 dark:ring-gray-700 [&_svg]:max-w-full"
+                 
                 dangerouslySetInnerHTML={{ __html: sanitizedSvg }}
               />
             )}
