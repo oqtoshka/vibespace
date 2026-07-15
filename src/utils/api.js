@@ -1,4 +1,5 @@
 import { IS_PLATFORM } from "../constants/config";
+
 import { persistAuthToken } from "./authToken";
 import { AUTH_TOKEN_REFRESHED_EVENT, AUTH_SESSION_EXPIRED_EVENT } from "./authEvents";
 
@@ -271,6 +272,15 @@ export const api = {
   shareRender: (shareId) => fetch(`/api/share/${encodeURIComponent(shareId)}/render`),
   shareContentUrl: (shareId, { download = false } = {}) =>
     `/api/share/${encodeURIComponent(shareId)}/content${download ? '?download' : ''}`,
+  // URL for an asset referenced by a shared file (e.g. an image linked from
+  // shared markdown); the server resolves it relative to the shared file and
+  // constrains it to the project root.
+  sharePreviewUrl: (shareId, assetPath) =>
+    `/api/share/${encodeURIComponent(shareId)}/preview/${assetPath
+      .replace(/^\/+/, '')
+      .split('/')
+      .map(encodeURIComponent)
+      .join('/')}`,
 
   // File operations
   createFile: (projectId, { path, type, name }) =>
