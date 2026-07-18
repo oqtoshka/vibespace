@@ -1,6 +1,7 @@
 import { History, RefreshCw } from 'lucide-react';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { GitDiffMap, GitCommitSummary } from '../../types/types';
+import { computeCommitGraph } from '../../utils/commitGraph';
 import CommitHistoryItem from './CommitHistoryItem';
 
 type HistoryViewProps = {
@@ -76,6 +77,15 @@ export default function HistoryView({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [recentCommits, expandedCommits]);
 
+  // Lane layout for the commit graph; rows align 1:1 with recentCommits.
+  // Older API responses without `parents` degrade to plain rows (no strip).
+  const graphRows = useMemo(() => {
+    if (!recentCommits.some((commit) => commit.parents !== undefined)) {
+      return null;
+    }
+    return computeCommitGraph(recentCommits);
+  }, [recentCommits]);
+
   const toggleCommitExpanded = useCallback(
     (commitHash: string) => {
       const isExpanding = !expandedCommits.has(commitHash);
@@ -114,7 +124,7 @@ export default function HistoryView({
         </div>
       ) : (
         <div className={isMobile ? 'pb-4' : ''}>
-          {recentCommits.map((commit) => (
+          {recentCommits.map((commit, index) => (
             <CommitHistoryItem
               key={commit.hash}
               commit={commit}
@@ -122,6 +132,7 @@ export default function HistoryView({
               diff={commitDiffs[commit.hash]}
               isMobile={isMobile}
               wrapText={wrapText}
+              graphRow={graphRows?.[index]}
               onToggle={() => toggleCommitExpanded(commit.hash)}
               onOpenFile={onOpenFile}
             />

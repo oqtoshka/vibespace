@@ -2,7 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../../../utils/api';
 import { useProjectFilesWatch, type FileChange } from '../../../hooks/useProjectFilesWatch';
 import type { CodeEditorFile } from '../types/types';
-import { isBinaryFile, isImageFile } from '../utils/binaryFile';
+import { isBinaryFile } from '../utils/binaryFile';
+import { getPreviewKind } from '../utils/previewableFile';
 
 type UseCodeEditorDocumentParams = {
   file: CodeEditorFile;
@@ -29,6 +30,9 @@ export const useCodeEditorDocument = ({ file, projectPath }: UseCodeEditorDocume
   // them, and to skip no-op reloads triggered by our own saves.
   const diskContentRef = useRef('');
   const savingRef = useRef(false);
+  // Some binaries (images, PDFs, audio, video) can be rendered natively, so the
+  // editor shows an inline preview instead of the generic binary placeholder.
+  const previewKind = getPreviewKind(file.name);
   // `fileProjectId` is the DB primary key passed down from the editor sidebar;
   // the fallback to `projectPath` preserves older callers that didn't yet
   // propagate the identifier.
@@ -47,9 +51,13 @@ export const useCodeEditorDocument = ({ file, projectPath }: UseCodeEditorDocume
         }
         setIsBinary(false);
 
-        // Check if file is binary by extension. Images are rendered inline by
-        // CodeEditorImageView, so they skip the text read too.
-        if (isBinaryFile(fileName) || isImageFile(fileName)) {
+        // Natively previewable media (image/pdf/audio/video) has no text to
+        // read; flag it binary so the editor routes it to its inline viewers
+        // (CodeEditorPdfView / CodeEditorImageView) instead of the text pane.
+        // Clear any buffer left over from a previously opened text file so a
+        // stray save can't write stale content over the binary file.
+        if (getPreviewKind(fileName) || isBinaryFile(fileName)) {
+          setContent('');
           setIsBinary(true);
           if (!silent) {
             setLoading(false);
@@ -124,6 +132,12 @@ export const useCodeEditorDocument = ({ file, projectPath }: UseCodeEditorDocume
   useProjectFilesWatch(fileProjectId, handleExternalChange);
 
   const handleSave = useCallback(async () => {
+    // Preview-only and binary files have no editable text buffer; never write
+    // them back (e.g. via Cmd/Ctrl+S) or we'd corrupt the file on disk.
+    if (previewKind || isBinaryFile(fileName)) {
+      return;
+    }
+
     setSaving(true);
     savingRef.current = true;
     setSaveError(null);
@@ -162,7 +176,7 @@ export const useCodeEditorDocument = ({ file, projectPath }: UseCodeEditorDocume
       setSaving(false);
       savingRef.current = false;
     }
-  }, [content, filePath, fileProjectId]);
+  }, [content, filePath, fileProjectId, previewKind, fileName]);
 
   const handleDownload = useCallback(() => {
     const blob = new Blob([content], { type: 'text/plain' });
@@ -187,6 +201,8 @@ export const useCodeEditorDocument = ({ file, projectPath }: UseCodeEditorDocume
     saveSuccess,
     saveError,
     isBinary,
+    previewKind,
+    fileProjectId,
     handleSave,
     handleDownload,
   };

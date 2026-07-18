@@ -1,7 +1,7 @@
 import { Cloud, ExternalLink, MessageSquare, Star, Users } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
-import { VIBESPACE_WORDMARK_FONT_FAMILY } from '../../../../constants/branding';
+import { CLOUDCLI_WORDMARK_FONT_FAMILY } from '../../../../constants/branding';
 import { IS_PLATFORM } from '../../../../constants/config';
 import { useVersionCheck } from '../../../../hooks/useVersionCheck';
 import PremiumFeatureCard from '../PremiumFeatureCard';
@@ -43,7 +43,7 @@ export default function AboutTab() {
           <div className="flex items-center gap-2">
             <span
               className="text-base font-semibold text-foreground"
-              style={{ fontFamily: VIBESPACE_WORDMARK_FONT_FAMILY }}
+              style={{ fontFamily: CLOUDCLI_WORDMARK_FONT_FAMILY }}
             >
               VibeSpace
             </span>

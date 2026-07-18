@@ -1,5 +1,5 @@
 import { type ReactNode } from 'react';
-import { Activity, Archive, Folder, ListOrdered, MessageSquare, RotateCcw, Search, Trash2 } from 'lucide-react';
+import { Archive, Folder, ListOrdered, MessageSquare, RotateCcw, Search, Trash2 } from 'lucide-react';
 import type { TFunction } from 'i18next';
 
 import { ScrollArea } from '../../../../shared/view/ui';
@@ -118,7 +118,6 @@ type SidebarContentProps = {
   isMobile: boolean;
   isLoading: boolean;
   projects: Project[];
-  runningSessionsCount: number;
   archivedProjects: ArchivedProjectListItem[];
   archivedSessions: ArchivedSessionListItem[];
   archivedSessionsCount: number;
@@ -164,7 +163,6 @@ export default function SidebarContent({
   isMobile,
   isLoading,
   projects,
-  runningSessionsCount,
   archivedProjects,
   archivedSessions,
   archivedSessionsCount,
@@ -217,7 +215,6 @@ export default function SidebarContent({
         isMobile={isMobile}
         isLoading={isLoading}
         projectsCount={projects.length}
-        runningSessionsCount={runningSessionsCount}
         archivedSessionsCount={archivedSessionsCount}
         isArchivedSessionsLoading={isArchivedSessionsLoading}
         searchFilter={searchFilter}

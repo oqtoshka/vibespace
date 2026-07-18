@@ -96,17 +96,6 @@ export default function CodeEditorHeader({
           </button>
         )}
 
-        {isHtmlPreviewFile && (
-          <button
-            type="button"
-            onClick={onOpenHtmlPreview}
-            className="flex items-center justify-center rounded-md p-1.5 text-gray-600 hover:bg-gray-100 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-white"
-            title={labels.previewHtml}
-          >
-            <Eye className="h-4 w-4" />
-          </button>
-        )}
-
         <button
           type="button"
           onClick={onOpenSettings}

@@ -1,5 +1,6 @@
 import type { ITerminalOptions } from '@xterm/xterm';
 
+export const CODEX_DEVICE_AUTH_URL = 'https://auth.openai.com/codex/device';
 export const SHELL_RESTART_DELAY_MS = 200;
 export const TERMINAL_INIT_DELAY_MS = 100;
 export const TERMINAL_RESIZE_DELAY_MS = 50;
