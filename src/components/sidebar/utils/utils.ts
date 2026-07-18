@@ -1,6 +1,6 @@
 import type { TFunction } from 'i18next';
 
-import type { LLMProvider, Project, ProjectSession } from '../../../types/app';
+import type { Project } from '../../../types/app';
 import type { ProjectSortOrder, ProjectViewMode, SettingsProject, SessionViewModel, SessionWithProvider } from '../types/types';
 
 export const readProjectSortOrder = (): ProjectSortOrder => {
@@ -87,13 +87,6 @@ const getUpdatedTimestamp = (session: SessionWithProvider): string => {
   return String(session.lastActivity || '');
 };
 
-const getSessionProvider = (session: ProjectSession): LLMProvider => {
-  const provider = session.__provider ?? session.provider;
-  return typeof provider === 'string' && provider.trim()
-    ? provider as LLMProvider
-    : 'claude';
-};
-
 export const getSessionDate = (session: SessionWithProvider): Date => {
   return new Date(getUpdatedTimestamp(session) || getCreatedTimestamp(session) || 0);
 };
@@ -115,6 +108,9 @@ export const createSessionViewModel = (
   const diffInMinutes = Math.floor((currentTime.getTime() - sessionDate.getTime()) / (1000 * 60));
 
   return {
+    isCursorSession: session.__provider === 'cursor',
+    isCodexSession: session.__provider === 'codex',
+    isOpenCodeSession: session.__provider === 'opencode',
     isActive: diffInMinutes < 10,
     sessionName: getSessionName(session, t),
     sessionTime: getSessionTime(session),
@@ -123,10 +119,27 @@ export const createSessionViewModel = (
 };
 
 export const getAllSessions = (project: Project): SessionWithProvider[] => {
-  return (project.sessions || []).map((session) => ({
+  const claudeSessions = [...(project.sessions || [])].map((session) => ({
     ...session,
-    __provider: getSessionProvider(session),
-  })).sort(
+    __provider: 'claude' as const,
+  }));
+
+  const cursorSessions = (project.cursorSessions || []).map((session) => ({
+    ...session,
+    __provider: 'cursor' as const,
+  }));
+
+  const codexSessions = (project.codexSessions || []).map((session) => ({
+    ...session,
+    __provider: 'codex' as const,
+  }));
+
+  const opencodeSessions = (project.opencodeSessions || []).map((session) => ({
+    ...session,
+    __provider: 'opencode' as const,
+  }));
+
+  return [...claudeSessions, ...cursorSessions, ...codexSessions, ...opencodeSessions].sort(
     (a, b) => getSessionDate(b).getTime() - getSessionDate(a).getTime(),
   );
 };

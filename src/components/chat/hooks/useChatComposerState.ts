@@ -39,8 +39,9 @@ interface UseChatComposerStateArgs {
   cursorModel: string;
   claudeModel: string;
   codexModel: string;
-  geminiModel: string;
   opencodeModel: string;
+  /** Composer-level reasoning-effort preference for the active provider ('default' when unset). */
+  effort?: string;
   isLoading: boolean;
   canAbortSession: boolean;
   tokenBudget: Record<string, unknown> | null;
@@ -195,8 +196,8 @@ export function useChatComposerState({
   cursorModel,
   claudeModel,
   codexModel,
-  geminiModel,
   opencodeModel,
+  effort,
   isLoading,
   canAbortSession,
   tokenBudget,
@@ -376,11 +377,9 @@ export function useChatComposerState({
             ? cursorModel
             : provider === 'codex'
               ? codexModel
-              : provider === 'gemini'
-                ? geminiModel
-                : provider === 'opencode'
-                  ? opencodeModel
-                  : claudeModel,
+              : provider === 'opencode'
+                ? opencodeModel
+                : claudeModel,
           tokenUsage: tokenBudget,
         };
 
@@ -433,7 +432,6 @@ export function useChatComposerState({
       codexModel,
       currentSessionId,
       cursorModel,
-      geminiModel,
       opencodeModel,
       handleBuiltInCommand,
       handleCustomCommand,
@@ -605,14 +603,12 @@ export function useChatComposerState({
         return cursorModel;
       case 'codex':
         return codexModel;
-      case 'gemini':
-        return geminiModel;
       case 'opencode':
         return opencodeModel;
       default:
         return claudeModel;
     }
-  }, [provider, cursorModel, codexModel, geminiModel, opencodeModel, claudeModel]);
+  }, [provider, cursorModel, codexModel, opencodeModel, claudeModel]);
 
   const getToolsSettings = useCallback(() => {
     try {
@@ -621,11 +617,9 @@ export function useChatComposerState({
           ? 'cursor-tools-settings'
           : provider === 'codex'
             ? 'codex-settings'
-            : provider === 'gemini'
-              ? 'gemini-settings'
-              : provider === 'opencode'
-                ? 'opencode-settings'
-                : 'claude-settings';
+            : provider === 'opencode'
+              ? 'opencode-settings'
+              : 'claude-settings';
       const savedSettings = safeLocalStorage.getItem(settingsKey);
       if (savedSettings) {
         return JSON.parse(savedSettings);
@@ -659,7 +653,7 @@ export function useChatComposerState({
       });
 
       try {
-        const response = await authenticatedFetch(`/api/projects/${selectedProject.projectId}/upload-images`, {
+        const response = await authenticatedFetch('/api/assets/images', {
           method: 'POST',
           headers: {},
           body: formData,
@@ -801,6 +795,7 @@ export function useChatComposerState({
         options: {
           cwd: effectiveCwd,
           model,
+          effort,
           // Codex has no plan mode; downgrade rather than sending an
           // unsupported value to its runtime.
           permissionMode: provider === 'codex' && permissionMode === 'plan' ? 'default' : permissionMode,
@@ -822,6 +817,7 @@ export function useChatComposerState({
       onSessionProcessing,
       onSessionEstablished,
       permissionMode,
+      effort,
       provider,
       scrollToBottom,
       selectedProject,
@@ -874,6 +870,7 @@ export function useChatComposerState({
         options: {
           cwd: effectiveCwd,
           model: activeModel,
+          effort,
           permissionMode: provider === 'codex' && permissionMode === 'plan' ? 'default' : permissionMode,
           toolsSettings,
           skipPermissions: toolsSettings?.skipPermissions || false,
@@ -889,6 +886,7 @@ export function useChatComposerState({
       uploadAttachedImages,
       getToolsSettings,
       activeModel,
+      effort,
       permissionMode,
       provider,
       sendMessage,

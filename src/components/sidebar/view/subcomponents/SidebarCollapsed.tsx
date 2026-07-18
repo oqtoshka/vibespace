@@ -54,6 +54,7 @@ export default function SidebarCollapsed({
         </div>
       )}
 
+
       {/* Update indicator */}
       {updateAvailable && (
         <button

@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react';
 import type { Dispatch, MutableRefObject, SetStateAction } from 'react';
 
 import type { ServerEvent } from '../../../contexts/WebSocketContext';
@@ -38,11 +39,6 @@ interface UseChatRealtimeHandlersArgs {
   onSessionProcessing?: MarkSessionProcessing;
   onSessionIdle?: MarkSessionIdle;
   onWebSocketReconnect?: () => void;
-  onSendFailed?: () => void;
-  onSendSucceeded?: () => void;
-  /** An error arrived before any session exists (e.g. rejected cwd) — there is
-   *  no store slot to append to, so the caller must surface it some other way. */
-  onSessionlessError?: (content: string) => void;
   sessionStore: SessionStore;
 }
 
@@ -74,9 +70,6 @@ export function useChatRealtimeHandlers({
   onSessionProcessing,
   onSessionIdle,
   onWebSocketReconnect,
-  onSendFailed,
-  onSendSucceeded,
-  onSessionlessError,
   sessionStore,
 }: UseChatRealtimeHandlersArgs) {
   // Session switches can send `chat.subscribe` before this effect has a chance
@@ -386,9 +379,6 @@ export function useChatRealtimeHandlers({
     onSessionProcessing,
     onSessionIdle,
     onWebSocketReconnect,
-    onSendFailed,
-    onSendSucceeded,
-    onSessionlessError,
     sessionStore,
   ]);
 }

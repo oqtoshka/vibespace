@@ -14,20 +14,20 @@
 ---
 
 <div align="center">
- <img src="https://raw.githubusercontent.com/siteboon/claudecodeui/main/public/logo.svg" alt="VibeSpace UI" width="64" height="64">
- <h1>Cloud CLI (aka Claude Code UI)</h1>
- <p>A desktop and mobile UI for <a href="https://docs.anthropic.com/en/docs/claude-code">Claude Code</a>, <a href="https://docs.cursor.com/en/cli/overview">Cursor CLI</a>, and <a href="https://developers.openai.com/codex">Codex</a>.<br>Use it locally or remotely to view your active projects and sessions from everywhere.</p>
+  <img src="https://raw.githubusercontent.com/siteboon/claudecodeui/main/public/logo.svg" alt="VibeSpace UI" width="64" height="64">
+  <h1>VibeSpace (aka Claude Code UI)</h1>
+  <p>A desktop and mobile UI for <a href="https://docs.anthropic.com/en/docs/claude-code">Claude Code</a>, <a href="https://docs.cursor.com/en/cli/overview">Cursor CLI</a> and <a href="https://developers.openai.com/codex">Codex</a>.<br>Use it locally or remotely to view your active projects and sessions from everywhere.</p>
 </div>
 
 <p align="center">
- <a href="https://vibespace.ai">VibeSpace Cloud</a> · <a href="https://vibespace.ai/docs">Documentation</a> · <a href="https://discord.gg/buxwujPNRE">Discord</a> · <a href="https://github.com/siteboon/claudecodeui/issues">Bug Reports</a> · <a href="https://github.com/siteboon/claudecodeui/blob/main/CONTRIBUTING.md">Contributing</a>
+  <a href="https://vibespace.ai">VibeSpace Cloud</a> · <a href="https://vibespace.ai/docs">Documentation</a> · <a href="https://discord.gg/buxwujPNRE">Discord</a> · <a href="https://github.com/siteboon/claudecodeui/issues">Bug Reports</a> · <a href="https://github.com/siteboon/claudecodeui/blob/main/CONTRIBUTING.md">Contributing</a>
 </p>
 
 <p align="center">
- <a href="https://vibespace.ai"><img src="https://img.shields.io/badge/☁️_VibeSpace_Cloud-Try_Now-0066FF?style=for-the-badge" alt="VibeSpace Cloud"></a>
- <a href="https://discord.gg/buxwujPNRE"><img src="https://img.shields.io/badge/Discord-Join%20Community-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Join our Discord"></a>
- <br><br>
- <a href="https://trendshift.io/repositories/15586" target="_blank"><img src="https://trendshift.io/api/badge/repositories/15586" alt="siteboon%2Fclaudecodeui | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
+  <a href="https://vibespace.ai"><img src="https://img.shields.io/badge/☁️_VibeSpace_Cloud-Try_Now-0066FF?style=for-the-badge" alt="VibeSpace Cloud"></a>
+  <a href="https://discord.gg/buxwujPNRE"><img src="https://img.shields.io/badge/Discord-Join%20Community-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Join our Discord"></a>
+  <br><br>
+  <a href="https://trendshift.io/repositories/15586" target="_blank"><img src="https://trendshift.io/api/badge/repositories/15586" alt="siteboon%2Fclaudecodeui | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/></a>
 </p>
 
 ---
@@ -181,7 +181,7 @@ Here's what that means in practice:
 
 - **All your sessions, not just one** — VibeSpace UI auto-discovers every session from your `~/.claude` folder. Remote Control only exposes the single active session to make it available in the Claude mobile app.
 - **Your settings are your settings** — MCP servers, tool permissions, and project config you change in VibeSpace UI are written directly to your Claude Code config and take effect immediately, and vice versa.
-- **Works with more agents** — Claude Code, Cursor CLI and Codex, not just Claude Code.
+- **Works with more agents** — Claude Code, Cursor CLI, and Codex, not just Claude Code.
 - **Full UI, not just a chat window** — file explorer, Git integration, MCP management, and a shell terminal are all built in.
 - **VibeSpace Cloud runs in the cloud** — close your laptop, the agent keeps running. No terminal to babysit, no machine to keep awake.
 
@@ -223,7 +223,7 @@ GNU Affero General Public License v3.0 or later (AGPL-3.0-or-later) — see [LIC
 
 This project is open source and free to use, modify, and distribute under the AGPL-3.0-or-later license. If you modify this software and run it as a network service, you must make your modified source code available to users of that service.
 
-VibeSpace UI - (https://vibespace.ai).
+VibeSpace UI  - (https://vibespace.ai).
 
 ## Acknowledgments
 

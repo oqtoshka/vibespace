@@ -473,6 +473,7 @@ export function parseGitStatusOutput(statusOutput) {
   return { modified, added, deleted, untracked, staged };
 }
 
+
 // Discover git repositories for a project: whether the project root itself is
 // a repo, plus any repos nested in subfolders (VSCode-workspace-style).
 router.get('/repos', async (req, res) => {
@@ -788,14 +789,14 @@ router.post('/commit', async (req, res) => {
 // Stage files (git add). Mirrors what the UI shows as the "Staged" section,
 // so the app's staging state and the real git index never drift apart.
 router.post('/stage', async (req, res) => {
-  const { project, files } = req.body;
+  const { project, repoPath, files } = req.body;
 
   if (!project || !Array.isArray(files) || files.length === 0) {
     return res.status(400).json({ error: 'Project id and files are required' });
   }
 
   try {
-    const projectPath = await getActualProjectPath(project);
+    const projectPath = await getActualRepoPath(project, repoPath);
     await validateGitRepository(projectPath);
     const repositoryRootPath = await getRepositoryRootPath(projectPath);
 
@@ -813,14 +814,14 @@ router.post('/stage', async (req, res) => {
 
 // Unstage files (remove from the index, keep the worktree changes)
 router.post('/unstage', async (req, res) => {
-  const { project, files } = req.body;
+  const { project, repoPath, files } = req.body;
 
   if (!project || !Array.isArray(files) || files.length === 0) {
     return res.status(400).json({ error: 'Project id and files are required' });
   }
 
   try {
-    const projectPath = await getActualProjectPath(project);
+    const projectPath = await getActualRepoPath(project, repoPath);
     await validateGitRepository(projectPath);
     const repositoryRootPath = await getRepositoryRootPath(projectPath);
     const hasCommits = await repositoryHasCommits(projectPath);
@@ -1004,54 +1005,6 @@ router.post('/delete-branch', async (req, res) => {
   }
 });
 
-// Fields are joined with the ASCII unit separator so pipes (or anything else
-// typed into a commit subject) cannot break parsing.
-const GIT_LOG_FIELD_SEPARATOR = '\u001f';
-const GIT_LOG_PRETTY_FORMAT = '%H%x1f%P%x1f%D%x1f%an%x1f%ae%x1f%ad%x1f%s';
-
-/**
- * Parses `git log --shortstat` output produced with GIT_LOG_PRETTY_FORMAT.
- *
- * Each commit is one format line (hash, parent hashes, ref decorations,
- * author, email, date, subject) optionally followed by its `--shortstat`
- * summary line ("N files changed, ..."). Parents and refs feed the commit
- * graph rendered by the History view; merge commits carry no shortstat line,
- * so their `stats` stays empty.
- *
- * Exported for tests.
- */
-export function parseGitLogWithStats(stdout) {
-  const commits = [];
-
-  for (const rawLine of stdout.split('\n')) {
-    const line = rawLine.trimEnd();
-    if (!line.trim()) continue;
-
-    if (line.includes(GIT_LOG_FIELD_SEPARATOR)) {
-      const [hash, parents, refs, author, email, date, ...messageParts] = line.split(GIT_LOG_FIELD_SEPARATOR);
-      commits.push({
-        hash,
-        parents: parents ? parents.split(' ').filter(Boolean) : [],
-        // `%D` decorations, e.g. "HEAD -> main", "origin/main", "tag: v1.0".
-        refs: refs ? refs.split(', ').filter(Boolean) : [],
-        author,
-        email,
-        date,
-        message: messageParts.join(GIT_LOG_FIELD_SEPARATOR),
-        stats: ''
-      });
-      continue;
-    }
-
-    if (commits.length > 0 && /files? changed/.test(line)) {
-      commits[commits.length - 1].stats = line.trim();
-    }
-  }
-
-  return commits;
-}
-
-
 // List worktrees for the repo (main checkout + any added worktrees).
 router.get('/worktrees', async (req, res) => {
   const { project, repoPath } = req.query;
@@ -1113,7 +1066,54 @@ router.post('/worktrees/remove', async (req, res) => {
   }
 });
 
-// Get recent commits
+// Fields are joined with the ASCII unit separator so pipes (or anything else
+// typed into a commit subject) cannot break parsing.
+const GIT_LOG_FIELD_SEPARATOR = '\u001f';
+const GIT_LOG_PRETTY_FORMAT = '%H%x1f%P%x1f%D%x1f%an%x1f%ae%x1f%ad%x1f%s';
+
+/**
+ * Parses `git log --shortstat` output produced with GIT_LOG_PRETTY_FORMAT.
+ *
+ * Each commit is one format line (hash, parent hashes, ref decorations,
+ * author, email, date, subject) optionally followed by its `--shortstat`
+ * summary line ("N files changed, ..."). Parents and refs feed the commit
+ * graph rendered by the History view; merge commits carry no shortstat line,
+ * so their `stats` stays empty.
+ *
+ * Exported for tests.
+ */
+export function parseGitLogWithStats(stdout) {
+  const commits = [];
+
+  for (const rawLine of stdout.split('\n')) {
+    const line = rawLine.trimEnd();
+    if (!line.trim()) continue;
+
+    if (line.includes(GIT_LOG_FIELD_SEPARATOR)) {
+      const [hash, parents, refs, author, email, date, ...messageParts] = line.split(GIT_LOG_FIELD_SEPARATOR);
+      commits.push({
+        hash,
+        parents: parents ? parents.split(' ').filter(Boolean) : [],
+        // `%D` decorations, e.g. "HEAD -> main", "origin/main", "tag: v1.0".
+        refs: refs ? refs.split(', ').filter(Boolean) : [],
+        author,
+        email,
+        date,
+        message: messageParts.join(GIT_LOG_FIELD_SEPARATOR),
+        stats: ''
+      });
+      continue;
+    }
+
+    if (commits.length > 0 && /files? changed/.test(line)) {
+      commits[commits.length - 1].stats = line.trim();
+    }
+  }
+
+  return commits;
+}
+
+// Get recent commits (across all branches, in graph order)
 router.get('/commits', async (req, res) => {
   const { project, repoPath, limit = 10 } = req.query;
 

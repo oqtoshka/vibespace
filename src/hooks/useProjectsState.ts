@@ -3,86 +3,33 @@ import type { NavigateFunction } from 'react-router-dom';
 
 import { useWebSocketEvent } from '../contexts/WebSocketContext';
 import { api } from '../utils/api';
-import type { ServerEvent } from '../contexts/WebSocketContext';
 import type {
+  AppSocketMessage,
   AppTab,
   LLMProvider,
   LoadingProgress,
   Project,
   ProjectSession,
+  ProjectsUpdatedMessage,
 } from '../types/app';
-
-import type { SessionActivityMap } from './useSessionProtection';
 
 type UseProjectsStateArgs = {
   sessionId?: string;
   navigate: NavigateFunction;
-  /** Subscription to the unified websocket event stream. */
-  subscribe: (listener: (event: ServerEvent) => void) => () => void;
   isMobile: boolean;
-  activeSessions: SessionActivityMap;
-};
-
-/**
- * Shape of the per-session sidebar delta broadcast by the backend file
- * watcher (`kind: session_upserted`). It carries everything needed to upsert
- * one session row in place — no full project-list snapshot is ever pushed.
- */
-type SessionUpsertedEvent = ServerEvent & {
-  sessionId: string;
-  providerSessionId?: string | null;
-  provider: LLMProvider;
-  session: ProjectSession;
-  project: {
-    projectId: string;
-    path: string;
-    fullPath: string;
-    displayName: string;
-    isStarred: boolean;
-  } | null;
+  activeSessions: Set<string>;
 };
 
 type FetchProjectsOptions = {
   showLoadingState?: boolean;
 };
 
-type RegisterOptimisticSessionArgs = {
-  sessionId: string;
-  provider: LLMProvider;
-  project: Project;
-  summary?: string | null;
-};
-
-type ProjectSessionPage = Pick<Project, 'sessions' | 'sessionMeta'>;
-
-const DEFAULT_PROVIDER: LLMProvider = 'claude';
-
 const serialize = (value: unknown) => JSON.stringify(value ?? null);
-
-const readSelectedProvider = (): LLMProvider => {
-  try {
-    const storedProvider = localStorage.getItem('selected-provider');
-    return storedProvider ? storedProvider as LLMProvider : DEFAULT_PROVIDER;
-  } catch {
-    return DEFAULT_PROVIDER;
-  }
-};
-
-const getSessionProvider = (session: ProjectSession): LLMProvider => {
-  const provider = session.__provider ?? session.provider;
-  return typeof provider === 'string' && provider.trim()
-    ? provider as LLMProvider
-    : DEFAULT_PROVIDER;
-};
-
-const normalizeSessionProvider = (session: ProjectSession): ProjectSession => ({
-  ...session,
-  __provider: getSessionProvider(session),
-});
 
 const projectsHaveChanges = (
   prevProjects: Project[],
   nextProjects: Project[],
+  includeExternalSessions: boolean,
 ): boolean => {
   if (prevProjects.length !== nextProjects.length) {
     return true;
@@ -94,14 +41,28 @@ const projectsHaveChanges = (
       return true;
     }
 
-    return (
+    const baseChanged =
       nextProject.projectId !== prevProject.projectId ||
       nextProject.displayName !== prevProject.displayName ||
       nextProject.fullPath !== prevProject.fullPath ||
       Boolean(nextProject.isStarred) !== Boolean(prevProject.isStarred) ||
       serialize(nextProject.sessionMeta) !== serialize(prevProject.sessionMeta) ||
       serialize(nextProject.sessions) !== serialize(prevProject.sessions) ||
-      serialize(nextProject.taskmaster) !== serialize(prevProject.taskmaster)
+      serialize(nextProject.taskmaster) !== serialize(prevProject.taskmaster);
+
+    if (baseChanged) {
+      return true;
+    }
+
+    if (!includeExternalSessions) {
+      return false;
+    }
+
+    return (
+      serialize(nextProject.cursorSessions) !== serialize(prevProject.cursorSessions) ||
+      serialize(nextProject.codexSessions) !== serialize(prevProject.codexSessions) ||
+      serialize(nextProject.geminiSessions) !== serialize(prevProject.geminiSessions) ||
+      serialize(nextProject.opencodeSessions) !== serialize(prevProject.opencodeSessions)
     );
   });
 };
@@ -133,7 +94,13 @@ const mergeTaskMasterCache = (nextProjects: Project[], previousProjects: Project
 };
 
 const getProjectSessions = (project: Project): ProjectSession[] => {
-  return project.sessions ?? [];
+  return [
+    ...(project.sessions ?? []),
+    ...(project.codexSessions ?? []),
+    ...(project.cursorSessions ?? []),
+    ...(project.geminiSessions ?? []),
+    ...(project.opencodeSessions ?? []),
+  ];
 };
 
 const countLoadedProjectSessions = (project: Project): number => getProjectSessions(project).length;
@@ -203,6 +170,10 @@ const mergeExpandedSessionPages = (previousProjects: Project[], incomingProjects
     const mergedProject: Project = {
       ...incomingProject,
       sessions: mergeSessionProviderLists(incomingProject.sessions ?? [], keepPagedOutSessions(previousProject.sessions)),
+      cursorSessions: mergeSessionProviderLists(incomingProject.cursorSessions ?? [], keepPagedOutSessions(previousProject.cursorSessions)),
+      codexSessions: mergeSessionProviderLists(incomingProject.codexSessions ?? [], keepPagedOutSessions(previousProject.codexSessions)),
+      geminiSessions: mergeSessionProviderLists(incomingProject.geminiSessions ?? [], keepPagedOutSessions(previousProject.geminiSessions)),
+      opencodeSessions: mergeSessionProviderLists(incomingProject.opencodeSessions ?? [], keepPagedOutSessions(previousProject.opencodeSessions)),
     };
 
     const totalSessions = Number(incomingProject.sessionMeta?.total ?? previousLoadedCount);
@@ -218,11 +189,15 @@ const mergeExpandedSessionPages = (previousProjects: Project[], incomingProjects
 
 const mergeProjectSessionPage = (
   existingProject: Project,
-  sessionsPage: ProjectSessionPage,
+  sessionsPage: Pick<Project, 'sessions' | 'cursorSessions' | 'codexSessions' | 'geminiSessions' | 'opencodeSessions' | 'sessionMeta'>,
 ): Project => {
   const mergedProject: Project = {
     ...existingProject,
     sessions: mergeSessionProviderLists(existingProject.sessions ?? [], sessionsPage.sessions ?? []),
+    cursorSessions: mergeSessionProviderLists(existingProject.cursorSessions ?? [], sessionsPage.cursorSessions ?? []),
+    codexSessions: mergeSessionProviderLists(existingProject.codexSessions ?? [], sessionsPage.codexSessions ?? []),
+    geminiSessions: mergeSessionProviderLists(existingProject.geminiSessions ?? [], sessionsPage.geminiSessions ?? []),
+    opencodeSessions: mergeSessionProviderLists(existingProject.opencodeSessions ?? [], sessionsPage.opencodeSessions ?? []),
   };
 
   const totalSessions = Number(sessionsPage.sessionMeta?.total ?? existingProject.sessionMeta?.total ?? 0);
@@ -236,126 +211,40 @@ const mergeProjectSessionPage = (
   return mergedProject;
 };
 
-const getSessionAliasIds = (event: SessionUpsertedEvent): Set<string> => {
-  const ids = new Set<string>();
-  const add = (value: unknown) => {
-    if (typeof value !== 'string') {
-      return;
-    }
-
-    const trimmed = value.trim();
-    if (trimmed) {
-      ids.add(trimmed);
-    }
-  };
-
-  add(event.sessionId);
-  add(event.providerSessionId);
-  add(event.session?.id);
-
-  return ids;
-};
-
-/**
- * Upserts one session into a project's normalized session list.
- *
- * Existing rows are updated in place (summary/lastActivity changes from the
- * watcher); new rows are prepended since the watcher only fires for sessions
- * with fresh activity. `sessionMeta.total` grows only on insert.
- */
-const upsertSessionIntoProject = (project: Project, event: SessionUpsertedEvent): Project => {
-  const sessions = project.sessions ?? [];
-  const aliasIds = getSessionAliasIds(event);
-  const normalizedSession: ProjectSession = {
-    ...event.session,
-    id: event.sessionId,
-    __provider: event.provider,
-  };
-  const existingIndex = sessions.findIndex((session) => aliasIds.has(String(session.id)));
-
-  let nextSessions: ProjectSession[];
-  let inserted = false;
-  if (existingIndex >= 0) {
-    let changed = false;
-    nextSessions = [];
-
-    for (const [index, session] of sessions.entries()) {
-      if (index === existingIndex) {
-        const updated = { ...session, ...normalizedSession };
-        // Never let a later upsert that carries an empty summary blank out a
-        // title we already have. Fresh sessions momentarily broadcast an empty
-        // custom_name before the disk indexer fills it in, which would
-        // otherwise flash the row back to the "New session" placeholder.
-        if (!normalizedSession.summary?.trim() && session.summary?.trim()) {
-          updated.summary = session.summary;
-        }
-        if (serialize(session) !== serialize(updated)) {
-          changed = true;
-        }
-        nextSessions.push(updated);
-        continue;
-      }
-
-      if (aliasIds.has(String(session.id))) {
-        changed = true;
-        continue;
-      }
-
-      nextSessions.push(session);
-    }
-
-    if (!changed) {
-      return project;
-    }
-  } else {
-    nextSessions = [normalizedSession, ...sessions];
-    inserted = true;
+const isUpdateAdditive = (
+  currentProjects: Project[],
+  updatedProjects: Project[],
+  selectedProject: Project | null,
+  selectedSession: ProjectSession | null,
+): boolean => {
+  if (!selectedProject || !selectedSession) {
+    return true;
   }
 
-  const next: Project = { ...project, sessions: nextSessions };
-  if (inserted) {
-    const total = Number(project.sessionMeta?.total ?? 0) + 1;
-    next.sessionMeta = {
-      ...project.sessionMeta,
-      total,
-      hasMore: countLoadedProjectSessions(next) < total,
-    };
+  const currentSelectedProject = currentProjects.find((project) => project.projectId === selectedProject.projectId);
+  const updatedSelectedProject = updatedProjects.find((project) => project.projectId === selectedProject.projectId);
+
+  if (!currentSelectedProject || !updatedSelectedProject) {
+    return false;
   }
 
-  return next;
-};
+  const currentSelectedSession = getProjectSessions(currentSelectedProject).find(
+    (session) => session.id === selectedSession.id,
+  );
+  const updatedSelectedSession = getProjectSessions(updatedSelectedProject).find(
+    (session) => session.id === selectedSession.id,
+  );
 
-const projectFromRegistration = (project: Project): Project => ({
-  projectId: project.projectId,
-  path: project.path || project.fullPath,
-  fullPath: project.fullPath || project.path || '',
-  displayName: project.displayName,
-  isStarred: project.isStarred,
-  sessions: project.sessions ?? [],
-  sessionMeta: project.sessionMeta ?? { hasMore: false, total: countLoadedProjectSessions(project) },
-  taskmaster: project.taskmaster,
-});
-
-const removeSessionFromProject = (project: Project, sessionIdToDelete: string): Project => {
-  const sessions = project.sessions ?? [];
-  const nextSessions = sessions.filter((session) => session.id !== sessionIdToDelete);
-  if (nextSessions.length === sessions.length) {
-    return project;
+  if (!currentSelectedSession || !updatedSelectedSession) {
+    return false;
   }
 
-  const updatedProject: Project = {
-    ...project,
-    sessions: nextSessions,
-  };
-
-  const totalSessions = Math.max(0, Number(project.sessionMeta?.total ?? 0) - 1);
-  updatedProject.sessionMeta = {
-    ...project.sessionMeta,
-    total: totalSessions,
-    hasMore: countLoadedProjectSessions(updatedProject) < totalSessions,
-  };
-
-  return updatedProject;
+  return (
+    currentSelectedSession.id === updatedSelectedSession.id &&
+    currentSelectedSession.title === updatedSelectedSession.title &&
+    currentSelectedSession.created_at === updatedSelectedSession.created_at &&
+    currentSelectedSession.updated_at === updatedSelectedSession.updated_at
+  );
 };
 
 const PROJECTS_CACHE_KEY = 'projects-cache-v1';
@@ -382,7 +271,6 @@ const writeProjectsCache = (projects: Project[]) => {
 export function useProjectsState({
   sessionId,
   navigate,
-  subscribe,
   isMobile,
   activeSessions,
 }: UseProjectsStateArgs) {
@@ -426,55 +314,6 @@ export function useProjectsState({
   const [newSessionTrigger, setNewSessionTrigger] = useState(0);
 
   const loadingProgressTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  /**
-   * Ref mirrors for state the websocket subscription handler needs.
-   *
-   * The subscription is registered once (per `subscribe` identity) and events
-   * are dispatched synchronously outside React's render cycle, so the handler
-   * must read the latest values through refs instead of stale closures —
-   * re-subscribing on every state change would risk missing events.
-   */
-  const selectedSessionRef = useRef(selectedSession);
-  selectedSessionRef.current = selectedSession;
-  const activeSessionsRef = useRef(activeSessions);
-  activeSessionsRef.current = activeSessions;
-
-  const markSessionAttention = useCallback((targetSessionId?: string | null) => {
-    if (!targetSessionId) {
-      return;
-    }
-
-    const viewedSessionId = selectedSessionRef.current?.id ?? sessionId ?? null;
-    if (targetSessionId === viewedSessionId) {
-      return;
-    }
-
-    setAttentionSessionIds((previous) => {
-      if (previous.has(targetSessionId)) {
-        return previous;
-      }
-
-      const next = new Set(previous);
-      next.add(targetSessionId);
-      return next;
-    });
-  }, [sessionId]);
-
-  const clearSessionAttention = useCallback((targetSessionId?: string | null) => {
-    if (!targetSessionId) {
-      return;
-    }
-
-    setAttentionSessionIds((previous) => {
-      if (!previous.has(targetSessionId)) {
-        return previous;
-      }
-
-      const next = new Set(previous);
-      next.delete(targetSessionId);
-      return next;
-    });
-  }, []);
 
   const fetchProjects = useCallback(async ({ showLoadingState = true }: FetchProjectsOptions = {}) => {
     try {
@@ -492,7 +331,7 @@ export function useProjectsState({
           return mergedProjects;
         }
 
-        return projectsHaveChanges(prevProjects, mergedProjects)
+        return projectsHaveChanges(prevProjects, mergedProjects, true)
           ? mergedProjects
           : prevProjects;
       });
@@ -509,75 +348,6 @@ export function useProjectsState({
     // Keep chat view stable while still syncing sidebar/session metadata in background.
     await fetchProjects({ showLoadingState: false });
   }, [fetchProjects]);
-
-  const registerOptimisticSession = useCallback(({
-    sessionId: newSessionId,
-    provider,
-    project,
-    summary,
-  }: RegisterOptimisticSessionArgs) => {
-    if (!newSessionId || !project?.projectId) {
-      return;
-    }
-
-    const now = new Date().toISOString();
-    const optimisticSession: ProjectSession = {
-      id: newSessionId,
-      summary: summary ?? '',
-      messageCount: 0,
-      createdAt: now,
-      created_at: now,
-      updated_at: now,
-      lastActivity: now,
-      __provider: provider,
-      __projectId: project.projectId,
-    };
-    const upsert: SessionUpsertedEvent = {
-      kind: 'session_upserted',
-      sessionId: newSessionId,
-      provider,
-      session: optimisticSession,
-      project: {
-        projectId: project.projectId,
-        path: project.path || project.fullPath,
-        fullPath: project.fullPath || project.path || '',
-        displayName: project.displayName,
-        isStarred: Boolean(project.isStarred),
-      },
-      timestamp: now,
-    };
-
-    setProjects((previousProjects) => {
-      const existingProject = previousProjects.find((candidate) => candidate.projectId === project.projectId);
-      if (!existingProject) {
-        return [upsertSessionIntoProject(projectFromRegistration(project), upsert), ...previousProjects];
-      }
-
-      const updatedProject = upsertSessionIntoProject(existingProject, upsert);
-      if (updatedProject === existingProject) {
-        return previousProjects;
-      }
-
-      return previousProjects.map((candidate) =>
-        candidate.projectId === existingProject.projectId ? updatedProject : candidate,
-      );
-    });
-
-    setSelectedProject((previousProject) => {
-      if (!previousProject || previousProject.projectId !== project.projectId) {
-        return previousProject;
-      }
-
-      const updatedProject = upsertSessionIntoProject(previousProject, upsert);
-      return updatedProject === previousProject ? previousProject : updatedProject;
-    });
-
-    setSelectedSession((previousSession) => (
-      previousSession?.id === newSessionId
-        ? { ...previousSession, ...optimisticSession }
-        : optimisticSession
-    ));
-  }, []);
 
   // Hydrates TaskMaster details for the given `projectId`. The project
   // identifier comes directly from the DB-driven /api/projects response.
@@ -652,156 +422,93 @@ export function useProjectsState({
     }
   }, [isLoadingProjects, projects, selectedProject, sessionId]);
 
-  // Realtime sidebar updates. The backend pushes per-session deltas
-  // (`session_upserted`) instead of full project snapshots, so each event is
-  // a keyed upsert that can never clobber unrelated client state — no
-  // "suppress updates while a run is active" protection is needed anymore.
-  useEffect(() => {
-    const handleEvent = (event: ServerEvent) => {
-      if (event.kind === 'loading_progress') {
-        if (loadingProgressTimeoutRef.current) {
-          clearTimeout(loadingProgressTimeoutRef.current);
+  // Delivered once per inbound frame, in order — no React-batch coalescing and
+  // no self-retrigger from the local-state reads below, so the old
+  // identity-dedup ref is unnecessary.
+  useWebSocketEvent((raw) => {
+    const latestMessage = raw as AppSocketMessage | null;
+    if (!latestMessage) {
+      return;
+    }
+
+    if (latestMessage.type === 'loading_progress') {
+      if (loadingProgressTimeoutRef.current) {
+        clearTimeout(loadingProgressTimeoutRef.current);
+        loadingProgressTimeoutRef.current = null;
+      }
+
+      setLoadingProgress(latestMessage as LoadingProgress);
+
+      if (latestMessage.phase === 'complete') {
+        loadingProgressTimeoutRef.current = setTimeout(() => {
+          setLoadingProgress(null);
           loadingProgressTimeoutRef.current = null;
-        }
-
-        setLoadingProgress(event as unknown as LoadingProgress);
-
-        if (event.phase === 'complete') {
-          loadingProgressTimeoutRef.current = setTimeout(() => {
-            setLoadingProgress(null);
-            loadingProgressTimeoutRef.current = null;
-          }, 500);
-        }
-
-        return;
+        }, 500);
       }
 
-      const eventSessionId = typeof event.sessionId === 'string' && event.sessionId
-        ? event.sessionId
-        : null;
-      const viewedSessionId = selectedSessionRef.current?.id ?? sessionId ?? null;
+      return;
+    }
 
-      if (
-        eventSessionId
-        && eventSessionId !== viewedSessionId
-        && event.kind !== 'chat_subscribed'
-        && event.kind !== 'loading_progress'
-        && event.kind !== 'session_upserted'
-        && event.kind !== 'status'
-        && event.kind !== 'stream_end'
-        && event.kind !== 'permission_cancelled'
-        && event.kind !== 'websocket_reconnected'
-      ) {
-        markSessionAttention(eventSessionId);
-      }
+    if (latestMessage.type !== 'projects_updated') {
+      return;
+    }
 
-      if (event.kind !== 'session_upserted') {
-        return;
-      }
+    const projectsMessage = latestMessage as ProjectsUpdatedMessage;
 
-      const upsert = event as SessionUpsertedEvent;
-      if (!upsert.sessionId || !upsert.session) {
-        return;
-      }
+    if (projectsMessage.updatedSessionId && selectedSession && selectedProject) {
+      if (projectsMessage.updatedSessionId === selectedSession.id) {
+        const isSessionActive = activeSessions.has(selectedSession.id);
 
-      // The transcript of the currently viewed session changed on disk while
-      // no run is active here (e.g. edited from another client or the CLI):
-      // signal the chat view to reload its messages.
-      const currentSelectedSession = selectedSessionRef.current;
-      if (
-        currentSelectedSession
-        && upsert.sessionId === currentSelectedSession.id
-        && !activeSessionsRef.current.has(upsert.sessionId)
-      ) {
-        setExternalMessageUpdate((prev) => prev + 1);
-      } else {
-        markSessionAttention(upsert.sessionId);
-      }
-
-      setProjects((previousProjects) => {
-        const targetProjectId = upsert.project?.projectId;
-        const existingProject = previousProjects.find((project) =>
-          targetProjectId ? project.projectId === targetProjectId : getProjectSessions(project).some((session) => session.id === upsert.sessionId),
-        );
-
-        if (!existingProject) {
-          // First session of a project this client has never seen: create the
-          // project entry from the event payload.
-          if (!upsert.project) {
-            return previousProjects;
-          }
-
-          const newProject: Project = {
-            projectId: upsert.project.projectId,
-            path: upsert.project.path,
-            fullPath: upsert.project.fullPath,
-            displayName: upsert.project.displayName,
-            isStarred: upsert.project.isStarred,
-            sessions: [],
-            sessionMeta: { hasMore: false, total: 0 },
-          } as Project;
-
-          return [...previousProjects, upsertSessionIntoProject(newProject, upsert)];
+        if (!isSessionActive) {
+          setExternalMessageUpdate((prev) => prev + 1);
         }
-
-        const updatedProject = upsertSessionIntoProject(existingProject, upsert);
-        if (updatedProject === existingProject) {
-          return previousProjects;
-        }
-
-        return previousProjects.map((project) =>
-          project.projectId === existingProject.projectId ? updatedProject : project,
-        );
-      });
-
-      // Keep the selected project reference in sync with the upsert.
-      setSelectedProject((previousProject) => {
-        if (!previousProject) {
-          return previousProject;
-        }
-        const matches = upsert.project
-          ? previousProject.projectId === upsert.project.projectId
-          : getProjectSessions(previousProject).some((session) => session.id === upsert.sessionId);
-        if (!matches) {
-          return previousProject;
-        }
-        const updated = upsertSessionIntoProject(previousProject, upsert);
-        return updated === previousProject ? previousProject : updated;
-      });
-
-      const aliasedSelectedSessionId =
-        typeof upsert.providerSessionId === 'string' && upsert.providerSessionId !== upsert.sessionId
-          ? upsert.providerSessionId
-          : null;
-      if (!aliasedSelectedSessionId) {
-        return;
       }
+    }
 
-      const normalizedSelectedSession: ProjectSession = {
-        ...upsert.session,
-        id: upsert.sessionId,
-        __provider: upsert.provider,
-        __projectId: upsert.project?.projectId ?? currentSelectedSession?.__projectId,
-      };
+    const hasActiveSession = Boolean(selectedSession && activeSessions.has(selectedSession.id));
 
-      setSelectedSession((previousSession) => {
-        if (previousSession?.id !== aliasedSelectedSessionId) {
-          return previousSession;
-        }
+    const updatedProjectsWithTaskMaster = mergeTaskMasterCache(projectsMessage.projects, projects);
+    const updatedProjects = mergeExpandedSessionPages(projects, updatedProjectsWithTaskMaster);
 
-        return {
-          ...previousSession,
-          ...normalizedSelectedSession,
-        };
-      });
+    if (
+      hasActiveSession &&
+      !isUpdateAdditive(projects, updatedProjects, selectedProject, selectedSession)
+    ) {
+      return;
+    }
 
-      if (sessionId === aliasedSelectedSessionId) {
-        navigate(`/session/${upsert.sessionId}`);
-      }
-    };
+    setProjects((previousProjects) =>
+      projectsHaveChanges(previousProjects, updatedProjects, true) ? updatedProjects : previousProjects,
+    );
 
-    return subscribe(handleEvent);
-  }, [markSessionAttention, navigate, sessionId, subscribe]);
+    if (!selectedProject) {
+      return;
+    }
+
+    const updatedSelectedProject = updatedProjects.find(
+      (project) => project.projectId === selectedProject.projectId,
+    );
+
+    if (!updatedSelectedProject) {
+      return;
+    }
+
+    if (serialize(updatedSelectedProject) !== serialize(selectedProject)) {
+      setSelectedProject(updatedSelectedProject);
+    }
+
+    if (!selectedSession) {
+      return;
+    }
+
+    const updatedSelectedSession = getProjectSessions(updatedSelectedProject).find(
+      (session) => session.id === selectedSession.id,
+    );
+
+    if (!updatedSelectedSession) {
+      setSelectedSession(null);
+    }
+  });
 
   useEffect(() => {
     return () => {
@@ -813,54 +520,104 @@ export function useProjectsState({
   }, []);
 
   useEffect(() => {
-    clearSessionAttention(selectedSession?.id ?? sessionId ?? null);
-  }, [clearSessionAttention, selectedSession?.id, sessionId]);
-
-  useEffect(() => {
     if (!sessionId || projects.length === 0) {
       return;
     }
 
     // Project membership is resolved through `projectId` after the migration.
     for (const project of projects) {
-      const match = project.sessions?.find((session) => session.id === sessionId);
-      if (match) {
-        const normalizedSession = normalizeSessionProvider(match);
+      const claudeSession = project.sessions?.find((session) => session.id === sessionId);
+      if (claudeSession) {
         const shouldUpdateProject = selectedProject?.projectId !== project.projectId;
         const shouldUpdateSession =
-          selectedSession?.id !== sessionId || selectedSession.__provider !== normalizedSession.__provider;
+          selectedSession?.id !== sessionId || selectedSession.__provider !== 'claude';
 
         if (shouldUpdateProject) {
           setSelectedProject(project);
         }
         if (shouldUpdateSession) {
-          setSelectedSession(normalizedSession);
+          setSelectedSession({ ...claudeSession, __provider: 'claude' });
+        }
+        return;
+      }
+
+      const cursorSession = project.cursorSessions?.find((session) => session.id === sessionId);
+      if (cursorSession) {
+        const shouldUpdateProject = selectedProject?.projectId !== project.projectId;
+        const shouldUpdateSession =
+          selectedSession?.id !== sessionId || selectedSession.__provider !== 'cursor';
+
+        if (shouldUpdateProject) {
+          setSelectedProject(project);
+        }
+        if (shouldUpdateSession) {
+          setSelectedSession({ ...cursorSession, __provider: 'cursor' });
+        }
+        return;
+      }
+
+      const codexSession = project.codexSessions?.find((session) => session.id === sessionId);
+      if (codexSession) {
+        const shouldUpdateProject = selectedProject?.projectId !== project.projectId;
+        const shouldUpdateSession =
+          selectedSession?.id !== sessionId || selectedSession.__provider !== 'codex';
+
+        if (shouldUpdateProject) {
+          setSelectedProject(project);
+        }
+        if (shouldUpdateSession) {
+          setSelectedSession({ ...codexSession, __provider: 'codex' });
+        }
+        return;
+      }
+
+      const opencodeSession = project.opencodeSessions?.find((session) => session.id === sessionId);
+      if (opencodeSession) {
+        const shouldUpdateProject = selectedProject?.projectId !== project.projectId;
+        const shouldUpdateSession =
+          selectedSession?.id !== sessionId || selectedSession.__provider !== 'opencode';
+
+        if (shouldUpdateProject) {
+          setSelectedProject(project);
+        }
+        if (shouldUpdateSession) {
+          setSelectedSession({ ...opencodeSession, __provider: 'opencode' });
         }
         return;
       }
     }
 
-    // Session id is in the URL but not yet present on any project payload
-    // (normal for a brand-new conversation: the composer allocates the id and
-    // navigates before the sidebar learns about the session via
-    // `session_upserted`). Without a `selectedSession`, chat state clears
-    // `currentSessionId` and the UI stops reading the session store even
-    // though messages stream under this id — so synthesize a placeholder.
+    // Session id is in the URL but not yet present on any project payload (common
+    // right after `session_created` + navigate, before the next projects refresh).
+    // Without a `selectedSession`, chat state clears `currentSessionId` and the
+    // UI stops reading the session store even though messages stream under this id.
     if (selectedSession?.id === sessionId) {
       return;
     }
 
-    // Only the currently selected project may host the placeholder. Guessing
-    // another project (e.g. "first one with sessions") could bind the URL
-    // session to the wrong project — better to wait until the owning project
-    // arrives in a later `projects` payload and is matched by the loop above.
     if (!selectedProject) {
       return;
     }
 
+    let providerFromStorage: string | null = null;
+    try {
+      providerFromStorage = localStorage.getItem('selected-provider');
+    } catch {
+      providerFromStorage = null;
+    }
+
+    const normalizedProvider: LLMProvider =
+      providerFromStorage === 'cursor'
+        ? 'cursor'
+        : providerFromStorage === 'codex'
+          ? 'codex'
+          : providerFromStorage === 'opencode'
+            ? 'opencode'
+            : 'claude';
+
     setSelectedSession({
       id: sessionId,
-      __provider: readSelectedProvider(),
+      __provider: normalizedProvider,
       __projectId: selectedProject.projectId,
       summary: '',
     });
@@ -881,7 +638,6 @@ export function useProjectsState({
 
   const handleSessionSelect = useCallback(
     (session: ProjectSession) => {
-      clearSessionAttention(session.id);
       setSelectedSession(session);
 
       const provider = localStorage.getItem('selected-provider') || 'claude';
@@ -923,18 +679,52 @@ export function useProjectsState({
 
   const handleSessionDelete = useCallback(
     (sessionIdToDelete: string) => {
-      clearSessionAttention(sessionIdToDelete);
-
       if (selectedSession?.id === sessionIdToDelete) {
         setSelectedSession(null);
         navigate('/');
       }
 
       setProjects((prevProjects) =>
-        prevProjects.map((project) => removeSessionFromProject(project, sessionIdToDelete)),
+        prevProjects.map((project) => {
+          const sessions = project.sessions?.filter((session) => session.id !== sessionIdToDelete) ?? [];
+          const cursorSessions = project.cursorSessions?.filter((session) => session.id !== sessionIdToDelete) ?? [];
+          const codexSessions = project.codexSessions?.filter((session) => session.id !== sessionIdToDelete) ?? [];
+          const geminiSessions = project.geminiSessions?.filter((session) => session.id !== sessionIdToDelete) ?? [];
+          const opencodeSessions = project.opencodeSessions?.filter((session) => session.id !== sessionIdToDelete) ?? [];
+
+          const removedFromProject = (
+            sessions.length !== (project.sessions?.length ?? 0)
+            || cursorSessions.length !== (project.cursorSessions?.length ?? 0)
+            || codexSessions.length !== (project.codexSessions?.length ?? 0)
+            || geminiSessions.length !== (project.geminiSessions?.length ?? 0)
+            || opencodeSessions.length !== (project.opencodeSessions?.length ?? 0)
+          );
+
+          if (!removedFromProject) {
+            return project;
+          }
+
+          const updatedProject: Project = {
+            ...project,
+            sessions,
+            cursorSessions,
+            codexSessions,
+            geminiSessions,
+            opencodeSessions,
+          };
+
+          const totalSessions = Math.max(0, Number(project.sessionMeta?.total ?? 0) - 1);
+          updatedProject.sessionMeta = {
+            ...project.sessionMeta,
+            total: totalSessions,
+            hasMore: countLoadedProjectSessions(updatedProject) < totalSessions,
+          };
+
+          return updatedProject;
+        }),
       );
     },
-    [clearSessionAttention, navigate, selectedSession?.id],
+    [navigate, selectedSession?.id],
   );
 
   const handleSidebarRefresh = useCallback(async () => {
@@ -945,7 +735,7 @@ export function useProjectsState({
       const mergedProjects = mergeExpandedSessionPages(projects, projectsWithTaskMaster);
 
       setProjects((prevProjects) =>
-        projectsHaveChanges(prevProjects, mergedProjects) ? mergedProjects : prevProjects,
+        projectsHaveChanges(prevProjects, mergedProjects, true) ? mergedProjects : prevProjects,
       );
 
       if (!selectedProject) {
@@ -1014,7 +804,7 @@ export function useProjectsState({
       throw new Error(message);
     }
 
-    const sessionsPage = (await response.json()) as ProjectSessionPage;
+    const sessionsPage = (await response.json()) as Pick<Project, 'sessions' | 'cursorSessions' | 'codexSessions' | 'geminiSessions' | 'opencodeSessions' | 'sessionMeta'>;
 
     let mergedProjectForSelection: Project | null = null;
     setProjects((previousProjects) =>
@@ -1054,8 +844,6 @@ export function useProjectsState({
       projects,
       selectedProject,
       selectedSession,
-      activeSessions,
-      attentionSessionIds,
       onProjectSelect: handleProjectSelect,
       onSessionSelect: handleSessionSelect,
       onNewSession: handleNewSession,
@@ -1072,7 +860,6 @@ export function useProjectsState({
       isMobile,
     }),
     [
-      attentionSessionIds,
       handleNewSession,
       handleProjectDelete,
       handleProjectSelect,
@@ -1083,7 +870,6 @@ export function useProjectsState({
       isLoadingProjects,
       isMobile,
       loadingProgress,
-      activeSessions,
       projects,
       settingsInitialTab,
       selectedProject,
@@ -1110,7 +896,6 @@ export function useProjectsState({
     openSettings,
     fetchProjects,
     refreshProjectsSilently,
-    registerOptimisticSession,
     sidebarSharedProps,
     handleProjectSelect,
     handleSessionSelect,
