@@ -107,6 +107,44 @@ function normalizeSessionName(sessionName) {
   return normalized.length > 80 ? `${normalized.slice(0, 77)}...` : normalized;
 }
 
+function rowMatchesProvider(row, provider) {
+  return row && (!provider || row.provider === provider);
+}
+
+function resolveSessionRow(sessionId, provider) {
+  if (!sessionId) {
+    return null;
+  }
+
+  const appSessionRow = sessionsDb.getSessionById(sessionId);
+  if (rowMatchesProvider(appSessionRow, provider)) {
+    return appSessionRow;
+  }
+
+  const providerSessionRow = sessionsDb.getSessionByProviderSessionId(sessionId);
+  if (rowMatchesProvider(providerSessionRow, provider)) {
+    return providerSessionRow;
+  }
+
+  return null;
+}
+
+function normalizeNotificationSession(event) {
+  if (!event?.sessionId || !event.provider || event.provider === 'system') {
+    return event;
+  }
+
+  const row = resolveSessionRow(event.sessionId, event.provider);
+  if (!row || row.session_id === event.sessionId) {
+    return event;
+  }
+
+  return {
+    ...event,
+    sessionId: row.session_id
+  };
+}
+
 function resolveSessionName(event) {
   const explicitSessionName = normalizeSessionName(event.meta?.sessionName);
   if (explicitSessionName) {
@@ -149,19 +187,20 @@ function buildPushMessage(event) {
 }
 
 function buildPushBody(event) {
-  const providerLabel = PROVIDER_LABELS[event.provider] || 'Assistant';
-  const sessionName = resolveSessionName(event);
-  const message = buildPushMessage(event);
+  const normalizedEvent = normalizeNotificationSession(event);
+  const providerLabel = PROVIDER_LABELS[normalizedEvent.provider] || 'Assistant';
+  const sessionName = resolveSessionName(normalizedEvent);
+  const message = buildPushMessage(normalizedEvent);
 
   return {
     title: sessionName || 'VibeSpace',
     body: `${providerLabel}: ${message}`,
     data: {
-      sessionId: event.sessionId || null,
-      code: event.code,
-      provider: event.provider || null,
+      sessionId: normalizedEvent.sessionId || null,
+      code: normalizedEvent.code,
+      provider: normalizedEvent.provider || null,
       sessionName,
-      tag: `${event.provider || 'assistant'}:${event.sessionId || 'none'}:${event.code}`
+      tag: `${normalizedEvent.provider || 'assistant'}:${normalizedEvent.sessionId || 'none'}:${normalizedEvent.code}`
     }
   };
 }
@@ -215,23 +254,24 @@ function notifyUserIfEnabled({ userId, event }) {
     return;
   }
 
+  const normalizedEvent = normalizeNotificationSession(event);
   const preferences = notificationPreferencesDb.getPreferences(userId);
-  const wantPush = shouldSendPush(preferences, event);
-  const wantTelegram = shouldSendTelegram(preferences, event);
+  const wantPush = shouldSendPush(preferences, normalizedEvent);
+  const wantTelegram = shouldSendTelegram(preferences, normalizedEvent);
   if (!wantPush && !wantTelegram) {
     return;
   }
-  if (isDuplicate(event)) {
+  if (isDuplicate(normalizedEvent)) {
     return;
   }
 
   if (wantPush) {
-    sendWebPush(userId, event).catch((err) => {
+    sendWebPush(userId, normalizedEvent).catch((err) => {
       console.error('Web push send error:', err);
     });
   }
   if (wantTelegram) {
-    sendTelegram(preferences.telegram, event).catch((err) => {
+    sendTelegram(preferences.telegram, normalizedEvent).catch((err) => {
       console.error('Telegram send error:', err);
     });
   }
@@ -278,9 +318,8 @@ function notifyRunFailed({ userId, provider, sessionId = null, error, sessionNam
 }
 
 export {
-  buildNotificationPayload,
   createNotificationEvent,
   notifyUserIfEnabled,
   notifyRunStopped,
-  notifyRunFailed,
-} from '../modules/notifications/services/notification-orchestrator.service.js';
+  notifyRunFailed
+};

@@ -4,6 +4,8 @@ import type { Terminal } from '@xterm/xterm';
 
 import type { Project, ProjectSession } from '../../../types/app';
 
+export type AuthCopyStatus = 'idle' | 'copied' | 'failed';
+
 export type ShellInitMessage = {
   type: 'init';
   projectPath: string;
@@ -62,6 +64,7 @@ export type ShellSharedRefs = {
   wsRef: MutableRefObject<WebSocket | null>;
   terminalRef: MutableRefObject<Terminal | null>;
   fitAddonRef: MutableRefObject<FitAddon | null>;
+  authUrlRef: MutableRefObject<string>;
   selectedProjectRef: MutableRefObject<Project | null | undefined>;
   selectedSessionRef: MutableRefObject<ProjectSession | null | undefined>;
   initialCommandRef: MutableRefObject<string | null | undefined>;
@@ -76,6 +79,8 @@ export type UseShellRuntimeResult = {
   isConnected: boolean;
   isInitialized: boolean;
   isConnecting: boolean;
+  authUrl: string;
+  authUrlVersion: number;
   connectToShell: (options?: { forceRestart?: boolean }) => void;
   disconnectFromShell: (options?: { suppressAutoConnect?: boolean }) => void;
   openAuthUrlInBrowser: (url?: string) => boolean;

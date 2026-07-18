@@ -21,7 +21,6 @@ import ChatMessagesPane from './subcomponents/ChatMessagesPane';
 import ChatComposer from './subcomponents/ChatComposer';
 import CommandResultModal from './subcomponents/CommandResultModal';
 
-
 function ChatInterface({
   selectedProject,
   selectedSession,
@@ -74,8 +73,8 @@ function ChatInterface({
     setClaudeModel,
     codexModel,
     setCodexModel,
-    geminiModel,
-    setGeminiModel,
+    currentProviderEffort,
+    currentProviderEffortOptions,
     opencodeModel,
     setOpenCodeModel,
     permissionMode,
@@ -88,6 +87,8 @@ function ChatInterface({
     providerModelsRefreshing,
     hardRefreshProviderModels,
     selectProviderModel,
+    setStoredProviderEffort,
+    resolvePermissionModeForProvider,
   } = useChatProviderState({
     selectedSession,
     selectedProject,
@@ -206,7 +207,7 @@ function ChatInterface({
     cursorModel,
     claudeModel,
     codexModel,
-    geminiModel,
+    effort: currentProviderEffort,
     opencodeModel,
     isLoading: isProcessing,
     canAbortSession,
@@ -350,15 +351,18 @@ function ChatInterface({
     [backgroundTasks, cancelBackgroundTask, provider],
   );
 
+  // Mirrors ChatComposer's own visibility check so the message pane can
+  // reserve enough bottom space to keep the floating status tab from
+  // overlapping the last message.
+  const hasActivityIndicator = Boolean(sessionActivity && pendingPermissionRequests.length === 0);
+
   if (!selectedProject) {
     const selectedProviderLabel =
       provider === 'cursor'
         ? t('messageTypes.cursor')
         : provider === 'codex'
           ? t('messageTypes.codex')
-          : provider === 'gemini'
-            ? t('messageTypes.gemini')
-            : provider === 'opencode'
+          : provider === 'opencode'
               ? t('messageTypes.opencode', { defaultValue: 'OpenCode' })
             : t('messageTypes.claude');
 
@@ -402,6 +406,7 @@ function ChatInterface({
           isProcessing={isProcessing}
           historyLoadFailed={historyLoadFailed}
           onRetryLoadHistory={retryLoadMessages}
+          hasActivityIndicator={hasActivityIndicator}
           chatMessages={chatMessages}
           selectedSession={selectedSession}
           currentSessionId={currentSessionId}
@@ -414,8 +419,6 @@ function ChatInterface({
           setCursorModel={setCursorModel}
           codexModel={codexModel}
           setCodexModel={setCodexModel}
-          geminiModel={geminiModel}
-          setGeminiModel={setGeminiModel}
           opencodeModel={opencodeModel}
           setOpenCodeModel={setOpenCodeModel}
           providerModelCatalog={providerModelCatalog}
@@ -471,6 +474,9 @@ function ChatInterface({
           onAbortSession={handleAbortSession}
           permissionMode={permissionMode}
           onModeSwitch={cyclePermissionMode}
+          effort={currentProviderEffort}
+          availableEffortOptions={currentProviderEffortOptions}
+          onSelectEffort={(nextEffort) => setStoredProviderEffort(provider, nextEffort)}
           tokenBudget={tokenBudget}
           onShowTokenUsage={showCostModal}
           backgroundTasks={backgroundTasks}
@@ -524,9 +530,7 @@ function ChatInterface({
                 ? t('messageTypes.cursor')
                 : provider === 'codex'
                   ? t('messageTypes.codex')
-                  : provider === 'gemini'
-                    ? t('messageTypes.gemini')
-                    : provider === 'opencode'
+                  : provider === 'opencode'
                       ? t('messageTypes.opencode', { defaultValue: 'OpenCode' })
                     : t('messageTypes.claude'),
           })}

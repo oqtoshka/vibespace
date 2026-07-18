@@ -24,7 +24,7 @@ export type ProviderModelsCacheInfo = {
   source: 'memory' | 'disk' | 'fresh';
 };
 
-export type AppTab = 'chat' | 'files' | 'shell' | 'git' | 'tasks' | 'browser' | `plugin:${string}`;
+export type AppTab = 'chat' | 'files' | 'shell' | 'git' | 'tasks' | 'preview' | 'browser' | `plugin:${string}`;
 
 export interface ProjectSession {
   id: string;
@@ -72,6 +72,10 @@ export interface Project {
   path?: string;
   isStarred?: boolean;
   sessions?: ProjectSession[];
+  cursorSessions?: ProjectSession[];
+  codexSessions?: ProjectSession[];
+  geminiSessions?: ProjectSession[];
+  opencodeSessions?: ProjectSession[];
   sessionMeta?: ProjectSessionMeta;
   taskmaster?: ProjectTaskmasterInfo;
   [key: string]: unknown;
@@ -85,3 +89,28 @@ export interface LoadingProgress {
   currentProject?: string;
   [key: string]: unknown;
 }
+
+// Realtime messages consumed by useProjectsState off the WebSocket stream.
+// Carried over the fork's project-list live-update path (project watcher →
+// `projects_updated`), distinct from the chat gateway's `kind`-based events.
+export interface ProjectsUpdatedMessage {
+  type: 'projects_updated';
+  projects: Project[];
+  updatedSessionId?: string;
+  updatedSessionIds?: string[];
+  watchProvider?: LLMProvider;
+  watchProviders?: LLMProvider[];
+  changeType?: 'add' | 'change';
+  changeTypes?: Array<'add' | 'change'>;
+  batched?: boolean;
+  [key: string]: unknown;
+}
+
+export interface LoadingProgressMessage extends LoadingProgress {
+  type: 'loading_progress';
+}
+
+export type AppSocketMessage =
+  | LoadingProgressMessage
+  | ProjectsUpdatedMessage
+  | { type?: string;[key: string]: unknown };

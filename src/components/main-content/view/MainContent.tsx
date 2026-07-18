@@ -182,7 +182,7 @@ function MainContent({
 }: MainContentProps) {
   const { t } = useTranslation();
   const { preferences } = useUiPreferences();
-  const { autoExpandTools, showRawParameters, showThinking, autoScrollToBottom, sendByCtrlEnter } = preferences;
+  const { showRawParameters, showThinking, sendByCtrlEnter } = preferences;
 
   const { currentProject, setCurrentProject } = useTaskMaster() as TaskMasterContextValue;
   const { tasksEnabled, isTaskMasterInstalled } = useTasksSettings() as TasksSettingsContextValue;
@@ -247,6 +247,9 @@ function MainContent({
 
   usePaletteOpsRegister({
     openFile: handleFileOpen,
+    // In this layout the files pane *is* the editor, so markdown file links
+    // (which call the palette's openFileInEditor) open a file tab the same way.
+    openFileInEditor: handleFileOpen,
   });
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -267,10 +270,8 @@ function MainContent({
       processingSessions,
       onNavigateToSession,
       onShowSettings,
-      autoExpandTools,
       showRawParameters,
       showThinking,
-      autoScrollToBottom,
       sendByCtrlEnter,
       externalMessageUpdate,
       newSessionTrigger,
@@ -279,7 +280,7 @@ function MainContent({
   }, [
     selectedProject, selectedSession, ws, sendMessage, handleFileOpen, onInputFocusChange,
     onSessionProcessing, onSessionIdle, processingSessions, onNavigateToSession, onShowSettings,
-    autoExpandTools, showRawParameters, showThinking, autoScrollToBottom, sendByCtrlEnter,
+    showRawParameters, showThinking, sendByCtrlEnter,
     externalMessageUpdate, newSessionTrigger, tasksEnabled, workspace,
   ]);
 

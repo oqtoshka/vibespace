@@ -1,3 +1,5 @@
+import path from 'node:path';
+
 import type { WebSocket } from 'ws';
 
 import { sessionsDb } from '@/modules/database/index.js';
@@ -8,12 +10,44 @@ import {
   unsubscribeAllProjectFiles,
 } from '@/modules/websocket/services/project-files-watcher.service.js';
 import { connectedClients, WS_OPEN_STATE } from '@/modules/websocket/services/websocket-state.service.js';
+import { getGlobalImageAssetsDir, normalizeImageDescriptors } from '@/shared/image-attachments.js';
 import type {
   AnyRecord,
   AuthenticatedWebSocketRequest,
   LLMProvider,
 } from '@/shared/types.js';
 import { createNormalizedMessage, parseIncomingJsonObject } from '@/shared/utils.js';
+
+/**
+ * Trust boundary for client-supplied image attachments: chat.send options come
+ * straight from the browser, and the provider runtimes read the referenced
+ * files off disk (Claude base64-encodes them into the prompt). Only images
+ * that live directly inside the global upload store (`~/.vibespace/assets`,
+ * where POST /api/assets/images puts them) are allowed through — anything
+ * else (absolute paths elsewhere, traversal, subdirectories) is dropped.
+ *
+ * Exported for tests; `assetsRootOverride` exists only for them.
+ */
+export function filterImagesToUploadStore(images: unknown, assetsRootOverride?: string): AnyRecord[] {
+  const assetsRoot = path.resolve(assetsRootOverride ?? getGlobalImageAssetsDir());
+
+  return normalizeImageDescriptors(images).filter((descriptor) => {
+    // Relative paths are anchored in the store; absolute ones must already be in it.
+    const resolved = path.resolve(assetsRoot, descriptor.path);
+    const relative = path.relative(assetsRoot, resolved);
+    const isDirectChild =
+      relative.length > 0 &&
+      !relative.startsWith('..') &&
+      !path.isAbsolute(relative) &&
+      !relative.includes(path.sep) &&
+      !relative.includes('/');
+
+    if (!isDirectChild) {
+      console.warn(`[Chat] Dropping image outside the upload store: ${descriptor.path}`);
+    }
+    return isDirectChild;
+  });
+}
 
 /**
  * One provider runtime entry point. All five runtimes share this signature,
@@ -96,6 +130,9 @@ function sendProtocolError(
   error: string,
   sessionId?: string
 ): void {
+  // Server-side trace for rejected client requests — without it a rejected
+  // send is invisible in the daemon log (the error only goes to the browser).
+  console.warn(`[Chat] Protocol error ${code}${sessionId ? ` (session ${sessionId})` : ''}: ${error}`);
   sendJson(ws, {
     kind: 'protocol_error',
     code,
@@ -128,6 +165,9 @@ function buildRuntimeOptions(
 ): AnyRecord {
   const runtimeOptions: AnyRecord = {
     ...clientOptions,
+    // Image attachments are re-validated server-side: only files inside the
+    // global upload store may reach the provider runtimes' file reads.
+    images: filterImagesToUploadStore(clientOptions.images),
     sessionId: session.provider_session_id ?? undefined,
     resume: Boolean(session.provider_session_id),
     // Worktree-pinned sessions run in the worktree dir. The client sends `cwd`
@@ -307,8 +347,10 @@ async function handleChatSend(
   } finally {
     // Safety net: a runtime that crashed (or resolved) without emitting its
     // terminal `complete` would otherwise leave the session stuck in
-    // "processing" forever on every connected client.
-    chatRunRegistry.completeRun(sessionId, { exitCode: 1 });
+    // "processing" forever on every connected client. Scoped to THIS run —
+    // a queued message can start the session's next run before this promise
+    // settles, and the session-keyed completeRun would kill that new run.
+    chatRunRegistry.completeRunIfCurrent(run, { exitCode: 1 });
   }
 }
 

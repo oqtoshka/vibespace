@@ -1,4 +1,3 @@
-import { spawn } from 'child_process';
 import fsSync from 'node:fs';
 import { mkdtemp, rm, unlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
@@ -7,15 +6,56 @@ import path from 'node:path';
 import crossSpawn from 'cross-spawn';
 import Database from 'better-sqlite3';
 
+import { appendImagesInputTag } from './shared/image-attachments.js';
 import { sessionsService } from './modules/providers/services/sessions.service.js';
 import { providerAuthService } from './modules/providers/services/provider-auth.service.js';
 import { providerModelsService } from './modules/providers/services/provider-models.service.js';
 import { notifyRunFailed, notifyRunStopped } from './services/notification-orchestrator.js';
-import { createCompleteMessage, createNormalizedMessage, getOpenCodeDatabasePath } from './shared/utils.js';
+import { createCompleteMessage, createNormalizedMessage, flattenPromptForWindowsShell, getOpenCodeDatabasePath } from './shared/utils.js';
 
-const spawnFunction = process.platform === 'win32' ? crossSpawn : spawn;
+// cross-spawn resolves .cmd shims/PATHEXT on Windows and delegates to
+// child_process.spawn everywhere else.
+const spawnFunction = crossSpawn;
 
 const activeOpenCodeProcesses = new Map();
+
+/**
+ * Maps the UI permission mode onto OpenCode's non-interactive controls.
+ *
+ * OpenCode has no single "permission mode" flag; each mode uses a different
+ * lever of the `opencode run` CLI (verified against v1.17.13):
+ * - plan              → the built-in read-only `plan` agent (`--agent plan`).
+ * - bypassPermissions → `--auto`, which auto-approves every permission that
+ *                       is not explicitly denied in the user's config.
+ * - acceptEdits       → the OPENCODE_PERMISSION env var, whose JSON body the
+ *                       CLI merges into its permission config. Forcing
+ *                       `edit: allow` guarantees file edits go through while
+ *                       every other rule stays under the user's own config.
+ * - default           → nothing; the user's opencode.json governs. In
+ *                       non-interactive `run` mode any `ask` rule is denied.
+ *
+ * Exported for tests only.
+ */
+export function resolveOpenCodePermissionOptions(permissionMode) {
+  switch (permissionMode) {
+    case 'plan':
+      return { args: ['--agent', 'plan'], env: {} };
+    case 'bypassPermissions':
+      return { args: ['--auto'], env: {} };
+    case 'acceptEdits':
+      return { args: [], env: { OPENCODE_PERMISSION: JSON.stringify({ edit: 'allow' }) } };
+    default:
+      return { args: [], env: {} };
+  }
+}
+
+function resolveOpenCodeEffort(model, effort, modelsDefinition) {
+  const selectedModel = modelsDefinition?.OPTIONS?.find((option) => option.value === model);
+  const allowedEfforts = selectedModel?.effort?.values?.map((value) => value.value) || [];
+  return typeof effort === 'string' && effort !== 'default' && allowedEfforts.includes(effort)
+    ? effort
+    : undefined;
+}
 
 function readOpenCodeSessionId(event) {
   if (!event || typeof event !== 'object') {
@@ -103,7 +143,7 @@ async function spawnOpenCode(command, options = {}, ws) {
   }
 
   return new Promise((resolve, reject) => {
-    const { sessionId, projectPath, cwd, model, sessionSummary, images } = options;
+    const { sessionId, projectPath, cwd, model, effort, sessionSummary, images, permissionMode } = options;
     const workingDir = cwd || projectPath || process.cwd();
     const processKey = sessionId || Date.now().toString();
     let capturedSessionId = sessionId || null;
@@ -111,8 +151,6 @@ async function spawnOpenCode(command, options = {}, ws) {
     let stdoutLineBuffer = '';
     let terminalNotificationSent = false;
     let opencodeProcess = null;
-    let tempImageDir = null;
-    const tempImagePaths = [];
     // Unified lifecycle contract: exactly one terminal `complete` per run
     // (close and error handlers can both fire for spawn failures).
     let completeSent = false;
@@ -214,6 +252,14 @@ async function spawnOpenCode(command, options = {}, ws) {
     };
 
     void providerModelsService.resolveResumeModel('opencode', sessionId, model).then(async (resolvedModel) => {
+      let effortModels = null;
+      try {
+        effortModels = (await providerModelsService.getProviderModels('opencode')).models;
+      } catch (error) {
+        console.warn('[OpenCode] Unable to load provider models for effort validation:', error);
+      }
+
+      const resolvedEffort = resolveOpenCodeEffort(resolvedModel, effort, effortModels);
       const args = ['run', '--format', 'json'];
       // OpenCode's `run` command owns workspace selection through `--dir`.
       // Relying on the child-process cwd alone is not enough on Linux, where
@@ -225,47 +271,23 @@ async function spawnOpenCode(command, options = {}, ws) {
       if (resolvedModel) {
         args.push('--model', resolvedModel);
       }
-
-      // Persist any attached files to temp files and attach them natively via
-      // `opencode run -f <path>` — the flag accepts any file type. Keep the
-      // original filename (sanitized, index-prefixed against collisions) with
-      // a mime-derived fallback for pasted blobs. Cleaned up in 'close' below.
-      if (Array.isArray(images) && images.length > 0) {
-        try {
-          tempImageDir = await mkdtemp(path.join(os.tmpdir(), 'vibespace-opencode-att-'));
-          for (const [index, image] of images.entries()) {
-            const matches = typeof image?.data === 'string'
-              ? image.data.match(/^data:([^;]+);base64,(.+)$/)
-              : null;
-            if (!matches) {
-              continue;
-            }
-            const [, mimeType, base64Data] = matches;
-            const originalName = typeof image?.name === 'string'
-              ? path.basename(image.name).replace(/[^\w.\-]/g, '_')
-              : '';
-            const extension = (mimeType.split('/')[1] || 'bin').split('+')[0];
-            const filename = originalName && originalName !== '_'
-              ? `${index}_${originalName}`
-              : `file_${index}.${extension}`;
-            const filepath = path.join(tempImageDir, filename);
-            await writeFile(filepath, Buffer.from(base64Data, 'base64'));
-            tempImagePaths.push(filepath);
-            args.push('-f', filepath);
-          }
-        } catch (error) {
-          console.error('[OpenCode] Failed to persist attached files:', error);
-        }
+      if (resolvedEffort) {
+        args.push('--variant', resolvedEffort);
       }
-
+      const permissionOptions = resolveOpenCodePermissionOptions(permissionMode);
+      args.push(...permissionOptions.args);
       if (command && command.trim()) {
-        args.push(command.trim());
+        // Image attachments ride along as an <images_input> path list appended
+        // to the prompt; the session history reader strips the tag back out.
+        // opencode is a .cmd shim on Windows, so the whole argument must be
+        // newline-free or cmd.exe silently truncates it at the first newline.
+        args.push(flattenPromptForWindowsShell(appendImagesInputTag(command.trim(), images)));
       }
 
       opencodeProcess = spawnFunction('opencode', args, {
         cwd: workingDir,
         stdio: ['pipe', 'pipe', 'pipe'],
-        env: { ...process.env },
+        env: { ...process.env, ...permissionOptions.env },
       });
 
       activeOpenCodeProcesses.set(processKey, opencodeProcess);
@@ -300,12 +322,6 @@ async function spawnOpenCode(command, options = {}, ws) {
         const finalSessionId = capturedSessionId || sessionId || processKey;
         activeOpenCodeProcesses.delete(finalSessionId);
         activeOpenCodeProcesses.delete(processKey);
-
-        // Remove the temp image files written for `-f` attachments.
-        await Promise.all(tempImagePaths.map((imagePath) => unlink(imagePath).catch(() => {})));
-        if (tempImageDir) {
-          await rm(tempImageDir, { recursive: true, force: true }).catch(() => {});
-        }
 
         if (stdoutLineBuffer.trim()) {
           processOpenCodeOutputLine(stdoutLineBuffer.trim());
@@ -356,12 +372,6 @@ async function spawnOpenCode(command, options = {}, ws) {
         const finalSessionId = capturedSessionId || sessionId || processKey;
         activeOpenCodeProcesses.delete(finalSessionId);
         activeOpenCodeProcesses.delete(processKey);
-
-        // Remove the temp image files written for `-f` attachments.
-        await Promise.all(tempImagePaths.map((imagePath) => unlink(imagePath).catch(() => {})));
-        if (tempImageDir) {
-          await rm(tempImageDir, { recursive: true, force: true }).catch(() => {});
-        }
 
         const installed = await providerAuthService.isProviderInstalled('opencode');
         const errorContent = !installed

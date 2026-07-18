@@ -74,7 +74,7 @@ export default function SidebarFooter({
               onClick={onShowVersionModal}
             >
               <div className="relative flex-shrink-0">
-                <ArrowUpCircle className="h-4 w-4 text-blue-500 dark:text-blue-400" />
+                <ArrowUpCircle className="w-4.5 h-4.5 text-blue-500 dark:text-blue-400" />
                 <span className="absolute -right-0.5 -top-0.5 h-1.5 w-1.5 animate-pulse rounded-full bg-blue-500" />
               </div>
               <div className="min-w-0 flex-1 text-left">
@@ -121,11 +121,11 @@ export default function SidebarFooter({
       {/* Mobile settings */}
       <div className="px-3 pb-3 pt-3 md:hidden">
         <button
-          className="flex h-10 w-full items-center gap-3 rounded-xl bg-muted/40 px-3.5 transition-all hover:bg-muted/60 active:scale-[0.98]"
+          className="flex h-12 w-full items-center gap-3.5 rounded-xl bg-muted/40 px-4 transition-all hover:bg-muted/60 active:scale-[0.98]"
           onClick={onShowSettings}
         >
-          <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-background/80">
-            <Settings className="h-4 w-4 text-muted-foreground" />
+          <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-background/80">
+            <Settings className="w-4.5 h-4.5 text-muted-foreground" />
           </div>
           <span className="text-sm font-normal text-foreground">{t('actions.settings')}</span>
         </button>

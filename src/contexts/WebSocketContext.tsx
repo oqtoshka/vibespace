@@ -53,12 +53,12 @@ export const useWebSocket = () => {
 };
 
 /**
- * Subscribe to every inbound WebSocket message without missing any. The handler
+ * Subscribe to every inbound WebSocket frame without missing any. The handler
  * is kept in a ref so it always sees the latest closure (current props/state)
- * without re-subscribing on every render — delivery order and exactly-once
- * semantics are preserved regardless of how often the component re-renders.
+ * without re-subscribing on every render — exactly-once, in-order delivery is
+ * preserved regardless of re-render frequency. Thin wrapper over `subscribe`.
  */
-export const useWebSocketEvent = (handler: WebSocketMessageHandler) => {
+export const useWebSocketEvent = (handler: (message: ServerEvent) => void) => {
   const { subscribe } = useWebSocket();
   const handlerRef = useRef(handler);
   useLayoutEffect(() => {
@@ -74,10 +74,25 @@ const buildWebSocketUrl = (token: string | null) => {
   return `${protocol}//${window.location.host}/ws?token=${encodeURIComponent(token)}`; // OSS mode: Use same host:port that served the page
 };
 
+/**
+ * Upper bound on outbound frames buffered while the socket is down. Sends are
+ * intent the UI already assumes happened (optimistic message bubble, queue
+ * optimism), so they are held and flushed on (re)connect rather than dropped —
+ * the cap only guards against a pathological offline pile-up.
+ */
+const MAX_BUFFERED_OUTBOUND_FRAMES = 100;
+
 const useWebSocketProviderState = (): WebSocketContextType => {
   const wsRef = useRef<WebSocket | null>(null);
   const unmountedRef = useRef(false); // Track if component is unmounted
   const hasConnectedRef = useRef(false); // Track if we've ever connected (to detect reconnects)
+  /**
+   * Frames sent while the socket was CONNECTING/closed, waiting for the next
+   * open to be delivered in order. Dropping them instead loses user messages
+   * silently: the composer has already rendered the optimistic bubble, so a
+   * send that never leaves the browser looks like the message just vanished.
+   */
+  const outboundBufferRef = useRef<string[]>([]);
   /**
    * Listener registry for the subscribe API. A ref (not state) because the
    * set must be readable synchronously inside `onmessage` and never trigger
@@ -131,6 +146,17 @@ const useWebSocketProviderState = (): WebSocketContextType => {
       websocket.onopen = () => {
         setIsConnected(true);
         wsRef.current = websocket;
+
+        // Deliver frames sent while the socket was down, in order, before any
+        // reconnect catch-up traffic. The socket can close again mid-flush;
+        // the remainder stays buffered for the next reconnect.
+        while (outboundBufferRef.current.length > 0 && websocket.readyState === WebSocket.OPEN) {
+          const payload = outboundBufferRef.current.shift();
+          if (payload !== undefined) {
+            websocket.send(payload);
+          }
+        }
+
         if (hasConnectedRef.current) {
           // This is a reconnect — signal so components can catch up on missed messages
           dispatch({ kind: 'websocket_reconnected', timestamp: Date.now() });
@@ -177,10 +203,20 @@ const useWebSocketProviderState = (): WebSocketContextType => {
 
   const sendMessage = useCallback((message: unknown) => {
     const socket = wsRef.current;
+    const payload = JSON.stringify(message);
     if (socket && socket.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify(message));
-    } else {
-      console.warn('WebSocket not connected');
+      socket.send(payload);
+      return;
+    }
+    // Not connected (initial CONNECTING window, or between reconnect
+    // attempts): hold the frame and deliver it when the socket opens.
+    console.warn('WebSocket not connected — buffering outbound message');
+    outboundBufferRef.current.push(payload);
+    if (outboundBufferRef.current.length > MAX_BUFFERED_OUTBOUND_FRAMES) {
+      outboundBufferRef.current.splice(
+        0,
+        outboundBufferRef.current.length - MAX_BUFFERED_OUTBOUND_FRAMES,
+      );
     }
   }, []);
 

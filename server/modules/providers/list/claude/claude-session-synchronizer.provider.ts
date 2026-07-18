@@ -85,6 +85,7 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
     if (!filePath.endsWith('.jsonl')) {
       return null;
     }
+    // A live subagent write must not re-hijack its parent's session row.
     if (this.isSubagentTranscript(filePath)) {
       return null;
     }

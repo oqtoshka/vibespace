@@ -26,8 +26,6 @@ function Sidebar({
   projects,
   selectedProject,
   selectedSession,
-  activeSessions,
-  attentionSessionIds,
   onProjectSelect,
   onSessionSelect,
   onNewSession,
@@ -80,7 +78,6 @@ function Sidebar({
     isSearching,
     searchProgress,
     clearConversationResults,
-    runningSessionsCount,
     deletingProjects,
     deleteConfirmation,
     sessionDeleteConfirmation,
@@ -124,7 +121,6 @@ function Sidebar({
     projects,
     selectedProject,
     selectedSession,
-    activeSessions,
     isLoading,
     isMobile,
     t,
@@ -172,9 +168,6 @@ function Sidebar({
     mcpServerStatus,
     getProjectSessions,
     loadingMoreProjects,
-    activeSessions,
-    attentionSessionIds,
-    forceExpanded: searchMode === 'running',
     isProjectStarred,
     onEditingNameChange: setEditingName,
     onToggleProject: toggleProject,
@@ -272,7 +265,6 @@ function Sidebar({
             isMobile={isMobile}
             isLoading={isLoading}
             projects={projects}
-            runningSessionsCount={runningSessionsCount}
             archivedProjects={archivedProjects}
             archivedSessions={archivedSessions}
             archivedSessionsCount={archivedSessionsCount}

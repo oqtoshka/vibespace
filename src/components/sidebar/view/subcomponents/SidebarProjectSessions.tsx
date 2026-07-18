@@ -2,7 +2,6 @@ import { Plus } from 'lucide-react';
 import type { TFunction } from 'i18next';
 
 import { Button } from '../../../../shared/view/ui';
-import type { SessionActivityMap } from '../../../../hooks/useSessionProtection';
 import type { Project, ProjectSession, LLMProvider } from '../../../../types/app';
 import type { SessionWithProvider } from '../../types/types';
 
@@ -16,8 +15,6 @@ type SidebarProjectSessionsProps = {
   initialSessionsLoaded: boolean;
   hasMoreSessions: boolean;
   isLoadingMoreSessions: boolean;
-  activeSessions: SessionActivityMap;
-  attentionSessionIds: ReadonlySet<string>;
   currentTime: Date;
   editingSession: string | null;
   editingSessionName: string;
@@ -64,8 +61,6 @@ export default function SidebarProjectSessions({
   initialSessionsLoaded,
   hasMoreSessions,
   isLoadingMoreSessions,
-  activeSessions,
-  attentionSessionIds,
   currentTime,
   editingSession,
   editingSessionName,
@@ -125,8 +120,6 @@ export default function SidebarProjectSessions({
               project={project}
               session={session}
               selectedSession={selectedSession}
-              isProcessing={activeSessions.has(session.id)}
-              needsAttention={attentionSessionIds.has(session.id)}
               currentTime={currentTime}
               editingSession={editingSession}
               editingSessionName={editingSessionName}

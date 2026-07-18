@@ -1,7 +1,7 @@
 import { ExternalLink, Star, MessageSquare } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
-import { VIBESPACE_WORDMARK_FONT_FAMILY } from '../../../../../../constants/branding';
+import { CLOUDCLI_WORDMARK_FONT_FAMILY } from '../../../../../../constants/branding';
 import { IS_PLATFORM } from '../../../../../../constants/config';
 import type { ReleaseInfo } from '../../../../../../types/sharedTypes';
 
@@ -55,7 +55,7 @@ export default function VersionInfoSection({
             <div className="flex items-center gap-2">
               <span
                 className="text-sm font-semibold text-foreground"
-                style={{ fontFamily: VIBESPACE_WORDMARK_FONT_FAMILY }}
+                style={{ fontFamily: CLOUDCLI_WORDMARK_FONT_FAMILY }}
               >
                 VibeSpace
               </span>
