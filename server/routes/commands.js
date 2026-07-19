@@ -41,6 +41,18 @@ const resolveCommandModel = async (provider, catalog, sessionId) => {
     return catalog.DEFAULT;
   }
 
+  // A model change made from the picker applies on the session's next turn.
+  // Until that turn runs, the transcript still shows the old model — surface
+  // the pending selection so reopening the picker reflects what the user chose.
+  try {
+    const changed = await providerModelsService.getChangedActiveModel(provider, sessionId);
+    if (changed?.changed && changed.model?.trim()) {
+      return changed.model.trim();
+    }
+  } catch {
+    // Fall through to the transcript-backed lookup.
+  }
+
   const currentActiveModel = await providerModelsService.getCurrentActiveModel(
     provider,
     sessionId,
