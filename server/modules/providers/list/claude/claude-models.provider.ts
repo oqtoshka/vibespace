@@ -120,6 +120,38 @@ export const findClaudeModelOption = (model: string | undefined | null): Provide
 
   return CLAUDE_FALLBACK_MODELS.OPTIONS.find((option) => option.value === normalizedModel) ?? null;
 };
+/**
+ * Transcript rows record full model ids (`claude-fable-5`,
+ * `claude-sonnet-4-6-...`) while the picker catalog uses short aliases
+ * (`fable`, `sonnet`, ...). Collapse known ids onto their alias so the UI can
+ * both display the truth and highlight the matching catalog card.
+ */
+const CLAUDE_MODEL_ID_ALIAS_PATTERNS: Array<[RegExp, string]> = [
+  [/fable|mythos/i, 'fable'],
+  [/opus/i, 'opus'],
+  [/sonnet/i, 'sonnet'],
+  [/haiku/i, 'haiku'],
+];
+
+const normalizeClaudeModelToCatalogValue = (model: string): string => {
+  const trimmed = model.trim();
+  if (!trimmed) {
+    return trimmed;
+  }
+  if (CLAUDE_FALLBACK_MODELS.OPTIONS.some((option) => option.value === trimmed)) {
+    return trimmed;
+  }
+  for (const [pattern, alias] of CLAUDE_MODEL_ID_ALIAS_PATTERNS) {
+    if (pattern.test(trimmed)) {
+      const withContext = /\[1m\]/i.test(trimmed) ? `${alias}[1m]` : alias;
+      return CLAUDE_FALLBACK_MODELS.OPTIONS.some((option) => option.value === withContext)
+        ? withContext
+        : alias;
+    }
+  }
+  return trimmed;
+};
+
 type ClaudeInitEvent = {
   sessionId?: string;
   session_id?: string;
@@ -251,12 +283,18 @@ export class ClaudeProviderModels implements IProviderModels {
     }
 
     try {
-      const jsonlPath = sessionsDb.getSessionById(sessionId)?.jsonl_path;
+      // The caller addresses sessions by the app-allocated id, but transcript
+      // rows carry the provider-native id — matching against the wrong one
+      // rejected every row and always reported the catalog default.
+      const row = sessionsDb.getSessionById(sessionId)
+        ?? sessionsDb.getSessionByProviderSessionId(sessionId);
+      const jsonlPath = row?.jsonl_path;
+      const transcriptSessionId = row?.provider_session_id ?? sessionId;
       const activeModel = jsonlPath
-        ? await readClaudeSessionModelFromJsonl(sessionId, jsonlPath)
+        ? await readClaudeSessionModelFromJsonl(transcriptSessionId, jsonlPath)
         : null;
       if (activeModel?.model) {
-        return activeModel;
+        return { model: normalizeClaudeModelToCatalogValue(activeModel.model) };
       }
     } catch {
       // Fall through to the provider default when the session-backed lookup fails.
