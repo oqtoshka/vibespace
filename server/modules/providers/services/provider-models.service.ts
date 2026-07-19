@@ -2,6 +2,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
+import { sessionsDb } from '@/modules/database/index.js';
 import { providerRegistry } from '@/modules/providers/provider.registry.js';
 import type { IProvider } from '@/shared/interfaces.js';
 import type {
@@ -313,12 +314,48 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
     input: ProviderChangeActiveModelInput,
   ): Promise<ProviderSessionActiveModelChange> => resolveProvider(provider).models.changeActiveModel(input);
 
+  /**
+   * A session is addressable by two ids: the app-allocated `session_id` (what
+   * the frontend/model-change endpoint uses) and the provider-native
+   * `provider_session_id` (what the runtimes resume with). Overrides written
+   * under one must be found when queried by the other, so expand to all known
+   * aliases before reading the change cache.
+   */
+  const resolveSessionIdAliases = (sessionId: string): string[] => {
+    const ids = new Set<string>([sessionId]);
+    try {
+      const row = sessionsDb.getSessionById(sessionId)
+        ?? sessionsDb.getSessionByProviderSessionId(sessionId);
+      if (row) {
+        ids.add(row.session_id);
+        if (row.provider_session_id) {
+          ids.add(row.provider_session_id);
+        }
+      }
+    } catch {
+      // DB unavailable (tests) — fall back to the literal id.
+    }
+    return [...ids];
+  };
+
   const getChangedActiveModel = async (
     provider: LLMProvider,
     sessionId: string,
-  ): Promise<ProviderSessionActiveModelChange> => readProviderSessionActiveModelChange(provider, sessionId, {
-    filePath: activeModelChangesPath,
-  });
+  ): Promise<ProviderSessionActiveModelChange> => {
+    let fallback: ProviderSessionActiveModelChange | null = null;
+    for (const aliasId of resolveSessionIdAliases(sessionId)) {
+      const change = await readProviderSessionActiveModelChange(provider, aliasId, {
+        filePath: activeModelChangesPath,
+      });
+      if (change.changed && change.model) {
+        return change;
+      }
+      fallback = fallback ?? change;
+    }
+    return fallback ?? readProviderSessionActiveModelChange(provider, sessionId, {
+      filePath: activeModelChangesPath,
+    });
+  };
 
   const resolveResumeModel = async (
     provider: LLMProvider,
