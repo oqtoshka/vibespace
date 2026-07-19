@@ -5,7 +5,9 @@ import { readVoiceConfig, VOICE_CONFIG_SYNC_EVENT } from '../../../hooks/useVoic
 
 // Voice UI is gated on the `voiceEnabled` UI preference (toggled in Quick Settings /
 // the Settings modal) and a configured voice backend.
-const STORAGE_KEY = 'uiPreferences';
+// Preferences live under the versioned key (see useUiPreferences); the legacy
+// blob is only consulted when the versioned one hasn't been written yet.
+const STORAGE_KEYS = ['uiPreferences.v2', 'uiPreferences'];
 const SYNC_EVENT = 'ui-preferences:sync';
 let healthRequest: Promise<boolean> | null = null;
 
@@ -25,14 +27,17 @@ function checkVoiceHealth(): Promise<boolean> {
 }
 
 function readVoiceEnabled(): boolean {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return false;
-    const parsed = JSON.parse(raw);
-    return parsed?.voiceEnabled === true || parsed?.voiceEnabled === 'true';
-  } catch {
-    return false;
+  for (const key of STORAGE_KEYS) {
+    try {
+      const raw = localStorage.getItem(key);
+      if (!raw) continue;
+      const parsed = JSON.parse(raw);
+      return parsed?.voiceEnabled === true || parsed?.voiceEnabled === 'true';
+    } catch {
+      return false;
+    }
   }
+  return false;
 }
 
 export function useVoiceAvailable(): boolean {
