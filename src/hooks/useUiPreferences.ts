@@ -34,7 +34,10 @@ type UiPreferencesAction =
 const DEFAULTS: UiPreferences = {
   showRawParameters: false,
   showThinking: true,
-  sendByCtrlEnter: false,
+  // Default to Ctrl/Cmd+Enter-only sending: plain Enter inserts a newline.
+  // A per-browser Quick Settings toggle can still flip this back, but a fresh
+  // browser/profile should not silently revert to send-on-Enter.
+  sendByCtrlEnter: true,
   sidebarVisible: true,
   voiceEnabled: false,
 };
@@ -75,27 +78,49 @@ const readLegacyPreference = (key: UiPreferenceKey, fallback: boolean): boolean 
   }
 };
 
+// Storage key for the pre-v2 unified preferences blob. Because the hook
+// persists the full state (defaults included) on first load, every browser
+// that ever opened the app carries an explicit `sendByCtrlEnter: false` from
+// the old default — indistinguishable from a deliberate choice. The v2 key
+// migrates the other preferences once and re-applies the new send default.
+const LEGACY_UNIFIED_STORAGE_KEY = 'uiPreferences';
+
+const parseStoredPreferences = (raw: string | null): UiPreferences | null => {
+  if (!raw) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      const parsedRecord = parsed as Record<string, unknown>;
+      return PREFERENCE_KEYS.reduce((acc, key) => {
+        acc[key] = parseBoolean(parsedRecord[key], DEFAULTS[key]);
+        return acc;
+      }, { ...DEFAULTS });
+    }
+  } catch {
+    // Malformed blob — treat as absent.
+  }
+  return null;
+};
+
 const readInitialPreferences = (storageKey: string): UiPreferences => {
   if (typeof window === 'undefined') {
     return DEFAULTS;
   }
 
   try {
-    const raw = localStorage.getItem(storageKey);
+    const current = parseStoredPreferences(localStorage.getItem(storageKey));
+    if (current) {
+      return current;
+    }
 
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-        const parsedRecord = parsed as Record<string, unknown>;
-
-        return PREFERENCE_KEYS.reduce((acc, key) => {
-          acc[key] = parseBoolean(parsedRecord[key], DEFAULTS[key]);
-          return acc;
-        }, { ...DEFAULTS });
-      }
+    const legacyUnified = parseStoredPreferences(localStorage.getItem(LEGACY_UNIFIED_STORAGE_KEY));
+    if (legacyUnified) {
+      return { ...legacyUnified, sendByCtrlEnter: DEFAULTS.sendByCtrlEnter };
     }
   } catch {
-    // Fall back to legacy keys when unified key is missing or invalid.
+    // Fall back to legacy keys when unified keys are missing or invalid.
   }
 
   return PREFERENCE_KEYS.reduce((acc, key) => {
@@ -144,7 +169,7 @@ function reducer(state: UiPreferences, action: UiPreferencesAction): UiPreferenc
   }
 }
 
-export function useUiPreferences(storageKey = 'uiPreferences') {
+export function useUiPreferences(storageKey = 'uiPreferences.v2') {
   const instanceIdRef = useRef(`ui-preferences-${Math.random().toString(36).slice(2)}`);
   const [state, dispatch] = useReducer(
     reducer,
