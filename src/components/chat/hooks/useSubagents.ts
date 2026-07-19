@@ -35,15 +35,35 @@ export function deriveSubagents(messages: ChatMessage[]): Subagent[] {
   const subagents: Subagent[] = [];
   let index = 0;
 
+  // Async (background) subagents get their Task tool_result immediately at
+  // launch (`status: 'async_launched'`), so the tool_result alone does not mean
+  // the agent finished. Completion arrives later as a <task-notification>
+  // whose task-id equals the agentId — collect those statuses first.
+  const notifiedStatus = new Map<string, string>();
+  for (const msg of messages) {
+    const notifications = (msg as { taskNotifications?: Array<{ taskId?: string; status?: string }> }).taskNotifications;
+    if (!Array.isArray(notifications)) continue;
+    for (const notification of notifications) {
+      if (notification?.taskId) {
+        notifiedStatus.set(String(notification.taskId), notification.status || 'completed');
+      }
+    }
+  }
+
   for (const msg of messages) {
     if (!msg.isSubagentContainer) continue;
     index += 1;
 
     const input = parseInput(msg.toolInput);
-    const toolUseResult = (msg.toolResult?.toolUseResult ?? null) as { agentId?: string } | null;
+    const toolUseResult = (msg.toolResult?.toolUseResult ?? null) as { agentId?: string; status?: string } | null;
     const agentId = toolUseResult?.agentId ? String(toolUseResult.agentId) : null;
-    const isComplete = msg.subagentState?.isComplete ?? Boolean(msg.toolResult);
-    const isError = Boolean(msg.toolResult?.isError);
+    let isComplete = msg.subagentState?.isComplete ?? Boolean(msg.toolResult);
+    let isError = Boolean(msg.toolResult?.isError);
+    if (toolUseResult?.status === 'async_launched' && agentId) {
+      const notified = notifiedStatus.get(agentId);
+      isComplete = notified !== undefined;
+      isError = notified === 'failed' || notified === 'error';
+    }
 
     subagents.push({
       key: agentId || msg.toolId || `subagent-${index}`,

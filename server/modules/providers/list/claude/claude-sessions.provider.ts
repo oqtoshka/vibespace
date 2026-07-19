@@ -535,7 +535,11 @@ export class ClaudeSessionsProvider implements IProviderSessions {
               content: typeof part.content === 'string' ? part.content : JSON.stringify(part.content),
               isError: Boolean(part.is_error),
               subagentTools: raw.subagentTools,
-              toolUseResult: raw.toolUseResult,
+              // JSONL transcript rows spell this `toolUseResult`; live SDK
+              // stream events spell it `tool_use_result`. Without the fallback
+              // the live path never learns e.g. a subagent's agentId, so the
+              // transcript viewer can't resolve running agents.
+              toolUseResult: raw.toolUseResult ?? raw.tool_use_result,
             }));
           } else if (part.type === 'text') {
             const text = part.text || '';
