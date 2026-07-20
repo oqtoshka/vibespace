@@ -88,6 +88,12 @@ export function useChatRealtimeHandlers({
     pendingPermissionRequestsRef.current = pendingPermissionRequests;
   }, [pendingPermissionRequests]);
 
+  // Last time a run-evidence event was dispatched per session — sequenced live
+  // events prove the server received our sends (the composer's pending-send
+  // journal acks on this), but a streaming run emits them constantly, so
+  // throttle to one dispatch per second per session.
+  const lastRunEvidenceAtRef = useRef<Map<string, number>>(new Map());
+
   useEffect(() => {
     const handleEvent = (msg: ServerEvent) => {
       if (!msg.kind) {
@@ -102,6 +108,18 @@ export function useChatRealtimeHandlers({
         const known = lastSeqRef.current.get(sid) ?? 0;
         if (msg.seq > known) {
           lastSeqRef.current.set(sid, msg.seq);
+        }
+
+        // A sequenced event means a run is (or was just) executing for this
+        // session — evidence for the composer that its dispatched sends
+        // arrived. Throttled; the composer acks its journal on this.
+        const lastAt = lastRunEvidenceAtRef.current.get(sid) ?? 0;
+        const now = Date.now();
+        if (now - lastAt > 1000) {
+          lastRunEvidenceAtRef.current.set(sid, now);
+          window.dispatchEvent(
+            new CustomEvent('vibespace:session-run-evidence', { detail: { sessionId: sid } }),
+          );
         }
       }
 
