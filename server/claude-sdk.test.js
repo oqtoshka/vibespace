@@ -271,6 +271,40 @@ test('a rewind tears down the live session and resumes a fresh query from the tr
   }
 });
 
+test('a mid-session permission mode change is applied to the live session on reuse', async () => {
+  const sessionId = 'mode-switch-session-1';
+  const modeCalls = [];
+  // Turn 1 (default mode), then a reused turn 2 sent with bypassPermissions.
+  const fakeQuery = ({ prompt }) => {
+    const reader = prompt[Symbol.asyncIterator]();
+    const gen = (async function* () {
+      await reader.next();
+      yield assistantText('turn one', sessionId);
+      yield resultMsg(sessionId);
+      await reader.next();
+      yield assistantText('turn two', sessionId);
+      yield resultMsg(sessionId);
+    })();
+    gen.interrupt = async () => {};
+    gen.setModel = async () => {};
+    gen.setPermissionMode = async (mode) => { modeCalls.push(mode); };
+    return gen;
+  };
+  __setClaudeQueryImpl(fakeQuery);
+  const writer = makeRecordingWriter();
+
+  try {
+    await queryClaudeSDK('first message', { sessionId, permissionMode: 'default' }, writer);
+    assert.deepEqual(modeCalls, [], 'no mode switch while the mode is unchanged');
+
+    await queryClaudeSDK('now push it', { sessionId, permissionMode: 'bypassPermissions' }, writer);
+    assert.deepEqual(modeCalls, ['bypassPermissions'], 'the reused session adopts the new mode');
+  } finally {
+    await abortClaudeSDKSession(sessionId).catch(() => {});
+    __setClaudeQueryImpl(null);
+  }
+});
+
 test('isClaudeSDKSessionActive reflects an in-flight turn, not mere liveness', async () => {
   const sessionId = 'active-session-1';
   // A query whose first turn never produces a result until we close input.
