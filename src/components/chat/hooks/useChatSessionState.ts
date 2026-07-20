@@ -292,6 +292,15 @@ export function useChatSessionState({
     && sessionStore.getSessionSlot(activeSessionId)?.status === 'error',
   );
 
+  // The transcript file for this session no longer exists on disk (Claude
+  // Code's auto-cleanup) — show an explanatory notice instead of the
+  // "start a new conversation" empty state.
+  const historyTranscriptMissing = Boolean(
+    activeSessionId
+    && storeMessages.length === 0
+    && sessionStore.getSessionSlot(activeSessionId)?.transcriptMissing,
+  );
+
   const retryLoadMessages = useCallback(() => {
     if (!activeSessionId) return;
     setIsLoadingSessionMessages(true);
@@ -912,6 +921,7 @@ export function useChatSessionState({
     isLoadingSessionMessages,
     isLoadingMoreMessages,
     historyLoadFailed,
+    historyTranscriptMissing,
     retryLoadMessages,
     hasMoreMessages,
     totalMessages,

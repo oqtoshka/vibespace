@@ -147,6 +147,11 @@
       "description": "Mesaj geçmişi yüklenemedi. Bağlantını kontrol edip tekrar dene.",
       "retry": "Tekrar dene"
     },
+    "transcriptMissing": {
+      "title": "Bu konuşmanın geçmişi artık diskte yok",
+      "description": "Transkript dosyası silindi — büyük olasılıkla Claude Code'un 30 günden eski sohbetleri temizleyen otomatik temizliği yüzünden (cleanupPeriodDays ayarı). Yalnızca oturumun meta verileri kaldı."
+    },
+    "sendNotDelivered": "Mesajın iletilemedi — sunucu bağlantısı koptu. Mesaj aşağıdaki giriş kutusuna geri yüklendi.",
     "loading": {
       "olderMessages": "Eski mesajlar yükleniyor...",
       "sessionMessages": "Oturum mesajları yükleniyor..."

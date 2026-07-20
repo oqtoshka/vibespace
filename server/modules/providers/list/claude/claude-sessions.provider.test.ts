@@ -93,6 +93,41 @@ test('fetchHistory nests subagent tools discovered under <sessionId>/subagents/'
   });
 });
 
+const CLEANED_SESSION = '44444444-4444-4444-8444-444444444444';
+
+test('fetchHistory flags transcriptMissing when the indexed JSONL was deleted from disk', async () => {
+  await withIsolatedDatabase(async (tempDir) => {
+    // Claude Code's cleanupPeriodDays cleanup deletes old transcripts while the
+    // DB row (and its jsonl_path) stays behind — the flag is what lets the UI
+    // tell that apart from a genuinely empty session.
+    const goneFile = path.join(tempDir, 'projects', '-demo', `${CLEANED_SESSION}.jsonl`);
+    sessionsDb.createSession(CLEANED_SESSION, 'claude', '/demo', 'Demo', undefined, undefined, goneFile);
+
+    const result = await new ClaudeSessionsProvider().fetchHistory(CLEANED_SESSION, { limit: null });
+
+    assert.equal(result.transcriptMissing, true);
+    assert.deepEqual(result.messages, []);
+    assert.equal(result.total, 0);
+  });
+});
+
+test('fetchHistory does not flag transcriptMissing for a transcript that exists', async () => {
+  await withIsolatedDatabase(async (tempDir) => {
+    const projectDir = path.join(tempDir, 'projects', '-demo');
+    await mkdir(projectDir, { recursive: true });
+    const mainFile = path.join(projectDir, `${CLEANED_SESSION}.jsonl`);
+    await writeFile(mainFile, jsonl(
+      { type: 'user', sessionId: CLEANED_SESSION, uuid: 'u1', timestamp: '2026-01-01T00:00:00.000Z', message: { role: 'user', content: 'hello' } },
+    ));
+    sessionsDb.createSession(CLEANED_SESSION, 'claude', '/demo', 'Demo', undefined, undefined, mainFile);
+
+    const result = await new ClaudeSessionsProvider().fetchHistory(CLEANED_SESSION, { limit: null });
+
+    assert.equal(result.transcriptMissing, undefined);
+    assert.equal(result.messages.length, 1);
+  });
+});
+
 const REWIND_SESSION = '33333333-3333-4333-8333-333333333333';
 
 function conversationJsonl(): string {

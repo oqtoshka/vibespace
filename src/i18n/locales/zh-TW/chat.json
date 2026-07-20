@@ -183,6 +183,11 @@
       "description": "訊息歷史載入失敗。請檢查連線後重試。",
       "retry": "重試"
     },
+    "transcriptMissing": {
+      "title": "此對話的歷史紀錄已不在磁碟上",
+      "description": "轉錄檔案已被刪除——很可能是 Claude Code 自動清理超過 30 天的對話所致（cleanupPeriodDays 設定）。僅保留了工作階段的中繼資料。"
+    },
+    "sendNotDelivered": "您的訊息未能送達——與伺服器的連線已中斷。訊息已還原到下方輸入框中。",
     "loading": {
       "olderMessages": "正在載入較早的訊息...",
       "sessionMessages": "正在載入工作階段訊息..."

@@ -26,6 +26,8 @@ interface ChatMessagesPaneProps {
   isProcessing?: boolean;
   /** Last history fetch failed with nothing rendered — show a retry state. */
   historyLoadFailed?: boolean;
+  /** Transcript file was deleted from disk (provider auto-cleanup) — explain instead of showing a fresh-chat state. */
+  historyTranscriptMissing?: boolean;
   onRetryLoadHistory?: () => void;
   /** True while ChatComposer's floating activity/stop tab is rendered above the input. */
   hasActivityIndicator?: boolean;
@@ -79,6 +81,7 @@ function ChatMessagesPane({
   isLoadingSessionMessages,
   isProcessing = false,
   historyLoadFailed = false,
+  historyTranscriptMissing = false,
   onRetryLoadHistory,
   hasActivityIndicator = false,
   chatMessages,
@@ -197,6 +200,17 @@ function ChatMessagesPane({
             >
               {t('session.loadFailed.retry')}
             </button>
+          </div>
+        </div>
+      ) : chatMessages.length === 0 && historyTranscriptMissing ? (
+        <div className="flex h-full items-center justify-center">
+          <div className="max-w-[34.25rem] px-6 text-center">
+            <p className="mb-1.5 text-lg font-semibold text-foreground">
+              {t('session.transcriptMissing.title')}
+            </p>
+            <p className="text-sm leading-relaxed text-muted-foreground">
+              {t('session.transcriptMissing.description')}
+            </p>
           </div>
         </div>
       ) : chatMessages.length === 0 ? (
