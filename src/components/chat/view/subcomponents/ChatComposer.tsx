@@ -448,6 +448,10 @@ export default function ChatComposer({
 
             <PromptInputTextarea
               ref={textareaRef}
+              // Without an explicit rows the browser default is 2, leaving a
+              // permanent empty line under the placeholder; autosize takes over
+              // as soon as there is content.
+              rows={1}
               dir="auto"
               value={input}
               onChange={onInputChange}
@@ -462,8 +466,10 @@ export default function ChatComposer({
             />
         </PromptInputBody>
 
-        <PromptInputFooter>
-          <PromptInputTools>
+        <PromptInputFooter className="gap-3">
+          {/* The buttons never shrink (clipped icons read as broken); the hint
+              text on the right is the flexible part and truncates instead. */}
+          <PromptInputTools className="shrink-0">
             <PromptInputButton
               tooltip={{ content: t('input.attachFiles', { defaultValue: 'Attach files' }) }}
               onClick={openImagePicker}
@@ -611,11 +617,12 @@ export default function ChatComposer({
 
           </PromptInputTools>
 
-          <div className="flex items-center gap-2">
+          <div className="flex min-w-0 items-center gap-2">
             <div
-              className={`hidden text-xs text-muted-foreground/50 transition-opacity duration-200 lg:block ${
+              className={`hidden min-w-0 truncate whitespace-nowrap text-xs text-muted-foreground/50 transition-opacity duration-200 lg:block ${
                 input.trim() && !canQueueDraft ? 'opacity-0' : 'opacity-100'
               }`}
+              title={submitHint}
             >
               {submitHint}
             </div>
