@@ -299,12 +299,22 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
           )}
         </div>
       ) : message.isTaskNotification ? (
-        /* Compact task notification on the left */
+        /* Compact task notification on the left. Some harness notices (e.g.
+           "no completion record for N background agents") carry a paragraph-long
+           summary that reads like an error wall — keep it to one line and let a
+           click reveal the full text. */
         <div className="w-full">
-          <div className="flex items-center gap-2 py-0.5">
-            <span className={`inline-block h-1.5 w-1.5 flex-shrink-0 rounded-full ${message.taskStatus === 'completed' ? 'bg-green-400 dark:bg-green-500' : 'bg-amber-400 dark:bg-amber-500'}`} />
-            <span className="text-xs text-gray-500 dark:text-gray-400">{message.content}</span>
-          </div>
+          <button
+            type="button"
+            onClick={() => setIsExpanded((current) => !current)}
+            className="flex w-full items-start gap-2 py-0.5 text-left"
+            title={isExpanded ? undefined : String(message.content ?? '')}
+          >
+            <span className={`mt-1 inline-block h-1.5 w-1.5 flex-shrink-0 rounded-full ${message.taskStatus === 'completed' ? 'bg-green-400 dark:bg-green-500' : 'bg-amber-400 dark:bg-amber-500'}`} />
+            <span className={`min-w-0 text-xs text-gray-500 dark:text-gray-400 ${isExpanded ? 'whitespace-pre-wrap break-words' : 'truncate'}`}>
+              {message.content}
+            </span>
+          </button>
         </div>
       ) : (
         /* Claude/Error/Tool messages on the left */
