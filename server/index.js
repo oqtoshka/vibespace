@@ -76,7 +76,7 @@ import { startEnabledPluginServers, stopAllPlugins, getPluginPort } from './util
 import { initializeDatabase, projectsDb, sessionsDb, fileSharesDb } from './modules/database/index.js';
 import crypto from 'crypto';
 import { configureWebPush } from './services/vapid-keys.js';
-import { validateApiKey, authenticateToken, authenticateWebSocket, JWT_SECRET } from './middleware/auth.js';
+import { validateApiKey, authenticateToken, authenticateWebSocket, readWorkerIdentity, JWT_SECRET } from './middleware/auth.js';
 import jwt from 'jsonwebtoken';
 import {
     resolvePreviewModel,
@@ -86,7 +86,7 @@ import {
     resolveCustomRenderer,
     wireFlowCrossLinks,
 } from './utils/htmlPreview.js';
-import { IS_PLATFORM } from './constants/config.js';
+import { IS_PLATFORM, IS_WORKER_MODE } from './constants/config.js';
 import { c } from './utils/colors.js';
 
 const __dirname = getModuleDir(import.meta.url);
@@ -126,6 +126,11 @@ const wss = createWebSocketServer(server, {
     verifyClient: {
         isPlatform: IS_PLATFORM,
         authenticateWebSocket,
+        isWorkerMode: IS_WORKER_MODE,
+        resolveWorkerUser: (request) => {
+            const user = readWorkerIdentity(request);
+            return user ? { id: user.id, userId: user.id, username: user.username } : null;
+        },
     },
     chat: {
         spawnFns: {

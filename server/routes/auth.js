@@ -3,12 +3,22 @@ import bcrypt from 'bcrypt';
 import { userDb } from '../modules/database/index.js';
 import { getConnection } from '../modules/database/connection.js';
 import { generateToken, authenticateToken } from '../middleware/auth.js';
+import { IS_WORKER_MODE } from '../constants/config.js';
 
 const router = express.Router();
 const db = getConnection();
 
+// Workers have no login flow of their own — the manager owns credentials and
+// stamps the identity header. These routes stay mounted so a direct hit gets a
+// clear answer instead of a confusing 401 from the identity check.
+const MANAGED_BY_MANAGER = { error: 'Authentication is managed by the VibeSpace manager.' };
+
 // Check auth status and setup requirements
 router.get('/status', async (req, res) => {
+  if (IS_WORKER_MODE) {
+    return res.json({ needsSetup: false, isAuthenticated: false });
+  }
+
   try {
     const hasUsers = await userDb.hasUsers();
     res.json({ 
@@ -23,6 +33,10 @@ router.get('/status', async (req, res) => {
 
 // User registration (setup) - only allowed if no users exist
 router.post('/register', async (req, res) => {
+  if (IS_WORKER_MODE) {
+    return res.status(403).json(MANAGED_BY_MANAGER);
+  }
+
   try {
     const { username, password } = req.body;
     
@@ -82,6 +96,10 @@ router.post('/register', async (req, res) => {
 
 // User login
 router.post('/login', async (req, res) => {
+  if (IS_WORKER_MODE) {
+    return res.status(403).json(MANAGED_BY_MANAGER);
+  }
+
   try {
     const { username, password } = req.body;
     
