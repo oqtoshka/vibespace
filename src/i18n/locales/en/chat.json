@@ -167,6 +167,11 @@
       "description": "The message history failed to load. Check your connection and try again.",
       "retry": "Retry"
     },
+    "transcriptMissing": {
+      "title": "This conversation's history is no longer on disk",
+      "description": "The transcript file was deleted — most likely by Claude Code's automatic cleanup of chats older than 30 days (the cleanupPeriodDays setting). Only the session's metadata remains."
+    },
+    "sendNotDelivered": "Your message couldn't be delivered — the connection to the server dropped. It has been restored to the input box below.",
     "loading": {
       "olderMessages": "Loading older messages...",
       "sessionMessages": "Loading session messages..."

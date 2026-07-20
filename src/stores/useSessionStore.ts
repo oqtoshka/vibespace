@@ -115,9 +115,33 @@ export interface SessionSlot {
   hasMore: boolean;
   offset: number;
   tokenUsage: unknown;
+  /**
+   * Server reported the session's transcript file no longer exists on disk
+   * (deleted by Claude Code's auto-cleanup). Drives an explanatory empty
+   * state instead of the "start a new conversation" screen.
+   */
+  transcriptMissing: boolean;
 }
 
 const EMPTY: NormalizedMessage[] = [];
+
+/**
+ * Realtime rows arrive straight off the websocket, and not every server event
+ * kind is guaranteed to carry an `id` — but the merge/dedupe logic calls
+ * `id.startsWith(...)` on every row. One id-less row poisons the slot: every
+ * later append or refresh throws inside the merge, killing the WS listener.
+ * Backfill an id at the single ingest point instead of guarding every reader.
+ */
+function normalizeRealtimeMessage(sessionId: string, msg: NormalizedMessage): NormalizedMessage {
+  const withSession = msg.sessionId === sessionId ? msg : { ...msg, sessionId };
+  if (typeof withSession.id === 'string' && withSession.id.length > 0) {
+    return withSession;
+  }
+  return {
+    ...withSession,
+    id: `realtime_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+  };
+}
 
 function createEmptySlot(): SessionSlot {
   return {
@@ -132,6 +156,7 @@ function createEmptySlot(): SessionSlot {
     hasMore: false,
     offset: 0,
     tokenUsage: null,
+    transcriptMissing: false,
     _fetchSeq: 0,
     _appliedFetchSeq: 0,
   };
@@ -507,6 +532,7 @@ export function useSessionStore() {
       slot.hasMore = Boolean(data.hasMore);
       slot.offset = (opts.offset ?? 0) + messages.length;
       slot.fetchedAt = Date.now();
+      slot.transcriptMissing = Boolean(data.transcriptMissing);
       slot.status = 'idle';
       recomputeMergedIfNeeded(slot);
       if (data.tokenUsage) {
@@ -580,10 +606,7 @@ export function useSessionStore() {
    */
   const appendRealtime = useCallback((sessionId: string, msg: NormalizedMessage) => {
     const slot = getSlot(sessionId);
-    const normalizedMessage =
-      msg.sessionId === sessionId
-        ? msg
-        : { ...msg, sessionId };
+    const normalizedMessage = normalizeRealtimeMessage(sessionId, msg);
     let updated = [...slot.realtimeMessages, normalizedMessage];
     if (updated.length > MAX_REALTIME_MESSAGES) {
       updated = updated.slice(-MAX_REALTIME_MESSAGES);
@@ -599,11 +622,7 @@ export function useSessionStore() {
   const appendRealtimeBatch = useCallback((sessionId: string, msgs: NormalizedMessage[]) => {
     if (msgs.length === 0) return;
     const slot = getSlot(sessionId);
-    const normalizedMessages = msgs.map((msg) =>
-      msg.sessionId === sessionId
-        ? msg
-        : { ...msg, sessionId },
-    );
+    const normalizedMessages = msgs.map((msg) => normalizeRealtimeMessage(sessionId, msg));
     let updated = [...slot.realtimeMessages, ...normalizedMessages];
     if (updated.length > MAX_REALTIME_MESSAGES) {
       updated = updated.slice(-MAX_REALTIME_MESSAGES);
@@ -641,6 +660,7 @@ export function useSessionStore() {
       slot.total = data.total ?? slot.serverMessages.length;
       slot.hasMore = Boolean(data.hasMore);
       slot.fetchedAt = Date.now();
+      slot.transcriptMissing = Boolean(data.transcriptMissing);
       // A successful refresh clears any earlier failed-fetch marker so the
       // error indicator doesn't linger over healthy data.
       slot.status = 'idle';

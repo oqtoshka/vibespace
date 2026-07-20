@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import type {
   ChangeEvent,
   ClipboardEvent,
@@ -223,6 +224,7 @@ export function useChatComposerState({
   setPendingPermissionRequests,
   onRewindTruncate,
 }: UseChatComposerStateArgs) {
+  const { t } = useTranslation('chat');
   const [input, setInput] = useState(() => {
     if (typeof window !== 'undefined' && selectedProject) {
       // Draft inputs are keyed by the DB projectId so per-project drafts
@@ -1040,8 +1042,15 @@ export function useChatComposerState({
         inputValueRef.current = next;
         return next;
       });
+      // A silent restore looks like the app ate the message and coughed it
+      // back — say what happened in the conversation itself.
+      addMessage({
+        type: 'error',
+        content: t('session.sendNotDelivered'),
+        timestamp: new Date(),
+      });
     },
-    [setInput],
+    [setInput, addMessage, t],
   );
 
   // Render the server-owned queue for the currently-viewed session. The
@@ -1077,25 +1086,24 @@ export function useChatComposerState({
     return () => window.removeEventListener('vibespace:queue-updated', onQueueUpdated);
   }, [selectedSession?.id, currentSessionId, restoreStalePendingSends]);
 
-  // Direct sends have no id-correlated ack; live run events for the session
-  // are the evidence the server got the frame (the realtime handler dispatches
-  // this, throttled). RUN_IN_PROGRESS rejections don't reach here — they are
-  // re-queued above and ride the queue ack instead.
+  // Direct sends ack on the server's id-correlated `send_ack` frame, emitted
+  // once the chat.send was accepted and its run registered. Nothing else may
+  // ack a 'send' entry: session-level heuristics (any live run event) proved
+  // unsound — events replayed from a previous run after a reconnect acked
+  // sends that had died on the dead socket, deleting the only copy.
+  // RUN_IN_PROGRESS rejections don't reach here — they are re-queued above
+  // and ride the queue ack instead.
   useEffect(() => {
-    const activeSessionId = selectedSession?.id || currentSessionId || null;
-    const onRunEvidence = (event: Event) => {
-      const detail = (event as CustomEvent<{ sessionId?: string }>).detail;
-      if (!detail?.sessionId || detail.sessionId !== activeSessionId) {
+    const onSendAcked = (event: Event) => {
+      const detail = (event as CustomEvent<{ sessionId?: string; clientMsgId?: string }>).detail;
+      if (!detail?.sessionId || !detail.clientMsgId) {
         return;
       }
-      const acked = readPendingSends(detail.sessionId)
-        .filter((entry) => entry.kind === 'send')
-        .map((entry) => entry.id);
-      removePendingSends(detail.sessionId, acked);
+      removePendingSends(detail.sessionId, [detail.clientMsgId]);
     };
-    window.addEventListener('vibespace:session-run-evidence', onRunEvidence);
-    return () => window.removeEventListener('vibespace:session-run-evidence', onRunEvidence);
-  }, [selectedSession?.id, currentSessionId]);
+    window.addEventListener('vibespace:send-acked', onSendAcked);
+    return () => window.removeEventListener('vibespace:send-acked', onSendAcked);
+  }, []);
 
   // Sweep for lost sends even when no queue/run events arrive at all (dead
   // socket, or a reload that left journal entries behind): shortly after the

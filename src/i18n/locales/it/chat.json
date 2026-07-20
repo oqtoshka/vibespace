@@ -147,6 +147,11 @@
       "description": "Il caricamento della cronologia dei messaggi non è riuscito. Controlla la connessione e riprova.",
       "retry": "Riprova"
     },
+    "transcriptMissing": {
+      "title": "La cronologia di questa conversazione non è più sul disco",
+      "description": "Il file della trascrizione è stato eliminato — molto probabilmente dalla pulizia automatica di Claude Code delle chat più vecchie di 30 giorni (impostazione cleanupPeriodDays). Restano solo i metadati della sessione."
+    },
+    "sendNotDelivered": "Il tuo messaggio non è stato consegnato — la connessione al server si è interrotta. È stato ripristinato nella casella di testo qui sotto.",
     "loading": {
       "olderMessages": "Caricamento messaggi precedenti...",
       "sessionMessages": "Caricamento messaggi della sessione..."

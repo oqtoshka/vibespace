@@ -147,6 +147,11 @@
       "description": "消息历史加载失败。请检查连接后重试。",
       "retry": "重试"
     },
+    "transcriptMissing": {
+      "title": "此对话的历史记录已不在磁盘上",
+      "description": "转录文件已被删除——很可能是 Claude Code 自动清理超过 30 天的对话所致（cleanupPeriodDays 设置）。仅保留了会话的元数据。"
+    },
+    "sendNotDelivered": "您的消息未能送达——与服务器的连接已断开。消息已恢复到下方输入框中。",
     "loading": {
       "olderMessages": "正在加载更早的消息...",
       "sessionMessages": "正在加载会话消息..."

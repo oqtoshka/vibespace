@@ -149,6 +149,11 @@
       "description": "L'historique des messages n'a pas pu être chargé. Vérifiez votre connexion et réessayez.",
       "retry": "Réessayer"
     },
+    "transcriptMissing": {
+      "title": "L'historique de cette conversation n'est plus sur le disque",
+      "description": "Le fichier de transcription a été supprimé — très probablement par le nettoyage automatique de Claude Code des conversations de plus de 30 jours (paramètre cleanupPeriodDays). Seules les métadonnées de la session subsistent."
+    },
+    "sendNotDelivered": "Votre message n'a pas pu être remis — la connexion au serveur a été interrompue. Il a été restauré dans le champ de saisie ci-dessous.",
     "loading": {
       "olderMessages": "Chargement des messages précédents...",
       "sessionMessages": "Chargement des messages de la session..."
