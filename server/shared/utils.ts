@@ -1002,6 +1002,32 @@ export function normalizeSessionName(rawValue: string | undefined, fallback: str
   return normalized.slice(0, 120);
 }
 
+/**
+ * Provenance of a stored session title, best first. A synchronizer may replace
+ * a stored name with one of equal or better provenance — so a provider's AI
+ * title upgrades a prompt-derived placeholder, a later prompt still refreshes
+ * an untitled session, and an explicit rename is never overwritten by a sync.
+ */
+export type SessionNameSource = 'user' | 'ai' | 'derived';
+
+const SESSION_NAME_SOURCE_RANK: Record<SessionNameSource, number> = {
+  user: 3,
+  ai: 2,
+  derived: 1,
+};
+
+export function shouldReplaceSessionName(
+  existingSource: string | null | undefined,
+  incomingSource: SessionNameSource,
+): boolean {
+  if (existingSource === 'user') {
+    return false;
+  }
+
+  const existingRank = SESSION_NAME_SOURCE_RANK[existingSource as SessionNameSource] ?? 0;
+  return SESSION_NAME_SOURCE_RANK[incomingSource] >= existingRank;
+}
+
 // ---------------------------
 //----------------- PROVIDER SESSION VALUE NORMALIZATION UTILITIES ------------
 /**

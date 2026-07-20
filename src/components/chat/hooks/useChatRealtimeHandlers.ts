@@ -345,11 +345,16 @@ export function useChatRealtimeHandlers({
         }
 
         case 'status': {
-          if (msg.text === 'token_budget' && msg.tokenBudget) {
-            setTokenBudget(msg.tokenBudget as Record<string, unknown>);
-          } else if (msg.text && sid) {
+          if (msg.text === 'token_budget') {
+            if (msg.tokenBudget) {
+              setTokenBudget(msg.tokenBudget as Record<string, unknown>);
+            }
+          } else if (sid) {
+            // A null/absent text is a deliberate clear — the agent stopped
+            // running tools and is writing, so the indicator goes back to its
+            // own rotating words rather than freezing on the last tool.
             onSessionProcessing?.(sid, {
-              statusText: msg.text as string,
+              statusText: typeof msg.text === 'string' && msg.text ? msg.text : null,
               canInterrupt: msg.canInterrupt !== false,
             });
           }
