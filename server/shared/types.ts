@@ -308,6 +308,13 @@ export type FetchHistoryResult = {
   offset: number;
   limit: number | null;
   tokenUsage?: unknown;
+  /**
+   * The session is indexed in the database but its transcript file no longer
+   * exists on disk (e.g. deleted by Claude Code's `cleanupPeriodDays`
+   * auto-cleanup). Lets the UI tell "history was purged" apart from a
+   * genuinely empty session.
+   */
+  transcriptMissing?: boolean;
 };
 
 /**

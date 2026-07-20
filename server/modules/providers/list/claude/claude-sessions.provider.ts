@@ -807,6 +807,22 @@ export class ClaudeSessionsProvider implements IProviderSessions {
     const { limit = null, offset = 0 } = options;
     const providerSessionId = options.providerSessionId ?? sessionId;
 
+    // A session can be indexed in the DB while its JSONL is gone from disk:
+    // Claude Code prunes transcripts older than `cleanupPeriodDays` (30 by
+    // default) and the watcher never deletes rows. Flag it so the UI can say
+    // "history was auto-cleaned" instead of rendering a fresh empty chat.
+    const indexedJsonlPath = sessionsDb.getSessionById(sessionId)?.jsonl_path;
+    if (indexedJsonlPath && !fs.existsSync(indexedJsonlPath)) {
+      return {
+        messages: [],
+        total: 0,
+        hasMore: false,
+        offset: 0,
+        limit: null,
+        transcriptMissing: true,
+      };
+    }
+
     let result: ClaudeHistoryResult;
     try {
       // Load full history first so `total` reflects frontend-normalized messages,

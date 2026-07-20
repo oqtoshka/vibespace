@@ -330,6 +330,22 @@ async function handleChatSend(
     return;
   }
 
+  // Explicit receipt for the composer's pending-send journal. The client
+  // journals every dispatched send and restores unacked entries into the
+  // input; without an id-correlated ack it can only guess from live run
+  // events, and replayed events from a previous run falsely ack a send that
+  // never arrived. Sent after the run is registered, so the ack means "this
+  // exact frame was accepted and a run started for it".
+  const clientMsgId = typeof data.clientMsgId === 'string' ? data.clientMsgId : '';
+  if (clientMsgId) {
+    sendJson(ws, {
+      kind: 'send_ack',
+      sessionId,
+      clientMsgId,
+      timestamp: new Date().toISOString(),
+    });
+  }
+
   const clientOptions = (data.options ?? {}) as AnyRecord;
   const command = typeof data.content === 'string' ? data.content : '';
 

@@ -147,6 +147,11 @@
       "description": "Der Nachrichtenverlauf konnte nicht geladen werden. Prüfe deine Verbindung und versuche es erneut.",
       "retry": "Erneut versuchen"
     },
+    "transcriptMissing": {
+      "title": "Der Verlauf dieser Unterhaltung ist nicht mehr auf der Festplatte",
+      "description": "Die Transkriptdatei wurde gelöscht — höchstwahrscheinlich durch die automatische Bereinigung von Claude Code für Chats, die älter als 30 Tage sind (Einstellung cleanupPeriodDays). Nur die Metadaten der Sitzung sind erhalten."
+    },
+    "sendNotDelivered": "Deine Nachricht konnte nicht zugestellt werden — die Verbindung zum Server ist abgebrochen. Sie wurde unten im Eingabefeld wiederhergestellt.",
     "loading": {
       "olderMessages": "Ältere Nachrichten werden geladen...",
       "sessionMessages": "Sitzungsnachrichten werden geladen..."

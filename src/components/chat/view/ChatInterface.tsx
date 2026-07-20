@@ -105,6 +105,7 @@ function ChatInterface({
     isLoadingSessionMessages,
     isLoadingMoreMessages,
     historyLoadFailed,
+    historyTranscriptMissing,
     retryLoadMessages,
     hasMoreMessages,
     totalMessages,
@@ -405,6 +406,7 @@ function ChatInterface({
           isLoadingSessionMessages={isLoadingSessionMessages}
           isProcessing={isProcessing}
           historyLoadFailed={historyLoadFailed}
+          historyTranscriptMissing={historyTranscriptMissing}
           onRetryLoadHistory={retryLoadMessages}
           hasActivityIndicator={hasActivityIndicator}
           chatMessages={chatMessages}
