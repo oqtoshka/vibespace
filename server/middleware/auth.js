@@ -1,9 +1,71 @@
+import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
 import { userDb, appConfigDb } from '../modules/database/index.js';
-import { IS_PLATFORM } from '../constants/config.js';
+import {
+  IS_PLATFORM,
+  IS_WORKER_MODE,
+  WORKER_USER_HEADER,
+  WORKER_TOKEN_HEADER
+} from '../constants/config.js';
 
 // Use env var if set, otherwise auto-generate a unique secret per installation
 const JWT_SECRET = process.env.JWT_SECRET || appConfigDb.getOrCreateJwtSecret();
+
+// Usernames become filesystem-adjacent identifiers downstream, so keep them boring.
+const WORKER_USERNAME_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/i;
+
+/**
+ * Verifies the manager's shared secret in constant time.
+ *
+ * Reachability is not an authentication boundary here: on the target deployment
+ * the agent gateway shares a network namespace with the manager and sibling
+ * workers sit on the same bridge, so anyone who can route to a worker could
+ * otherwise forge an identity header. When VS_WORKER_TOKEN is unset (laptop
+ * runs, tests) the check is skipped.
+ */
+const hasValidWorkerToken = (req) => {
+  const expected = process.env.VS_WORKER_TOKEN;
+  if (!expected) return true;
+
+  const presented = req.headers[WORKER_TOKEN_HEADER];
+  if (typeof presented !== 'string') return false;
+
+  const expectedBuf = Buffer.from(expected);
+  const presentedBuf = Buffer.from(presented);
+  if (expectedBuf.length !== presentedBuf.length) return false;
+  return crypto.timingSafeEqual(expectedBuf, presentedBuf);
+};
+
+/**
+ * Resolves the worker's single tenant, creating the row on first contact.
+ *
+ * Workers never run a login flow, so the stored hash is a placeholder that no
+ * bcrypt comparison can ever match. The row is read back through getUserById so
+ * `req.user` carries the same public columns the JWT path exposes.
+ */
+const ensureWorkerUser = (username) => {
+  const existing = userDb.getUserByUsername(username);
+  if (existing) return userDb.getUserById(existing.id);
+
+  const created = userDb.createUser(username, 'managed:no-password');
+  return userDb.getUserById(created.id);
+};
+
+/**
+ * Reads the manager-stamped identity off a request, or null if it isn't
+ * trustworthy. Shared by the HTTP middleware and the WebSocket verifier.
+ */
+const readWorkerIdentity = (req) => {
+  if (!hasValidWorkerToken(req)) return null;
+
+  const raw = req.headers[WORKER_USER_HEADER];
+  const username = Array.isArray(raw) ? raw[0] : raw;
+  if (typeof username !== 'string' || !WORKER_USERNAME_PATTERN.test(username)) {
+    return null;
+  }
+
+  return ensureWorkerUser(username);
+};
 
 // Optional API key middleware
 const validateApiKey = (req, res, next) => {
@@ -21,6 +83,23 @@ const validateApiKey = (req, res, next) => {
 
 // JWT authentication middleware
 const authenticateToken = async (req, res, next) => {
+  // Worker mode: the manager already authenticated the user and re-stamped the
+  // identity header, so any Authorization header carries a manager-signed token
+  // this process has no key for. Trust the header instead.
+  if (IS_WORKER_MODE) {
+    try {
+      const user = readWorkerIdentity(req);
+      if (!user) {
+        return res.status(401).json({ error: 'Worker mode: missing or invalid managed identity' });
+      }
+      req.user = user;
+      return next();
+    } catch (error) {
+      console.error('Worker mode auth error:', error);
+      return res.status(500).json({ error: 'Worker mode: failed to resolve user' });
+    }
+  }
+
   // Platform mode:  use single database user
   if (IS_PLATFORM) {
     try {
@@ -128,5 +207,7 @@ export {
   authenticateToken,
   generateToken,
   authenticateWebSocket,
+  ensureWorkerUser,
+  readWorkerIdentity,
   JWT_SECRET
 };

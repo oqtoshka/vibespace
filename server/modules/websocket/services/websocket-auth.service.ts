@@ -2,14 +2,24 @@ import type { VerifyClientCallbackSync } from 'ws';
 
 import type { AuthenticatedWebSocketRequest } from '@/shared/types.js';
 
+type AuthenticatedUser = {
+  id?: string | number;
+  userId?: string | number;
+  username?: string;
+  [key: string]: unknown;
+};
+
 type WebSocketAuthDependencies = {
   isPlatform: boolean;
-  authenticateWebSocket: (token: string | null) => {
-    id?: string | number;
-    userId?: string | number;
-    username?: string;
-    [key: string]: unknown;
-  } | null;
+  authenticateWebSocket: (token: string | null) => AuthenticatedUser | null;
+  /** True when this process is a per-user worker behind the manager. */
+  isWorkerMode?: boolean;
+  /**
+   * Resolves the manager-stamped identity off the upgrade request, or null when
+   * the headers aren't trustworthy. Supplied by the auth middleware so the
+   * token check and user auto-provisioning stay in one place.
+   */
+  resolveWorkerUser?: (request: AuthenticatedWebSocketRequest) => AuthenticatedUser | null;
 };
 
 /**
@@ -33,6 +43,21 @@ export function verifyWebSocketClient(
   }
 
   console.log('WebSocket connection attempt to:', `${loggedUrl.pathname}${loggedUrl.search}`);
+
+  // Worker mode: identity comes from the header the manager stamped after it
+  // authenticated the user. Leaving `user` unset on failure keeps the existing
+  // contract — the connection handler closes with the app-level auth code.
+  if (dependencies.isWorkerMode) {
+    const user = dependencies.resolveWorkerUser?.(request) ?? null;
+    if (!user) {
+      console.log(`[WARN] Worker mode: unauthenticated WebSocket upgrade (${loggedUrl.pathname})`);
+      return true;
+    }
+
+    request.user = user;
+    console.log('[OK] Worker mode WebSocket authenticated for user:', user.username);
+    return true;
+  }
 
   // Platform mode: use the first DB user and skip token checks.
   if (dependencies.isPlatform) {
