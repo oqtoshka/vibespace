@@ -56,14 +56,15 @@
     "enable": "Enable voice",
     "enableDescription": "Show the mic button and the read-aloud button on messages.",
     "backendTitle": "Backend",
-    "backendDescription": "Point at OpenAI, Groq, or a local server (LocalAI, Speaches, Kokoro-FastAPI). Leave blank to use the server default.",
-    "baseUrl": "Base URL",
+    "backendDescription": "OpenAI, Groq, or a local server (LocalAI, Speaches, Kokoro-FastAPI) — whatever OpenAI-compatible backend the server is configured to talk to.",
     "apiKey": "API key",
     "sttModel": "Speech-to-text model",
     "ttsModel": "Text-to-speech model",
     "voice": "Voice",
     "format": "Audio format",
-    "note": "A custom base URL is called directly by your browser and must allow browser CORS requests. Leave it blank to use the server-configured backend."
+    "note": "Saved to your account automatically — these settings follow you across browsers and devices. The API key is stored server-side and never sent back to the browser.",
+    "clearApiKey": "Clear saved API key",
+    "saveError": "Couldn't save voice settings — check your connection and try again."
   },
   "quickSettings": {
     "title": "Quick Settings",

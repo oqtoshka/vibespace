@@ -1,4 +1,5 @@
-import { synthesizeVoice, voiceConfigSignature } from './voiceApi';
+import { voiceConfigSignature } from '../hooks/useVoiceConfig';
+import { synthesizeVoice } from './voiceApi';
 
 // A single app-level audio player for read-aloud. It owns one <audio> element, lives
 // outside the React tree, and caches generated audio by content. Because playback is not

@@ -20,7 +20,7 @@ function Field({ label, ...props }: { label: string } & InputHTMLAttributes<HTML
 export default function VoiceSettingsTab() {
   const { t } = useTranslation('settings');
   const { preferences, setPreference } = useUiPreferences();
-  const { config, update } = useVoiceConfig();
+  const { config, apiKeyInput, update, saveError } = useVoiceConfig();
   const voiceEnabled = preferences.voiceEnabled;
 
   return (
@@ -42,20 +42,25 @@ export default function VoiceSettingsTab() {
       {voiceEnabled && (
         <SettingsSection title={t('voiceSettings.backendTitle')} description={t('voiceSettings.backendDescription')}>
           <div className="space-y-4">
-            <Field
-              label={t('voiceSettings.baseUrl')}
-              placeholder="https://api.openai.com/v1"
-              value={config.baseUrl}
-              onChange={(e) => update({ baseUrl: e.target.value })}
-            />
-            <Field
-              label={t('voiceSettings.apiKey')}
-              type="password"
-              autoComplete="off"
-              placeholder="sk-…"
-              value={config.apiKey}
-              onChange={(e) => update({ apiKey: e.target.value })}
-            />
+            <div className="space-y-1">
+              <Field
+                label={t('voiceSettings.apiKey')}
+                type="password"
+                autoComplete="off"
+                placeholder={config.apiKeySet ? config.apiKeyHint : 'sk-…'}
+                value={apiKeyInput}
+                onChange={(e) => update({ apiKey: e.target.value })}
+              />
+              {config.apiKeySet && (
+                <button
+                  type="button"
+                  className="text-xs text-muted-foreground underline hover:text-foreground"
+                  onClick={() => update({ clearApiKey: true })}
+                >
+                  {t('voiceSettings.clearApiKey')}
+                </button>
+              )}
+            </div>
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-4">
               <Field
                 label={t('voiceSettings.sttModel')}
@@ -82,7 +87,13 @@ export default function VoiceSettingsTab() {
                 onChange={(e) => update({ ttsFormat: e.target.value })}
               />
             </div>
-            <p className="text-xs text-muted-foreground">{t('voiceSettings.note')}</p>
+            <p className="text-xs text-muted-foreground">
+              {saveError ? (
+                <span className="text-destructive">{t('voiceSettings.saveError')}</span>
+              ) : (
+                t('voiceSettings.note')
+              )}
+            </p>
           </div>
         </SettingsSection>
       )}
