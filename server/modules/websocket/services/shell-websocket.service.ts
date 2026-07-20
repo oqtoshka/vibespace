@@ -32,6 +32,10 @@ type PtySessionEntry = {
   timeoutId: NodeJS.Timeout | null;
   projectPath: string;
   sessionId: string | null;
+  // Cancels this shell's "waiting for a fresh CLI session id" registration
+  // (see pending-cli-sessions.service). Null when the shell resumed an
+  // existing provider session or runs no agent at all.
+  releasePendingCliSession: (() => void) | null;
 };
 
 const ptySessionsMap = new Map<string, PtySessionEntry>();
@@ -43,6 +47,11 @@ type ShellWebSocketDependencies = {
     sessionId: string,
     provider: string,
   ) => string | null | undefined;
+  registerPendingCliSession: (
+    provider: string,
+    appSessionId: string,
+    projectPath: string,
+  ) => () => void;
   stripAnsiSequences: (content: string) => string;
   normalizeDetectedUrl: (url: string) => string | null;
   extractUrlsFromText: (content: string) => string[];
@@ -290,6 +299,7 @@ export function handleShellConnection(
             if (oldSession.timeoutId) {
               clearTimeout(oldSession.timeoutId);
             }
+            oldSession.releasePendingCliSession?.();
             oldSession.pty.kill();
             ptySessionsMap.delete(ptySessionKey);
           }
@@ -375,6 +385,16 @@ export function handleShellConnection(
           },
         });
 
+        // A session-backed shell with nothing to resume lets the CLI allocate
+        // a fresh provider-native session id. Register the app session so the
+        // transcript watcher can bind that id back to it — otherwise the chat
+        // view of this session stays empty and the sidebar grows a duplicate
+        // row for the same conversation.
+        const releasePendingCliSession =
+          !isPlainShell && hasSession && sessionId && !resumeSessionId
+            ? dependencies.registerPendingCliSession(provider, sessionId, resolvedProjectPath)
+            : null;
+
         ptySessionsMap.set(ptySessionKey, {
           pty: shellProcess,
           ws,
@@ -382,6 +402,7 @@ export function handleShellConnection(
           timeoutId: null,
           projectPath,
           sessionId,
+          releasePendingCliSession,
         });
 
         shellProcess.onData((chunk) => {
@@ -485,6 +506,7 @@ export function handleShellConnection(
             clearTimeout(session.timeoutId);
           }
 
+          session?.releasePendingCliSession?.();
           ptySessionsMap.delete(ptySessionKey);
           shellProcess = null;
         });
@@ -536,6 +558,7 @@ export function handleShellConnection(
             if (session.timeoutId) {
               clearTimeout(session.timeoutId);
             }
+            session.releasePendingCliSession?.();
             session.pty.kill();
             ptySessionsMap.delete(ptySessionKey);
           }
@@ -572,6 +595,7 @@ export function handleShellConnection(
         return;
       }
 
+      session.releasePendingCliSession?.();
       session.pty.kill();
       ptySessionsMap.delete(ptySessionKey as string);
     }, PTY_SESSION_TIMEOUT);
