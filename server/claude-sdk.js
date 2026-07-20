@@ -28,6 +28,7 @@ import {
   notifyUserIfEnabled
 } from './services/notification-orchestrator.js';
 import { describeTool } from './services/notification-content.js';
+import { describeAssistantActivity } from './services/activity-status.js';
 import { sessionsService } from './modules/providers/services/sessions.service.js';
 import { providerAuthService } from './modules/providers/services/provider-auth.service.js';
 import { createCompleteMessage, createNormalizedMessage } from './shared/utils.js';
@@ -989,9 +990,26 @@ async function runSessionLoop(session) {
         if (!session.awaitingResult) {
           session.lastAssistantText = '';
           session.turnToolNames = [];
+          session.lastActivityText = undefined;
         }
         session.awaitingResult = true;
         captureAssistantSummary(session, message);
+
+        // Narrate the turn in the activity indicator. Without this the UI only
+        // ever cycles generic words ("Thinking", "Working"), so a long tool run
+        // looks identical to a stalled one. A prose-only message clears the
+        // label back to those words, which is what the model is actually doing.
+        const activityText = describeAssistantActivity(message);
+        if (activityText !== session.lastActivityText) {
+          session.lastActivityText = activityText;
+          session.writer.send(createNormalizedMessage({
+            kind: 'status',
+            text: activityText,
+            canInterrupt: true,
+            sessionId: sid,
+            provider: 'claude',
+          }));
+        }
       }
 
       // Drive background-job tracking / auto-resume off the task system messages.
@@ -1255,6 +1273,9 @@ async function startPersistentSession(command, options, ws) {
     awaitingResult: true,
     lastAssistantText: '',
     turnToolNames: [],
+    // Last label pushed to the activity indicator, so repeat tool calls of the
+    // same shape don't spam identical status messages down the socket.
+    lastActivityText: undefined,
     firstTurnCompleted: false,
     sessionCreatedSent: false,
     currentTurn: null,

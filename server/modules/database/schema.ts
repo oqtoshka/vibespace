@@ -116,6 +116,11 @@ CREATE TABLE IF NOT EXISTS sessions (
     -- id mid-run, or equals \`session_id\` for sessions discovered on disk.
     provider_session_id TEXT,
     custom_name TEXT,
+    -- Where \`custom_name\` came from, so a better title can replace a weaker
+    -- one without ever clobbering an explicit rename: 'user' (renamed by hand)
+    -- > 'ai' (a provider-generated title) > 'derived' (first/last prompt or
+    -- another mechanical fallback). NULL on rows that predate this column.
+    name_source TEXT,
     project_path TEXT,
     jsonl_path TEXT,
     worktree_path TEXT,

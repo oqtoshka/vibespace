@@ -9,14 +9,37 @@ import {
   findFilesRecursivelyCreatedAfter,
   normalizeSessionName,
   readFileTimestamps,
+  shouldReplaceSessionName,
 } from '@/shared/utils.js';
+import type { SessionNameSource } from '@/shared/utils.js';
 import type { IProviderSessionSynchronizer } from '@/shared/interfaces.js';
 
 type ParsedSession = {
   sessionId: string;
   projectPath: string;
   sessionName?: string;
+  nameSource?: SessionNameSource;
 };
+
+const PLACEHOLDER_NAME = 'Untitled Claude Session';
+
+/**
+ * Title candidates the Claude CLI leaves in a transcript, best first.
+ *
+ * `custom-title` is a rename the user typed into the CLI, `ai-title` is the
+ * CLI's own generated summary of the conversation, and `last-prompt` is just
+ * the most recent thing the user typed. Ranking matters because all three are
+ * appended repeatedly: a plain "scan backwards for the first title-ish event"
+ * almost always lands on a `last-prompt`, which is why sessions ended up named
+ * after a message instead of their topic.
+ */
+const TITLE_EVENTS = [
+  { type: 'custom-title', field: 'customTitle', source: 'ai' },
+  { type: 'ai-title', field: 'aiTitle', source: 'ai' },
+  { type: 'last-prompt', field: 'lastPrompt', source: 'derived' },
+] as const satisfies ReadonlyArray<{ type: string; field: string; source: SessionNameSource }>;
+
+type TitleCandidate = { name: string; source: SessionNameSource };
 
 /**
  * Session indexer for Claude transcript artifacts.
@@ -70,7 +93,8 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
         parsed.sessionName,
         timestamps.createdAt,
         timestamps.updatedAt,
-        filePath
+        filePath,
+        parsed.nameSource
       );
       processed += 1;
     }
@@ -104,7 +128,8 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
       parsed.sessionName,
       timestamps.createdAt,
       timestamps.updatedAt,
-      filePath
+      filePath,
+      parsed.nameSource
     );
   }
 
@@ -139,28 +164,49 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
     const existingSession = sessionsDb.getSessionByProviderSessionId(parsed.sessionId)
       ?? sessionsDb.getSessionById(parsed.sessionId);
     const existingSessionName = existingSession?.custom_name;
-    if (existingSessionName && existingSessionName !== 'Untitled Claude Session') {
+    const hasRealExistingName = Boolean(existingSessionName)
+      && existingSessionName !== PLACEHOLDER_NAME;
+
+    const candidate = await this.extractSessionTitle(filePath, parsed.sessionId)
+      // history.jsonl only ever carries the prompt text the user typed.
+      ?? this.historyCandidate(nameMap.get(parsed.sessionId));
+
+    // Keep the stored name unless the transcript now offers one of equal or
+    // better provenance — this is what lets the CLI's generated title replace
+    // the first-message placeholder once it appears, a few turns in.
+    const keepExisting = hasRealExistingName
+      && (!candidate || !shouldReplaceSessionName(existingSession?.name_source, candidate.source));
+
+    if (keepExisting) {
       return {
         ...parsed,
-        sessionName: normalizeSessionName(existingSessionName, 'Untitled Claude Session'),
+        sessionName: normalizeSessionName(existingSessionName ?? undefined, PLACEHOLDER_NAME),
+        nameSource: (existingSession?.name_source as SessionNameSource | undefined) ?? 'derived',
       };
-    }
-
-    let sessionName = nameMap.get(parsed.sessionId);
-    if (!sessionName) {
-      sessionName = await this.extractSessionAiTitleFromEnd(filePath, parsed.sessionId);
     }
 
     return {
       ...parsed,
-      sessionName: normalizeSessionName(sessionName, 'Untitled Claude Session'),
+      sessionName: normalizeSessionName(candidate?.name, PLACEHOLDER_NAME),
+      nameSource: candidate?.source ?? 'derived',
     };
   }
 
-  private async extractSessionAiTitleFromEnd(
+  private historyCandidate(display: string | undefined): TitleCandidate | null {
+    return display?.trim() ? { name: display, source: 'derived' } : null;
+  }
+
+  /**
+   * Reads the transcript back-to-front and returns the best title event in it.
+   * Scanning backwards means the newest of each kind wins; ranking across kinds
+   * means a generated title beats any prompt, however recent.
+   */
+  private async extractSessionTitle(
     filePath: string,
     sessionId: string
-  ): Promise<string | undefined> {
+  ): Promise<TitleCandidate | null> {
+    const found = new Map<string, string>();
+
     try {
       const content = await readFile(filePath, 'utf8');
       const lines = content.split(/\r?\n/);
@@ -179,24 +225,35 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
         }
 
         const data = parsed as Record<string, unknown>;
-        const eventType = typeof data.type === 'string' ? data.type : undefined;
-        const eventSessionId = typeof data.sessionId === 'string' ? data.sessionId : undefined;
-        const aiTitle = typeof data.aiTitle === 'string' ? data.aiTitle : undefined;
-        const lastPrompt = typeof data.lastPrompt === 'string' ? data.lastPrompt : undefined;
-        const claudeRenamedTitle = typeof data.customTitle === 'string' ? data.customTitle : undefined;
+        if (data.sessionId !== sessionId || typeof data.type !== 'string') {
+          continue;
+        }
 
-        if (
-          (eventType === 'ai-title' && eventSessionId === sessionId && aiTitle?.trim()) ||
-          (eventType === 'last-prompt' && eventSessionId === sessionId && lastPrompt?.trim()) ||
-          (eventType === "custom-title" && eventSessionId === sessionId && claudeRenamedTitle?.trim())
-        ) {
-          return aiTitle || lastPrompt || claudeRenamedTitle;
+        const event = TITLE_EVENTS.find((entry) => entry.type === data.type);
+        if (!event || found.has(event.type)) {
+          continue;
+        }
+
+        const value = data[event.field];
+        if (typeof value === 'string' && value.trim()) {
+          found.set(event.type, value);
+          // The best-ranked event is all we need; stop once it's in hand.
+          if (event.type === TITLE_EVENTS[0].type) {
+            break;
+          }
         }
       }
     } catch {
       // Ignore missing/unreadable files so sync can continue.
     }
 
-    return undefined;
+    for (const event of TITLE_EVENTS) {
+      const name = found.get(event.type);
+      if (name) {
+        return { name, source: event.source };
+      }
+    }
+
+    return null;
   }
 }

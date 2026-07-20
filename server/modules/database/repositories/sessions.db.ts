@@ -1,5 +1,6 @@
 import { getConnection } from '@/modules/database/connection.js';
 import { projectsDb } from '@/modules/database/repositories/projects.db.js';
+import type { SessionNameSource } from '@/shared/utils.js';
 import { normalizeProjectPath } from '@/shared/utils.js';
 import { parentProjectFromWorktreeCwd } from '@/utils/worktrees.js';
 
@@ -11,13 +12,14 @@ type SessionRow = {
   jsonl_path: string | null;
   worktree_path: string | null;
   custom_name: string | null;
+  name_source: string | null;
   isArchived: number;
   created_at: string;
   updated_at: string;
 };
 
 const SESSION_ROW_COLUMNS =
-  'session_id, provider, provider_session_id, project_path, jsonl_path, worktree_path, custom_name, isArchived, created_at, updated_at';
+  'session_id, provider, provider_session_id, project_path, jsonl_path, worktree_path, custom_name, name_source, isArchived, created_at, updated_at';
 
 const SQLITE_UTC_TIMESTAMP_REGEX = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
 
@@ -76,7 +78,8 @@ export const sessionsDb = {
     customName?: string,
     createdAt?: string,
     updatedAt?: string,
-    jsonlPath?: string | null
+    jsonlPath?: string | null,
+    nameSource?: SessionNameSource | null
   ): string {
     const db = getConnection();
     const createdAtValue = normalizeTimestamp(createdAt);
@@ -120,7 +123,8 @@ export const sessionsDb = {
            jsonl_path = ?,
            worktree_path = ?,
            isArchived = 0,
-           custom_name = COALESCE(?, custom_name)
+           custom_name = COALESCE(?, custom_name),
+           name_source = COALESCE(?, name_source)
          WHERE session_id = ?`
       ).run(
         provider,
@@ -129,6 +133,7 @@ export const sessionsDb = {
         jsonlPath ?? null,
         worktreePath,
         customName ?? null,
+        customName ? nameSource ?? null : null,
         existing.session_id
       );
 
@@ -139,8 +144,8 @@ export const sessionsDb = {
     // keyed by the provider-native id for both columns. The ON CONFLICT path
     // covers legacy rows that predate the provider_session_id mapping.
     db.prepare(
-      `INSERT INTO sessions (session_id, provider, provider_session_id, custom_name, project_path, jsonl_path, worktree_path, isArchived, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 0, COALESCE(?, CURRENT_TIMESTAMP), COALESCE(?, CURRENT_TIMESTAMP))
+      `INSERT INTO sessions (session_id, provider, provider_session_id, custom_name, name_source, project_path, jsonl_path, worktree_path, isArchived, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, COALESCE(?, CURRENT_TIMESTAMP), COALESCE(?, CURRENT_TIMESTAMP))
        ON CONFLICT(session_id) DO UPDATE SET
          provider = excluded.provider,
          provider_session_id = excluded.provider_session_id,
@@ -149,12 +154,14 @@ export const sessionsDb = {
          jsonl_path = excluded.jsonl_path,
          worktree_path = excluded.worktree_path,
          isArchived = 0,
-         custom_name = COALESCE(excluded.custom_name, sessions.custom_name)`
+         custom_name = COALESCE(excluded.custom_name, sessions.custom_name),
+         name_source = COALESCE(excluded.name_source, sessions.name_source)`
     ).run(
       providerSessionId,
       provider,
       providerSessionId,
       customName ?? null,
+      customName ? nameSource ?? null : null,
       normalizedProjectPath,
       jsonlPath ?? null,
       worktreePath,
@@ -180,8 +187,8 @@ export const sessionsDb = {
     projectsDb.createProjectPath(normalizedProjectPath);
 
     db.prepare(
-      `INSERT INTO sessions (session_id, provider, provider_session_id, custom_name, project_path, jsonl_path, isArchived, created_at, updated_at)
-       VALUES (?, ?, NULL, NULL, ?, NULL, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
+      `INSERT INTO sessions (session_id, provider, provider_session_id, custom_name, name_source, project_path, jsonl_path, isArchived, created_at, updated_at)
+       VALUES (?, ?, NULL, NULL, NULL, ?, NULL, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
     ).run(sessionId, provider, normalizedProjectPath);
 
     return sessionId;
@@ -216,9 +223,16 @@ export const sessionsDb = {
              provider_session_id = ?,
              jsonl_path = COALESCE(jsonl_path, ?),
              custom_name = COALESCE(custom_name, ?),
+             name_source = COALESCE(name_source, ?),
              updated_at = CURRENT_TIMESTAMP
            WHERE session_id = ?`
-        ).run(providerSessionId, duplicate.jsonl_path, duplicate.custom_name, sessionId);
+        ).run(
+          providerSessionId,
+          duplicate.jsonl_path,
+          duplicate.custom_name,
+          duplicate.name_source,
+          sessionId,
+        );
         return;
       }
 
@@ -233,13 +247,17 @@ export const sessionsDb = {
     merge();
   },
 
-  updateSessionCustomName(sessionId: string, customName: string): void {
+  updateSessionCustomName(
+    sessionId: string,
+    customName: string,
+    nameSource: SessionNameSource = 'user'
+  ): void {
     const db = getConnection();
     db.prepare(
       `UPDATE sessions
-       SET custom_name = ?
+       SET custom_name = ?, name_source = ?
        WHERE session_id = ?`
-    ).run(customName, sessionId);
+    ).run(customName, nameSource, sessionId);
   },
 
   getSessionById(sessionId: string): SessionRow | null {
