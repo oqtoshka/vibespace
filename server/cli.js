@@ -156,6 +156,7 @@ Usage:
 
 Commands:
   start            Start the VibeSpace server (default)
+  manager          Start the multi-user manager (proxies users to workers)
   sandbox          Manage Docker sandbox environments
   browser-use-mcp  Run the Browser MCP stdio server
   status           Show configuration and data locations
@@ -608,6 +609,13 @@ async function startBrowserUseMcp() {
     await import('./browser-use-mcp.js');
 }
 
+// Start the multi-user manager, which authenticates users and proxies each of
+// them to their own worker instance. See server/manager/README.md.
+async function startManagerCommand() {
+    const { startManager } = await import('./manager/index.js');
+    await startManager();
+}
+
 // Parse CLI arguments
 function parseArgs(args) {
     const parsed = { command: 'start', options: {} };
@@ -645,7 +653,11 @@ async function main() {
     const { command, options, remainingArgs } = parseArgs(args);
 
     // Apply CLI options to environment variables
-    if (options.serverPort) {
+    if (options.serverPort && command === 'manager') {
+        // The manager reads its own port, so --port targets it rather than the
+        // worker port the same flag sets for `start`.
+        process.env.VS_MANAGER_PORT = options.serverPort;
+    } else if (options.serverPort) {
         process.env.SERVER_PORT = options.serverPort;
     } else if (!process.env.SERVER_PORT && process.env.PORT) {
         process.env.SERVER_PORT = process.env.PORT;
@@ -663,6 +675,9 @@ async function main() {
             break;
         case 'browser-use-mcp':
             await startBrowserUseMcp();
+            break;
+        case 'manager':
+            await startManagerCommand();
             break;
         case 'status':
         case 'info':
