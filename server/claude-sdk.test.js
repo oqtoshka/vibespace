@@ -305,6 +305,55 @@ test('a mid-session permission mode change is applied to the live session on reu
   }
 });
 
+test('a mid-session reasoning effort change is applied to the live session on reuse', async () => {
+  const sessionId = 'effort-switch-session-1';
+  const flagSettingsCalls = [];
+  // Turn 1 at the model default, then a reused turn 2 sent with effort 'max'.
+  const fakeQuery = ({ prompt }) => {
+    const reader = prompt[Symbol.asyncIterator]();
+    const gen = (async function* () {
+      await reader.next();
+      yield assistantText('turn one', sessionId);
+      yield resultMsg(sessionId);
+      await reader.next();
+      yield assistantText('turn two', sessionId);
+      yield resultMsg(sessionId);
+      await reader.next();
+      yield assistantText('turn three', sessionId);
+      yield resultMsg(sessionId);
+    })();
+    gen.interrupt = async () => {};
+    gen.setModel = async () => {};
+    gen.setPermissionMode = async () => {};
+    gen.applyFlagSettings = async (settings) => { flagSettingsCalls.push(settings); };
+    return gen;
+  };
+  __setClaudeQueryImpl(fakeQuery);
+  const writer = makeRecordingWriter();
+
+  try {
+    await queryClaudeSDK('first message', { sessionId, model: 'sonnet', effort: 'default' }, writer);
+    assert.deepEqual(flagSettingsCalls, [], 'no effort switch while the effort is unchanged');
+
+    await queryClaudeSDK('think harder', { sessionId, model: 'sonnet', effort: 'max' }, writer);
+    assert.deepEqual(
+      flagSettingsCalls,
+      [{ effortLevel: 'max' }],
+      'the reused session adopts the new effort',
+    );
+
+    await queryClaudeSDK('back to normal', { sessionId, model: 'sonnet', effort: 'default' }, writer);
+    assert.deepEqual(
+      flagSettingsCalls.at(-1),
+      { effortLevel: null },
+      'returning to default clears the flag layer',
+    );
+  } finally {
+    await abortClaudeSDKSession(sessionId).catch(() => {});
+    __setClaudeQueryImpl(null);
+  }
+});
+
 test('isClaudeSDKSessionActive reflects an in-flight turn, not mere liveness', async () => {
   const sessionId = 'active-session-1';
   // A query whose first turn never produces a result until we close input.

@@ -1140,6 +1140,30 @@ async function reuseSession(session, command, options, ws) {
     console.warn(`setModel during reuse for ${session.sessionId} failed:`, err?.message || err);
   }
 
+  // Apply a mid-session reasoning-effort switch. Like the permission mode, the
+  // effort rides on every user message but the live session keeps whatever it
+  // was spawned with, so picking a new level from the composer would otherwise
+  // only change the label. Validated against the (possibly just switched) model
+  // so an unsupported level falls back to the model's own default.
+  try {
+    let effortModels = CLAUDE_FALLBACK_MODELS;
+    try {
+      effortModels = (await providerModelsService.getProviderModels('claude')).models;
+    } catch {
+      // Static catalog is a fine fallback for validation.
+    }
+    const wantedEffort = resolveClaudeEffort(session.model, options.effort, effortModels);
+    if (session.sdkOptions && wantedEffort !== session.sdkOptions.effort) {
+      session.sdkOptions.effort = wantedEffort;
+      if (session.instance?.applyFlagSettings) {
+        // null clears the flag layer so the model's default effort applies again.
+        await session.instance.applyFlagSettings({ effortLevel: wantedEffort ?? null });
+      }
+    }
+  } catch (err) {
+    console.warn(`effort switch during reuse for ${session.sessionId} failed:`, err?.message || err);
+  }
+
   // Apply a mid-session permission mode switch. The mode rides on every user
   // message, but the live SDK session keeps whatever it was spawned with, so a
   // later default→bypassPermissions change would otherwise be silently ignored
