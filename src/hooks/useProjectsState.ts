@@ -449,6 +449,26 @@ export function useProjectsState({
       return;
     }
 
+    // Transcript-watcher delta for one session (kind-based, not type-based).
+    // When it targets the session on screen and the app itself isn't driving
+    // that session (no active run), the transcript changed underneath us —
+    // e.g. the conversation is happening in the Terminal tab's CLI, or in
+    // another client — so nudge the chat view to refetch its history.
+    const upsertedMessage = latestMessage as { kind?: string; sessionId?: string };
+    if (upsertedMessage.kind === 'session_upserted') {
+      const upsertedSessionId =
+        typeof upsertedMessage.sessionId === 'string' ? upsertedMessage.sessionId : null;
+      if (
+        upsertedSessionId &&
+        selectedSession &&
+        upsertedSessionId === selectedSession.id &&
+        !activeSessions.has(upsertedSessionId)
+      ) {
+        setExternalMessageUpdate((prev) => prev + 1);
+      }
+      return;
+    }
+
     if (latestMessage.type !== 'projects_updated') {
       return;
     }

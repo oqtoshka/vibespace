@@ -16,7 +16,7 @@ import mime from 'mime-types';
 import Database from 'better-sqlite3';
 
 import { AppError, WORKSPACES_ROOT, getOpenCodeDatabasePath, validateWorkspacePath } from '@/shared/utils.js';
-import { closeSessionsWatcher, initializeSessionsWatcher } from '@/modules/providers/index.js';
+import { closeSessionsWatcher, initializeSessionsWatcher, registerPendingCliSession } from '@/modules/providers/index.js';
 import { getSubagentConversation } from '@/modules/providers/list/claude/claude-sessions.provider.js';
 import { createWebSocketServer } from '@/modules/websocket/index.js';
 import { chatRunRegistry } from '@/modules/websocket/services/chat-run-registry.service.js';
@@ -158,6 +158,7 @@ const wss = createWebSocketServer(server, {
 
             return null;
         },
+        registerPendingCliSession,
         stripAnsiSequences,
         normalizeDetectedUrl,
         extractUrlsFromText,

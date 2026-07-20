@@ -3,6 +3,7 @@ import path from 'node:path';
 import { readFile } from 'node:fs/promises';
 
 import { sessionsDb } from '@/modules/database/index.js';
+import { claimPendingCliSession } from '@/modules/providers/services/pending-cli-sessions.service.js';
 import {
   buildLookupMap,
   extractFirstValidJsonlData,
@@ -115,7 +116,10 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
     }
 
     const nameMap = await buildLookupMap(path.join(this.claudeHome, 'history.jsonl'), 'sessionId', 'display');
-    const parsed = await this.processSessionFile(filePath, nameMap);
+    // Only the live watcher path may claim a waiting terminal: the bulk rescan
+    // in synchronize() also walks years-old transcripts, which must never
+    // attach themselves to a freshly opened empty chat.
+    const parsed = await this.processSessionFile(filePath, nameMap, { claimPendingCliSession: true });
     if (!parsed) {
       return null;
     }
@@ -138,7 +142,8 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
    */
   private async processSessionFile(
     filePath: string,
-    nameMap: Map<string, string>
+    nameMap: Map<string, string>,
+    options?: { claimPendingCliSession?: boolean }
   ): Promise<ParsedSession | null> {
     const parsed = await extractFirstValidJsonlData(filePath, (rawData) => {
       const data = rawData as Record<string, unknown>;
@@ -157,6 +162,20 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
 
     if (!parsed) {
       return null;
+    }
+
+    // A session born in the Terminal tab runs the real CLI, which allocates
+    // its own session id the app never hears about. If a terminal registered
+    // itself as waiting for a fresh CLI session in this project, bind this
+    // never-seen-before id to that app session so the chat view the user has
+    // open fills in instead of the sidebar growing a duplicate row.
+    if (options?.claimPendingCliSession
+      && !sessionsDb.getSessionByProviderSessionId(parsed.sessionId)
+      && !sessionsDb.getSessionById(parsed.sessionId)) {
+      const waitingAppSessionId = claimPendingCliSession(this.provider, parsed.projectPath);
+      if (waitingAppSessionId) {
+        sessionsDb.assignProviderSessionId(waitingAppSessionId, parsed.sessionId);
+      }
     }
 
     // App-created sessions are keyed by an app id, so disk-discovered provider
