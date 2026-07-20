@@ -16,7 +16,12 @@ import { downscaleImageFiles } from '../../../utils/imageDownscale';
 import { readActiveWorktree, bindSessionCwd, getSessionCwd } from '../../../hooks/useActiveWorktree';
 import type { MarkSessionProcessing } from '../../../hooks/useSessionProtection';
 import { grantClaudeToolPermission } from '../utils/chatPermissions';
-import { safeLocalStorage } from '../utils/chatStorage';
+import {
+  addPendingSend,
+  readPendingSends,
+  removePendingSends,
+  safeLocalStorage,
+} from '../utils/chatStorage';
 import type {
   ChatMessage,
   PendingPermissionRequest,
@@ -86,6 +91,10 @@ export interface QueuedMessage {
 
 // Cap the pending queue so a runaway loop can't accumulate unbounded sends.
 const MAX_QUEUED_MESSAGES = 20;
+// How long a journaled send may stay unacked before it is presumed lost and
+// restored into the composer. Must comfortably exceed the ws reconnect delay
+// (3s) plus a subscribe/snapshot round-trip so live sends don't false-restore.
+const PENDING_SEND_GRACE_MS = 10_000;
 
 // Attachment caps — mirrored by the server's upload-images endpoint limits.
 const MAX_ATTACHMENT_MB = 20;
@@ -244,7 +253,7 @@ export function useChatComposerState({
   // than lost) if the server rejects it with RUN_IN_PROGRESS — a state-desync
   // where the client thought the session idle. Consumed one-shot by the
   // 'vibespace:run-in-progress' listener below.
-  const lastSubmittedRef = useRef<{ sessionId: string; content: string; images: File[] } | null>(null);
+  const lastSubmittedRef = useRef<{ sessionId: string; content: string; images: File[]; clientMsgId: string } | null>(null);
   const selectedProjectId = selectedProject?.projectId;
 
   const handleBuiltInCommand = useCallback(
@@ -783,7 +792,16 @@ export function useChatComposerState({
       // it if the backend rejects it (the client believed the session idle but
       // a run was actually active). The original File[] is kept so a re-send
       // re-uploads cleanly.
-      lastSubmittedRef.current = { sessionId: targetSessionId, content, images };
+      // Journal the send before dispatch: the frame can die silently on a
+      // stale socket, and the composer has already been cleared by the time
+      // we get here. The entry is acked away by live run events for this
+      // session; if none arrive it is restored into the composer input.
+      // The id never leaves the client except as an opaque frame field
+      // (used to drop superseded frames from the outbound buffer).
+      const clientMsgId = `send_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      addPendingSend(targetSessionId, { id: clientMsgId, content, kind: 'send', ts: Date.now() });
+
+      lastSubmittedRef.current = { sessionId: targetSessionId, content, images, clientMsgId };
 
       // One message shape for every provider. The backend resolves the
       // provider, project path, and provider-native resume id from the
@@ -791,6 +809,7 @@ export function useChatComposerState({
       sendMessage({
         type: 'chat.send',
         sessionId: targetSessionId,
+        clientMsgId,
         content,
         options: {
           cwd: effectiveCwd,
@@ -861,6 +880,12 @@ export function useChatComposerState({
       setQueuedMessages((previous) =>
         [...previous, { id, content, imageCount: images.length }].slice(-MAX_QUEUED_MESSAGES),
       );
+
+      // Journal before dispatch — the composer is cleared right after Enter,
+      // so this entry is the only durable copy until the server's
+      // `queue_updated` snapshot echoes the id back (the ack). A frame lost
+      // to a dead socket gets restored into the composer instead of vanishing.
+      addPendingSend(targetSessionId, { id, content, kind: 'queue', ts: Date.now() });
 
       sendMessage({
         type: 'chat.queue-add',
@@ -979,11 +1004,45 @@ export function useChatComposerState({
         return;
       }
       lastSubmittedRef.current = null;
+      // The rejected direct send is re-journaled as a queue item inside
+      // enqueueMessage; drop its 'send' journal entry so it can't be
+      // restored a second time later.
+      removePendingSends(pending.sessionId, [pending.clientMsgId]);
       void enqueueMessage(pending.content, pending.images);
     };
     window.addEventListener('vibespace:run-in-progress', onRunInProgress);
     return () => window.removeEventListener('vibespace:run-in-progress', onRunInProgress);
   }, [enqueueMessage]);
+
+  /**
+   * Restores stale unacked journal entries into the composer input. A send is
+   * "stale" when the server has shown no evidence of receipt for longer than
+   * the grace window — the frame died on a dead socket or the page reloaded
+   * with it still buffered. Restored ids are also dropped from the websocket
+   * outbound buffer so a late reconnect can't deliver the same content twice.
+   */
+  const restoreStalePendingSends = useCallback(
+    (sessionId: string) => {
+      const stale = readPendingSends(sessionId).filter(
+        (entry) => Date.now() - entry.ts > PENDING_SEND_GRACE_MS,
+      );
+      if (stale.length === 0) {
+        return;
+      }
+      const ids = stale.map((entry) => entry.id);
+      removePendingSends(sessionId, ids);
+      window.dispatchEvent(
+        new CustomEvent('vibespace:drop-outbound-frames', { detail: { ids } }),
+      );
+      const restored = stale.map((entry) => entry.content).join('\n\n');
+      setInput((previous) => {
+        const next = previous.trim() ? `${previous}\n\n${restored}` : restored;
+        inputValueRef.current = next;
+        return next;
+      });
+    },
+    [setInput],
+  );
 
   // Render the server-owned queue for the currently-viewed session. The
   // realtime handler forwards both the `chat_subscribed` snapshot and live
@@ -1003,10 +1062,58 @@ export function useChatComposerState({
           imageCount: typeof item.imageCount === 'number' ? item.imageCount : 0,
         })),
       );
+
+      // The snapshot is the ack for queued sends: any journaled queue item the
+      // server echoes back arrived safely. Anything still unacked past the
+      // grace window is presumed lost and put back in the composer.
+      const serverIds = new Set(queue.map((item) => item.id));
+      const acked = readPendingSends(detail.sessionId)
+        .filter((entry) => entry.kind === 'queue' && serverIds.has(entry.id))
+        .map((entry) => entry.id);
+      removePendingSends(detail.sessionId, acked);
+      restoreStalePendingSends(detail.sessionId);
     };
     window.addEventListener('vibespace:queue-updated', onQueueUpdated);
     return () => window.removeEventListener('vibespace:queue-updated', onQueueUpdated);
+  }, [selectedSession?.id, currentSessionId, restoreStalePendingSends]);
+
+  // Direct sends have no id-correlated ack; live run events for the session
+  // are the evidence the server got the frame (the realtime handler dispatches
+  // this, throttled). RUN_IN_PROGRESS rejections don't reach here — they are
+  // re-queued above and ride the queue ack instead.
+  useEffect(() => {
+    const activeSessionId = selectedSession?.id || currentSessionId || null;
+    const onRunEvidence = (event: Event) => {
+      const detail = (event as CustomEvent<{ sessionId?: string }>).detail;
+      if (!detail?.sessionId || detail.sessionId !== activeSessionId) {
+        return;
+      }
+      const acked = readPendingSends(detail.sessionId)
+        .filter((entry) => entry.kind === 'send')
+        .map((entry) => entry.id);
+      removePendingSends(detail.sessionId, acked);
+    };
+    window.addEventListener('vibespace:session-run-evidence', onRunEvidence);
+    return () => window.removeEventListener('vibespace:session-run-evidence', onRunEvidence);
   }, [selectedSession?.id, currentSessionId]);
+
+  // Sweep for lost sends even when no queue/run events arrive at all (dead
+  // socket, or a reload that left journal entries behind): shortly after the
+  // session opens — entries from before a reload are already past the grace
+  // window — and periodically while it stays open.
+  useEffect(() => {
+    const activeSessionId = selectedSession?.id || currentSessionId || null;
+    if (!activeSessionId) {
+      return;
+    }
+    const sweep = () => restoreStalePendingSends(activeSessionId);
+    const openTimer = window.setTimeout(sweep, 2000);
+    const interval = window.setInterval(sweep, 15000);
+    return () => {
+      window.clearTimeout(openTimer);
+      window.clearInterval(interval);
+    };
+  }, [selectedSession?.id, currentSessionId, restoreStalePendingSends]);
 
   // Clear the visible queue when switching sessions; the new session's
   // `chat_subscribed` snapshot repopulates it.

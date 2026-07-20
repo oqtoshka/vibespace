@@ -227,6 +227,24 @@ const useWebSocketProviderState = (): WebSocketContextType => {
     };
   }, []);
 
+  // The composer restores journaled sends it presumes lost back into the
+  // input. If such a frame is still sitting in the outbound buffer, a later
+  // reconnect would deliver it anyway — the same content twice. The restore
+  // path announces the ids it reclaimed; drop any buffered frame carrying one.
+  useEffect(() => {
+    const onDropFrames = (event: Event) => {
+      const ids = (event as CustomEvent<{ ids?: string[] }>).detail?.ids;
+      if (!Array.isArray(ids) || ids.length === 0) {
+        return;
+      }
+      outboundBufferRef.current = outboundBufferRef.current.filter(
+        (payload) => !ids.some((id) => payload.includes(`"${id}"`)),
+      );
+    };
+    window.addEventListener('vibespace:drop-outbound-frames', onDropFrames);
+    return () => window.removeEventListener('vibespace:drop-outbound-frames', onDropFrames);
+  }, []);
+
   const value: WebSocketContextType = useMemo(() =>
   ({
     ws: wsRef.current,
