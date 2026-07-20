@@ -270,7 +270,7 @@ app.get('/api/sessions/:sessionId/subagents/:agentId', authenticateToken, async 
         if (!/^[A-Za-z0-9_-]+$/.test(agentId)) {
             return res.status(400).json({ error: 'Invalid agent id' });
         }
-        const session = sessionsDb.getSessionById(sessionId);
+        const session = sessionsDb.getSessionById(sessionId) ?? sessionsDb.getSessionByProviderSessionId(sessionId);
         if (!session) {
             return res.status(404).json({ error: 'Session not found' });
         }
