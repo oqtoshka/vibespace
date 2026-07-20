@@ -56,11 +56,14 @@ export default function FileTree({ selectedProject, isActive = true, onFileOpen 
     }
   }, [toast]);
 
-  const { expandedDirs, toggleDirectory, expandDirectories, collapseAll } = useExpandedDirectories(
-    selectedProject?.projectId,
+  const { expandedDirs, toggleDirectory, expandDirectories, pruneDirectories, collapseAll } =
+    useExpandedDirectories(selectedProject?.projectId);
+  const onDirectoryMissing = useCallback(
+    (dirPath: string) => pruneDirectories([dirPath]),
+    [pruneDirectories],
   );
   const { files, loading, refreshFiles, loadDirectory, ensureFullTree, isFullTreeLoading } =
-    useFileTreeData(selectedProject, expandedDirs);
+    useFileTreeData(selectedProject, expandedDirs, onDirectoryMissing);
 
   // The tree stays mounted while other tabs are active; refresh silently when
   // the user returns so the listing is fresh without collapsing expanded dirs.

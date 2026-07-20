@@ -4,6 +4,9 @@ type UseExpandedDirectoriesResult = {
   expandedDirs: Set<string>;
   toggleDirectory: (path: string) => void;
   expandDirectories: (paths: string[]) => void;
+  /** Drops paths (and their descendants) from the set — for directories that
+   * no longer exist on disk, so refreshes stop refetching them forever. */
+  pruneDirectories: (paths: string[]) => void;
   collapseAll: () => void;
 };
 
@@ -97,6 +100,20 @@ export function useExpandedDirectories(projectId?: string): UseExpandedDirectori
     });
   }, []);
 
+  const pruneDirectories = useCallback((paths: string[]) => {
+    if (paths.length === 0) {
+      return;
+    }
+    setExpandedDirs((previous) => {
+      const next = new Set(
+        [...previous].filter(
+          (dir) => !paths.some((path) => dir === path || dir.startsWith(`${path}/`)),
+        ),
+      );
+      return next.size === previous.size ? previous : next;
+    });
+  }, []);
+
   const collapseAll = useCallback(() => {
     setExpandedDirs(new Set());
   }, []);
@@ -105,6 +122,7 @@ export function useExpandedDirectories(projectId?: string): UseExpandedDirectori
     expandedDirs,
     toggleDirectory,
     expandDirectories,
+    pruneDirectories,
     collapseAll,
   };
 }
