@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 
 import { authenticatedFetch } from '../../../utils/api';
-import { readVoiceConfig, VOICE_CONFIG_SYNC_EVENT } from '../../../hooks/useVoiceConfig';
+import { VOICE_CONFIG_SYNC_EVENT } from '../../../hooks/useVoiceConfig';
 
 // Voice UI is gated on the `voiceEnabled` UI preference (toggled in Quick Settings /
 // the Settings modal) and a configured voice backend.
@@ -63,10 +63,6 @@ export function useVoiceAvailable(): boolean {
     const check = async () => {
       if (!enabled) {
         setAvailable(false);
-        return;
-      }
-      if (readVoiceConfig().baseUrl.trim()) {
-        setAvailable(true);
         return;
       }
       const id = ++requestId;
