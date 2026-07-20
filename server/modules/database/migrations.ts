@@ -406,6 +406,33 @@ const addProviderSessionIdMapping = (db: Database): void => {
   `);
 };
 
+/**
+ * Records where each session title came from so a provider-generated title can
+ * later replace a prompt-derived placeholder. Existing rows are backfilled as
+ * 'derived' because their provenance is unknowable and the overwhelming
+ * majority are prompt-derived — the point of the column is to let those be
+ * upgraded. The cost is that a rename made before this migration can be
+ * replaced once by the provider's own title; renames made after it are
+ * recorded as 'user' and are never overwritten by a sync.
+ */
+const addSessionNameSource = (db: Database): void => {
+  if (!tableExists(db, 'sessions')) {
+    return;
+  }
+
+  const columnNames = getTableInfo(db, 'sessions').map((column) => column.name);
+  if (columnNames.includes('name_source')) {
+    return;
+  }
+
+  addColumnToTableIfNotExists(db, 'sessions', columnNames, 'name_source', 'TEXT');
+  db.exec(`
+    UPDATE sessions
+    SET name_source = 'derived'
+    WHERE name_source IS NULL AND custom_name IS NOT NULL
+  `);
+};
+
 const ensureProjectsForSessionPaths = (db: Database): void => {
   if (!tableExists(db, 'sessions')) {
     return;
@@ -457,6 +484,7 @@ export const runMigrations = (db: Database) => {
     rebuildSessionsTableWithProjectSchema(db);
     migrateLegacySessionNames(db);
     addProviderSessionIdMapping(db);
+    addSessionNameSource(db);
     ensureProjectsForSessionPaths(db);
 
     db.exec('CREATE INDEX IF NOT EXISTS idx_session_ids_lookup ON sessions(session_id)');
