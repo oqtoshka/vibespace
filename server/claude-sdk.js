@@ -1140,6 +1140,27 @@ async function reuseSession(session, command, options, ws) {
     console.warn(`setModel during reuse for ${session.sessionId} failed:`, err?.message || err);
   }
 
+  // Apply a mid-session permission mode switch. The mode rides on every user
+  // message, but the live SDK session keeps whatever it was spawned with, so a
+  // later default→bypassPermissions change would otherwise be silently ignored
+  // and tools would still prompt.
+  try {
+    const settings = options.toolsSettings || {};
+    let wantedMode = options.permissionMode || 'default';
+    if (settings.skipPermissions && wantedMode !== 'plan') wantedMode = 'bypassPermissions';
+    const currentMode = session.sdkOptions?.permissionMode || 'default';
+    if (session.sdkOptions && wantedMode !== currentMode) {
+      // Both gates: canUseTool reads sdkOptions.permissionMode, and
+      // setPermissionMode moves the SDK's own permission step.
+      session.sdkOptions.permissionMode = wantedMode;
+      if (session.instance?.setPermissionMode) {
+        await session.instance.setPermissionMode(wantedMode);
+      }
+    }
+  } catch (err) {
+    console.warn(`setPermissionMode during reuse for ${session.sessionId} failed:`, err?.message || err);
+  }
+
   // Attachments ride along as content blocks read from the assets store.
   const turnContent = await buildTurnContent(command, options.images, options.cwd);
 
@@ -1195,6 +1216,9 @@ async function startPersistentSession(command, options, ws) {
     // one-shot callers, where the current writer is reused instead).
     acquireResumeRun: typeof options.acquireResumeRun === 'function' ? options.acquireResumeRun : null,
     model: sdkOptions.model,
+    // Kept on the session so reuseSession can apply mid-session permission mode
+    // switches (canUseTool reads permissionMode from this same object).
+    sdkOptions,
     options,
     command,
     sessionSummary,
