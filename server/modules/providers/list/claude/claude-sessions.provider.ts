@@ -129,14 +129,24 @@ export async function getSubagentConversation(
   sessionId: string,
   agentId: string,
 ): Promise<{ found: boolean; messages: SubagentConversationEntry[] }> {
-  const jsonLPath = sessionsDb.getSessionById(sessionId)?.jsonl_path;
+  const row = sessionsDb.getSessionById(sessionId) ?? sessionsDb.getSessionByProviderSessionId(sessionId);
+  const jsonLPath = row?.jsonl_path;
   if (!jsonLPath) {
     return { found: false, messages: [] };
   }
 
   const projectDir = path.dirname(jsonLPath);
   const agentFileName = `agent-${agentId}.jsonl`;
-  const candidateDirs = [path.join(projectDir, sessionId, 'subagents'), projectDir];
+  // The per-session subagents folder is named after the provider-native session
+  // id (the transcript basename), which can differ from the app session id this
+  // API is called with. Probe every known spelling, then the flat legacy layout.
+  const sessionDirIds = [
+    ...new Set([path.basename(jsonLPath, '.jsonl'), row?.provider_session_id, sessionId].filter(Boolean)),
+  ] as string[];
+  const candidateDirs = [
+    ...sessionDirIds.map((id) => path.join(projectDir, id, 'subagents')),
+    projectDir,
+  ];
 
   let agentFilePath: string | null = null;
   for (const dir of candidateDirs) {
@@ -247,12 +257,17 @@ async function getSessionMessages(
     const projectDir = path.dirname(jsonLPath);
 
     // Claude stores Task/subagent transcripts under a per-session subfolder:
-    //   <projectDir>/<sessionId>/subagents/agent-<id>.jsonl
-    // Older transcripts kept them flat in <projectDir>. Probe both locations so
-    // subagent tool output nests inline under its parent tool call regardless of
-    // on-disk layout. (These files carry the parent's sessionId, so they must
-    // never be indexed as standalone sessions — see the synchronizer.)
-    const subagentDirs = [path.join(projectDir, sessionId, 'subagents'), projectDir];
+    //   <projectDir>/<providerSessionId>/subagents/agent-<id>.jsonl
+    // The folder is named after the provider-native id (the transcript
+    // basename), not the app-facing session id. Older transcripts kept them
+    // flat in <projectDir>. Probe every known spelling so subagent tool output
+    // nests inline under its parent tool call regardless of on-disk layout.
+    // (These files carry the parent's sessionId, so they must never be indexed
+    // as standalone sessions — see the synchronizer.)
+    const sessionDirIds = [
+      ...new Set([path.basename(jsonLPath, '.jsonl'), providerSessionId, sessionId].filter(Boolean)),
+    ] as string[];
+    const subagentDirs = [...sessionDirIds.map((id) => path.join(projectDir, id, 'subagents')), projectDir];
     const agentFilesByDir = new Map<string, Set<string>>();
     for (const dir of subagentDirs) {
       try {
