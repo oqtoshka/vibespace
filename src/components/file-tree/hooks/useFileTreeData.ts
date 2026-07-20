@@ -49,6 +49,10 @@ function isAbortError(error: unknown): boolean {
 export function useFileTreeData(
   selectedProject: Project | null,
   expandedDirs: Set<string>,
+  /** Called with a directory path the server reported missing (404) — the
+   * persisted expansion state references a directory that was deleted on
+   * disk. The owner prunes it so refreshes stop refetching it forever. */
+  onDirectoryMissing?: (dirPath: string) => void,
 ): UseFileTreeDataResult {
   const [files, setFiles] = useState<FileTreeNode[]>([]);
   const [loading, setLoading] = useState(false);
@@ -62,6 +66,10 @@ export function useFileTreeData(
   // Directories with an in-flight children fetch (dedupes repeated expands).
   const pendingDirsRef = useRef(new Set<string>());
   const fullTreeRequestedRef = useRef(false);
+  // Ref so the fetch effect doesn't re-run when the owner re-creates the
+  // callback; missing-dir reports always reach the latest handler.
+  const onDirectoryMissingRef = useRef(onDirectoryMissing);
+  onDirectoryMissingRef.current = onDirectoryMissing;
 
   // File-tree requests use the DB projectId; the backend resolves it to the
   // project's absolute path through the projects table.
@@ -95,6 +103,13 @@ export function useFileTreeData(
     }): Promise<FileTreeNode[] | null> => {
       const response = await api.getFiles(projectId, { ...options, signal: controller.signal });
       if (!response.ok) {
+        // A 404 for a subtree means the persisted expanded directory was
+        // deleted on disk — report it for pruning instead of erroring on
+        // every refresh from now on.
+        if (response.status === 404 && options.dir) {
+          onDirectoryMissingRef.current?.(options.dir);
+          return null;
+        }
         console.error('File fetch failed:', response.status, await response.text());
         return null;
       }
@@ -176,6 +191,9 @@ export function useFileTreeData(
           });
           if (signal?.aborted) {
             return;
+          }
+          if (response.status === 404) {
+            onDirectoryMissingRef.current?.(dirPath);
           }
           const children = response.ok ? ((await response.json()) as FileTreeNode[]) : [];
           setFiles((prev) => withChildrenAt(prev, dirPath, children));
