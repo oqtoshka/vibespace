@@ -1,7 +1,7 @@
 import express from 'express';
 // cross-spawn: drop-in spawn with Windows .cmd/PATHEXT resolution.
 import spawn from 'cross-spawn';
-import { userDb } from '../modules/database/index.js';
+import { toClientVoiceSettings, userDb, voiceSettingsDb } from '../modules/database/index.js';
 import { authenticateToken } from '../middleware/auth.js';
 import { getSystemGitConfig } from '../utils/gitConfig.js';
 
@@ -88,6 +88,29 @@ router.post('/git-config', authenticateToken, async (req, res) => {
   } catch (error) {
     console.error('Error updating git config:', error);
     res.status(500).json({ error: 'Failed to update git configuration' });
+  }
+});
+
+// Voice settings live on the user record so they roam across browsers/devices.
+// The raw API key never leaves the server: responses carry a set-flag + masked
+// hint, and the voice proxy reads the stored key directly.
+router.get('/voice-settings', authenticateToken, async (req, res) => {
+  try {
+    const settings = voiceSettingsDb.getVoiceSettings(req.user.id);
+    res.json({ success: true, settings: toClientVoiceSettings(settings) });
+  } catch (error) {
+    console.error('Error getting voice settings:', error);
+    res.status(500).json({ error: 'Failed to get voice settings' });
+  }
+});
+
+router.put('/voice-settings', authenticateToken, async (req, res) => {
+  try {
+    const stored = voiceSettingsDb.updateVoiceSettings(req.user.id, req.body?.settings ?? req.body);
+    res.json({ success: true, settings: toClientVoiceSettings(stored) });
+  } catch (error) {
+    console.error('Error updating voice settings:', error);
+    res.status(500).json({ error: 'Failed to update voice settings' });
   }
 });
 

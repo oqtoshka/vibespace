@@ -6,11 +6,15 @@
 //     POST {base}/audio/transcriptions   (multipart 'file' + 'model')      -> { text }
 //     POST {base}/audio/speech           ({ model, voice, input })         -> audio bytes
 //
-// Config is resolved per-request from headers (set by the client's voice settings),
-// falling back to server env defaults. Mounted at /api/voice behind authenticateToken.
+// Config is resolved per-request from the authenticated user's stored voice
+// settings (Settings → Voice, persisted server-side so they roam across
+// devices), falling back to server env defaults. Mounted at /api/voice behind
+// authenticateToken.
 import { Readable } from 'node:stream';
 
 import express from 'express';
+
+import { voiceSettingsDb } from './modules/database/index.js';
 
 const ENV = {
   baseUrl: (process.env.VOICE_API_BASE_URL || '').replace(/\/$/, ''),
@@ -21,22 +25,27 @@ const ENV = {
 };
 
 /**
- * Resolve the voice backend config for a request. Client headers (set from the
- * user's in-app voice settings) take precedence over the server env defaults.
+ * Resolve the voice backend config for a request. The authenticated user's
+ * stored voice settings take precedence over the server env defaults.
  * @param {import('express').Request} req
  * @returns {{baseUrl: string, apiKey: string, sttModel: string, ttsModel: string, ttsVoice: string, ttsFormat: string}}
  */
 function resolveConfig(req) {
-  const h = req.headers;
+  let stored = null;
+  try {
+    stored = req.user?.id ? voiceSettingsDb.getVoiceSettings(req.user.id) : null;
+  } catch {
+    // Fall back to env defaults when the settings row can't be read.
+  }
   return {
     // Security: do not allow clients to control the outbound backend host.
     // Always use the server-side configured base URL.
     baseUrl: ENV.baseUrl,
-    apiKey: String(h['x-voice-api-key'] || '') || ENV.apiKey,
-    sttModel: String(h['x-voice-stt-model'] || '') || ENV.sttModel,
-    ttsModel: String(h['x-voice-tts-model'] || '') || ENV.ttsModel,
-    ttsVoice: String(h['x-voice-tts-voice'] || '') || ENV.ttsVoice,
-    ttsFormat: String(h['x-voice-tts-format'] || '').trim(),
+    apiKey: stored?.apiKey || ENV.apiKey,
+    sttModel: stored?.sttModel || ENV.sttModel,
+    ttsModel: stored?.ttsModel || ENV.ttsModel,
+    ttsVoice: stored?.ttsVoice || ENV.ttsVoice,
+    ttsFormat: stored?.ttsFormat || '',
   };
 }
 
