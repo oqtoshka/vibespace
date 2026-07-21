@@ -46,7 +46,6 @@ import {
     spawnOpenCode,
     abortOpenCodeSession,
 } from './opencode-cli.js';
-import sessionManager from './sessionManager.js';
 import { encodePlantUmlSource, inlinePlantUmlIncludes } from './utils/plantuml.js';
 import { renderDbmlToSvg } from './utils/dbml.js';
 import {
