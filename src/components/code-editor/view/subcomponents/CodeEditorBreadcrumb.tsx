@@ -118,12 +118,20 @@ export default function CodeEditorBreadcrumb({
           meta: 0,
           signal: controller.signal,
         });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        if (!res.ok) {
+          // Surface the server's own reason. A bare "Failed to load" hid a
+          // path-validation 400 here for a long time.
+          const reason = await res.json().then(
+            (body) => (body as { error?: string })?.error,
+            () => undefined,
+          );
+          throw new Error(reason || `HTTP ${res.status}`);
+        }
         const data: BreadcrumbEntry[] = await res.json();
         if (!cancelled) setEntries(Array.isArray(data) ? data : []);
       } catch (e) {
         if (!cancelled && (e as Error).name !== 'AbortError') {
-          setError('Failed to load');
+          setError((e as Error).message || 'Failed to load');
           setEntries([]);
         }
       } finally {
