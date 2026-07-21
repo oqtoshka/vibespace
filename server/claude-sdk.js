@@ -268,13 +268,23 @@ function mapCliOptionsToSDK(options = {}) {
 
   sdkOptions.disallowedTools = settings.disallowedTools || [];
 
-  // Map model (default to sonnet)
-  // Valid models: sonnet, opus, haiku, opusplan, sonnet[1m], fable
-  sdkOptions.model = options.model || CLAUDE_FALLBACK_MODELS.DEFAULT;
+  // Map model. Valid values: sonnet, opus, haiku, opusplan, sonnet[1m], fable.
+  //
+  // "default" is deliberately NOT forwarded: the SDK turns any model value into
+  // an explicit `--model` flag, and that flag outranks the CLI's own settings.
+  // Passing it pinned every session to the CLI's built-in default (Sonnet) and
+  // silently overrode `model` in ~/.claude/settings.json, so a deployment could
+  // not choose its own default. Omitting the flag is what makes the picker's
+  // "Default (recommended)" mean "whatever this Claude Code is configured to
+  // use". The selected value still drives effort validation below.
+  const selectedModel = options.model || CLAUDE_FALLBACK_MODELS.DEFAULT;
+  if (selectedModel !== CLAUDE_FALLBACK_MODELS.DEFAULT) {
+    sdkOptions.model = selectedModel;
+  }
   // Model logged at query start below
 
   const resolvedEffort = resolveClaudeEffort(
-    sdkOptions.model,
+    selectedModel,
     options.effort,
     options.effortModels || CLAUDE_FALLBACK_MODELS,
   );
@@ -1257,7 +1267,10 @@ async function startPersistentSession(command, options, ws) {
     // Opens a fresh chat-run for a background auto-resume turn (null in tests /
     // one-shot callers, where the current writer is reused instead).
     acquireResumeRun: typeof options.acquireResumeRun === 'function' ? options.acquireResumeRun : null,
-    model: sdkOptions.model,
+    // The selected catalog value, not sdkOptions.model — the latter is absent
+    // for "default" (see mapCliOptionsToSDK), and effort validation plus the
+    // mid-session switch in reuseSession both need something to compare against.
+    model: resolvedModel || options.model || CLAUDE_FALLBACK_MODELS.DEFAULT,
     // Kept on the session so reuseSession can apply mid-session permission mode
     // switches (canUseTool reads permissionMode from this same object).
     sdkOptions,
