@@ -81,7 +81,17 @@ export const useCodeEditorDocument = ({ file, projectPath }: UseCodeEditorDocume
 
         const response = await api.readFile(fileProjectId, filePath);
         if (!response.ok) {
-          throw new Error(`Failed to load file: ${response.status} ${response.statusText}`);
+          // Prefer the server's own reason. Reporting only the status turned a
+          // path-validation refusal into an opaque "403 Forbidden".
+          const reason = await response.json().then(
+            (body: { error?: string }) => body?.error,
+            () => undefined,
+          );
+          throw new Error(
+            reason
+              ? `Failed to load file: ${reason}`
+              : `Failed to load file: ${response.status} ${response.statusText}`,
+          );
         }
 
         const data = await response.json();
