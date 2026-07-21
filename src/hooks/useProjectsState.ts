@@ -649,11 +649,14 @@ export function useProjectsState({
       setSelectedSession(null);
       navigate('/');
 
-      if (isMobile) {
-        setSidebarOpen(false);
-      }
+      // Deliberately leaves the drawer open on narrow layouts. Tapping a project
+      // only stages a new session; the usual next move is picking one of that
+      // project's existing sessions, which the list right below now reveals.
+      // Closing here forced the user to re-open the drawer every time. The
+      // explicit "new session" action still collapses it (handleNewSession), as
+      // does picking a session from a different project.
     },
-    [isMobile, navigate],
+    [navigate],
   );
 
   const handleSessionSelect = useCallback(
