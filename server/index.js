@@ -16,6 +16,7 @@ import mime from 'mime-types';
 import Database from 'better-sqlite3';
 
 import { AppError, WORKSPACES_ROOT, getOpenCodeDatabasePath, validateWorkspacePath } from '@/shared/utils.js';
+import { validateAccessiblePath, validatePathInProject } from './utils/allowedPaths.js';
 import { closeSessionsWatcher, initializeSessionsWatcher, registerPendingCliSession } from '@/modules/providers/index.js';
 import { getSubagentConversation } from '@/modules/providers/list/claude/claude-sessions.provider.js';
 import { createWebSocketServer } from '@/modules/websocket/index.js';
@@ -756,14 +757,13 @@ app.get('/api/projects/:projectId/file', authenticateToken, async (req, res) => 
             return res.status(404).json({ error: 'Project not found' });
         }
 
-        // Handle both absolute and relative paths
-        const resolved = path.isAbsolute(filePath)
-            ? path.resolve(filePath)
-            : path.resolve(projectRoot, filePath);
-        const normalizedRoot = path.resolve(projectRoot) + path.sep;
-        if (!resolved.startsWith(normalizedRoot)) {
-            return res.status(403).json({ error: 'Path must be under project root' });
+        // Handle both absolute and relative paths, and allow the additional
+        // roots — the agent's edits are not confined to the project.
+        const allowed = await validateAccessiblePath(projectRoot, filePath);
+        if (!allowed.valid) {
+            return res.status(403).json({ error: allowed.error });
         }
+        const { resolved } = allowed;
 
         const content = await fsPromises.readFile(resolved, 'utf8');
         res.json({ content, path: resolved });
@@ -1231,13 +1231,11 @@ app.get('/api/projects/:projectId/files/content', authenticateToken, async (req,
 
         // Match the text reader endpoint so callers can pass either project-relative
         // or absolute paths without changing how the bytes are served.
-        const resolved = path.isAbsolute(filePath)
-            ? path.resolve(filePath)
-            : path.resolve(projectRoot, filePath);
-        const normalizedRoot = path.resolve(projectRoot) + path.sep;
-        if (!resolved.startsWith(normalizedRoot)) {
-            return res.status(403).json({ error: 'Path must be under project root' });
+        const allowed = await validateAccessiblePath(projectRoot, filePath);
+        if (!allowed.valid) {
+            return res.status(403).json({ error: allowed.error });
         }
+        const { resolved } = allowed;
 
         // Check if file exists
         try {
@@ -1291,14 +1289,14 @@ app.put('/api/projects/:projectId/file', authenticateToken, async (req, res) => 
             return res.status(404).json({ error: 'Project not found' });
         }
 
-        // Handle both absolute and relative paths
-        const resolved = path.isAbsolute(filePath)
-            ? path.resolve(filePath)
-            : path.resolve(projectRoot, filePath);
-        const normalizedRoot = path.resolve(projectRoot) + path.sep;
-        if (!resolved.startsWith(normalizedRoot)) {
-            return res.status(403).json({ error: 'Path must be under project root' });
+        // Same reach as the reader: a file you can open is a file you can save,
+        // otherwise opening an out-of-project file leaves a tab that can never
+        // be written back.
+        const allowed = await validateAccessiblePath(projectRoot, filePath);
+        if (!allowed.valid) {
+            return res.status(403).json({ error: allowed.error });
         }
+        const { resolved } = allowed;
 
         // Write the new content
         await fsPromises.writeFile(resolved, content, 'utf8');
@@ -1332,10 +1330,11 @@ app.get('/api/projects/:projectId/files', authenticateToken, async (req, res) =>
             return res.status(404).json({ error: 'Project not found' });
         }
 
-        // Optional subtree root for lazy loading; must stay within the project.
+        // Optional subtree root for lazy loading. Accepts the additional roots so
+        // the breadcrumb of an out-of-project file can still list its folder.
         let rootPath = actualPath;
         if (typeof req.query.dir === 'string' && req.query.dir) {
-            const validation = validatePathInProject(actualPath, req.query.dir);
+            const validation = await validateAccessiblePath(actualPath, req.query.dir);
             if (!validation.valid) {
                 return res.status(400).json({ error: validation.error });
             }
@@ -1383,22 +1382,8 @@ app.get('/api/projects/:projectId/files', authenticateToken, async (req, res) =>
 // FILE OPERATIONS API ENDPOINTS
 // ============================================================================
 
-/**
- * Validate that a path is within the project root
- * @param {string} projectRoot - The project root path
- * @param {string} targetPath - The path to validate
- * @returns {{ valid: boolean, resolved?: string, error?: string }}
- */
-function validatePathInProject(projectRoot, targetPath) {
-    const resolved = path.isAbsolute(targetPath)
-        ? path.resolve(targetPath)
-        : path.resolve(projectRoot, targetPath);
-    const normalizedRoot = path.resolve(projectRoot) + path.sep;
-    if (!resolved.startsWith(normalizedRoot)) {
-        return { valid: false, error: 'Path must be under project root' };
-    }
-    return { valid: true, resolved };
-}
+// Path containment lives in server/utils/allowedPaths.js — see the module
+// header for why reads reach further than the mutating routes.
 
 /**
  * Validate filename - check for invalid characters
