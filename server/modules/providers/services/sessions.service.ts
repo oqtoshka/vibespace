@@ -197,7 +197,14 @@ export const sessionsService = {
    * `rewindHistory` implementation.
    */
   async rewindHistory(sessionId: string, messageUuid: string): Promise<RewindResult> {
-    const session = sessionsDb.getSessionById(sessionId);
+    // The chat runtime addresses sessions by the provider-native id; app-created
+    // rows are keyed by their own `session_id` with the provider id in a
+    // separate column. Accept either — looking up only by `session_id` made
+    // every rewind on an app-allocated session throw SESSION_NOT_FOUND, which
+    // the Claude runtime then degraded into a blank fresh session (orphaning
+    // the original conversation).
+    const session = sessionsDb.getSessionById(sessionId)
+      ?? sessionsDb.getSessionByProviderSessionId(sessionId);
     if (!session) {
       throw new AppError(`Session "${sessionId}" was not found.`, {
         code: 'SESSION_NOT_FOUND',

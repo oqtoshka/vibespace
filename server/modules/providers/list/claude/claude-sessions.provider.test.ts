@@ -4,9 +4,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { closeConnection } from '@/modules/database/connection.js';
-import { initializeDatabase } from '@/modules/database/init-db.js';
-import { sessionsDb } from '@/modules/database/repositories/sessions.db.js';
+import { closeConnection, initializeDatabase, sessionsDb } from '@/modules/database/index.js';
+
 import { ClaudeSessionsProvider } from './claude-sessions.provider.js';
 
 /**
@@ -182,6 +181,32 @@ test('rewindHistory reports startFresh (and leaves the file intact) for the firs
     assert.equal(await readFile(mainFile, 'utf8'), original, 'the transcript is untouched');
     const backups = (await readdir(projectDir)).filter((f) => f.includes('.rewind-'));
     assert.equal(backups.length, 0, 'no backup needed when nothing is truncated');
+  });
+});
+
+test('rewindHistory resolves app-allocated sessions through the provider-native id', async () => {
+  await withIsolatedDatabase(async (tempDir) => {
+    const projectDir = path.join(tempDir, 'projects', '-demo');
+    await mkdir(projectDir, { recursive: true });
+    const mainFile = path.join(projectDir, `${REWIND_SESSION}.jsonl`);
+    await writeFile(mainFile, conversationJsonl());
+
+    // App-created session: DB row keyed by an app id, provider id mapped later
+    // (the transcript keeps using the provider-native id). The chat runtime
+    // passes the PROVIDER id to rewindHistory.
+    const APP_SESSION = '99999999-9999-4999-8999-999999999999';
+    sessionsDb.createAppSession(APP_SESSION, 'claude', '/demo');
+    sessionsDb.assignProviderSessionId(APP_SESSION, REWIND_SESSION);
+    // Synchronizer indexes the transcript from disk onto the same row.
+    sessionsDb.createSession(REWIND_SESSION, 'claude', '/demo', undefined, undefined, undefined, mainFile);
+
+    const provider = new ClaudeSessionsProvider();
+    const result = await provider.rewindHistory(REWIND_SESSION, 'u2');
+
+    assert.deepEqual(result, { ok: true, startFresh: false, removed: 2 });
+    const body = await readFile(mainFile, 'utf8');
+    assert.match(body, /first answer/);
+    assert.doesNotMatch(body, /second question/, 'the edited turn and its tail were truncated');
   });
 });
 
