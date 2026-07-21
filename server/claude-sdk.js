@@ -1430,10 +1430,19 @@ async function queryClaudeSDK(command, options = {}, ws) {
     if (rewind && sessionId) {
       const result = await performClaudeRewind(sessionId, rewind);
       const baseOptions = { ...options, rewind: undefined };
-      if (result.startFresh || !result.ok) {
-        // First-turn edit (nothing to resume) or the anchor was not found — start
-        // a brand-new session so the edited message is never dropped.
+      if (result.startFresh) {
+        // First-turn edit — nothing resumable precedes the edited message, so
+        // start a brand-new session.
         return await startPersistentSession(command, { ...baseOptions, sessionId: undefined, resume: false }, ws);
+      }
+      if (!result.ok) {
+        // The truncation failed (anchor not found / transcript unreadable).
+        // Degrade to resuming with the history INTACT — the edited message is
+        // appended instead of replacing its original. Never fall back to a
+        // blank session here: that silently discards the whole conversation
+        // and orphans the old transcript once the new provider id is mapped.
+        console.warn(`Rewind for session ${sessionId} did not truncate; resuming with full history.`);
+        return await startPersistentSession(command, { ...baseOptions, resume: true }, ws);
       }
       return await startPersistentSession(command, { ...baseOptions, resume: true }, ws);
     }

@@ -905,10 +905,17 @@ export class ClaudeSessionsProvider implements IProviderSessions {
    * session instead.
    */
   async rewindHistory(sessionId: string, messageUuid: string): Promise<RewindResult> {
-    const jsonLPath = sessionsDb.getSessionById(sessionId)?.jsonl_path;
+    // The chat path hands us the provider-native id (transcript entries are
+    // keyed by it), while app-allocated rows key the DB by their own
+    // `session_id` — resolve through either so neither id regime 404s here.
+    const row = sessionsDb.getSessionById(sessionId)
+      ?? sessionsDb.getSessionByProviderSessionId(sessionId);
+    const jsonLPath = row?.jsonl_path;
     if (!jsonLPath) {
       return { ok: false, startFresh: false, removed: 0 };
     }
+    // Transcript lines carry the provider-native session id, not the app id.
+    const transcriptSessionId = row?.provider_session_id ?? sessionId;
 
     let raw: string;
     try {
@@ -931,7 +938,7 @@ export class ClaudeSessionsProvider implements IProviderSessions {
       } catch {
         continue;
       }
-      if (entry.sessionId !== sessionId) {
+      if (entry.sessionId !== transcriptSessionId) {
         continue;
       }
       if (entry.uuid === messageUuid) {
