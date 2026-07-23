@@ -285,35 +285,6 @@ function ChatInterface({
   }, [selectedSession, isProcessing, handleWebSocketReconnect]);
 
   useEffect(() => {
-    if (!canAbortSession) {
-      return;
-    }
-
-    const handleGlobalEscape = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape' || event.repeat || event.defaultPrevented) {
-        return;
-      }
-
-      // Don't swallow Escape when an xterm terminal owns focus — the key must
-      // reach the running program (e.g. to dismiss a CLI menu). xterm's hidden
-      // textarea lives inside the `.xterm` root, so the keydown target is
-      // within it whenever the terminal is focused.
-      const target = event.target as HTMLElement | null;
-      if (target && typeof target.closest === 'function' && target.closest('.xterm')) {
-        return;
-      }
-
-      event.preventDefault();
-      handleAbortSession();
-    };
-
-    document.addEventListener('keydown', handleGlobalEscape, { capture: true });
-    return () => {
-      document.removeEventListener('keydown', handleGlobalEscape, { capture: true });
-    };
-  }, [canAbortSession, handleAbortSession]);
-
-  useEffect(() => {
     return () => {
       resetStreamingState();
     };
