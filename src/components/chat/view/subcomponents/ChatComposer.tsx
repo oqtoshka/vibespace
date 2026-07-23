@@ -11,7 +11,7 @@ import type {
   RefObject,
   TouchEvent,
 } from 'react';
-import { MessageSquareIcon, XIcon, Clock3, Loader2, PaperclipIcon, ChevronDown, Check, ArrowUpIcon } from 'lucide-react';
+import { MessageSquareIcon, XIcon, Clock3, Loader2, PaperclipIcon, ChevronDown, Check, ArrowUpIcon, ActivityIcon, MoreHorizontalIcon } from 'lucide-react';
 
 import type { QueuedMessage } from '../../hooks/useChatComposerState';
 
@@ -36,7 +36,8 @@ import ActivityIndicator from './ActivityIndicator';
 import ImageAttachment from './ImageAttachment';
 import VoiceInputButton from './VoiceInputButton';
 import PermissionRequestsBanner from './PermissionRequestsBanner';
-import TokenUsageSummary from './TokenUsageSummary';
+import TokenUsageSummary, { formatTokenCount, readUsedTokens } from './TokenUsageSummary';
+import { AnchoredPopover } from './AnchoredPopover';
 import BackgroundTasksIndicator from './BackgroundTasksIndicator';
 import SubagentsIndicator from './SubagentsIndicator';
 import type { BackgroundTask } from '../../hooks/useBackgroundTasks';
@@ -216,6 +217,9 @@ export default function ChatComposer({
   );
   const isRecording = voiceState === 'recording';
   const isTranscribing = voiceState === 'transcribing';
+  // Mobile-only "…" menu holding the secondary controls that don't fit in the footer.
+  const [isOverflowOpen, setIsOverflowOpen] = useState(false);
+  const overflowButtonRef = useRef<HTMLButtonElement | null>(null);
   const [isEffortDropdownOpen, setIsEffortDropdownOpen] = useState(false);
   const effortDropdownRef = useRef<HTMLDivElement | null>(null);
   const effortDropdownMenuRef = useRef<HTMLDivElement | null>(null);
@@ -477,10 +481,6 @@ export default function ChatComposer({
               <PaperclipIcon />
             </PromptInputButton>
 
-            {onVoiceTranscript && voiceAvailable && (
-              <VoiceInputButton state={voiceState} onToggle={voiceToggle} errorMsg={voiceError} />
-            )}
-
             <button
               type="button"
               onClick={onModeSwitch}
@@ -522,7 +522,7 @@ export default function ChatComposer({
             </button>
 
             {availableEffortOptions.length > 0 && (
-              <div ref={effortDropdownRef} className="relative">
+              <div ref={effortDropdownRef} className="relative hidden sm:block">
                 <button
                   ref={effortDropdownButtonRef}
                   type="button"
@@ -585,7 +585,9 @@ export default function ChatComposer({
               </div>
             )}
 
-            <TokenUsageSummary usage={tokenBudget} onClick={onShowTokenUsage} />
+            <div className="hidden sm:block">
+              <TokenUsageSummary usage={tokenBudget} onClick={onShowTokenUsage} />
+            </div>
 
             <BackgroundTasksIndicator tasks={backgroundTasks} runningCount={backgroundRunningCount} />
             <SubagentsIndicator subagents={subagents} runningCount={subagentRunningCount} sessionId={sessionId} />
@@ -593,7 +595,7 @@ export default function ChatComposer({
             <PromptInputButton
               tooltip={{ content: t('input.showAllCommands') }}
               onClick={onToggleCommandMenu}
-              className="relative"
+              className="relative hidden sm:inline-flex"
             >
               <MessageSquareIcon />
               {slashCommandsCount > 0 && (
@@ -615,6 +617,111 @@ export default function ChatComposer({
               </PromptInputButton>
             )}
 
+            {/* Mobile: secondary controls collapse into this "…" menu so the
+                footer always fits — only attach, mode, live counters, mic and
+                send stay inline. */}
+            <div className="relative sm:hidden">
+              <PromptInputButton
+                ref={overflowButtonRef}
+                tooltip={{ content: t('input.moreOptions', { defaultValue: 'More options' }) }}
+                onClick={() => setIsOverflowOpen((current) => !current)}
+                aria-haspopup="menu"
+                aria-expanded={isOverflowOpen}
+              >
+                <MoreHorizontalIcon />
+              </PromptInputButton>
+
+              <AnchoredPopover
+                anchorRef={overflowButtonRef}
+                open={isOverflowOpen}
+                onClose={() => setIsOverflowOpen(false)}
+                align="left"
+                className="w-56 max-w-[85vw] overflow-hidden rounded-xl border border-border bg-card p-1 shadow-lg"
+              >
+                {availableEffortOptions.length > 0 && (
+                  <>
+                    <div className="px-2 pb-1 pt-1.5 text-[11px] font-medium text-muted-foreground">
+                      {t('input.effort', { defaultValue: 'Reasoning effort' })}
+                    </div>
+                    {effortOptions.map((option) => {
+                      const isSelected = option.value === effort;
+                      const label = option.value === 'default' ? 'Default' : option.value;
+                      return (
+                        <button
+                          key={option.value}
+                          type="button"
+                          role="menuitemradio"
+                          aria-checked={isSelected}
+                          onClick={() => {
+                            onSelectEffort(option.value);
+                            setIsOverflowOpen(false);
+                          }}
+                          className={`flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-sm capitalize transition-colors ${
+                            isSelected
+                              ? 'bg-accent text-foreground'
+                              : 'text-muted-foreground hover:bg-accent/70 hover:text-foreground'
+                          }`}
+                        >
+                          <span className="flex h-3.5 w-3.5 items-center justify-center">
+                            {isSelected && <Check className="h-3.5 w-3.5 text-primary" />}
+                          </span>
+                          <span>{label}</span>
+                        </button>
+                      );
+                    })}
+                    <div className="my-1 border-t border-border/50" />
+                  </>
+                )}
+
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    onShowTokenUsage();
+                    setIsOverflowOpen(false);
+                  }}
+                  className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-sm text-foreground transition-colors hover:bg-accent/70"
+                >
+                  <ActivityIcon className="h-4 w-4 text-primary" />
+                  <span className="flex-1">{t('input.tokenUsage', { defaultValue: 'Token usage' })}</span>
+                  <span className="text-xs text-muted-foreground">{formatTokenCount(readUsedTokens(tokenBudget))}</span>
+                </button>
+
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    onToggleCommandMenu();
+                    setIsOverflowOpen(false);
+                  }}
+                  className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-sm text-foreground transition-colors hover:bg-accent/70"
+                >
+                  <MessageSquareIcon className="h-4 w-4 text-muted-foreground" />
+                  <span className="flex-1">{t('input.showAllCommands')}</span>
+                  {slashCommandsCount > 0 && (
+                    <span className="flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-bold text-primary-foreground">
+                      {slashCommandsCount}
+                    </span>
+                  )}
+                </button>
+
+                {hasInput && (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      onClearInput();
+                      setIsOverflowOpen(false);
+                    }}
+                    className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-sm text-foreground transition-colors hover:bg-accent/70"
+                  >
+                    <XIcon className="h-4 w-4 text-muted-foreground" />
+                    <span>{t('input.clearInput', { defaultValue: 'Clear input' })}</span>
+                  </button>
+                )}
+              </AnchoredPopover>
+            </div>
+
           </PromptInputTools>
 
           <div className="flex min-w-0 items-center gap-2">
@@ -626,6 +733,14 @@ export default function ChatComposer({
             >
               {submitHint}
             </div>
+            {onVoiceTranscript && voiceAvailable && (
+              <VoiceInputButton
+                state={voiceState}
+                onToggle={voiceToggle}
+                errorMsg={voiceError}
+                className="h-10 w-10 shrink-0 rounded-lg border border-border/60 bg-muted/40 hover:bg-muted [&_svg]:size-5"
+              />
+            )}
             <PromptInputSubmit
               onClick={
                 canQueueDraft

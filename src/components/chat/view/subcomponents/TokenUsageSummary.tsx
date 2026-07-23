@@ -5,7 +5,7 @@ type TokenUsageSummaryProps = {
   onClick?: () => void;
 };
 
-const formatTokenCount = (value: number) => {
+export const formatTokenCount = (value: number) => {
   if (!Number.isFinite(value) || value <= 0) {
     return '0';
   }
@@ -30,14 +30,18 @@ const readUsageNumber = (value: unknown) => {
   return Number.isFinite(parsed) ? parsed : 0;
 };
 
-export default function TokenUsageSummary({ usage, onClick }: TokenUsageSummaryProps) {
+export const readUsedTokens = (usage: Record<string, unknown> | null) => {
   const breakdown =
     usage?.breakdown && typeof usage.breakdown === 'object'
       ? usage.breakdown as Record<string, unknown>
       : null;
   const inputTokens = readUsageNumber(usage?.inputTokens ?? breakdown?.input);
   const outputTokens = readUsageNumber(usage?.outputTokens ?? breakdown?.output);
-  const usedTokens = readUsageNumber(usage?.used) || inputTokens + outputTokens;
+  return readUsageNumber(usage?.used) || inputTokens + outputTokens;
+};
+
+export default function TokenUsageSummary({ usage, onClick }: TokenUsageSummaryProps) {
+  const usedTokens = readUsedTokens(usage);
 
   return (
     <button
