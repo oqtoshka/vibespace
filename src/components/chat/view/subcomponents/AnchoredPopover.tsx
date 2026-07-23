@@ -2,10 +2,13 @@ import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefO
 import { createPortal } from 'react-dom';
 
 type AnchoredPopoverProps = {
-  /** The trigger the popover is anchored above (bottom-right aligned). */
+  /** The trigger the popover is anchored above (bottom-right aligned by default). */
   anchorRef: RefObject<HTMLElement | null>;
   open: boolean;
   onClose: () => void;
+  /** 'right' (default) grows leftward from the anchor's right edge; use 'left'
+      for anchors near the left screen edge so the popover grows rightward. */
+  align?: 'left' | 'right';
   className?: string;
   children: ReactNode;
 };
@@ -18,9 +21,9 @@ type AnchoredPopoverProps = {
  * lower stacking context). Closes on outside-click, Escape, and reflows on
  * scroll/resize.
  */
-export function AnchoredPopover({ anchorRef, open, onClose, className, children }: AnchoredPopoverProps) {
+export function AnchoredPopover({ anchorRef, open, onClose, align = 'right', className, children }: AnchoredPopoverProps) {
   const popRef = useRef<HTMLDivElement | null>(null);
-  const [coords, setCoords] = useState<{ bottom: number; right: number } | null>(null);
+  const [coords, setCoords] = useState<{ bottom: number; left?: number; right?: number } | null>(null);
 
   useLayoutEffect(() => {
     if (!open) return;
@@ -28,10 +31,12 @@ export function AnchoredPopover({ anchorRef, open, onClose, className, children 
       const anchor = anchorRef.current;
       if (!anchor) return;
       const rect = anchor.getBoundingClientRect();
-      setCoords({
-        bottom: window.innerHeight - rect.top + 8,
-        right: window.innerWidth - rect.right,
-      });
+      const bottom = window.innerHeight - rect.top + 8;
+      setCoords(
+        align === 'left'
+          ? { bottom, left: rect.left }
+          : { bottom, right: window.innerWidth - rect.right },
+      );
     };
     update();
     window.addEventListener('resize', update);
@@ -41,7 +46,7 @@ export function AnchoredPopover({ anchorRef, open, onClose, className, children 
       window.removeEventListener('resize', update);
       window.removeEventListener('scroll', update, true);
     };
-  }, [open, anchorRef]);
+  }, [open, anchorRef, align]);
 
   useEffect(() => {
     if (!open) return;
@@ -66,7 +71,7 @@ export function AnchoredPopover({ anchorRef, open, onClose, className, children 
   return createPortal(
     <div
       ref={popRef}
-      style={{ position: 'fixed', bottom: coords.bottom, right: coords.right, zIndex: 100 }}
+      style={{ position: 'fixed', bottom: coords.bottom, left: coords.left, right: coords.right, zIndex: 100 }}
       className={className}
     >
       {children}

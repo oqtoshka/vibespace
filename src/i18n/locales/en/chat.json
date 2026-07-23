@@ -128,6 +128,9 @@
     "clickToChangeMode": "Click to change permission mode (or press Tab in input)",
     "showAllCommands": "Show all commands",
     "clearInput": "Clear input",
+    "moreOptions": "More options",
+    "effort": "Reasoning effort",
+    "tokenUsage": "Token usage",
     "scrollToBottom": "Scroll to bottom",
     "queue": {
       "sendNext": "Queue next message",
