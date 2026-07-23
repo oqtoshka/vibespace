@@ -117,6 +117,9 @@
     "clickToChangeMode": "Нажмите для смены режима разрешений (или нажмите Tab в поле ввода)",
     "showAllCommands": "Показать все команды",
     "clearInput": "Очистить ввод",
+    "moreOptions": "Ещё",
+    "effort": "Уровень рассуждений",
+    "tokenUsage": "Использование токенов",
     "scrollToBottom": "Прокрутить вниз"
   },
   "providerSelection": {
