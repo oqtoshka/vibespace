@@ -8,12 +8,13 @@ type Props = {
   state: VoiceInputState;
   onToggle: () => void;
   errorMsg?: string | null;
+  className?: string;
 };
 
 // Push-to-talk mic button (presentational). Recording state and the stop-and-send action
 // are owned by the composer so the main Send button can drive them too. This button just
 // starts recording and, while recording, stops and drops the transcript into the input box.
-export default function VoiceInputButton({ state, onToggle, errorMsg }: Props) {
+export default function VoiceInputButton({ state, onToggle, errorMsg, className }: Props) {
   const { t } = useTranslation('chat');
 
   const icon =
@@ -28,12 +29,13 @@ export default function VoiceInputButton({ state, onToggle, errorMsg }: Props) {
   return (
     <span className="relative inline-flex">
       {errorMsg && (
-        <span className="absolute bottom-full left-1/2 mb-1 -translate-x-1/2 whitespace-nowrap rounded bg-red-600 px-2 py-1 text-xs text-white shadow-lg">
+        <span className="absolute bottom-full right-0 mb-1 whitespace-nowrap rounded bg-red-600 px-2 py-1 text-xs text-white shadow-lg">
           {errorMsg}
         </span>
       )}
       <PromptInputButton
         tooltip={{ content: state === 'recording' ? t('voice.stopRecording') : t('voice.input') }}
+        className={className}
         onClick={(e: { preventDefault: () => void }) => {
           e.preventDefault();
           onToggle();
