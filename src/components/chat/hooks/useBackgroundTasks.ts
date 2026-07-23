@@ -162,15 +162,26 @@ export function useBackgroundTasks(
   const sessionIdRef = useRef(sessionId);
   sessionIdRef.current = sessionId;
 
+  // Poll while a session is selected and either something may be running or we
+  // haven't yet fetched an authoritative snapshot for the tasks we do have.
+  // Collapsed to a single boolean so the polling effect below does NOT depend on
+  // `serverRunning` directly: `poll` calls setServerRunning with a fresh object
+  // every response, and if that object were an effect dependency the effect
+  // would tear down + immediately re-poll on every response, self-perpetuating a
+  // ~65 req/s runaway loop bounded only by network latency (this is what pegged
+  // the main thread and drained battery). The boolean only flips when polling
+  // should actually start or stop, so a stable-true value keeps one 3s interval.
+  const shouldPoll = Boolean(
+    sessionId &&
+    (maybeLive || serverRunning === null) &&
+    (hasAnyTasks || isSessionActive),
+  );
+
   useEffect(() => {
-    // Poll while a session is selected and either something may be running or we
-    // haven't yet fetched an authoritative snapshot for the tasks we do have.
-    if (!sessionId || (!maybeLive && serverRunning !== null)) {
+    if (!shouldPoll) {
       return;
     }
-    if (!hasAnyTasks && !isSessionActive) {
-      return;
-    }
+    const sessionId = sessionIdRef.current;
 
     let cancelled = false;
     const controllerRef: { current: AbortController | null } = { current: null };
@@ -200,7 +211,7 @@ export function useBackgroundTasks(
       controllerRef.current?.abort();
       window.clearInterval(timer);
     };
-  }, [sessionId, maybeLive, hasAnyTasks, isSessionActive, serverRunning]);
+  }, [shouldPoll]);
 
   // Reset the authoritative snapshot when switching sessions so one session's
   // running set never bleeds into another.
