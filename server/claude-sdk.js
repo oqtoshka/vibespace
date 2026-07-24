@@ -268,7 +268,7 @@ function mapCliOptionsToSDK(options = {}) {
 
   sdkOptions.disallowedTools = settings.disallowedTools || [];
 
-  // Map model. Valid values: sonnet, opus, haiku, opusplan, sonnet[1m], fable.
+  // Map model. Valid values: sonnet, opus, haiku, opusplan, opus[1m], fable.
   //
   // "default" is deliberately NOT forwarded: the SDK turns any model value into
   // an explicit `--model` flag, and that flag outranks the CLI's own settings.
