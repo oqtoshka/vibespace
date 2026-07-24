@@ -372,7 +372,21 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
       return changedModel.model.trim();
     }
 
-    return normalizedRequestedModel || undefined;
+    if (!normalizedRequestedModel) {
+      return undefined;
+    }
+
+    // The client is not a trustworthy source for `model` — any provider mix-up
+    // on its side used to forward a foreign alias (a Claude `opus` onto a codex
+    // session) straight to the CLI, which then failed the whole run. Drop
+    // anything the provider's own catalog does not list and let the provider
+    // fall back to its default.
+    const { models } = await getProviderModels(provider);
+    const isKnownModel = models.OPTIONS.some(
+      (option) => option.value === normalizedRequestedModel,
+    );
+
+    return isKnownModel ? normalizedRequestedModel : undefined;
   };
 
   const clearCache = (): void => {
