@@ -1,6 +1,6 @@
 import type { TFunction } from 'i18next';
 
-import type { Project } from '../../../types/app';
+import type { LLMProvider, Project, ProjectSession } from '../../../types/app';
 import type { ProjectSortOrder, ProjectViewMode, SettingsProject, SessionViewModel, SessionWithProvider } from '../types/types';
 
 export const readProjectSortOrder = (): ProjectSortOrder => {
@@ -118,28 +118,19 @@ export const createSessionViewModel = (
   };
 };
 
+// The server sends every session in one `sessions` array tagged with its own
+// `provider`; the per-provider buckets are legacy and no longer populated.
+// Trust the row, and only fall back to Claude when a payload predates the field.
+export const getSessionProvider = (session: ProjectSession): LLMProvider =>
+  session.__provider ?? session.provider ?? 'claude';
+
 export const getAllSessions = (project: Project): SessionWithProvider[] => {
-  const claudeSessions = [...(project.sessions || [])].map((session) => ({
+  const sessions = [...(project.sessions || [])].map((session) => ({
     ...session,
-    __provider: 'claude' as const,
+    __provider: getSessionProvider(session),
   }));
 
-  const cursorSessions = (project.cursorSessions || []).map((session) => ({
-    ...session,
-    __provider: 'cursor' as const,
-  }));
-
-  const codexSessions = (project.codexSessions || []).map((session) => ({
-    ...session,
-    __provider: 'codex' as const,
-  }));
-
-  const opencodeSessions = (project.opencodeSessions || []).map((session) => ({
-    ...session,
-    __provider: 'opencode' as const,
-  }));
-
-  return [...claudeSessions, ...cursorSessions, ...codexSessions, ...opencodeSessions].sort(
+  return sessions.sort(
     (a, b) => getSessionDate(b).getTime() - getSessionDate(a).getTime(),
   );
 };

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { NavigateFunction } from 'react-router-dom';
 
+import { getSessionProvider } from '../components/sidebar/utils/utils';
 import { useWebSocketEvent } from '../contexts/WebSocketContext';
 import { api } from '../utils/api';
 import type {
@@ -545,63 +546,27 @@ export function useProjectsState({
     }
 
     // Project membership is resolved through `projectId` after the migration.
+    //
+    // Every session — whatever its provider — arrives in the single `sessions`
+    // array carrying its own `provider`; the per-provider buckets the server
+    // used to send are gone. Matching against `sessions` and then hard-coding
+    // `__provider: 'claude'` therefore relabelled *every* codex/cursor/opencode
+    // session as Claude on each projects refresh, which flipped the composer's
+    // provider (and with it the model) and sent Claude aliases like `opus` to
+    // the codex CLI. Derive the provider from the row instead.
     for (const project of projects) {
-      const claudeSession = project.sessions?.find((session) => session.id === sessionId);
-      if (claudeSession) {
+      const session = project.sessions?.find((entry) => entry.id === sessionId);
+      if (session) {
+        const sessionProvider = getSessionProvider(session);
         const shouldUpdateProject = selectedProject?.projectId !== project.projectId;
         const shouldUpdateSession =
-          selectedSession?.id !== sessionId || selectedSession.__provider !== 'claude';
+          selectedSession?.id !== sessionId || selectedSession.__provider !== sessionProvider;
 
         if (shouldUpdateProject) {
           setSelectedProject(project);
         }
         if (shouldUpdateSession) {
-          setSelectedSession({ ...claudeSession, __provider: 'claude' });
-        }
-        return;
-      }
-
-      const cursorSession = project.cursorSessions?.find((session) => session.id === sessionId);
-      if (cursorSession) {
-        const shouldUpdateProject = selectedProject?.projectId !== project.projectId;
-        const shouldUpdateSession =
-          selectedSession?.id !== sessionId || selectedSession.__provider !== 'cursor';
-
-        if (shouldUpdateProject) {
-          setSelectedProject(project);
-        }
-        if (shouldUpdateSession) {
-          setSelectedSession({ ...cursorSession, __provider: 'cursor' });
-        }
-        return;
-      }
-
-      const codexSession = project.codexSessions?.find((session) => session.id === sessionId);
-      if (codexSession) {
-        const shouldUpdateProject = selectedProject?.projectId !== project.projectId;
-        const shouldUpdateSession =
-          selectedSession?.id !== sessionId || selectedSession.__provider !== 'codex';
-
-        if (shouldUpdateProject) {
-          setSelectedProject(project);
-        }
-        if (shouldUpdateSession) {
-          setSelectedSession({ ...codexSession, __provider: 'codex' });
-        }
-        return;
-      }
-
-      const opencodeSession = project.opencodeSessions?.find((session) => session.id === sessionId);
-      if (opencodeSession) {
-        const shouldUpdateProject = selectedProject?.projectId !== project.projectId;
-        const shouldUpdateSession =
-          selectedSession?.id !== sessionId || selectedSession.__provider !== 'opencode';
-
-        if (shouldUpdateProject) {
-          setSelectedProject(project);
-        }
-        if (shouldUpdateSession) {
-          setSelectedSession({ ...opencodeSession, __provider: 'opencode' });
+          setSelectedSession({ ...session, __provider: sessionProvider });
         }
         return;
       }
