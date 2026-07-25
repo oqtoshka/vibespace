@@ -113,6 +113,8 @@ function ChatInterface({
     setIsUserScrolledUp,
     tokenBudget,
     setTokenBudget,
+    contextUsage,
+    setContextUsage,
     visibleMessageCount,
     visibleMessages,
     loadEarlierMessages,
@@ -213,6 +215,7 @@ function ChatInterface({
     isLoading: isProcessing,
     canAbortSession,
     tokenBudget,
+    contextUsage,
     sendMessage,
     sendByCtrlEnter,
     onSessionProcessing,
@@ -250,6 +253,7 @@ function ChatInterface({
     selectedSession,
     currentSessionId,
     setTokenBudget,
+    setContextUsage,
     pendingPermissionRequests,
     setPendingPermissionRequests,
     streamTimerRef,
@@ -451,6 +455,7 @@ function ChatInterface({
           availableEffortOptions={currentProviderEffortOptions}
           onSelectEffort={(nextEffort) => setStoredProviderEffort(provider, nextEffort)}
           tokenBudget={tokenBudget}
+          contextUsage={contextUsage}
           onShowTokenUsage={showCostModal}
           backgroundTasks={backgroundTasks}
           backgroundRunningCount={backgroundRunningCount}

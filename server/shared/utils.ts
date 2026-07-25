@@ -459,6 +459,39 @@ export const readOptionalString = (value: unknown): string | undefined => {
 };
 
 /**
+ * Reads a finite number from unknown input, returning `null` for anything that
+ * is not one (missing fields, nulls, NaN). Distinct from a `?? 0` fallback:
+ * callers use it to tell "absent" from "genuinely zero", which matters for
+ * optional telemetry fields like a compaction's post-token count.
+ */
+export const readFiniteNumber = (value: unknown): number | null => {
+  if (value === null || value === undefined || value === '') {
+    return null;
+  }
+
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
+/**
+ * The operator-configured context window, or `null` when unknown.
+ *
+ * There is deliberately no built-in default. A model's real window is not
+ * derivable from its id — the same `claude-opus-5` answers 1,000,000 through
+ * one deployment and 200,000 through another — and this value drives a
+ * percentage the user acts on. A wrong constant here reads as "83% full" when
+ * the truth is 3%, which is worse than showing no percentage at all.
+ *
+ * The real window comes from the live runtime (`getContextUsage()`), which is
+ * remembered per session; callers fall back to this only for the offline
+ * estimate, and show a bare token count when it too is unknown.
+ */
+export function resolveConfiguredContextWindow(): number | null {
+  const configured = parseInt(process.env.CONTEXT_WINDOW ?? '', 10);
+  return Number.isFinite(configured) && configured > 0 ? configured : null;
+}
+
+/**
  * Reads an optional string array from unknown input.
  *
  * Non-array values are ignored, and any array entries that are not strings are

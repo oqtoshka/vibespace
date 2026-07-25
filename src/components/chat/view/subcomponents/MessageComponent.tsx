@@ -1,6 +1,6 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { PaperclipIcon, PencilIcon } from 'lucide-react';
+import { ArchiveIcon, PaperclipIcon, PencilIcon } from 'lucide-react';
 
 import SessionProviderLogo from '../../../llm-logo-provider/SessionProviderLogo';
 import type {
@@ -54,6 +54,14 @@ type InteractiveOption = {
 };
 
 const COPY_HIDDEN_TOOL_NAMES = new Set(['Bash', 'Edit', 'Write', 'ApplyPatch']);
+
+/** Compact token count for the compaction divider (180000 → "180k"). */
+const formatCompactTokens = (value: number) => {
+  if (value >= 1000) {
+    return `${Math.round(value / 1000)}k`;
+  }
+  return String(value);
+};
 
 const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, showRawParameters, showThinking, selectedProject, provider, onRewind, rewindDisabled }: MessageComponentProps) => {
   const renderStart = performance.now();
@@ -175,6 +183,40 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
 
   if (shouldHideThinkingMessage) {
     return null;
+  }
+
+  // Compaction seam. Everything above it left the model's context, which is
+  // otherwise invisible — the transcript just carries on and the agent quietly
+  // stops remembering the earlier turns.
+  if (message.isCompactBoundary) {
+    const compaction = message.compaction;
+    const trigger = compaction?.trigger === 'auto'
+      ? t('compaction.auto', { defaultValue: 'Context auto-compacted' })
+      : t('compaction.manual', { defaultValue: 'Context compacted' });
+    const before = typeof compaction?.preTokens === 'number' ? compaction.preTokens : null;
+    const after = typeof compaction?.postTokens === 'number' ? compaction.postTokens : null;
+    const shrink = before !== null && after !== null
+      ? `${formatCompactTokens(before)} → ${formatCompactTokens(after)}`
+      : before !== null
+        ? formatCompactTokens(before)
+        : null;
+
+    return (
+      <div className="chat-message system px-3 py-2 sm:px-0">
+        <div className="flex items-center gap-3" role="separator">
+          <span className="h-px flex-1 bg-border" />
+          <span
+            className="flex items-center gap-1.5 whitespace-nowrap rounded-full border border-border/70 bg-muted/40 px-2.5 py-1 text-[11px] text-muted-foreground"
+            title={compaction?.durationMs ? `Took ${Math.round(compaction.durationMs / 1000)}s` : undefined}
+          >
+            <ArchiveIcon className="h-3 w-3" />
+            <span>{trigger}</span>
+            {shrink && <span className="font-mono text-muted-foreground/80">{shrink}</span>}
+          </span>
+          <span className="h-px flex-1 bg-border" />
+        </div>
+      </div>
+    );
   }
 
   return (

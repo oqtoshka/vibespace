@@ -4,7 +4,7 @@ import type { MutableRefObject } from 'react';
 import { authenticatedFetch } from '../../../utils/api';
 import type { MarkSessionIdle, SessionActivityMap } from '../../../hooks/useSessionProtection';
 import type { Project, ProjectSession, LLMProvider } from '../../../types/app';
-import type { SessionStore, NormalizedMessage } from '../../../stores/useSessionStore';
+import type { SessionStore, NormalizedMessage, ContextUsage } from '../../../stores/useSessionStore';
 import type { ChatMessage } from '../types/types';
 import { createCachedDiffCalculator, type DiffCalculator } from '../utils/messageTransforms';
 
@@ -114,6 +114,10 @@ export function useChatSessionState({
   const [totalMessages, setTotalMessages] = useState(0);
   const [isUserScrolledUp, setIsUserScrolledUp] = useState(false);
   const [tokenBudget, setTokenBudget] = useState<Record<string, unknown> | null>(null);
+  // Authoritative context-window reading from the live runtime. Null until a
+  // turn runs for this session; the gauge falls back to estimating from
+  // `tokenBudget` (transcript usage) until then.
+  const [contextUsage, setContextUsage] = useState<ContextUsage | null>(null);
   const [visibleMessageCount, setVisibleMessageCount] = useState(INITIAL_VISIBLE_MESSAGES);
   const [allMessagesLoaded, setAllMessagesLoaded] = useState(false);
   const [isLoadingAllMessages, setIsLoadingAllMessages] = useState(false);
@@ -183,6 +187,7 @@ export function useChatSessionState({
     setTotalMessages(0);
     
     setTokenBudget(null);
+    setContextUsage(null);
     setVisibleMessageCount(INITIAL_VISIBLE_MESSAGES);
     setAllMessagesLoaded(false);
     allMessagesLoadedRef.current = false;
@@ -529,6 +534,7 @@ export function useChatSessionState({
       setHasMoreMessages(false);
       setTotalMessages(0);
       setTokenBudget(null);
+      setContextUsage(null);
       lastLoadedSessionKeyRef.current = null;
       return;
     }
@@ -579,6 +585,8 @@ export function useChatSessionState({
 
     if (sessionChanged) {
       setTokenBudget(null);
+      // Belongs to the session we just left; the new one reports its own.
+      setContextUsage(null);
     }
 
     setCurrentSessionId(selectedSessionId);
@@ -789,6 +797,7 @@ export function useChatSessionState({
   useEffect(() => {
     if (!selectedProject || !selectedSession?.id) {
       setTokenBudget(null);
+      setContextUsage(null);
       return;
     }
     const fetchInitialTokenUsage = async () => {
@@ -797,9 +806,15 @@ export function useChatSessionState({
         const url = `/api/projects/${selectedProject.projectId}/sessions/${selectedSession.id}/token-usage`;
         const response = await authenticatedFetch(url);
         if (response.ok) {
-          setTokenBudget(await response.json());
+          const usage = await response.json();
+          setTokenBudget(usage);
+          // The server hands back its last live reading for this session when
+          // it still has one, which restores the full gauge (percentage,
+          // auto-compact state) across a reload without waiting for a turn.
+          setContextUsage(usage?.contextUsage ?? null);
         } else {
           setTokenBudget(null);
+          setContextUsage(null);
         }
       } catch (error) {
         console.error('Failed to fetch initial token usage:', error);
@@ -929,6 +944,8 @@ export function useChatSessionState({
     setIsUserScrolledUp,
     tokenBudget,
     setTokenBudget,
+    contextUsage,
+    setContextUsage,
     visibleMessageCount,
     visibleMessages,
     loadEarlierMessages,

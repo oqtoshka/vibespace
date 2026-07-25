@@ -15,11 +15,13 @@ import { MessageSquareIcon, XIcon, Clock3, Loader2, PaperclipIcon, ChevronDown, 
 
 import type { QueuedMessage } from '../../hooks/useChatComposerState';
 
+import { useToolbarOverflow } from '../../hooks/useToolbarOverflow';
 import { useVoiceInput } from '../../hooks/useVoiceInput';
 import { useVoiceAvailable } from '../../hooks/useVoiceAvailable';
 import type { SessionActivity } from '../../../../hooks/useSessionProtection';
 import type { PendingPermissionRequest, PermissionMode } from '../../types/types';
 import type { ProviderModelOption } from '../../../../types/app';
+import type { ContextUsage } from '../../../../stores/useSessionStore';
 import {
   PromptInput,
   PromptInputHeader,
@@ -36,7 +38,7 @@ import ActivityIndicator from './ActivityIndicator';
 import ImageAttachment from './ImageAttachment';
 import VoiceInputButton from './VoiceInputButton';
 import PermissionRequestsBanner from './PermissionRequestsBanner';
-import TokenUsageSummary, { formatTokenCount, readUsedTokens } from './TokenUsageSummary';
+import TokenUsageSummary, { formatTokenCount, readUsedTokens, resolveContextGauge } from './TokenUsageSummary';
 import { AnchoredPopover } from './AnchoredPopover';
 import BackgroundTasksIndicator from './BackgroundTasksIndicator';
 import SubagentsIndicator from './SubagentsIndicator';
@@ -74,6 +76,7 @@ interface ChatComposerProps {
   availableEffortOptions: NonNullable<ProviderModelOption['effort']>['values'];
   onSelectEffort: (effort: string) => void;
   tokenBudget: Record<string, unknown> | null;
+  contextUsage: ContextUsage | null;
   onShowTokenUsage: () => void;
   backgroundTasks: BackgroundTask[];
   backgroundRunningCount: number;
@@ -136,6 +139,7 @@ export default function ChatComposer({
   availableEffortOptions,
   onSelectEffort,
   tokenBudget,
+  contextUsage,
   backgroundTasks,
   backgroundRunningCount,
   subagents,
@@ -184,7 +188,7 @@ export default function ChatComposer({
   queuedMessages,
   onRemoveQueuedMessage,
 }: ChatComposerProps) {
-  const { t } = useTranslation('chat');
+  const { t, i18n } = useTranslation('chat');
   const commandMenuPosition = useMemo(() => {
     if (!isCommandMenuOpen) {
       return { top: 0, left: 16, bottom: 90 };
@@ -217,9 +221,12 @@ export default function ChatComposer({
   );
   const isRecording = voiceState === 'recording';
   const isTranscribing = voiceState === 'transcribing';
-  // Mobile-only "…" menu holding the secondary controls that don't fit in the footer.
+  // "…" menu holding the secondary controls whenever they don't fit inline.
   const [isOverflowOpen, setIsOverflowOpen] = useState(false);
   const overflowButtonRef = useRef<HTMLButtonElement | null>(null);
+  const footerRef = useRef<HTMLDivElement | null>(null);
+  const toolsRef = useRef<HTMLDivElement | null>(null);
+  const footerActionsRef = useRef<HTMLDivElement | null>(null);
   const [isEffortDropdownOpen, setIsEffortDropdownOpen] = useState(false);
   const effortDropdownRef = useRef<HTMLDivElement | null>(null);
   const effortDropdownMenuRef = useRef<HTMLDivElement | null>(null);
@@ -234,6 +241,38 @@ export default function ChatComposer({
     [availableEffortOptions],
   );
   const selectedEffortLabel = effort === 'default' ? 'Default' : effort;
+
+  const hasBackgroundTasks = backgroundTasks.length > 0;
+  const hasSubagents = subagents.length > 0;
+  // Everything that changes the toolbar's natural width without changing the
+  // footer's — the live indicators are the usual cause, since they appear
+  // mid-run and are exactly what pushed send off the edge before.
+  const toolbarSignature = [
+    hasBackgroundTasks ? backgroundRunningCount || backgroundTasks.length : 0,
+    hasSubagents ? subagentRunningCount || subagents.length : 0,
+    hasInput ? 1 : 0,
+    effortOptions.length,
+    permissionMode,
+    selectedEffortLabel,
+    slashCommandsCount,
+    i18n.language,
+  ].join('|');
+
+  const isToolbarCollapsed = useToolbarOverflow({
+    containerRef: footerRef,
+    toolsRef,
+    actionsRef: footerActionsRef,
+    signature: toolbarSignature,
+  });
+
+  // The "…" button unmounts when the row expands again (widened window, an
+  // indicator finishing) — drop the open state with it so the menu doesn't
+  // reappear already-open the next time the row collapses.
+  useEffect(() => {
+    if (!isToolbarCollapsed) {
+      setIsOverflowOpen(false);
+    }
+  }, [isToolbarCollapsed]);
   const updateEffortDropdownPosition = useCallback(() => {
     const rect = effortDropdownButtonRef.current?.getBoundingClientRect();
     if (!rect) {
@@ -470,10 +509,12 @@ export default function ChatComposer({
             />
         </PromptInputBody>
 
-        <PromptInputFooter className="gap-3">
-          {/* The buttons never shrink (clipped icons read as broken); the hint
-              text on the right is the flexible part and truncates instead. */}
-          <PromptInputTools className="shrink-0">
+        <PromptInputFooter ref={footerRef} className="gap-3">
+          {/* Shrink priority, in order: the hint text truncates, then the
+              toolbar clips (and collapses into "…" before it gets that far).
+              Mic and send never shrink and never leave the box — a clipped
+              send button is the one failure the user cannot work around. */}
+          <PromptInputTools ref={toolsRef} className="min-w-0 shrink overflow-hidden">
             <PromptInputButton
               tooltip={{ content: t('input.attachFiles', { defaultValue: 'Attach files' }) }}
               onClick={openImagePicker}
@@ -521,8 +562,8 @@ export default function ChatComposer({
               </div>
             </button>
 
-            {availableEffortOptions.length > 0 && (
-              <div ref={effortDropdownRef} className="relative hidden sm:block">
+            {availableEffortOptions.length > 0 && !isToolbarCollapsed && (
+              <div ref={effortDropdownRef} className="relative">
                 <button
                   ref={effortDropdownButtonRef}
                   type="button"
@@ -585,17 +626,18 @@ export default function ChatComposer({
               </div>
             )}
 
-            <div className="hidden sm:block">
-              <TokenUsageSummary usage={tokenBudget} onClick={onShowTokenUsage} />
-            </div>
+            {!isToolbarCollapsed && (
+              <TokenUsageSummary usage={tokenBudget} contextUsage={contextUsage} onClick={onShowTokenUsage} />
+            )}
 
             <BackgroundTasksIndicator tasks={backgroundTasks} runningCount={backgroundRunningCount} />
             <SubagentsIndicator subagents={subagents} runningCount={subagentRunningCount} sessionId={sessionId} />
 
+            {!isToolbarCollapsed && (
             <PromptInputButton
               tooltip={{ content: t('input.showAllCommands') }}
               onClick={onToggleCommandMenu}
-              className="relative hidden sm:inline-flex"
+              className="relative"
             >
               <MessageSquareIcon />
               {slashCommandsCount > 0 && (
@@ -606,21 +648,24 @@ export default function ChatComposer({
                 </span>
               )}
             </PromptInputButton>
+            )}
 
-            {hasInput && (
+            {hasInput && !isToolbarCollapsed && (
               <PromptInputButton
                 tooltip={{ content: t('input.clearInput', { defaultValue: 'Clear input' }) }}
                 onClick={onClearInput}
-                className="hidden sm:flex"
               >
                 <XIcon />
               </PromptInputButton>
             )}
 
-            {/* Mobile: secondary controls collapse into this "…" menu so the
-                footer always fits — only attach, mode, live counters, mic and
-                send stay inline. */}
-            <div className="relative sm:hidden">
+            {/* Secondary controls collapse into this "…" menu whenever the row
+                would otherwise overflow — on a phone, on a tablet, and on a
+                wide desktop whose chat pane is narrowed by the file pane.
+                Attach, mode and the live indicators stay inline: they are the
+                status you watch while a run is going. */}
+            {isToolbarCollapsed && (
+            <div className="relative">
               <PromptInputButton
                 ref={overflowButtonRef}
                 tooltip={{ content: t('input.moreOptions', { defaultValue: 'More options' }) }}
@@ -684,7 +729,16 @@ export default function ChatComposer({
                 >
                   <ActivityIcon className="h-4 w-4 text-primary" />
                   <span className="flex-1">{t('input.tokenUsage', { defaultValue: 'Token usage' })}</span>
-                  <span className="text-xs text-muted-foreground">{formatTokenCount(readUsedTokens(tokenBudget))}</span>
+                  <span className="text-xs text-muted-foreground">
+                    {(() => {
+                      // Mobile has no room for the bar, so the percentage is
+                      // the whole reading here.
+                      const gauge = resolveContextGauge(tokenBudget, contextUsage);
+                      return gauge
+                        ? `${formatTokenCount(gauge.used)} · ${Math.round(gauge.percentage)}%`
+                        : formatTokenCount(readUsedTokens(tokenBudget));
+                    })()}
+                  </span>
                 </button>
 
                 <button
@@ -721,18 +775,30 @@ export default function ChatComposer({
                 )}
               </AnchoredPopover>
             </div>
+            )}
 
           </PromptInputTools>
 
-          <div className="flex min-w-0 items-center gap-2">
-            <div
-              className={`hidden min-w-0 truncate whitespace-nowrap text-xs text-muted-foreground/50 transition-opacity duration-200 lg:block ${
-                input.trim() && !canQueueDraft ? 'opacity-0' : 'opacity-100'
-              }`}
-              title={submitHint}
-            >
-              {submitHint}
-            </div>
+          {/* Three flat siblings — toolbar, hint, actions — deliberately not
+              nested. Wrapping the hint and the actions in one group made that
+              group's min-content (the hint's full nowrap text) the floor for
+              the whole right side, which starved the toolbar even when there
+              was plenty of room. As siblings each carries its own priority:
+              the hint grows into leftover space only (`basis-0`) and truncates
+              to nothing, the toolbar takes its natural width and clips only as
+              a last resort, and the actions never shrink at all. */}
+          <div
+            className={`hidden min-w-0 flex-1 basis-0 truncate whitespace-nowrap text-right text-xs text-muted-foreground/50 transition-opacity duration-200 lg:block ${
+              input.trim() && !canQueueDraft ? 'opacity-0' : 'opacity-100'
+            }`}
+            title={submitHint}
+          >
+            {submitHint}
+          </div>
+
+          {/* The width the toolbar must not collide with — measured, so the
+              overflow check stays correct as the mic comes and goes. */}
+          <div ref={footerActionsRef} className="flex shrink-0 items-center gap-2">
             {onVoiceTranscript && voiceAvailable && (
               <VoiceInputButton
                 state={voiceState}
