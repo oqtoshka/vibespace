@@ -278,6 +278,20 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
         });
         break;
 
+      // The seam where the conversation was summarized. Rendered as a marker
+      // rather than a bubble: what matters is that everything above it is no
+      // longer in the model's context, and roughly how much was dropped.
+      case 'compact_boundary':
+        converted.push({
+          type: 'system',
+          content: '',
+          timestamp: msg.timestamp,
+          isCompactBoundary: true,
+          compaction: msg.compaction,
+          ...sharedMetadata,
+        });
+        break;
+
       case 'stream_delta':
         if (msg.content) {
           converted.push({

@@ -15,7 +15,8 @@ import cors from 'cors';
 import mime from 'mime-types';
 import Database from 'better-sqlite3';
 
-import { AppError, WORKSPACES_ROOT, getOpenCodeDatabasePath, validateWorkspacePath } from '@/shared/utils.js';
+import { AppError, WORKSPACES_ROOT, getOpenCodeDatabasePath, resolveConfiguredContextWindow, validateWorkspacePath } from '@/shared/utils.js';
+import { recallContextUsage } from '@/shared/context-usage-cache.js';
 import { validateAccessiblePath, validatePathInProject } from './utils/allowedPaths.js';
 import { closeSessionsWatcher, initializeSessionsWatcher, registerPendingCliSession } from '@/modules/providers/index.js';
 import { getSubagentConversation } from '@/modules/providers/list/claude/claude-sessions.provider.js';
@@ -2191,12 +2192,11 @@ app.get('/api/projects/:projectId/sessions/:sessionId/token-usage', authenticate
         }
         const lines = fileContent.trim().split('\n');
 
-        const parsedContextWindow = parseInt(process.env.CONTEXT_WINDOW, 10);
-        const contextWindow = Number.isFinite(parsedContextWindow) ? parsedContextWindow : 160000;
         let inputTokens = 0;
         let outputTokens = 0;
         let cacheReadTokens = 0;
         let cacheCreationTokens = 0;
+        let usageModel = null;
 
         // Find the latest assistant message with usage data (scan from end)
         for (let i = lines.length - 1; i >= 0; i--) {
@@ -2213,6 +2213,7 @@ app.get('/api/projects/:projectId/sessions/:sessionId/token-usage', authenticate
                     cacheCreationTokens = readUsageNumber(usage.cache_creation_input_tokens ?? usage.cacheCreationInputTokens ?? usage.cacheCreationTokens);
                     inputTokens = directInputTokens + cacheReadTokens + cacheCreationTokens;
                     outputTokens = readUsageNumber(usage.output_tokens ?? usage.outputTokens);
+                    usageModel = typeof entry.message?.model === 'string' ? entry.message.model : null;
 
                     break; // Stop after finding the latest assistant message
                 }
@@ -2224,10 +2225,21 @@ app.get('/api/projects/:projectId/sessions/:sessionId/token-usage', authenticate
 
         const totalUsed = inputTokens + outputTokens;
         const cacheTokens = cacheReadTokens + cacheCreationTokens;
+        // The window is only knowable from a live runtime, so reuse the last
+        // reading this server saw for the session — that survives the page
+        // reloads and session switches a web UI does constantly. Failing that,
+        // only an explicit CONTEXT_WINDOW is trustworthy; with neither,
+        // `total: 0` means "unknown" and the client shows a bare token count
+        // instead of a percentage of a number we made up.
+        const rememberedContextUsage = recallContextUsage(providerNativeSessionId);
+        const contextWindow = rememberedContextUsage?.maxTokens ?? resolveConfiguredContextWindow() ?? 0;
 
         res.json({
             used: totalUsed,
             total: contextWindow,
+            model: usageModel,
+            estimated: true,
+            ...(rememberedContextUsage ? { contextUsage: rememberedContextUsage } : {}),
             inputTokens,
             outputTokens,
             cacheReadTokens,

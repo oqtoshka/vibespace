@@ -28,7 +28,33 @@ export type MessageKind =
   | 'permission_cancelled'
   | 'session_created'
   | 'interactive_prompt'
-  | 'task_notification';
+  | 'task_notification'
+  | 'compact_boundary';
+
+/**
+ * Context-window occupancy reported by the live provider runtime (mirrors
+ * `ContextUsage` in server/shared/types.ts).
+ *
+ * `percentage` is the runtime's own number, so the gauge always agrees with
+ * what the CLI would print. `autoCompactThreshold` is a 0–1 fraction and is
+ * only meaningful when `isAutoCompactEnabled`.
+ */
+export interface ContextUsage {
+  totalTokens: number;
+  maxTokens: number;
+  percentage: number;
+  model?: string;
+  autoCompactThreshold?: number;
+  isAutoCompactEnabled: boolean;
+}
+
+/** What one compaction did (mirrors `CompactionInfo` in server/shared/types.ts). */
+export interface CompactionInfo {
+  trigger: 'manual' | 'auto';
+  preTokens?: number;
+  postTokens?: number;
+  durationMs?: number;
+}
 
 export interface NormalizedMessage {
   id: string;
@@ -72,6 +98,10 @@ export interface NormalizedMessage {
   tokens?: number;
   canInterrupt?: boolean;
   tokenBudget?: unknown;
+  /** Live context-window snapshot; carried on `status`/`context_usage` events. */
+  contextUsage?: ContextUsage;
+  /** Compaction metadata; carried on `compact_boundary` events. */
+  compaction?: CompactionInfo;
   requestId?: string;
   input?: unknown;
   context?: unknown;

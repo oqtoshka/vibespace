@@ -1,4 +1,5 @@
 import type { Project, ProjectSession, LLMProvider } from '../../../types/app';
+import type { CompactionInfo } from '../../../stores/useSessionStore';
 import type {
   MarkSessionIdle,
   MarkSessionProcessing,
@@ -60,6 +61,9 @@ export interface ChatMessage {
   isLocalCommand?: boolean;
   isLocalCommandStdout?: boolean;
   isCompactSummary?: boolean;
+  /** Renders as a "context compacted here" divider instead of a bubble. */
+  isCompactBoundary?: boolean;
+  compaction?: CompactionInfo;
   isSubagentContainer?: boolean;
   subagentState?: {
     childTools: SubagentChildTool[];
