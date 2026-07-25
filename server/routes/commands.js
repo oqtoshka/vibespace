@@ -355,14 +355,31 @@ Custom commands can be created in:
     const hasTokenBreakdown = computedUsed > 0;
     const used = Math.max(reportedUsed, computedUsed);
 
+    // A live runtime reading, when the client has one, beats everything derived
+    // above: it knows the model's real window and whether auto-compaction will
+    // rescue the session before it hits it.
+    const liveContext = context?.contextUsage;
+    const contextUsage = liveContext && Number(liveContext.maxTokens) > 0
+      ? {
+          totalTokens: Number(liveContext.totalTokens) || 0,
+          maxTokens: Number(liveContext.maxTokens),
+          percentage: Number(liveContext.percentage) || 0,
+          autoCompactThreshold: Number.isFinite(liveContext.autoCompactThreshold)
+            ? liveContext.autoCompactThreshold
+            : undefined,
+          isAutoCompactEnabled: liveContext.isAutoCompactEnabled === true,
+        }
+      : null;
+
     return {
       type: "builtin",
       action: "cost",
       data: {
         tokenUsage: {
-          used,
-          total,
+          used: contextUsage ? contextUsage.totalTokens : used,
+          total: contextUsage ? contextUsage.maxTokens : total,
         },
+        ...(contextUsage ? { contextUsage } : {}),
         ...(hasTokenBreakdown
           ? {
               tokenBreakdown: {

@@ -405,6 +405,7 @@ function ModelsContent({
 function CostContent({ data }: { data: CostCommandData }) {
   const used = Number(data.tokenUsage?.used ?? 0);
   const total = Number(data.tokenUsage?.total ?? 0);
+  const contextUsage = data.contextUsage && data.contextUsage.maxTokens > 0 ? data.contextUsage : null;
   const model = data.model || 'Unknown';
   const provider = getProviderLabel(data.provider, data.provider || 'Unknown');
   const hasBreakdown =
@@ -434,6 +435,26 @@ function CostContent({ data }: { data: CostCommandData }) {
         ]),
     ...(total > 0
       ? [{ label: 'Context window', value: formatNumber(total), icon: Gauge }]
+      : []),
+    ...(contextUsage
+      ? [
+          {
+            label: 'Context used',
+            value: `${Math.round(contextUsage.percentage)}%`,
+            icon: Gauge,
+          },
+          {
+            label: 'Auto-compact',
+            value: contextUsage.isAutoCompactEnabled
+              ? `On${
+                  Number.isFinite(contextUsage.autoCompactThreshold) && contextUsage.autoCompactThreshold
+                    ? ` — at ${Math.round(contextUsage.autoCompactThreshold * 100)}%`
+                    : ''
+                }`
+              : 'Off',
+            icon: Activity,
+          },
+        ]
       : []),
   ];
 

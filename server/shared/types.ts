@@ -180,7 +180,8 @@ export type MessageKind =
   | 'permission_cancelled'
   | 'session_created'
   | 'interactive_prompt'
-  | 'task_notification';
+  | 'task_notification'
+  | 'compact_boundary';
 
 /**
  * Event kinds added by the chat gateway layer on top of provider message kinds.
@@ -205,6 +206,39 @@ export type GatewayEventKind =
  * `GatewayEventKind` values.
  */
 export type ServerEventKind = MessageKind | GatewayEventKind;
+
+/**
+ * Context-window occupancy for a live session.
+ *
+ * Unlike `tokenBudget` — which is derived from a single message's `usage` and
+ * a guessed window size — this comes from the provider runtime itself, so
+ * `maxTokens` is the real window for the model in use and `percentage` is the
+ * same number the CLI shows. `autoCompactThreshold` is the fraction at which
+ * the runtime would compact on its own; it is only meaningful when
+ * `isAutoCompactEnabled` is true.
+ */
+export type ContextUsage = {
+  totalTokens: number;
+  maxTokens: number;
+  /** 0–100. */
+  percentage: number;
+  model?: string;
+  /** 0–1 fraction of the window at which auto-compaction triggers. */
+  autoCompactThreshold?: number;
+  isAutoCompactEnabled: boolean;
+};
+
+/**
+ * What one compaction did — emitted live by the runtime at the moment the
+ * conversation is summarized, so the transcript can show a boundary instead of
+ * an unexplained gap between the pre- and post-compaction turns.
+ */
+export type CompactionInfo = {
+  trigger: 'manual' | 'auto';
+  preTokens?: number;
+  postTokens?: number;
+  durationMs?: number;
+};
 
 /**
  * Provider-neutral message envelope used in REST responses and realtime channels.
@@ -270,6 +304,14 @@ export type NormalizedMessage = {
   status?: string;
   summary?: string;
   tokenBudget?: unknown;
+  /**
+   * Authoritative context-window snapshot for the session, read from the live
+   * provider runtime (Claude: the SDK's `getContextUsage()` control request).
+   * Carried on `status` events with `text: 'context_usage'`.
+   */
+  contextUsage?: ContextUsage;
+  /** Compaction metadata carried by `compact_boundary` events. */
+  compaction?: CompactionInfo;
   subagentTools?: unknown;
   toolUseResult?: unknown;
   sequence?: number;

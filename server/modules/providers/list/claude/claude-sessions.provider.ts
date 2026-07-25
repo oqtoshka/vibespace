@@ -4,8 +4,8 @@ import path from 'node:path';
 import readline from 'node:readline';
 
 import type { IProviderSessions } from '@/shared/interfaces.js';
-import type { AnyRecord, FetchHistoryOptions, FetchHistoryResult, NormalizedMessage, RewindResult } from '@/shared/types.js';
-import { createNormalizedMessage, generateMessageId, readObjectRecord, sliceTailPage } from '@/shared/utils.js';
+import type { AnyRecord, CompactionInfo, FetchHistoryOptions, FetchHistoryResult, NormalizedMessage, RewindResult } from '@/shared/types.js';
+import { createNormalizedMessage, generateMessageId, readFiniteNumber, readObjectRecord, sliceTailPage } from '@/shared/utils.js';
 import { sessionsDb } from '@/modules/database/index.js';
 
 const PROVIDER = 'claude';
@@ -509,6 +509,32 @@ export class ClaudeSessionsProvider implements IProviderSessions {
         provider: PROVIDER,
         kind: 'error',
         content,
+      })];
+    }
+
+    // Compaction boundary. The live SDK stream announces it as a system event
+    // the moment the conversation is summarized; the JSONL transcript records
+    // the same seam as a `compact_boundary` row alongside the summary text.
+    // Both spellings land here so a compaction reads the same live and on
+    // reload, instead of looking like an unexplained gap in the transcript.
+    if (raw.type === 'system' && raw.subtype === 'compact_boundary') {
+      const meta = readObjectRecord(raw.compact_metadata ?? raw.compactMetadata) || {};
+      const trigger = meta.trigger === 'auto' ? 'auto' : 'manual';
+      const compaction: CompactionInfo = { trigger };
+      const preTokens = readFiniteNumber(meta.pre_tokens ?? meta.preTokens);
+      const postTokens = readFiniteNumber(meta.post_tokens ?? meta.postTokens);
+      const durationMs = readFiniteNumber(meta.duration_ms ?? meta.durationMs);
+      if (preTokens !== null) compaction.preTokens = preTokens;
+      if (postTokens !== null) compaction.postTokens = postTokens;
+      if (durationMs !== null) compaction.durationMs = durationMs;
+
+      return [createNormalizedMessage({
+        id: raw.uuid || generateMessageId('claude'),
+        sessionId,
+        timestamp: raw.timestamp || new Date().toISOString(),
+        provider: PROVIDER,
+        kind: 'compact_boundary',
+        compaction,
       })];
     }
 
