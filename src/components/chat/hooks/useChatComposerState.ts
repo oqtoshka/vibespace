@@ -30,6 +30,7 @@ import type {
   SessionEstablishedContext,
 } from '../types/types';
 import type { Project, ProjectSession, LLMProvider, ProviderModelsCacheInfo } from '../../../types/app';
+import type { ContextUsage } from '../../../stores/useSessionStore';
 import { escapeRegExp } from '../utils/chatFormatting';
 
 import { useFileMentions } from './useFileMentions';
@@ -51,6 +52,8 @@ interface UseChatComposerStateArgs {
   isLoading: boolean;
   canAbortSession: boolean;
   tokenBudget: Record<string, unknown> | null;
+  /** Live context reading, when the session has produced one. */
+  contextUsage: ContextUsage | null;
   sendMessage: (message: unknown) => void;
   sendByCtrlEnter?: boolean;
   onSessionProcessing?: MarkSessionProcessing;
@@ -137,6 +140,8 @@ export type CostCommandData = {
     input?: number;
     output?: number;
   };
+  /** Present only when the session had a live runtime to read. */
+  contextUsage?: ContextUsage;
   provider?: string;
   model?: string;
 };
@@ -211,6 +216,7 @@ export function useChatComposerState({
   isLoading,
   canAbortSession,
   tokenBudget,
+  contextUsage,
   sendMessage,
   sendByCtrlEnter,
   onSessionProcessing,
@@ -392,6 +398,7 @@ export function useChatComposerState({
                 ? opencodeModel
                 : claudeModel,
           tokenUsage: tokenBudget,
+          contextUsage,
         };
 
         const response = await authenticatedFetch('/api/commands/execute', {
@@ -451,6 +458,7 @@ export function useChatComposerState({
       selectedProject,
       addMessage,
       tokenBudget,
+      contextUsage,
     ],
   );
 

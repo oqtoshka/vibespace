@@ -7,7 +7,7 @@ import { playChatCompletionSound, playNotificationSound } from '../../../utils/n
 import type { MarkSessionIdle, MarkSessionProcessing } from '../../../hooks/useSessionProtection';
 import type { PendingPermissionRequest } from '../types/types';
 import type { ProjectSession, LLMProvider } from '../../../types/app';
-import type { SessionStore, NormalizedMessage } from '../../../stores/useSessionStore';
+import type { SessionStore, NormalizedMessage, ContextUsage } from '../../../stores/useSessionStore';
 
 const isActionablePermissionRequest = (request: { toolName?: unknown } | null | undefined): boolean => {
   return request?.toolName !== 'ExitPlanMode' && request?.toolName !== 'exit_plan_mode';
@@ -23,6 +23,7 @@ interface UseChatRealtimeHandlersArgs {
   selectedSession: ProjectSession | null;
   currentSessionId: string | null;
   setTokenBudget: (budget: Record<string, unknown> | null) => void;
+  setContextUsage: (usage: ContextUsage | null) => void;
   pendingPermissionRequests: PendingPermissionRequest[];
   setPendingPermissionRequests: Dispatch<SetStateAction<PendingPermissionRequest[]>>;
   streamTimerRef: MutableRefObject<number | null>;
@@ -61,6 +62,7 @@ export function useChatRealtimeHandlers({
   selectedSession,
   currentSessionId,
   setTokenBudget,
+  setContextUsage,
   pendingPermissionRequests,
   setPendingPermissionRequests,
   streamTimerRef,
@@ -365,6 +367,14 @@ export function useChatRealtimeHandlers({
             if (msg.tokenBudget) {
               setTokenBudget(msg.tokenBudget as Record<string, unknown>);
             }
+          } else if (msg.text === 'context_usage') {
+            // Data-only status: the runtime's authoritative context reading.
+            // Must not fall through to the processing branch below — it can
+            // arrive just after a run's terminal `complete` (the probe is a
+            // round-trip to the CLI), which would revive the spinner.
+            if (msg.contextUsage) {
+              setContextUsage(msg.contextUsage as ContextUsage);
+            }
           } else if (sid) {
             // A null/absent text is a deliberate clear — the agent stopped
             // running tools and is writing, so the indicator goes back to its
@@ -391,6 +401,7 @@ export function useChatRealtimeHandlers({
     selectedSession,
     currentSessionId,
     setTokenBudget,
+    setContextUsage,
     pendingPermissionRequests,
     setPendingPermissionRequests,
     streamTimerRef,

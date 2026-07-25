@@ -222,3 +222,60 @@ test('rewindHistory returns ok:false for an unknown message uuid', async () => {
     assert.deepEqual(result, { ok: false, startFresh: false, removed: 0 });
   });
 });
+
+/**
+ * Compaction boundaries.
+ *
+ * The live SDK stream and the JSONL transcript describe the same seam with
+ * different casing (`compact_metadata` vs `compactMetadata`), and normalization
+ * runs on both. If either spelling falls through, a compaction renders as an
+ * unexplained gap: the turns above it silently stop being in context.
+ */
+test('normalizeMessage maps a live compact_boundary event', () => {
+  const provider = new ClaudeSessionsProvider();
+  const [message] = provider.normalizeMessage({
+    type: 'system',
+    subtype: 'compact_boundary',
+    uuid: 'cb1',
+    timestamp: '2026-01-01T00:00:00.000Z',
+    compact_metadata: {
+      trigger: 'auto',
+      pre_tokens: 180_000,
+      post_tokens: 12_000,
+      duration_ms: 91_000,
+    },
+  }, SESSION);
+
+  assert.equal(message.kind, 'compact_boundary');
+  assert.equal(message.id, 'cb1');
+  assert.deepEqual(message.compaction, {
+    trigger: 'auto',
+    preTokens: 180_000,
+    postTokens: 12_000,
+    durationMs: 91_000,
+  });
+});
+
+test('normalizeMessage maps a transcript compact boundary with camelCase metadata', () => {
+  const provider = new ClaudeSessionsProvider();
+  const [message] = provider.normalizeMessage({
+    type: 'system',
+    subtype: 'compact_boundary',
+    compactMetadata: { trigger: 'manual', preTokens: 90_000 },
+  }, SESSION);
+
+  assert.equal(message.kind, 'compact_boundary');
+  // Absent optional fields stay absent rather than being reported as zero —
+  // the divider must not claim the context shrank to nothing.
+  assert.deepEqual(message.compaction, { trigger: 'manual', preTokens: 90_000 });
+});
+
+test('normalizeMessage defaults an unknown compaction trigger to manual', () => {
+  const provider = new ClaudeSessionsProvider();
+  const [message] = provider.normalizeMessage({
+    type: 'system',
+    subtype: 'compact_boundary',
+  }, SESSION);
+
+  assert.deepEqual(message.compaction, { trigger: 'manual' });
+});

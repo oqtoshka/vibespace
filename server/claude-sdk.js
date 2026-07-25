@@ -31,7 +31,8 @@ import { describeTool } from './services/notification-content.js';
 import { describeAssistantActivity } from './services/activity-status.js';
 import { sessionsService } from './modules/providers/services/sessions.service.js';
 import { providerAuthService } from './modules/providers/services/provider-auth.service.js';
-import { createCompleteMessage, createNormalizedMessage } from './shared/utils.js';
+import { createCompleteMessage, createNormalizedMessage, resolveConfiguredContextWindow } from './shared/utils.js';
+import { rememberContextUsage } from './shared/context-usage-cache.js';
 
 const activeSessions = new Map();
 const pendingToolApprovals = new Map();
@@ -391,7 +392,7 @@ function extractTokenBudget(sdkMessage) {
     const inputTokens = directInputTokens + cacheTokens;
     const outputTokens = readNumber(messageUsage.output_tokens ?? messageUsage.outputTokens);
     const totalUsed = inputTokens + outputTokens;
-    const contextWindow = parseInt(process.env.CONTEXT_WINDOW, 10) || 160000;
+    const contextWindow = resolveConfiguredContextWindow() ?? 0;
 
     return {
       used: totalUsed,
@@ -423,7 +424,7 @@ function extractTokenBudget(sdkMessage) {
   const inputTokens = readNumber(modelData.cumulativeInputTokens ?? modelData.inputTokens);
   const outputTokens = readNumber(modelData.cumulativeOutputTokens ?? modelData.outputTokens);
   const totalUsed = inputTokens + outputTokens;
-  const contextWindow = parseInt(process.env.CONTEXT_WINDOW, 10) || 160000;
+  const contextWindow = resolveConfiguredContextWindow() ?? 0;
 
   return {
     used: totalUsed,
@@ -435,6 +436,136 @@ function extractTokenBudget(sdkMessage) {
       output: outputTokens,
     },
   };
+}
+
+/**
+ * Asks the live runtime how full the context window actually is and pushes the
+ * answer to the client as a `context_usage` status.
+ *
+ * This is the authoritative source for the composer's gauge: `tokenBudget` is
+ * inferred from a single message's `usage`, whereas this is the CLI's own
+ * accounting — the real window for the model in use, plus the auto-compact
+ * threshold and whether it is even on, which is what makes the reading
+ * actionable ("will this compact itself, or am I about to hit the wall?").
+ *
+ * Deliberately NOT awaited by the stream loop: it is a control round-trip to
+ * the CLI, and awaiting it inside `for await` would stall message consumption
+ * (and so the visible stream) for its duration.
+ *
+ * Overlapping requests collapse into one trailing re-read rather than being
+ * dropped: a compaction emits its boundary and its turn `result` moments
+ * apart, and simply ignoring the second would leave the gauge showing the
+ * pre-compaction number — exactly the reading the user is watching for.
+ *
+ * @param {Object} session
+ * @param {string} reason - Why we are refreshing; logged on failure only.
+ */
+function refreshContextUsage(session, reason) {
+  if (!session || session.ended) return;
+  // One-shot internal flows (commit messages, agent helpers) have no chat UI
+  // behind them and tear down immediately — probing them only races teardown.
+  if (session.ephemeral) return;
+  if (session.contextUsageInFlight) {
+    session.contextUsageRerunReason = reason;
+    return;
+  }
+  const instance = session.instance;
+  if (!instance || typeof instance.getContextUsage !== 'function') return;
+
+  session.contextUsageInFlight = true;
+  Promise.resolve()
+    .then(() => instance.getContextUsage())
+    .then((usage) => {
+      if (!usage || session.ended) return;
+      const maxTokens = readNumber(usage.maxTokens);
+      const totalTokens = readNumber(usage.totalTokens);
+      if (maxTokens <= 0) return;
+
+      const contextUsage = {
+        totalTokens,
+        maxTokens,
+        // The runtime already computes this; recompute only if it is absent
+        // so the gauge can never disagree with the CLI's own number.
+        percentage: Number.isFinite(usage.percentage)
+          ? usage.percentage
+          : (totalTokens / maxTokens) * 100,
+        model: typeof usage.model === 'string' ? usage.model : undefined,
+        autoCompactThreshold: Number.isFinite(usage.autoCompactThreshold)
+          ? usage.autoCompactThreshold
+          : undefined,
+        isAutoCompactEnabled: usage.isAutoCompactEnabled === true,
+      };
+
+      // Survives a page reload / session switch, which would otherwise drop the
+      // gauge back to a bare token count until the user sends something.
+      rememberContextUsage(session.sessionId || session.options.sessionId, contextUsage);
+
+      session.writer.send(createNormalizedMessage({
+        kind: 'status',
+        text: 'context_usage',
+        contextUsage,
+        sessionId: session.sessionId || session.options.sessionId || null,
+        provider: 'claude',
+      }));
+    })
+    .catch((error) => {
+      // Never surfaced to the user: an unavailable gauge is a missing nicety,
+      // not a failed turn. Older CLIs simply don't answer this control request.
+      console.warn(`[claude context] ${reason} usage probe failed:`, error?.message || error);
+    })
+    .finally(() => {
+      session.contextUsageInFlight = false;
+      const rerunReason = session.contextUsageRerunReason;
+      if (rerunReason) {
+        session.contextUsageRerunReason = null;
+        refreshContextUsage(session, rerunReason);
+      }
+    });
+}
+
+/**
+ * Surfaces compaction as it happens.
+ *
+ * Compaction takes tens of seconds to minutes, during which the model emits
+ * nothing at all, so without this the UI is indistinguishable from a hung
+ * turn.
+ * The runtime announces the phase with a `status` system event and the seam
+ * itself with `compact_boundary` (normalized into the transcript elsewhere).
+ *
+ * @returns {boolean} True when the message was a compaction status.
+ */
+function handleCompactionStatus(session, message) {
+  if (!message || message.type !== 'system' || message.subtype !== 'status') {
+    return false;
+  }
+
+  const sid = session.sessionId || session.options.sessionId || null;
+
+  if (message.status === 'compacting') {
+    session.writer.send(createNormalizedMessage({
+      kind: 'status',
+      text: 'Compacting conversation',
+      canInterrupt: true,
+      sessionId: sid,
+      provider: 'claude',
+    }));
+    return true;
+  }
+
+  if (message.compact_result === 'failed') {
+    // A failed compaction leaves the context exactly as full as it was, so the
+    // next turn will very likely hit the input limit. Say so in the transcript
+    // rather than letting it fail later with no explanation.
+    session.writer.send(createNormalizedMessage({
+      kind: 'error',
+      content: `Compaction failed${message.compact_error ? `: ${message.compact_error}` : ''}. The conversation was left uncompacted — start a fresh session if the next turn hits the context limit.`,
+      sessionId: sid,
+      provider: 'claude',
+    }));
+    return true;
+  }
+
+  return message.compact_result === 'success';
 }
 
 /**
@@ -1025,6 +1156,25 @@ async function runSessionLoop(session) {
       // Drive background-job tracking / auto-resume off the task system messages.
       handleTaskMessage(session, message);
 
+      // Compaction: narrate the phase, and re-read the gauge once the seam
+      // lands so the user sees the window actually drop.
+      if (handleCompactionStatus(session, message) && message.compact_result) {
+        refreshContextUsage(session, 'post-compact');
+      }
+      if (message.type === 'system' && message.subtype === 'compact_boundary') {
+        refreshContextUsage(session, 'compact-boundary');
+      }
+
+      // Seed the gauge from the runtime at the start of the session instead of
+      // leaving it on the offline estimate until the first turn finishes —
+      // turns can run for minutes. Only the first init: the runtime re-inits
+      // every turn (and after a compaction), and those readings are already
+      // covered by the turn-end probe.
+      if (message.type === 'system' && message.subtype === 'init' && !session.contextUsageSeeded) {
+        session.contextUsageSeeded = true;
+        refreshContextUsage(session, 'init');
+      }
+
       // Transform and normalize the message, then fan out to the current writer.
       const transformedMessage = transformMessage(message);
       const normalized = sessionsService.normalizeMessage('claude', transformedMessage, sid);
@@ -1048,6 +1198,9 @@ async function runSessionLoop(session) {
 
       // A `result` marks the end of one assistant turn.
       if (message.type === 'result') {
+        // Read the gauge at the turn boundary — the point where the context has
+        // just grown by a whole turn and the user decides what to do next.
+        refreshContextUsage(session, 'turn-end');
         onTurnEnd(session);
       }
     }
