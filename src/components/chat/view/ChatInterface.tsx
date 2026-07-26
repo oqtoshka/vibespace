@@ -110,6 +110,7 @@ function ChatInterface({
     hasMoreMessages,
     totalMessages,
     isUserScrolledUp,
+    isFarFromBottom,
     setIsUserScrolledUp,
     tokenBudget,
     setTokenBudget,
@@ -428,7 +429,7 @@ function ChatInterface({
         />
 
         <div className="relative flex-shrink-0">
-          {isUserScrolledUp && chatMessages.length > 0 && (
+          {isFarFromBottom && chatMessages.length > 0 && (
             <div className="pointer-events-none absolute -top-11 left-0 right-0 z-20 flex justify-center">
               <button
                 type="button"
