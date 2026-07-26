@@ -206,7 +206,13 @@ export function useChatRealtimeHandlers({
           if (sid) {
             window.dispatchEvent(
               new CustomEvent('vibespace:queue-updated', {
-                detail: { sessionId: sid, queue: Array.isArray(msg.queue) ? msg.queue : [] },
+                detail: {
+                  sessionId: sid,
+                  queue: Array.isArray(msg.queue) ? msg.queue : [],
+                  // Items dropped without being sent (the user removed one, or
+                  // Stop cancelled it) — the composer takes their text back.
+                  removed: Array.isArray(msg.removed) ? msg.removed : [],
+                },
               }),
             );
           }
