@@ -63,9 +63,26 @@ export function useVoiceInput(
     if (startingRef.current || (recorderRef.current && recorderRef.current.state !== 'inactive')) return;
     startingRef.current = true;
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: true, noiseSuppression: true },
-      });
+      if (typeof window !== 'undefined' && window.isSecureContext === false) {
+        throw Object.assign(new Error('insecure context'), { name: 'InsecureContextError' });
+      }
+      if (!navigator.mediaDevices?.getUserMedia) {
+        throw Object.assign(new Error('getUserMedia unavailable'), { name: 'UnsupportedError' });
+      }
+      // iOS Safari rejects the constrained form on some versions (it surfaces as
+      // NotAllowedError/OverconstrainedError even when the user granted the mic),
+      // so retry bare `{audio:true}` before believing the denial. A genuine denial
+      // fails the same way twice without re-prompting.
+      let stream: MediaStream;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: { echoCancellation: true, noiseSuppression: true },
+        });
+      } catch (constrainedErr) {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true }).catch(() => {
+          throw constrainedErr;
+        });
+      }
       if (cancelledRef.current) {
         stream.getTracks().forEach((t) => t.stop());
         return;
@@ -119,9 +136,15 @@ export function useVoiceInput(
       stopTracks();
       if (cancelledRef.current) return;
       const err = e as { name?: string; message?: string };
-      let msg = `Mic error: ${err?.message || e}`;
-      if (err?.name === 'NotAllowedError') msg = 'Microphone access denied.';
+      let msg = `Mic error: ${err?.name || ''} ${err?.message || e}`.trim();
+      if (err?.name === 'InsecureContextError') msg = 'Mic needs HTTPS.';
+      else if (err?.name === 'UnsupportedError') msg = 'Mic unsupported by this browser.';
+      // Keep the raw name visible: on iOS a granted mic can still land here, and
+      // the name is the only way to tell a real denial from a constraint/hardware
+      // rejection without a desktop debugger attached to the phone.
+      else if (err?.name === 'NotAllowedError') msg = 'Microphone access denied (NotAllowedError).';
       else if (err?.name === 'NotFoundError') msg = 'No microphone found.';
+      else if (err?.name === 'NotReadableError') msg = 'Mic busy — another app is using it.';
       onError?.(msg);
       setState('idle');
     } finally {

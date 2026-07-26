@@ -440,6 +440,14 @@ export default function ChatComposer({
                     <span className="min-w-0 flex-1 truncate" title={queued.content}>
                       {queued.content}
                     </span>
+                    {/* Delivered: the runtime holds it and folds it into the
+                        running turn at the agent's next step — worth saying, or
+                        a card that lingers mid-run reads as "stuck". */}
+                    {queued.delivered && (
+                      <span className="flex-shrink-0 whitespace-nowrap text-[10px] uppercase tracking-wide opacity-60">
+                        {t('input.queue.nextStep', { defaultValue: 'next step' })}
+                      </span>
+                    )}
                     {queued.imageCount > 0 && (
                       <span className="flex-shrink-0 opacity-70">
                         {queued.imageCount}

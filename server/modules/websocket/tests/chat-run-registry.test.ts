@@ -280,3 +280,103 @@ test('startRun rejects a second concurrent run for the same session', async () =
     assert.ok(third);
   });
 });
+
+test('a message handed to the runtime is not drained as its own turn', async () => {
+  await withIsolatedDatabase(() => {
+    sessionsDb.createAppSession('app-run-7', 'claude', '/workspace/demo');
+    const connection = new FakeConnection();
+    connectedClients.add(connection as never);
+
+    chatRunRegistry.enqueue('app-run-7', {
+      id: 'q-delivered',
+      content: 'fold me into the running turn',
+      imageCount: 0,
+      options: {},
+      userId: null,
+      createdAt: 1,
+    });
+    chatRunRegistry.enqueue('app-run-7', {
+      id: 'q-waiting',
+      content: 'send me as my own turn',
+      imageCount: 0,
+      options: {},
+      userId: null,
+      createdAt: 2,
+    });
+
+    chatRunRegistry.markDelivered('app-run-7', 'q-delivered', 'uuid-1');
+
+    // The delivered item is still shown (flagged), but the drain skips it —
+    // sending it again would duplicate what the runtime is already running.
+    const broadcast = connection.frames.at(-1);
+    assert.equal(broadcast?.kind, 'queue_updated');
+    assert.deepEqual(
+      (broadcast?.queue as Array<Record<string, unknown>>).map((item) => [item.id, item.delivered]),
+      [['q-delivered', true], ['q-waiting', false]],
+    );
+    assert.equal(chatRunRegistry.hasQueued('app-run-7'), true);
+
+    assert.equal(chatRunRegistry.dequeueNext('app-run-7')?.id, 'q-waiting');
+    assert.equal(chatRunRegistry.hasQueued('app-run-7'), false);
+    assert.equal(chatRunRegistry.dequeueNext('app-run-7'), null);
+    assert.equal(chatRunRegistry.getQueued('app-run-7', 'q-delivered')?.deliveredUuid, 'uuid-1');
+  });
+});
+
+test('a cancelled queued message is broadcast with its text so the composer can take it back', async () => {
+  await withIsolatedDatabase(() => {
+    sessionsDb.createAppSession('app-run-8', 'claude', '/workspace/demo');
+    const connection = new FakeConnection();
+    connectedClients.add(connection as never);
+
+    chatRunRegistry.enqueue('app-run-8', {
+      id: 'q-1',
+      content: 'first',
+      imageCount: 0,
+      options: {},
+      userId: null,
+      createdAt: 1,
+    });
+    chatRunRegistry.enqueue('app-run-8', {
+      id: 'q-2',
+      content: 'second',
+      imageCount: 0,
+      options: {},
+      userId: null,
+      createdAt: 2,
+    });
+
+    const removed = chatRunRegistry.removeQueued('app-run-8', 'q-1', 'cancelled');
+    assert.equal(removed?.content, 'first');
+    assert.deepEqual(connection.frames.at(-1)?.removed, [
+      { id: 'q-1', content: 'first', reason: 'cancelled' },
+    ]);
+
+    // Stop clears the rest the same way.
+    chatRunRegistry.clearQueue('app-run-8', 'aborted');
+    assert.deepEqual(connection.frames.at(-1)?.removed, [
+      { id: 'q-2', content: 'second', reason: 'aborted' },
+    ]);
+    assert.equal(chatRunRegistry.hasQueued('app-run-8'), false);
+  });
+});
+
+test('a drained (sent) message is not reported as removed', async () => {
+  await withIsolatedDatabase(() => {
+    sessionsDb.createAppSession('app-run-9', 'claude', '/workspace/demo');
+    const connection = new FakeConnection();
+    connectedClients.add(connection as never);
+
+    chatRunRegistry.enqueue('app-run-9', {
+      id: 'q-1',
+      content: 'on its way to the model',
+      imageCount: 0,
+      options: {},
+      userId: null,
+      createdAt: 1,
+    });
+    chatRunRegistry.dequeueNext('app-run-9');
+
+    assert.deepEqual(connection.frames.at(-1)?.removed, []);
+  });
+});
