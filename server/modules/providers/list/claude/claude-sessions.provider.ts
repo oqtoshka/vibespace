@@ -538,6 +538,28 @@ export class ClaudeSessionsProvider implements IProviderSessions {
       })];
     }
 
+    // A message the user sent mid-turn: the runtime parks it in its own command
+    // queue and folds it into the running turn, recording it as a
+    // `queued_command` attachment rather than a normal user row. Without this
+    // branch the prompt would be missing from the transcript on reload — the
+    // agent visibly changes course with nothing to explain why.
+    if (raw.type === 'attachment' && readObjectRecord(raw.attachment)?.type === 'queued_command') {
+      const attachment = readObjectRecord(raw.attachment) || {};
+      const prompt = typeof attachment.prompt === 'string' ? attachment.prompt : '';
+      if (!prompt.trim()) {
+        return [];
+      }
+      return [createNormalizedMessage({
+        id: raw.uuid || generateMessageId('claude'),
+        sessionId,
+        timestamp: raw.timestamp || new Date().toISOString(),
+        provider: PROVIDER,
+        kind: 'text',
+        role: 'user',
+        content: prompt,
+      })];
+    }
+
     if (raw.type === 'content_block_delta' && raw.delta?.text) {
       return [createNormalizedMessage({ kind: 'stream_delta', content: raw.delta.text, sessionId, provider: PROVIDER })];
     }

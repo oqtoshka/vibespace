@@ -28,6 +28,8 @@ import { getConnectableHost } from '../shared/networkHosts.js';
 import { findAppRoot, getModuleDir } from './utils/runtime-paths.js';
 import {
     queryClaudeSDK,
+    injectClaudeMessage,
+    cancelInjectedClaudeMessage,
     abortClaudeSDKSession,
     stopClaudeSDKTask,
     getClaudeSDKBackgroundTasks,
@@ -151,6 +153,15 @@ const wss = createWebSocketServer(server, {
         // and the handler no-ops for them.
         stopTaskFns: {
             claude: stopClaudeSDKTask,
+        },
+        // Mid-turn message delivery. Only Claude's runtime takes a user message
+        // while a turn is running and folds it in at the agent's next step; the
+        // other providers fall back to the server-drained queue.
+        injectFns: {
+            claude: injectClaudeMessage,
+        },
+        cancelInjectedFns: {
+            claude: cancelInjectedClaudeMessage,
         },
         resolveToolApproval,
         getPendingApprovalsForSession,

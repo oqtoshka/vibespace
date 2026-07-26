@@ -75,6 +75,28 @@ type ChatWebSocketDependencies = {
    * provider has no such capability and the request no-ops.
    */
   stopTaskFns?: Partial<Record<LLMProvider, (providerSessionId: string, taskId: string) => boolean | Promise<boolean>>>;
+  /**
+   * Mid-turn message delivery, keyed by provider id. A runtime that has one
+   * accepts a user message while a turn is running and folds it into that turn
+   * at the agent's next step, the way the Claude Code CLI does — instead of the
+   * message waiting for the whole run to finish. Resolves the runtime-side id
+   * the message is cancellable by, or null when it could not be delivered
+   * (no live session), which falls back to the app-level queue.
+   */
+  injectFns?: Partial<Record<LLMProvider, (
+    providerSessionId: string,
+    content: string,
+    options: AnyRecord,
+  ) => Promise<string | null>>>;
+  /**
+   * Cancels a message previously handed to a runtime via `injectFns`. Resolves
+   * false when the runtime had already started it — its content is running, so
+   * the caller must not treat it as recalled.
+   */
+  cancelInjectedFns?: Partial<Record<LLMProvider, (
+    providerSessionId: string,
+    injectedUuid: string,
+  ) => Promise<boolean>>>;
   resolveToolApproval: (
     requestId: string,
     payload: {
@@ -398,6 +420,14 @@ async function handleChatAbort(
     success = Boolean(await abortFn(run.providerSessionId));
   }
 
+  // Stop stops everything the user has lined up, not just the current turn:
+  // without this the terminal `complete` below would immediately drain the
+  // queue and start a new run from the message they queued during the one they
+  // just stopped. Each dropped message's text goes back to the composer.
+  // (Messages the runtime already holds are cancelled inside the abort above,
+  // which removes them the same way.)
+  chatRunRegistry.clearQueue(sessionId, 'aborted');
+
   chatRunRegistry.completeRun(sessionId, {
     exitCode: success ? 0 : 1,
     aborted: true,
@@ -454,17 +484,75 @@ async function handleChatStopTask(
 }
 
 /**
+ * Resolves the provider-native id for a session: a live run's captured id wins
+ * (a brand-new session has none in the database yet), then the DB mapping.
+ */
+function resolveProviderSessionId(appSessionId: string, session: SessionRow): string | null {
+  return chatRunRegistry.getRun(appSessionId)?.providerSessionId ?? session.provider_session_id ?? null;
+}
+
+/**
+ * Hands a queued message to the provider runtime so it lands in the RUNNING
+ * turn at the agent's next step instead of waiting for the whole run — what
+ * the Claude Code CLI does with a message typed mid-task.
+ *
+ * The item stays in the shared queue (so every client still sees it pending)
+ * until the runtime reports it started, at which point the runtime's own
+ * stream carries the user bubble. Returns false when the runtime can't take it
+ * and the server-drained queue remains responsible for it.
+ */
+async function tryDeliverToRunningTurn(
+  appSessionId: string,
+  session: SessionRow,
+  provider: LLMProvider,
+  item: { id: string; content: string; options: AnyRecord },
+  dependencies: ChatWebSocketDependencies,
+): Promise<boolean> {
+  const injectFn = dependencies.injectFns?.[provider];
+  const providerSessionId = resolveProviderSessionId(appSessionId, session);
+  if (!injectFn || !providerSessionId || !chatRunRegistry.isProcessing(appSessionId)) {
+    return false;
+  }
+
+  const runtimeOptions = buildRuntimeOptions(session, item.options ?? {}, provider, appSessionId);
+
+  try {
+    const injectedUuid = await injectFn(providerSessionId, item.content, {
+      ...runtimeOptions,
+      // Delivered: the runtime now owns the message and streams the bubble.
+      onDelivered: () => chatRunRegistry.removeQueued(appSessionId, item.id),
+      // Cancelled (Stop pressed): hand the text back to the composer.
+      onCancelled: () => chatRunRegistry.removeQueued(appSessionId, item.id, 'aborted'),
+    });
+    if (!injectedUuid) {
+      return false;
+    }
+    chatRunRegistry.markDelivered(appSessionId, item.id, injectedUuid);
+    return true;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(`[Chat] Mid-turn delivery failed for session ${appSessionId}`, { error: message });
+    return false;
+  }
+}
+
+/**
  * Handles `chat.queue-add`: appends a message to the session's server-owned
- * queue so it is shared across every client viewing the session and drained by
- * the server when the current run finishes. If the session is idle when the add
+ * queue so it is shared across every client viewing the session.
+ *
+ * Delivery then takes whichever path the provider supports: runtimes that
+ * accept mid-turn messages get it right away (it joins the running turn at the
+ * agent's next step); otherwise it waits in the queue and the server sends it
+ * as its own turn once the run finishes. If the session is idle when the add
  * arrives (a race — the run finished between the client deciding to queue and
  * this message landing), the drain fires immediately.
  */
-function handleChatQueueAdd(
+async function handleChatQueueAdd(
   ws: WebSocket,
   userId: string | number | null,
   data: AnyRecord,
-): void {
+  dependencies: ChatWebSocketDependencies,
+): Promise<void> {
   const sessionId = readRequiredSessionId(data);
   if (!sessionId) {
     sendProtocolError(ws, 'SESSION_ID_REQUIRED', 'chat.queue-add requires a sessionId.');
@@ -497,15 +585,32 @@ function handleChatQueueAdd(
     createdAt: Date.now(),
   });
 
-  if (!chatRunRegistry.isProcessing(sessionId)) {
+  const provider = session.provider as LLMProvider;
+  const delivered = await tryDeliverToRunningTurn(
+    sessionId,
+    session,
+    provider,
+    { id, content, options },
+    dependencies,
+  );
+
+  if (!delivered && !chatRunRegistry.isProcessing(sessionId)) {
     void drainQueue(sessionId);
   }
 }
 
 /**
  * Handles `chat.queue-remove`: drops one pending message from the shared queue.
+ *
+ * A message already handed to the provider runtime has to be recalled there
+ * first; if the runtime has started it, the content is on its way to the model
+ * and the item stays put (the client learns this by not seeing it removed).
  */
-function handleChatQueueRemove(ws: WebSocket, data: AnyRecord): void {
+async function handleChatQueueRemove(
+  ws: WebSocket,
+  data: AnyRecord,
+  dependencies: ChatWebSocketDependencies,
+): Promise<void> {
   const sessionId = readRequiredSessionId(data);
   if (!sessionId) {
     sendProtocolError(ws, 'SESSION_ID_REQUIRED', 'chat.queue-remove requires a sessionId.');
@@ -516,7 +621,25 @@ function handleChatQueueRemove(ws: WebSocket, data: AnyRecord): void {
     sendProtocolError(ws, 'QUEUE_ID_REQUIRED', 'chat.queue-remove requires an id.', sessionId);
     return;
   }
-  chatRunRegistry.removeQueued(sessionId, id);
+
+  const queued = chatRunRegistry.getQueued(sessionId, id);
+  if (queued?.deliveredUuid) {
+    const session = sessionsDb.getSessionById(sessionId);
+    const provider = session?.provider as LLMProvider | undefined;
+    const cancelFn = provider ? dependencies.cancelInjectedFns?.[provider] : undefined;
+    const providerSessionId = session ? resolveProviderSessionId(sessionId, session) : null;
+    const cancelled = cancelFn && providerSessionId
+      ? await cancelFn(providerSessionId, queued.deliveredUuid)
+      : false;
+    if (!cancelled) {
+      // Too late — it is running. Re-broadcast so the client that optimistically
+      // hid the card puts it back.
+      chatRunRegistry.touchQueue(sessionId);
+      return;
+    }
+  }
+
+  chatRunRegistry.removeQueued(sessionId, id, 'cancelled');
 }
 
 /**
@@ -669,10 +792,10 @@ export function handleChatConnection(
           await handleChatStopTask(ws, data, dependencies);
           return;
         case 'chat.queue-add':
-          handleChatQueueAdd(ws, userId, data);
+          await handleChatQueueAdd(ws, userId, data, dependencies);
           return;
         case 'chat.queue-remove':
-          handleChatQueueRemove(ws, data);
+          await handleChatQueueRemove(ws, data, dependencies);
           return;
         case 'chat.subscribe':
           handleChatSubscribe(ws, data, dependencies);
