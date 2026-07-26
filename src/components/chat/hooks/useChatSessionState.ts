@@ -13,6 +13,22 @@ import { normalizedToChatMessages } from './useChatMessages';
 const MESSAGES_PER_PAGE = 20;
 const INITIAL_VISIBLE_MESSAGES = 100;
 
+/**
+ * How close to the bottom counts as "following the transcript", so new output
+ * keeps scrolling into view. Deliberately tight: this is the distance at which
+ * auto-scroll takes the view back, and anything looser fights the reader —
+ * nudging up 30px to re-read the last line used to still count as at-bottom,
+ * so the next message yanked the view down again, once per message.
+ */
+const FOLLOW_BOTTOM_PX = 4;
+
+/**
+ * How far up the reader has to be before the floating "scroll to bottom"
+ * button appears. Separate from following: a small nudge stops auto-scroll
+ * immediately, but shouldn't pop a button over the transcript.
+ */
+const SCROLL_TO_BOTTOM_BUTTON_PX = 120;
+
 interface UseChatSessionStateArgs {
   selectedProject: Project | null;
   selectedSession: ProjectSession | null;
@@ -113,6 +129,8 @@ export function useChatSessionState({
   const [hasMoreMessages, setHasMoreMessages] = useState(false);
   const [totalMessages, setTotalMessages] = useState(0);
   const [isUserScrolledUp, setIsUserScrolledUp] = useState(false);
+  // Drives the floating scroll-to-bottom button (see SCROLL_TO_BOTTOM_BUTTON_PX).
+  const [isFarFromBottom, setIsFarFromBottom] = useState(false);
   const [tokenBudget, setTokenBudget] = useState<Record<string, unknown> | null>(null);
   // Authoritative context-window reading from the live runtime. Null until a
   // turn runs for this session; the gauge falls back to estimating from
@@ -140,7 +158,11 @@ export function useChatSessionState({
   const pendingScrollRestoreRef = useRef<ScrollRestoreState | null>(null);
   const pendingInitialScrollRef = useRef(true);
   const messagesOffsetRef = useRef(0);
-  const scrollPositionRef = useRef({ height: 0, top: 0 });
+  // Last observed scrollTop, so a scroll event can tell which way the reader
+  // moved. Height changes (a prepended page, content settling) move scrollTop
+  // too, but never in a way that reads as "scrolled up" while at the bottom —
+  // the follow check below is evaluated first.
+  const lastScrollTopRef = useRef(0);
   const loadAllFinishedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const loadAllOverlayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastLoadedSessionKeyRef = useRef<string | null>(null);
@@ -422,8 +444,21 @@ export function useChatSessionState({
     const container = scrollContainerRef.current;
     if (!container) return;
 
-    const nearBottom = isNearBottom();
-    setIsUserScrolledUp(!nearBottom);
+    // Following is lost by intent and regained by arriving at the bottom: any
+    // upward movement stops auto-scroll (even a few pixels), and only actually
+    // reaching the bottom resumes it. A distance threshold can't express that —
+    // it would resume following while the reader is still reading.
+    const { scrollTop, scrollHeight, clientHeight } = container;
+    const distanceFromBottom = scrollHeight - scrollTop - clientHeight;
+    const movedUp = scrollTop < lastScrollTopRef.current - 1;
+    lastScrollTopRef.current = scrollTop;
+
+    if (distanceFromBottom <= FOLLOW_BOTTOM_PX) {
+      setIsUserScrolledUp(false);
+    } else if (movedUp) {
+      setIsUserScrolledUp(true);
+    }
+    setIsFarFromBottom(distanceFromBottom > SCROLL_TO_BOTTOM_BUTTON_PX);
 
     const scrolledNearTop = container.scrollTop < 100;
 
@@ -452,7 +487,7 @@ export function useChatSessionState({
       const didLoad = await loadOlderMessages(container);
       if (didLoad) topLoadLockRef.current = true;
     }
-  }, [hasMoreMessages, isNearBottom, loadOlderMessages]);
+  }, [hasMoreMessages, loadOlderMessages]);
 
   useLayoutEffect(() => {
     if (!pendingScrollRestoreRef.current || !scrollContainerRef.current) return;
@@ -472,7 +507,9 @@ export function useChatSessionState({
     topLoadLockRef.current = false;
     pendingScrollRestoreRef.current = null;
     wasNearTopRef.current = false;
+    lastScrollTopRef.current = 0;
     setIsUserScrolledUp(false);
+    setIsFarFromBottom(false);
   }, [selectedProject?.projectId, selectedSession?.id]);
 
   // Initial scroll to bottom — robust to lazy content reflow.
@@ -828,28 +865,18 @@ export function useChatSessionState({
     return chatMessages.slice(-visibleMessageCount);
   }, [chatMessages, visibleMessageCount]);
 
-  useEffect(() => {
-    const container = scrollContainerRef.current;
-    if (!container) return;
-    scrollPositionRef.current = { height: container.scrollHeight, top: container.scrollTop };
-  });
-
+  // Follow the transcript while the view is pinned to the bottom. When it isn't,
+  // do nothing at all: the browser's own scroll anchoring keeps the reader's
+  // place as content is appended below or prepended above, and every attempt to
+  // "help" by re-deriving the position from a height delta moved the view out
+  // from under them instead.
   useEffect(() => {
     if (!scrollContainerRef.current || chatMessages.length === 0) return;
     if (isLoadingMoreRef.current || isLoadingMoreMessages || pendingScrollRestoreRef.current) return;
     if (searchScrollActiveRef.current) return;
+    if (isUserScrolledUp) return;
 
-    if (!isUserScrolledUp) {
-      setTimeout(() => scrollToBottom(), 50);
-      return;
-    }
-
-    const container = scrollContainerRef.current;
-    const prevHeight = scrollPositionRef.current.height;
-    const prevTop = scrollPositionRef.current.top;
-    const newHeight = container.scrollHeight;
-    const heightDiff = newHeight - prevHeight;
-    if (heightDiff > 0 && prevTop > 0) container.scrollTop = prevTop + heightDiff;
+    setTimeout(() => scrollToBottom(), 50);
   }, [chatMessages.length, isLoadingMoreMessages, isUserScrolledUp, scrollToBottom]);
 
   useEffect(() => {
@@ -941,6 +968,7 @@ export function useChatSessionState({
     hasMoreMessages,
     totalMessages,
     isUserScrolledUp,
+    isFarFromBottom,
     setIsUserScrolledUp,
     tokenBudget,
     setTokenBudget,
