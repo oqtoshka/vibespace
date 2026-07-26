@@ -79,6 +79,28 @@ export type QueuedMessage = {
   options: AnyRecord;
   userId: string | number | null;
   createdAt: number;
+  /**
+   * Set once the message has been handed to the provider runtime's own command
+   * queue, to be folded into the RUNNING turn (Claude Code behavior) rather
+   * than sent as a turn of its own after the run finishes. Such an item is no
+   * longer ours to drain — it leaves the queue when the runtime reports it
+   * started (or cancelled) — and cancelling it means cancelling it there.
+   */
+  deliveredUuid?: string | null;
+};
+
+/** Why a queued message left the queue without being sent. */
+export type QueueRemovalReason = 'cancelled' | 'aborted';
+
+/**
+ * A queue item that was dropped rather than delivered. Broadcast alongside the
+ * new queue so the client that owns it can put the text back in the composer
+ * instead of silently losing it.
+ */
+export type QueueRemoval = {
+  id: string;
+  content: string;
+  reason: QueueRemovalReason;
 };
 
 /** Pending messages per app session id, oldest first. */
@@ -96,17 +118,32 @@ const MAX_QUEUED_MESSAGES = 20;
 let onRunCompleteHandler: ((appSessionId: string) => void) | null = null;
 
 /** The client-facing view of a queued item (no server-only bookkeeping). */
-function toClientQueued(item: QueuedMessage): { id: string; content: string; imageCount: number; createdAt: number } {
-  return { id: item.id, content: item.content, imageCount: item.imageCount, createdAt: item.createdAt };
+function toClientQueued(item: QueuedMessage): {
+  id: string;
+  content: string;
+  imageCount: number;
+  createdAt: number;
+  delivered: boolean;
+} {
+  return {
+    id: item.id,
+    content: item.content,
+    imageCount: item.imageCount,
+    createdAt: item.createdAt,
+    // Drives the queue card's wording: a delivered message goes in at the
+    // agent's next step, an undelivered one waits for the whole run.
+    delivered: Boolean(item.deliveredUuid),
+  };
 }
 
 /** Fan the current queue for a session out to every connected client. */
-function broadcastQueue(appSessionId: string): void {
+function broadcastQueue(appSessionId: string, removed: QueueRemoval[] = []): void {
   const queue = queues.get(appSessionId) ?? [];
   const payload = JSON.stringify({
     kind: 'queue_updated',
     sessionId: appSessionId,
     queue: queue.map(toClientQueued),
+    removed,
     timestamp: new Date().toISOString(),
   });
   connectedClients.forEach((client) => {
@@ -488,31 +525,91 @@ export const chatRunRegistry = {
     broadcastQueue(appSessionId);
   },
 
-  /** Removes one queued message by id and broadcasts the change. */
-  removeQueued(appSessionId: string, id: string): void {
+  /**
+   * Drops every pending message for a session, reporting each as removed so the
+   * client can restore the text. Used by the abort path: Stop has to mean stop,
+   * not "stop this and immediately start the next thing I typed".
+   */
+  clearQueue(appSessionId: string, reason: QueueRemovalReason): void {
     const queue = queues.get(appSessionId);
-    if (!queue) {
+    if (!queue || queue.length === 0) {
       return;
     }
+    queues.delete(appSessionId);
+    broadcastQueue(
+      appSessionId,
+      queue.map((item) => ({ id: item.id, content: item.content, reason })),
+    );
+  },
+
+  /** Re-broadcasts the queue unchanged (to correct an optimistic client). */
+  touchQueue(appSessionId: string): void {
+    broadcastQueue(appSessionId);
+  },
+
+  /** Looks up one queued message by id without removing it. */
+  getQueued(appSessionId: string, id: string): QueuedMessage | null {
+    return (queues.get(appSessionId) ?? []).find((item) => item.id === id) ?? null;
+  },
+
+  /**
+   * Records that the provider runtime took ownership of a queued message (it
+   * will be folded into the running turn), and re-broadcasts so clients relabel
+   * the card. The item stays in the queue — visible as pending — until the
+   * runtime reports it started.
+   */
+  markDelivered(appSessionId: string, id: string, deliveredUuid: string): void {
+    const item = (queues.get(appSessionId) ?? []).find((entry) => entry.id === id);
+    if (!item) {
+      return;
+    }
+    item.deliveredUuid = deliveredUuid;
+    broadcastQueue(appSessionId);
+  },
+
+  /**
+   * Removes one queued message by id and broadcasts the change. `reason`
+   * marks it as dropped rather than sent, so the client can restore the text
+   * into the composer; omit it when the message is on its way to the model.
+   */
+  removeQueued(appSessionId: string, id: string, reason?: QueueRemovalReason): QueuedMessage | null {
+    const queue = queues.get(appSessionId);
+    if (!queue) {
+      return null;
+    }
+    const removed = queue.find((item) => item.id === id) ?? null;
     const next = queue.filter((item) => item.id !== id);
     if (next.length === queue.length) {
-      return;
+      return null;
     }
     if (next.length === 0) {
       queues.delete(appSessionId);
     } else {
       queues.set(appSessionId, next);
     }
-    broadcastQueue(appSessionId);
+    broadcastQueue(
+      appSessionId,
+      reason && removed ? [{ id: removed.id, content: removed.content, reason }] : [],
+    );
+    return removed;
   },
 
-  /** Pops the oldest queued message (broadcasting the removal), or null. */
+  /**
+   * Pops the oldest message the server still owns (broadcasting the removal),
+   * or null. Messages already handed to the provider runtime are skipped —
+   * draining one would send its content a second time.
+   */
   dequeueNext(appSessionId: string): QueuedMessage | null {
     const queue = queues.get(appSessionId);
     if (!queue || queue.length === 0) {
       return null;
     }
-    const [next, ...rest] = queue;
+    const index = queue.findIndex((item) => !item.deliveredUuid);
+    if (index === -1) {
+      return null;
+    }
+    const next = queue[index];
+    const rest = queue.filter((_, position) => position !== index);
     if (rest.length === 0) {
       queues.delete(appSessionId);
     } else {
@@ -532,8 +629,9 @@ export const chatRunRegistry = {
     broadcastQueue(appSessionId);
   },
 
+  /** True when a message is waiting for the server to send it as its own turn. */
   hasQueued(appSessionId: string): boolean {
-    return (queues.get(appSessionId)?.length ?? 0) > 0;
+    return (queues.get(appSessionId) ?? []).some((item) => !item.deliveredUuid);
   },
 
   /**

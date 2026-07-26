@@ -896,38 +896,14 @@ function handleTaskMessage(session, message) {
     const isBackground = (task && task.background) || session.turnActive === false;
     if (isBackground && !session.ended && !session.input.closed) {
       const text = buildTaskNotificationMessage(message);
-      if (!session.turnActive) {
-        // No active turn → open a fresh run for the auto-resumed turn so its
-        // output streams under its own sequence and the session shows as
-        // processing again. Without a seam (e.g. tests) keep the current
-        // writer.
-        const resumeWriter = session.acquireResumeRun?.();
-        if (resumeWriter) {
-          session.writer = resumeWriter;
-          // A server-initiated resume has no client `chat.send` behind it, so
-          // nothing has told the viewing clients this session is processing
-          // again. Emit a `status` up front so the UI flips out of "idle" the
-          // moment the auto-resumed turn begins streaming — otherwise new
-          // messages appear while the composer still shows "send", and a user
-          // send races into a RUN_IN_PROGRESS rejection (state-desync bug).
-          resumeWriter.send(createNormalizedMessage({
-            kind: 'status',
-            text: 'Resuming — background task finished',
-            canInterrupt: true,
-            sessionId: session.sessionId,
-            provider: 'claude',
-          }));
-        }
-        session.turnActive = true;
-        session.turnStartTime = Date.now();
-      }
-      // A resume turn will run for this injection — make sure it settles even if
-      // it produces only a result (the loop also re-arms this on assistant
-      // output). Reset the recap so this turn's "stopped" notification is fresh.
-      session.awaitingResult = true;
-      session.lastAssistantText = '';
-      session.turnToolNames = [];
-      clearIdleTimer(session);
+      // No active turn → open a fresh run for the auto-resumed turn so its
+      // output streams under its own sequence and the session shows as
+      // processing again (a server-initiated resume has no client `chat.send`
+      // behind it, so without the status the composer would still show "send"
+      // while messages stream in — and a user send would race into a
+      // RUN_IN_PROGRESS rejection). A resume turn also has to settle even if it
+      // produces only a result, which the helper's `awaitingResult` covers.
+      ensureRunForServerStartedTurn(session, 'Resuming — background task finished');
       console.log(`[claude bg] session ${session.sessionId}: background task ${message.task_id} ${message.status || 'completed'} — auto-resuming agent`);
       session.input.push(makeUserMessage(text));
     }
@@ -941,6 +917,214 @@ function handleTaskMessage(session, message) {
       return;
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// Mid-turn user messages ("async commands")
+//
+// The Claude runtime accepts a user message while a turn is still running: it
+// parks it in its own command queue and folds it into the RUNNING turn at the
+// next tool boundary — the model sees it after finishing the current action
+// instead of after the whole task, which is what the Claude Code CLI does.
+// The runtime narrates that with `command_lifecycle` events carrying the uuid
+// we stamped on the message: queued → started → completed (or cancelled).
+//
+// Turn accounting: a folded message produces NO extra `result`, so it must not
+// open a chat-run of its own. Only when the runtime's own drain loop starts a
+// *fresh* turn for it (the message landed just as the previous turn ended) do
+// we open one, the same way a background-job auto-resume does.
+// ---------------------------------------------------------------------------
+
+/**
+ * Opens a chat-run for a turn the runtime started on its own, so its output is
+ * sequenced under a run and every client sees the session as processing again.
+ * No-op when a turn is already in flight (the output belongs to that run).
+ */
+function ensureRunForServerStartedTurn(session, statusText) {
+  if (!session.turnActive) {
+    // Without a seam (tests, one-shot callers) keep the current writer.
+    const resumeWriter = session.acquireResumeRun?.();
+    if (resumeWriter) {
+      session.writer = resumeWriter;
+      resumeWriter.send(createNormalizedMessage({
+        kind: 'status',
+        text: statusText,
+        canInterrupt: true,
+        sessionId: session.sessionId,
+        provider: 'claude',
+      }));
+    }
+    session.turnActive = true;
+    session.turnStartTime = Date.now();
+  }
+
+  // Make sure the turn settles even if it produces only a result (the loop
+  // re-arms this on assistant output too), with a fresh recap capture.
+  session.awaitingResult = true;
+  session.lastAssistantText = '';
+  session.turnToolNames = [];
+  clearIdleTimer(session);
+}
+
+/**
+ * Feeds a user message into a live session's running turn.
+ *
+ * Returns the uuid the runtime will refer to it by in `command_lifecycle`
+ * events (and which `cancelInjectedClaudeMessage` cancels it with), or null
+ * when the session isn't live — the caller then falls back to the app-level
+ * queue, which sends it as its own turn once the run finishes.
+ */
+async function injectClaudeMessage(sessionId, command, options = {}) {
+  const session = getSession(sessionId);
+  if (!session || session.ended || session.input.closed) {
+    return null;
+  }
+
+  // Without the lifecycle events there is no signal that the runtime picked the
+  // message up, so the queue card would hang around forever and the prompt
+  // would never appear in the transcript. Fall back to the app-level queue.
+  if (!session.capabilities?.includes('msg_lifecycle_v1')) {
+    console.warn(`[claude] session ${sessionId}: runtime has no msg_lifecycle_v1 — queueing instead of delivering mid-turn`);
+    return null;
+  }
+
+  const content = await buildTurnContent(command, options.images, options.cwd);
+  const uuid = crypto.randomUUID();
+  const pushed = session.input.push({ ...makeUserMessage(content), uuid });
+  if (!pushed) {
+    return null;
+  }
+
+  session.injectedCommands.set(uuid, {
+    content: command,
+    onDelivered: typeof options.onDelivered === 'function' ? options.onDelivered : null,
+    onCancelled: typeof options.onCancelled === 'function' ? options.onCancelled : null,
+  });
+  if (options.sessionSummary) session.sessionSummary = options.sessionSummary;
+  console.log(`[claude] session ${sessionId}: injected mid-turn message ${uuid}`);
+  return uuid;
+}
+
+/**
+ * Drops a still-queued injected message from the runtime's command queue.
+ * Resolves false when the runtime had already folded it into a turn — its
+ * content is running and the caller must not treat it as recallable.
+ */
+async function cancelInjectedClaudeMessage(sessionId, uuid) {
+  const session = getSession(sessionId);
+  if (!session || !session.injectedCommands.has(uuid) || !session.instance?.cancelAsyncMessage) {
+    return false;
+  }
+
+  try {
+    const cancelled = Boolean(await session.instance.cancelAsyncMessage(uuid));
+    if (cancelled) {
+      session.injectedCommands.delete(uuid);
+    }
+    return cancelled;
+  } catch (error) {
+    console.warn(`cancelAsyncMessage(${uuid}) for ${sessionId} rejected:`, error?.message || error);
+    return false;
+  }
+}
+
+/** Reports one injected message as recalled and forgets it. */
+function settleCancelledInjection(session, uuid) {
+  const entry = session.injectedCommands.get(uuid);
+  if (!entry) return;
+  session.injectedCommands.delete(uuid);
+  entry.onCancelled?.();
+}
+
+/**
+ * Interrupts the in-flight turn, taking anything the user queued during it
+ * along with it.
+ *
+ * A plain `interrupt()` deliberately leaves queued messages alone — they would
+ * then start a brand-new turn moments after the abort, the opposite of what
+ * pressing Stop means. `cancel_queued` sweeps them in the same round-trip and
+ * reaches even a message already being folded into the turn (the one case
+ * `cancelAsyncMessage` refuses). Advertised as `interrupt_cancel_queued_v1`;
+ * older runtimes ignore the field, which the per-uuid sweep afterwards covers.
+ */
+async function interruptTurn(session) {
+  try {
+    const response = typeof session.instance.request === 'function'
+      ? (await session.instance.request({ subtype: 'interrupt', cancel_queued: true }))?.response
+      : await session.instance.interrupt();
+
+    for (const uuid of Array.isArray(response?.cancelled) ? response.cancelled : []) {
+      settleCancelledInjection(session, uuid);
+    }
+  } catch (error) {
+    console.warn(`interrupt() for ${session.sessionId} rejected:`, error?.message || error);
+  }
+}
+
+/**
+ * Cancels every injected message still parked in the runtime's queue, one by
+ * one. Backstop for whatever `interruptTurn` did not sweep: an older runtime
+ * without `interrupt_cancel_queued_v1`, or a message queued while no turn was
+ * running. Each cancelled message is handed back through its `onCancelled`
+ * callback so the gateway can return the text to the composer.
+ */
+async function cancelInjectedMessagesForSession(session) {
+  if (!session?.injectedCommands?.size) return;
+
+  for (const uuid of [...session.injectedCommands.keys()]) {
+    if (await cancelInjectedClaudeMessage(session.sessionId, uuid)) {
+      settleCancelledInjection(session, uuid);
+    }
+  }
+}
+
+/**
+ * Handles the runtime's `command_lifecycle` narration for injected messages.
+ * @returns {boolean} true when the message was a lifecycle event (consumed).
+ */
+function handleCommandLifecycle(session, message) {
+  if (!message || message.type !== 'command_lifecycle' || !message.command_uuid) {
+    return false;
+  }
+
+  // Uuids we never stamped (cron triggers, internal continuations) are none of
+  // our business, but they're still lifecycle events — swallow them.
+  const entry = session.injectedCommands.get(message.command_uuid);
+  if (!entry) {
+    return true;
+  }
+
+  if (message.state === 'started') {
+    // The runtime picked the message up. If it folded it into the running turn
+    // there is nothing to open; if it started a fresh turn for it, this opens
+    // the run that turn streams into.
+    ensureRunForServerStartedTurn(session, 'Sending your queued message');
+
+    // Show the prompt in the transcript at the point it actually landed. The
+    // durable copy is the runtime's own `queued_command` attachment row, which
+    // replaces this on the next history load.
+    if (entry.content.trim()) {
+      session.writer.send(createNormalizedMessage({
+        kind: 'text',
+        role: 'user',
+        content: entry.content,
+        sessionId: session.sessionId,
+        provider: 'claude',
+      }));
+    }
+    entry.onDelivered?.();
+    entry.onDelivered = null;
+    return true;
+  }
+
+  if (message.state === 'completed' || message.state === 'cancelled') {
+    session.injectedCommands.delete(message.command_uuid);
+    if (message.state === 'cancelled') {
+      entry.onCancelled?.();
+    }
+  }
+
+  return true;
 }
 
 /**
@@ -1156,6 +1340,13 @@ async function runSessionLoop(session) {
       // Drive background-job tracking / auto-resume off the task system messages.
       handleTaskMessage(session, message);
 
+      // Mid-turn user messages the runtime parked in its own command queue.
+      // Not a provider message — it narrates delivery, so it never reaches the
+      // normalizer.
+      if (handleCommandLifecycle(session, message)) {
+        continue;
+      }
+
       // Compaction: narrate the phase, and re-read the gauge once the seam
       // lands so the user sees the window actually drop.
       if (handleCompactionStatus(session, message) && message.compact_result) {
@@ -1170,6 +1361,13 @@ async function runSessionLoop(session) {
       // turns can run for minutes. Only the first init: the runtime re-inits
       // every turn (and after a compaction), and those readings are already
       // covered by the turn-end probe.
+      // Protocol capabilities are feature-detected, not version-sniffed — the
+      // mid-turn delivery path needs `msg_lifecycle_v1` to know when the
+      // runtime picks a message up.
+      if (message.type === 'system' && message.subtype === 'init' && Array.isArray(message.capabilities)) {
+        session.capabilities = message.capabilities;
+      }
+
       if (message.type === 'system' && message.subtype === 'init' && !session.contextUsageSeeded) {
         session.contextUsageSeeded = true;
         refreshContextUsage(session, 'init');
@@ -1217,6 +1415,14 @@ async function runSessionLoop(session) {
 function finalizeSession(session) {
   if (session.finalized) return;
   session.finalized = true;
+
+  // Any message still parked in the runtime's queue died with it — hand each
+  // back so its text returns to the composer instead of sitting in the queue
+  // card forever, waiting for a runtime that will never pick it up.
+  for (const uuid of [...session.injectedCommands?.keys() ?? []]) {
+    settleCancelledInjection(session, uuid);
+  }
+
   completeTurn(session);
   session.finalizeDeferred?.resolve();
   clearIdleTimer(session);
@@ -1446,6 +1652,11 @@ async function startPersistentSession(command, options, ws) {
     sessionCreatedSent: false,
     currentTurn: null,
     pendingTasks: new Map(),
+    // uuid -> { content, onDelivered, onCancelled } for messages fed into a
+    // running turn (see "Mid-turn user messages" above).
+    injectedCommands: new Map(),
+    // Protocol capabilities the runtime advertised on system/init.
+    capabilities: null,
     idleTimer: null,
     maxLifetimeTimer: null,
     ended: false,
@@ -1666,15 +1877,17 @@ async function abortClaudeSDKSession(sessionId) {
       console.log(`Cancelled ${cancelledApprovals} pending approval(s) for ${sessionId} before interrupt`);
     }
 
-    // Interrupt the in-flight turn. The streaming query stays alive for future
-    // turns and for background jobs launched this turn.
-    if (session.turnActive && session.instance?.interrupt) {
-      try {
-        await session.instance.interrupt();
-      } catch (interruptError) {
-        console.warn(`interrupt() for ${sessionId} rejected:`, interruptError?.message || interruptError);
-      }
+    // Interrupt the in-flight turn, sweeping anything the user queued during
+    // it. The streaming query stays alive for future turns and for background
+    // jobs launched this turn.
+    if (session.turnActive && session.instance) {
+      await interruptTurn(session);
     }
+
+    // Backstop for messages the interrupt didn't sweep (or an abort with no
+    // turn running): stop means stop, so nothing the user queued may start a
+    // new turn seconds later.
+    await cancelInjectedMessagesForSession(session);
 
     // Settle the turn now (keeps the session alive; reconciles background jobs).
     // The gateway emits the aborted terminal `complete`, so settleTurn skips it.
@@ -1812,6 +2025,8 @@ function reconnectSessionWriter(sessionId, newRawWs) {
 // Export public API
 export {
   queryClaudeSDK,
+  injectClaudeMessage,
+  cancelInjectedClaudeMessage,
   abortClaudeSDKSession,
   stopClaudeSDKTask,
   getClaudeSDKBackgroundTasks,

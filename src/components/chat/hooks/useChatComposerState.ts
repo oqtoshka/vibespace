@@ -85,12 +85,17 @@ interface MentionableFile {
   path: string;
 }
 
-/** A message captured while a run was processing, awaiting auto-send when idle. */
+/** A message captured while a run was processing, awaiting delivery. */
 export interface QueuedMessage {
   id: string;
   content: string;
   /** How many images the queued message carries (already uploaded server-side). */
   imageCount: number;
+  /**
+   * The provider runtime already has it and will fold it into the running turn
+   * at the agent's next step; false means it waits for the run to finish.
+   */
+  delivered?: boolean;
 }
 
 // Cap the pending queue so a runaway loop can't accumulate unbounded sends.
@@ -1067,7 +1072,11 @@ export function useChatComposerState({
   useEffect(() => {
     const activeSessionId = selectedSession?.id || currentSessionId || null;
     const onQueueUpdated = (event: Event) => {
-      const detail = (event as CustomEvent<{ sessionId?: string; queue?: Array<{ id: string; content: string; imageCount?: number }> }>).detail;
+      const detail = (event as CustomEvent<{
+        sessionId?: string;
+        queue?: Array<{ id: string; content: string; imageCount?: number; delivered?: boolean }>;
+        removed?: Array<{ id: string; content: string; reason?: string }>;
+      }>).detail;
       if (!detail?.sessionId || detail.sessionId !== activeSessionId) {
         return;
       }
@@ -1077,8 +1086,25 @@ export function useChatComposerState({
           id: item.id,
           content: item.content,
           imageCount: typeof item.imageCount === 'number' ? item.imageCount : 0,
+          delivered: Boolean(item.delivered),
         })),
       );
+
+      // A queued message that was dropped rather than sent — the user removed
+      // it, or Stop cancelled it before the agent picked it up. Its text goes
+      // back into the composer so a cancel is an edit, not a loss. The server
+      // only reports this once the removal is confirmed, so text can never come
+      // back for a message that is already running.
+      const restored = (Array.isArray(detail.removed) ? detail.removed : [])
+        .map((item) => (typeof item.content === 'string' ? item.content.trim() : ''))
+        .filter(Boolean);
+      if (restored.length > 0) {
+        setInput((previous) => {
+          const next = previous.trim() ? `${previous}\n\n${restored.join('\n\n')}` : restored.join('\n\n');
+          inputValueRef.current = next;
+          return next;
+        });
+      }
 
       // The snapshot is the ack for queued sends: any journaled queue item the
       // server echoes back arrived safely. Anything still unacked past the
@@ -1140,7 +1166,10 @@ export function useChatComposerState({
   const removeQueuedMessage = useCallback(
     (id: string) => {
       const targetSessionId = selectedSession?.id || currentSessionId;
-      // Optimistic removal; the server broadcasts the authoritative queue.
+      // Optimistic removal; the server broadcasts the authoritative queue —
+      // including the removed item's text, which lands back in the composer.
+      // If the agent had already picked the message up, the broadcast puts the
+      // card back instead and nothing is restored.
       setQueuedMessages((previous) => previous.filter((message) => message.id !== id));
       if (targetSessionId) {
         sendMessage({ type: 'chat.queue-remove', sessionId: targetSessionId, id });
