@@ -83,10 +83,14 @@ export default function SessionPane({
     });
   }, [view, currentKey, selectedProject.projectId, selectedSession]);
 
-  const sessionLabel =
+  // The header has room for the longer form, so prefer the generated recap and
+  // fall back to the short label the lists use. A session that has not been
+  // summarised yet (brand new, or one turn in) still shows something.
+  const sessionTitle =
     (selectedSession?.summary as string) ||
     (selectedSession?.name as string) ||
     t('mainContent.newSession', { defaultValue: 'New session' });
+  const sessionLabel = (selectedSession?.recap as string) || sessionTitle;
 
   const isChat = view === 'chat';
 
@@ -117,7 +121,10 @@ export default function SessionPane({
           </button>
         </div>
 
-        <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground" title={sessionLabel}>
+        <span
+          className="min-w-0 flex-1 truncate text-xs text-muted-foreground"
+          title={sessionLabel === sessionTitle ? sessionLabel : `${sessionTitle}\n\n${sessionLabel}`}
+        >
           {sessionLabel}
         </span>
 

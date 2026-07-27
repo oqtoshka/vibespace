@@ -106,6 +106,81 @@ const getProjectSessions = (project: Project): ProjectSession[] => {
 
 const countLoadedProjectSessions = (project: Project): number => getProjectSessions(project).length;
 
+/** Which per-provider list on a project a session belongs to. */
+const SESSION_LIST_KEY_BY_PROVIDER: Record<string, keyof Project> = {
+  claude: 'sessions',
+  codex: 'codexSessions',
+  cursor: 'cursorSessions',
+  gemini: 'geminiSessions',
+  opencode: 'opencodeSessions',
+};
+
+/**
+ * Applies one `session_upserted` delta to the project list.
+ *
+ * Updates the session in place wherever it already is — which provider list it
+ * lives in is not the delta's business — and only falls back to inserting when
+ * the session is genuinely new, which needs the owning project to be known.
+ * Returns the original array when nothing matched, so React skips the re-render.
+ */
+const upsertSessionIntoProjects = (
+  projects: Project[],
+  sessionId: string,
+  incoming: Partial<ProjectSession>,
+  provider?: LLMProvider,
+  projectId?: string,
+): Project[] => {
+  let changed = false;
+
+  const updated = projects.map((project) => {
+    let projectChanged = false;
+    const nextProject: Project = { ...project };
+
+    for (const listKey of Object.values(SESSION_LIST_KEY_BY_PROVIDER)) {
+      const list = nextProject[listKey] as ProjectSession[] | undefined;
+      if (!Array.isArray(list)) continue;
+
+      const index = list.findIndex((session) => String(session.id) === sessionId);
+      if (index === -1) continue;
+
+      const nextList = [...list];
+      nextList[index] = { ...nextList[index], ...incoming, id: nextList[index].id };
+      (nextProject[listKey] as ProjectSession[]) = nextList;
+      projectChanged = true;
+    }
+
+    if (projectChanged) {
+      changed = true;
+      return nextProject;
+    }
+    return project;
+  });
+
+  if (changed) {
+    return updated;
+  }
+
+  // Not on the list yet — a session that has only just been indexed.
+  if (!projectId || !provider) {
+    return projects;
+  }
+  const listKey = SESSION_LIST_KEY_BY_PROVIDER[provider];
+  if (!listKey) {
+    return projects;
+  }
+
+  return projects.map((project) => {
+    if (project.projectId !== projectId) return project;
+
+    changed = true;
+    const list = (project[listKey] as ProjectSession[] | undefined) ?? [];
+    return {
+      ...project,
+      [listKey]: [{ ...incoming, id: sessionId, __provider: provider } as ProjectSession, ...list],
+    };
+  });
+};
+
 const mergeSessionProviderLists = (baseSessions: ProjectSession[], additionalSessions: ProjectSession[]): ProjectSession[] => {
   const merged = [...baseSessions];
   const seenSessionIds = new Set(baseSessions.map((session) => String(session.id)));
@@ -454,10 +529,36 @@ export function useProjectsState({
     // that session (no active run), the transcript changed underneath us —
     // e.g. the conversation is happening in the Terminal tab's CLI, or in
     // another client — so nudge the chat view to refetch its history.
-    const upsertedMessage = latestMessage as { kind?: string; sessionId?: string };
+    const upsertedMessage = latestMessage as {
+      kind?: string;
+      sessionId?: string;
+      provider?: LLMProvider;
+      session?: Partial<ProjectSession>;
+      project?: { projectId?: string } | null;
+    };
     if (upsertedMessage.kind === 'session_upserted') {
       const upsertedSessionId =
         typeof upsertedMessage.sessionId === 'string' ? upsertedMessage.sessionId : null;
+
+      // Apply the delta to the list. This event carries the session's current
+      // summary/recap and is the only prompt notice of a rename or a newly
+      // indexed session — a full `projects_updated` may be many seconds away,
+      // which is why a new session used to sit missing from the drawer and a
+      // regenerated title never showed up until a reload. Merging one session
+      // cannot disturb anything else, so unlike a full snapshot it is safe to
+      // apply while a run is in flight.
+      if (upsertedSessionId && upsertedMessage.session) {
+        setProjects((previousProjects) =>
+          upsertSessionIntoProjects(
+            previousProjects,
+            upsertedSessionId,
+            upsertedMessage.session as Partial<ProjectSession>,
+            upsertedMessage.provider,
+            upsertedMessage.project?.projectId,
+          ),
+        );
+      }
+
       if (
         upsertedSessionId &&
         selectedSession &&

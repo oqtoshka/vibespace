@@ -29,7 +29,14 @@ export type AppTab = 'chat' | 'files' | 'shell' | 'git' | 'tasks' | 'preview' | 
 export interface ProjectSession {
   id: string;
   title?: string;
+  /** Short label for lists — a few words. */
   summary?: string;
+  /**
+   * A sentence or two on what the session is doing, regenerated in the
+   * background as it moves. Shown in the session pane header; absent until the
+   * first one has been generated.
+   */
+  recap?: string;
   name?: string;
   createdAt?: string;
   created_at?: string;

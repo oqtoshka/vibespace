@@ -31,8 +31,10 @@ import { describeTool } from './services/notification-content.js';
 import { describeAssistantActivity } from './services/activity-status.js';
 import { sessionsService } from './modules/providers/services/sessions.service.js';
 import { providerAuthService } from './modules/providers/services/provider-auth.service.js';
-import { createCompleteMessage, createNormalizedMessage, resolveConfiguredContextWindow } from './shared/utils.js';
+import { createNormalizedMessage, resolveConfiguredContextWindow } from './shared/utils.js';
 import { rememberContextUsage } from './shared/context-usage-cache.js';
+import { scheduleSessionRecap } from './services/session-recap.service.js';
+import { broadcastSessionUpdate } from './modules/providers/index.js';
 
 const activeSessions = new Map();
 const pendingToolApprovals = new Map();
@@ -202,6 +204,48 @@ function resolveClaudeEffort(model, effort, modelsDefinition = CLAUDE_FALLBACK_M
 }
 
 /**
+ * Host-specific preamble appended to the claude_code system prompt.
+ *
+ * The agent has no way to know it is answering into VibeSpace rather than a
+ * terminal, and the difference matters for one thing: the chat renderer turns
+ * any non-external markdown link into a click that opens that file in the
+ * editor pane (see `Markdown.tsx`). That only works for paths relative to the
+ * project root — the renderer deliberately refuses `/…` and `~/…`, which it
+ * cannot resolve through the project file API. Absolute paths, the terminal's
+ * natural habit, render as dead links.
+ *
+ * So this states the one convention the host needs and nothing else. Kept
+ * short on purpose: it rides on every request, and a long preamble here is a
+ * standing tax on every session's context.
+ *
+ * @param {string} [cwd] - Project root the session runs in.
+ * @returns {string} Text to append, or '' when there is no project root.
+ */
+function buildVibespaceSystemPrompt(cwd) {
+  if (!cwd) return '';
+
+  return [
+    '# VibeSpace',
+    '',
+    `You are running inside VibeSpace, a web UI. The project root is \`${cwd}\`.`,
+    '',
+    'When you finish a turn in which you created, edited, or deleted files, end',
+    'your reply with a short list of those files as markdown links whose target',
+    'is the path relative to the project root:',
+    '',
+    '    - [src/components/Foo.tsx](src/components/Foo.tsx) — what changed',
+    '',
+    'VibeSpace turns those links into clicks that open the file in the editor',
+    'pane. This only works for project-root-relative paths: absolute paths and',
+    '`~/…` cannot be resolved and render as dead links. A `:line` suffix is',
+    'understood and jumps to that line.',
+    '',
+    'Skip the list entirely when a turn changed no files — do not pad a reply',
+    'with an empty or irrelevant one.',
+  ].join('\n');
+}
+
+/**
  * Maps CLI options to SDK-compatible options format
  * @param {Object} options - CLI options
  * @returns {Object} SDK-compatible options
@@ -294,9 +338,11 @@ function mapCliOptionsToSDK(options = {}) {
   }
 
   // Map system prompt configuration
+  const vibespacePreamble = buildVibespaceSystemPrompt(cwd);
   sdkOptions.systemPrompt = {
     type: 'preset',
-    preset: 'claude_code'  // Required to use CLAUDE.md
+    preset: 'claude_code',  // Required to use CLAUDE.md
+    ...(vibespacePreamble ? { append: vibespacePreamble } : {}),
   };
 
   // Map setting sources for CLAUDE.md loading
@@ -1201,6 +1247,51 @@ function settleTurn(session, { aborted = false } = {}) {
 /** Called when a `result` message marks the end of an assistant turn. */
 function onTurnEnd(session) {
   settleTurn(session, { aborted: false });
+  queueRecapForSession(session);
+}
+
+/**
+ * Queues the background title/recap refresh for a finished turn.
+ *
+ * Skipped for ephemeral sessions — those ARE the helper calls (commit messages,
+ * and the recap generation itself), so summarising them would have each recap
+ * schedule another one.
+ */
+function queueRecapForSession(session) {
+  if (session.ephemeral) return;
+
+  const sessionId = session.sessionId || session.options?.sessionId;
+  const cwd = session.options?.cwd;
+  if (!sessionId || !cwd) return;
+
+  scheduleSessionRecap({
+    sessionId,
+    cwd,
+    // Injected rather than imported by the service, which would close a cycle
+    // back into this module.
+    runQuery: queryClaudeSDK,
+    onRecap: (result) => {
+      // The turn is long over by now, so this rides the session's writer only
+      // if it is still attached; a closed one is not an error.
+      try {
+        session.writer?.send?.(createNormalizedMessage({
+          kind: 'status',
+          text: 'session_recap',
+          sessionRecap: result,
+          sessionId: result.sessionId,
+          provider: 'claude',
+        }));
+      } catch {
+        // Client gone — the recap is in the database either way, and the next
+        // projects refresh carries it.
+      }
+      // Everyone else — the sidebar in this tab and every other client — hears
+      // about it through the same per-session delta the transcript watcher
+      // uses. The recap is a database write with no file change behind it, so
+      // without this nothing would ever be told.
+      broadcastSessionUpdate(result.sessionId);
+    },
+  });
 }
 
 /**
@@ -1448,6 +1539,11 @@ function finalizeSession(session) {
     settleCancelledInjection(session, uuid);
   }
 
+  // NOTE: a queued recap is deliberately NOT cancelled here. It reads the
+  // transcript from disk and makes its own one-shot call, so it needs nothing
+  // from this session — and sessions are torn down on idle, which is exactly
+  // the quiet the debounce is waiting for. Cancelling here would mean the
+  // recap almost never ran.
   completeTurn(session);
   session.finalizeDeferred?.resolve();
   clearIdleTimer(session);

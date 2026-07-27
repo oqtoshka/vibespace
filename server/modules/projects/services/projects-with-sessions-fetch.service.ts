@@ -11,6 +11,8 @@ type SessionSummary = {
   id: string;
   provider: string;
   summary: string;
+  /** Background-generated description; '' until one has been written. */
+  recap: string;
   messageCount: number;
   lastActivity: string;
   // Set when the session runs in a git worktree (not the project's main checkout).
@@ -22,6 +24,7 @@ type SessionRepositoryRow = {
   provider: string;
   session_id: string;
   custom_name?: string | null;
+  recap?: string | null;
   updated_at?: string | null;
   created_at?: string | null;
   worktree_path?: string | null;
@@ -127,6 +130,7 @@ function mapSessionRowToSummary(row: SessionRepositoryRow): SessionSummary {
     id: row.session_id,
     provider: row.provider,
     summary: row.custom_name || '',
+    recap: row.recap || '',
     messageCount: 0,
     lastActivity: row.updated_at ?? row.created_at ?? new Date().toISOString(),
     worktreePath,
