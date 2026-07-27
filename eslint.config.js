@@ -170,6 +170,7 @@ export default tseslint.config(
           pattern: [
             "server/projects.js",
             "server/utils/runtime-paths.js",
+            "server/utils/worktrees.js",
           ], // provider history loading still resolves session data through these legacy runtime files
           mode: "file",
         },
