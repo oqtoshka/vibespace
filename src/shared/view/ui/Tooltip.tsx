@@ -10,6 +10,13 @@ type TooltipProps = {
   content?: ReactNode;
   position?: TooltipPosition;
   className?: string;
+  /**
+   * Classes for the wrapper around `children`, whose default `inline-block`
+   * sizes itself to its content. A trigger that has to shrink — a truncating
+   * label in a flex row — needs the wrapper to be the flex child that shrinks,
+   * since the wrapper, not `children`, is what the parent lays out.
+   */
+  containerClassName?: string;
   delay?: number;
 };
 
@@ -33,6 +40,7 @@ function Tooltip({
   content,
   position = 'top',
   className = '',
+  containerClassName = '',
   delay = 350,
 }: TooltipProps) {
   const [isVisible, setIsVisible] = useState(false);
@@ -169,7 +177,7 @@ function Tooltip({
   return (
     <div
       ref={containerRef}
-      className="relative inline-block"
+      className={cn('relative inline-block', containerClassName)}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
       onTouchStart={handleTouchStart}
