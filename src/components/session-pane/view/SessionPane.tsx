@@ -90,7 +90,9 @@ export default function SessionPane({
     (selectedSession?.summary as string) ||
     (selectedSession?.name as string) ||
     t('mainContent.newSession', { defaultValue: 'New session' });
-  const sessionLabel = (selectedSession?.recap as string) || sessionTitle;
+  const sessionRecap = (selectedSession?.recap as string) || '';
+  const hasRecap = Boolean(sessionRecap.trim());
+  const sessionLabel = sessionRecap || sessionTitle;
 
   const isChat = view === 'chat';
 
@@ -121,12 +123,25 @@ export default function SessionPane({
           </button>
         </div>
 
-        <span
-          className="min-w-0 flex-1 truncate text-xs text-muted-foreground"
-          title={sessionLabel === sessionTitle ? sessionLabel : `${sessionTitle}\n\n${sessionLabel}`}
+        {/* The recap is a sentence or two and the header is one truncated line,
+            so the full text needs somewhere to go. A real tooltip rather than
+            the native `title`: this pane is used on tablets, where `title`
+            never fires, and Tooltip opens on long-press there. */}
+        <Tooltip
+          content={
+            <div className="max-w-xs space-y-1 text-left">
+              <div className="font-semibold">{sessionTitle}</div>
+              {hasRecap && <div className="font-normal opacity-90">{sessionRecap}</div>}
+            </div>
+          }
+          position="bottom"
+          className="whitespace-normal leading-relaxed"
+          containerClassName="block min-w-0 flex-1"
         >
-          {sessionLabel}
-        </span>
+          <span className="block truncate text-xs text-muted-foreground">
+            {sessionLabel}
+          </span>
+        </Tooltip>
 
         <Tooltip content={t('sessionPane.close', { defaultValue: 'Hide session pane' })} position="bottom">
           <button

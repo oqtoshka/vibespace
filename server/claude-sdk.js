@@ -349,6 +349,17 @@ function mapCliOptionsToSDK(options = {}) {
   // This loads CLAUDE.md from project, user (~/.config/claude/CLAUDE.md), and local directories
   sdkOptions.settingSources = ['project', 'user', 'local'];
 
+  // Helper calls (commit messages, agent REST one-shots, the title/recap
+  // generator) are conversations only in the mechanical sense: nothing resumes
+  // them and nobody reads them back. Left persisted, the SDK writes each one
+  // into ~/.claude/projects/<cwd>/ exactly like a real chat, the transcript
+  // watcher indexes it, and the sidebar fills with sessions named after our own
+  // prompts ("Below is the tail of a coding session…"). Not writing them at all
+  // is cheaper than teaching the watcher to recognise and skip them.
+  if (options.ephemeral) {
+    sdkOptions.persistSession = false;
+  }
+
   // Map resume session
   if (sessionId) {
     sdkOptions.resume = sessionId;
