@@ -215,11 +215,21 @@ export default function ChatComposer({
     if (voiceErrorTimer.current) clearTimeout(voiceErrorTimer.current);
   }, []);
   const noopTranscript = useCallback(() => {}, []);
-  const { state: voiceState, toggle: voiceToggle, stop: voiceStop } = useVoiceInput(
+  const {
+    state: voiceState,
+    toggle: voiceToggle,
+    stop: voiceStop,
+    pause: voicePause,
+    resume: voiceResume,
+    cancel: voiceCancel,
+    canPause: voiceCanPause,
+  } = useVoiceInput(
     onVoiceTranscript ?? noopTranscript,
     handleVoiceError,
   );
-  const isRecording = voiceState === 'recording';
+  // A paused take is still a take: Send must stop-and-send it exactly as it
+  // does mid-recording, so everything keyed off "recording" covers paused too.
+  const isRecording = voiceState === 'recording' || voiceState === 'paused';
   const isTranscribing = voiceState === 'transcribing';
   // "…" menu holding the secondary controls whenever they don't fit inline.
   const [isOverflowOpen, setIsOverflowOpen] = useState(false);
@@ -811,6 +821,10 @@ export default function ChatComposer({
               <VoiceInputButton
                 state={voiceState}
                 onToggle={voiceToggle}
+                onPause={voicePause}
+                onResume={voiceResume}
+                onCancel={voiceCancel}
+                canPause={voiceCanPause}
                 errorMsg={voiceError}
                 className="h-10 w-10 shrink-0 rounded-lg border border-border/60 bg-muted/40 hover:bg-muted [&_svg]:size-5"
               />
