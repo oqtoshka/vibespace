@@ -628,9 +628,11 @@ export function useSidebarController({
     [debouncedSearchQuery, sortedProjects],
   );
 
-  // Flat "by activity" view: every session across all projects, with sessions
-  // that have stopped and remain unread floated to the top, then everything
-  // else ordered by most recent activity.
+  // Flat "by activity" view: every session across all projects, ordered purely
+  // by most recent activity. Unread is surfaced by the row's dot marker only —
+  // it deliberately does NOT affect ordering. Floating stopped-and-unread
+  // sessions to the top made the list jump under you as runs finished, and it
+  // meant "by activity" did not actually mean by activity.
   const activitySessions = useMemo<ActivitySessionItem[]>(() => {
     const normalizedSearch = debouncedSearchQuery.trim().toLowerCase();
     const items: ActivitySessionItem[] = [];
@@ -656,16 +658,7 @@ export function useSidebarController({
       }
     }
 
-    items.sort((a, b) => {
-      // Stopped + unread = "done, waiting for you" → highest priority.
-      const aPriority = !a.isRunning && a.isUnread ? 0 : 1;
-      const bPriority = !b.isRunning && b.isUnread ? 0 : 1;
-      if (aPriority !== bPriority) {
-        return aPriority - bPriority;
-      }
-
-      return getSessionDate(b.session).getTime() - getSessionDate(a.session).getTime();
-    });
+    items.sort((a, b) => getSessionDate(b.session).getTime() - getSessionDate(a.session).getTime());
 
     return items;
   }, [debouncedSearchQuery, processingSessions, projectsWithResolvedStarState, readMap, selectedSessionId, t]);

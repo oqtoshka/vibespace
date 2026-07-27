@@ -179,6 +179,7 @@ function MainContent({
   onCloseSessionPane,
   sessionPaneWidth,
   onSessionPaneWidthChange,
+  onMobilePaneChange,
 }: MainContentProps) {
   const { t } = useTranslation();
   const { preferences } = useUiPreferences();
@@ -193,6 +194,18 @@ function MainContent({
 
   // Mobile shows one pane at a time, switched from the header.
   const [mobileView, setMobileView] = useState<'session' | 'files'>('session');
+
+  // Switching the visible pane also points the drawer at the matching list —
+  // picking Files and then opening a drawer still showing sessions (or the
+  // reverse) meant two taps to get anywhere. Session pairs with the session
+  // list, Files with the file tree.
+  const selectMobileView = useCallback(
+    (pane: 'session' | 'files') => {
+      setMobileView(pane);
+      onMobilePaneChange?.(pane);
+    },
+    [onMobilePaneChange],
+  );
 
   // Bottom terminal pane: a plain interactive shell in the project folder.
   // Once opened it stays mounted (hidden on close) so the PTY survives toggles.
@@ -327,7 +340,7 @@ function MainContent({
         <div className="flex flex-shrink-0 gap-1 border-b border-border/60 bg-card/40 px-2 py-1.5">
           <button
             type="button"
-            onClick={() => setMobileView('session')}
+            onClick={() => selectMobileView('session')}
             className={`flex flex-1 items-center justify-center gap-1.5 rounded-md py-1.5 text-xs font-medium ${
               mobileView === 'session' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground'
             }`}
@@ -337,7 +350,7 @@ function MainContent({
           </button>
           <button
             type="button"
-            onClick={() => setMobileView('files')}
+            onClick={() => selectMobileView('files')}
             className={`flex flex-1 items-center justify-center gap-1.5 rounded-md py-1.5 text-xs font-medium ${
               mobileView === 'files' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground'
             }`}

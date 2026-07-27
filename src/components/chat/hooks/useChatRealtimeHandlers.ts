@@ -369,8 +369,17 @@ export function useChatRealtimeHandlers({
         }
 
         case 'status': {
+          // Both readings below are single-value state for the session on
+          // screen, so they must be gated on the message belonging to it.
+          // Ungated, any background session's probe painted its number onto
+          // whatever session you were looking at — which is how a brand-new
+          // session came to display the 500k reading of a long run happening
+          // in another tab. `sid` falls back to the active view when the
+          // message carries no sessionId, so this does not drop our own.
+          const isViewedSession = sid === activeViewSessionId;
+
           if (msg.text === 'token_budget') {
-            if (msg.tokenBudget) {
+            if (msg.tokenBudget && isViewedSession) {
               setTokenBudget(msg.tokenBudget as Record<string, unknown>);
             }
           } else if (msg.text === 'context_usage') {
@@ -378,7 +387,7 @@ export function useChatRealtimeHandlers({
             // Must not fall through to the processing branch below — it can
             // arrive just after a run's terminal `complete` (the probe is a
             // round-trip to the CLI), which would revive the spinner.
-            if (msg.contextUsage) {
+            if (msg.contextUsage && isViewedSession) {
               setContextUsage(msg.contextUsage as ContextUsage);
             }
           } else if (sid) {
