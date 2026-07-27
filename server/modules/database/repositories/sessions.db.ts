@@ -13,13 +13,15 @@ type SessionRow = {
   worktree_path: string | null;
   custom_name: string | null;
   name_source: string | null;
+  recap: string | null;
+  recap_message_count: number | null;
   isArchived: number;
   created_at: string;
   updated_at: string;
 };
 
 const SESSION_ROW_COLUMNS =
-  'session_id, provider, provider_session_id, project_path, jsonl_path, worktree_path, custom_name, name_source, isArchived, created_at, updated_at';
+  'session_id, provider, provider_session_id, project_path, jsonl_path, worktree_path, custom_name, name_source, recap, recap_message_count, isArchived, created_at, updated_at';
 
 const SQLITE_UTC_TIMESTAMP_REGEX = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
 
@@ -258,6 +260,22 @@ export const sessionsDb = {
        SET custom_name = ?, name_source = ?
        WHERE session_id = ?`
     ).run(customName, nameSource, sessionId);
+  },
+
+  /**
+   * Stores a generated recap and the transcript size it describes.
+   *
+   * Writes by app session id or provider session id: the recap generator works
+   * from the runtime's own session id, which for an app-created session is the
+   * provider id rather than the row key.
+   */
+  updateSessionRecap(sessionId: string, recap: string, messageCount: number): void {
+    const db = getConnection();
+    db.prepare(
+      `UPDATE sessions
+       SET recap = ?, recap_message_count = ?
+       WHERE session_id = ? OR provider_session_id = ?`
+    ).run(recap, messageCount, sessionId, sessionId);
   },
 
   getSessionById(sessionId: string): SessionRow | null {

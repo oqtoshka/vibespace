@@ -433,6 +433,23 @@ const addSessionNameSource = (db: Database): void => {
   `);
 };
 
+/**
+ * Adds the background session recap and the transcript size it was built from.
+ *
+ * Nothing is backfilled: a recap is only meaningful once generated, and every
+ * existing session gets one the next time it runs a turn. NULL reads as "no
+ * recap yet", which the UI already has to handle for brand-new sessions.
+ */
+const addSessionRecap = (db: Database): void => {
+  if (!tableExists(db, 'sessions')) {
+    return;
+  }
+
+  const columnNames = getTableInfo(db, 'sessions').map((column) => column.name);
+  addColumnToTableIfNotExists(db, 'sessions', columnNames, 'recap', 'TEXT');
+  addColumnToTableIfNotExists(db, 'sessions', columnNames, 'recap_message_count', 'INTEGER');
+};
+
 const ensureProjectsForSessionPaths = (db: Database): void => {
   if (!tableExists(db, 'sessions')) {
     return;
@@ -485,6 +502,7 @@ export const runMigrations = (db: Database) => {
     migrateLegacySessionNames(db);
     addProviderSessionIdMapping(db);
     addSessionNameSource(db);
+    addSessionRecap(db);
     ensureProjectsForSessionPaths(db);
 
     db.exec('CREATE INDEX IF NOT EXISTS idx_session_ids_lookup ON sessions(session_id)');

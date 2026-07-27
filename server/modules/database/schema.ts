@@ -121,6 +121,13 @@ CREATE TABLE IF NOT EXISTS sessions (
     -- > 'ai' (a provider-generated title) > 'derived' (first/last prompt or
     -- another mechanical fallback). NULL on rows that predate this column.
     name_source TEXT,
+    -- A sentence or two on what the session is actually doing, regenerated in
+    -- the background as the conversation moves (see session-recap.service).
+    -- Distinct from \`custom_name\`, which is the few-word label the lists show.
+    recap TEXT,
+    -- Transcript size the recap was generated from, so a session that has not
+    -- moved since is not re-summarised on every idle tick.
+    recap_message_count INTEGER,
     project_path TEXT,
     jsonl_path TEXT,
     worktree_path TEXT,
