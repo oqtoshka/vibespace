@@ -26,6 +26,8 @@ import type {
   StatusCommandData,
 } from '../../hooks/useChatComposerState';
 
+import { resolveCompactAtPercent } from './TokenUsageSummary';
+
 type CommandResultModalProps = {
   payload: CommandModalPayload | null;
   onClose: () => void;
@@ -446,11 +448,20 @@ function CostContent({ data }: { data: CostCommandData }) {
           {
             label: 'Auto-compact',
             value: contextUsage.isAutoCompactEnabled
-              ? `On${
-                  Number.isFinite(contextUsage.autoCompactThreshold) && contextUsage.autoCompactThreshold
-                    ? ` — at ${Math.round(contextUsage.autoCompactThreshold * 100)}%`
-                    : ''
-                }`
+              ? `On${(() => {
+                  // The threshold is an absolute token count, not a fraction —
+                  // see resolveCompactAtPercent. Show both, since the token
+                  // figure is the one that answers "how much room is left?".
+                  const percent = resolveCompactAtPercent(
+                    contextUsage.autoCompactThreshold,
+                    contextUsage.maxTokens,
+                  );
+                  if (percent === null) return '';
+                  const tokens = Number(contextUsage.autoCompactThreshold);
+                  return tokens > 1
+                    ? ` — at ${tokens.toLocaleString()} (${percent}%)`
+                    : ` — at ${percent}%`;
+                })()}`
               : 'Off',
             icon: Activity,
           },

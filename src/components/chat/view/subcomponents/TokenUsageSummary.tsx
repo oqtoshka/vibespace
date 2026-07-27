@@ -57,6 +57,33 @@ export type ContextGauge = {
 };
 
 /**
+ * Turns the runtime's auto-compact threshold into a 0-100 mark on the gauge.
+ *
+ * The runtime reports it as an ABSOLUTE TOKEN COUNT — Opus 5 with a 1M window
+ * reports 967000, not 0.967. Multiplying it by 100 as if it were a fraction
+ * produced `left: 96700000%` on the marker and "Auto-compacts at 96700000%" in
+ * the tooltip. That stayed invisible for as long as auto-compact was off,
+ * because the caller only asks for this when it is enabled.
+ *
+ * Both readings are accepted rather than assuming the current one: a value at
+ * or below 1 can only be a fraction (a 1-token threshold is meaningless), and
+ * anything larger can only be a token count.
+ */
+export const resolveCompactAtPercent = (threshold: unknown, maxTokens: number): number | null => {
+  const value = Number(threshold);
+  if (!Number.isFinite(value) || value <= 0 || maxTokens <= 0) {
+    return null;
+  }
+
+  const percent = value <= 1 ? value * 100 : (value / maxTokens) * 100;
+  if (!Number.isFinite(percent) || percent <= 0 || percent > 100) {
+    return null;
+  }
+
+  return Math.round(percent);
+};
+
+/**
  * Resolves what to show in the gauge from the two available signals.
  *
  * The live runtime reading is authoritative — it knows the real window for the
@@ -70,15 +97,13 @@ export const resolveContextGauge = (
   contextUsage?: ContextUsage | null,
 ): ContextGauge | null => {
   if (contextUsage && contextUsage.maxTokens > 0) {
-    const threshold = contextUsage.autoCompactThreshold;
     return {
       used: contextUsage.totalTokens,
       max: contextUsage.maxTokens,
       percentage: Math.min(100, Math.max(0, contextUsage.percentage)),
-      compactAtPercent:
-        contextUsage.isAutoCompactEnabled && Number.isFinite(threshold) && threshold
-          ? Math.round(threshold * 100)
-          : null,
+      compactAtPercent: contextUsage.isAutoCompactEnabled
+        ? resolveCompactAtPercent(contextUsage.autoCompactThreshold, contextUsage.maxTokens)
+        : null,
       autoCompactEnabled: contextUsage.isAutoCompactEnabled,
       estimated: false,
     };
