@@ -109,7 +109,10 @@
     "transcribing": "Transcribing…",
     "speak": "Read aloud",
     "stopSpeaking": "Stop",
-    "loading": "Loading…"
+    "loading": "Loading…",
+    "pauseRecording": "Pause recording",
+    "resumeRecording": "Resume recording",
+    "cancelRecording": "Discard recording"
   },
   "input": {
     "placeholder": "Type / for commands, @ for files, or ask {{provider}} anything...",

@@ -22,12 +22,17 @@ function pickMime(): string {
   return '';
 }
 
-export type VoiceInputState = 'idle' | 'recording' | 'transcribing';
+export type VoiceInputState = 'idle' | 'recording' | 'paused' | 'transcribing';
 
 /**
  * Push-to-talk dictation. Records the mic, uploads to /api/voice/transcribe
  * (an OpenAI-compatible speech-to-text backend via the Express proxy), and
  * returns the transcript through onTranscript.
+ *
+ * Recording can be paused (the take is kept, the mic stops capturing) or
+ * cancelled (the take is thrown away). Cancelling also aborts an upload that is
+ * already in flight, because "cancel" that still pastes a transcript a few
+ * seconds later is not a cancel.
  */
 export function useVoiceInput(
   onTranscript: (text: string, send?: boolean) => void,
@@ -37,10 +42,20 @@ export function useVoiceInput(
   const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const streamRef = useRef<MediaStream | null>(null);
-  const cancelledRef = useRef(false);
+  // Set on unmount only. Distinct from a user cancel: this one must not touch
+  // React state, because the component it belongs to is already gone.
+  const unmountedRef = useRef(false);
   const startingRef = useRef(false);
   // Whether the in-progress stop should auto-send the transcript (vs just fill the box).
   const sendRef = useRef(false);
+  // Set by cancel() so the `onstop` handler this triggers discards the take
+  // instead of transcribing it — `onstop` cannot tell the two callers apart.
+  const discardRef = useRef(false);
+  // Aborts an upload already in flight when cancel() lands during transcription.
+  const uploadAbortRef = useRef<AbortController | null>(null);
+  // Not every browser that has MediaRecorder implements pause/resume, so the
+  // button is only offered once a live recorder confirms it.
+  const [canPause, setCanPause] = useState(false);
 
   const stopTracks = () => {
     streamRef.current?.getTracks().forEach((t) => t.stop());
@@ -49,10 +64,12 @@ export function useVoiceInput(
 
   // Stop the mic if the component unmounts mid-recording.
   useEffect(() => {
-    cancelledRef.current = false;
+    unmountedRef.current = false;
     return () => {
-      cancelledRef.current = true;
+      unmountedRef.current = true;
       startingRef.current = false;
+      uploadAbortRef.current?.abort();
+      uploadAbortRef.current = null;
       streamRef.current?.getTracks().forEach((t) => t.stop());
       streamRef.current = null;
       recorderRef.current = null;
@@ -83,7 +100,7 @@ export function useVoiceInput(
           throw constrainedErr;
         });
       }
-      if (cancelledRef.current) {
+      if (unmountedRef.current) {
         stream.getTracks().forEach((t) => t.stop());
         return;
       }
@@ -92,6 +109,8 @@ export function useVoiceInput(
       const rec = mimeType ? new MediaRecorder(stream, { mimeType }) : new MediaRecorder(stream);
       recorderRef.current = rec;
       chunksRef.current = [];
+      discardRef.current = false;
+      setCanPause(typeof rec.pause === 'function' && typeof rec.resume === 'function');
 
       rec.ondataavailable = (e) => {
         if (e.data.size > 0) chunksRef.current.push(e.data);
@@ -99,10 +118,21 @@ export function useVoiceInput(
 
       rec.onstop = async () => {
         stopTracks();
-        if (cancelledRef.current) return;
-        // Capture and clear the send intent for this stop before any async work.
+        if (unmountedRef.current) return;
+        // Capture and clear the intents for this stop before any async work.
         const shouldSend = sendRef.current;
+        const discarded = discardRef.current;
         sendRef.current = false;
+        discardRef.current = false;
+
+        // Cancelled: the audio goes nowhere, so there is nothing to upload and
+        // no error to report — the user already knows what they did.
+        if (discarded) {
+          chunksRef.current = [];
+          setState('idle');
+          return;
+        }
+
         const type = rec.mimeType || 'audio/webm';
         const blob = new Blob(chunksRef.current, { type });
         if (blob.size < 800) {
@@ -111,21 +141,26 @@ export function useVoiceInput(
           return;
         }
         setState('transcribing');
+        const abort = new AbortController();
+        uploadAbortRef.current = abort;
         try {
           const ext = type.includes('mp4') ? 'm4a' : type.includes('ogg') ? 'ogg' : 'webm';
-          const res = await transcribeVoice(blob, `recording.${ext}`);
+          const res = await transcribeVoice(blob, `recording.${ext}`, abort.signal);
           if (!res.ok) throw new Error(`transcribe ${res.status}`);
           const data = await res.json();
-          if (cancelledRef.current) return;
+          if (unmountedRef.current || abort.signal.aborted) return;
           const text = String(data?.text || '').trim();
           if (text) onTranscript(text, shouldSend);
           else onError?.('No speech detected');
         } catch (e) {
-          if (!cancelledRef.current) {
+          // An abort is a cancel, not a failure worth a red banner.
+          if (!unmountedRef.current && !abort.signal.aborted) {
             onError?.(`Transcription failed: ${e instanceof Error ? e.message : String(e)}`);
           }
         } finally {
-          if (!cancelledRef.current) setState('idle');
+          if (uploadAbortRef.current === abort) uploadAbortRef.current = null;
+          // cancel() has already put us back to idle; don't race it.
+          if (!unmountedRef.current && !abort.signal.aborted) setState('idle');
         }
       };
 
@@ -134,7 +169,7 @@ export function useVoiceInput(
     } catch (e) {
       recorderRef.current = null;
       stopTracks();
-      if (cancelledRef.current) return;
+      if (unmountedRef.current) return;
       const err = e as { name?: string; message?: string };
       let msg = `Mic error: ${err?.name || ''} ${err?.message || e}`.trim();
       if (err?.name === 'InsecureContextError') msg = 'Mic needs HTTPS.';
@@ -163,10 +198,60 @@ export function useVoiceInput(
     }
   }, []);
 
+  /**
+   * Suspends capture, keeping the take. The mic track is deliberately left
+   * live: stopping it would end the browser's "recording" indicator, but
+   * resuming would need a fresh getUserMedia, which re-prompts on some
+   * browsers and starts a second MediaRecorder that cannot append to the first.
+   */
+  const pause = useCallback(() => {
+    const rec = recorderRef.current;
+    if (rec && rec.state === 'recording' && typeof rec.pause === 'function') {
+      rec.pause();
+      setState('paused');
+    }
+  }, []);
+
+  const resume = useCallback(() => {
+    const rec = recorderRef.current;
+    if (rec && rec.state === 'paused' && typeof rec.resume === 'function') {
+      rec.resume();
+      setState('recording');
+    }
+  }, []);
+
+  /**
+   * Throws the take away. Works from every non-idle state: while recording or
+   * paused it stops the recorder and marks the resulting `onstop` as a discard;
+   * while transcribing it aborts the upload in flight.
+   */
+  const cancel = useCallback(() => {
+    const abort = uploadAbortRef.current;
+    if (abort) {
+      abort.abort();
+      uploadAbortRef.current = null;
+    }
+
+    const rec = recorderRef.current;
+    if (rec && rec.state !== 'inactive') {
+      discardRef.current = true;
+      sendRef.current = false;
+      rec.stop();
+      // `onstop` clears the chunks and returns to idle.
+      return;
+    }
+
+    chunksRef.current = [];
+    sendRef.current = false;
+    discardRef.current = false;
+    stopTracks();
+    setState('idle');
+  }, []);
+
   const toggle = useCallback(() => {
-    if (state === 'recording') stop();
+    if (state === 'recording' || state === 'paused') stop();
     else if (state === 'idle') start();
   }, [state, start, stop]);
 
-  return { state, toggle, stop };
+  return { state, toggle, stop, pause, resume, cancel, canPause };
 }
