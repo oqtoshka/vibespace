@@ -142,7 +142,8 @@ export default function SidebarActivityList({
             )}
             onClick={() => onSelectSession({ session, project, isUnread, isRunning })}
           >
-            {/* Unread marker — stopped + unread rows are the ones floated to top. */}
+            {/* Unread marker. Ordering is strictly by recency — this dot is the
+                only thing that distinguishes an unread row, it does not move it. */}
             <span className="mt-1.5 flex h-2 w-2 flex-shrink-0 items-center justify-center">
               {isUnread && !isRunning && (
                 <span className="h-2 w-2 rounded-full bg-primary" aria-label={t('activity.unread', 'Unread')} />

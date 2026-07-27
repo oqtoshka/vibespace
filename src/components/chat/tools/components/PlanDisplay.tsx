@@ -14,6 +14,7 @@ import {
   Shimmer,
 } from '../../../../shared/view/ui';
 import { usePermission } from '../../../../contexts/PermissionContext';
+import type { PermissionMode } from '../../types/types';
 
 import { MarkdownContent } from './ContentRenderers';
 
@@ -43,9 +44,29 @@ export const PlanDisplay: React.FC<PlanDisplayProps> = ({
     (r) => r.toolName === 'ExitPlanMode' || r.toolName === 'exit_plan_mode'
   );
 
+  // Approving ExitPlanMode ends plan mode, so the runtime needs to be told what
+  // to run as from here on. It used to be told nothing and fell back to
+  // `default`, which silently discarded a mode the user had already picked:
+  // switch to bypassPermissions while the plan is up, press Build, and the
+  // build phase would start prompting for every tool.
+  //
+  // The composer's mode is that choice. If it is still `plan` — the user never
+  // touched it — `default` is the honest landing spot, and the composer is
+  // moved off `plan` too so the pill matches what the session is actually doing.
   const handleBuild = () => {
-    if (pendingRequest && permissionCtx) {
-      permissionCtx.handlePermissionDecision(pendingRequest.requestId, { allow: true });
+    if (!pendingRequest || !permissionCtx) return;
+
+    const buildMode = permissionCtx.permissionMode === 'plan'
+      ? 'default'
+      : (permissionCtx.permissionMode as PermissionMode);
+
+    permissionCtx.handlePermissionDecision(pendingRequest.requestId, {
+      allow: true,
+      permissionMode: buildMode,
+    });
+
+    if (permissionCtx.permissionMode === 'plan') {
+      permissionCtx.setPermissionMode('default');
     }
   };
 
