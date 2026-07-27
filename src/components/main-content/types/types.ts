@@ -76,6 +76,11 @@ export type MainContentProps = {
   onCloseSessionPane: () => void;
   sessionPaneWidth: number | null;
   onSessionPaneWidthChange: (width: number) => void;
+  /**
+   * Fired when the one-pane-at-a-time switch (mobile/tablet widths) changes
+   * which pane is showing, so the drawer can follow it to the matching list.
+   */
+  onMobilePaneChange?: (pane: 'session' | 'files') => void;
 };
 
 export type MainContentHeaderProps = {

@@ -78,6 +78,7 @@ function ChatInterface({
     opencodeModel,
     setOpenCodeModel,
     permissionMode,
+    setPermissionMode,
     pendingPermissionRequests,
     setPendingPermissionRequests,
     cyclePermissionMode,
@@ -298,7 +299,9 @@ function ChatInterface({
   const permissionContextValue = useMemo(() => ({
     pendingPermissionRequests,
     handlePermissionDecision,
-  }), [pendingPermissionRequests, handlePermissionDecision]);
+    permissionMode,
+    setPermissionMode,
+  }), [pendingPermissionRequests, handlePermissionDecision, permissionMode, setPermissionMode]);
 
   const { activeWorktree } = useActiveWorktree(selectedProject?.projectId ?? null);
   const { tasks: backgroundTasks, runningCount: backgroundRunningCount } = useBackgroundTasks(
