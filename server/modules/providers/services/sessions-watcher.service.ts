@@ -124,6 +124,20 @@ function queuePendingWatcherUpdate(
 }
 
 /**
+ * Broadcasts a `session_upserted` for one session without a file change behind
+ * it.
+ *
+ * The watcher's own trigger is the transcript file moving on disk. A recap is
+ * generated after the turn is over and written straight to the database, so
+ * nothing on disk changes and no client would ever hear about it. This pushes
+ * the same delta the watcher would have.
+ */
+export function broadcastSessionUpdate(sessionId: string): void {
+  if (!sessionId) return;
+  queuePendingWatcherUpdate('change', 'claude', sessionId);
+}
+
+/**
  * Builds one `session_upserted` delta event for a provider-native session id.
  *
  * The event carries everything a sidebar needs to upsert the session in place
@@ -151,6 +165,9 @@ async function buildSessionUpsertedEvent(updatedProviderSessionId: string): Prom
     session: {
       id: row.session_id,
       summary: row.custom_name || '',
+      // The longer background-generated description, shown in the session pane
+      // header. Empty until the first recap for this session has been written.
+      recap: row.recap || '',
       messageCount: 0,
       lastActivity: row.updated_at ?? row.created_at ?? new Date().toISOString(),
     },
