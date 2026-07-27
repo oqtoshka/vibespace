@@ -212,6 +212,21 @@ const mergeProjectSessionPage = (
   return mergedProject;
 };
 
+/**
+ * Whether a projects refresh is safe to apply while a run is in flight.
+ *
+ * The thing worth protecting is the session you are looking at: if a refresh
+ * arrives without it — mid-index, a project page that hasn't caught up — taking
+ * it would yank the open session out from under an active run.
+ *
+ * It used to also reject any refresh in which the selected session's title or
+ * `updated_at` had moved, which is the opposite of what you want: those are
+ * exactly the refreshes carrying news. A session goes active the moment you
+ * send its first message, so from then on every update that renamed it (the
+ * derived title arriving) or added a sibling row was discarded — the pane
+ * header sat on "New session" and the new row was missing from the drawer until
+ * a reload rebuilt the list from scratch.
+ */
 const isUpdateAdditive = (
   currentProjects: Project[],
   updatedProjects: Project[],
@@ -222,30 +237,14 @@ const isUpdateAdditive = (
     return true;
   }
 
-  const currentSelectedProject = currentProjects.find((project) => project.projectId === selectedProject.projectId);
   const updatedSelectedProject = updatedProjects.find((project) => project.projectId === selectedProject.projectId);
-
-  if (!currentSelectedProject || !updatedSelectedProject) {
+  if (!updatedSelectedProject) {
     return false;
   }
 
-  const currentSelectedSession = getProjectSessions(currentSelectedProject).find(
-    (session) => session.id === selectedSession.id,
-  );
-  const updatedSelectedSession = getProjectSessions(updatedSelectedProject).find(
-    (session) => session.id === selectedSession.id,
-  );
-
-  if (!currentSelectedSession || !updatedSelectedSession) {
-    return false;
-  }
-
-  return (
-    currentSelectedSession.id === updatedSelectedSession.id &&
-    currentSelectedSession.title === updatedSelectedSession.title &&
-    currentSelectedSession.created_at === updatedSelectedSession.created_at &&
-    currentSelectedSession.updated_at === updatedSelectedSession.updated_at
-  );
+  // Present in the incoming list is the whole test. Its title/timestamps are
+  // free to differ — that is the update doing its job.
+  return getProjectSessions(updatedSelectedProject).some((session) => session.id === selectedSession.id);
 };
 
 const PROJECTS_CACHE_KEY = 'projects-cache-v1';

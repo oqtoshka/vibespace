@@ -202,6 +202,17 @@ function AppContentInner() {
     // On desktop the button toggles between the two views.
     setSidebarView(sidebarView === 'files' ? 'sessions' : 'files');
   }, [isMobile, setSidebarOpen, setSidebarView, sidebarView]);
+  // At mobile/tablet widths the main area shows one pane at a time and the
+  // sidebar is a drawer. Keep the two in step: picking Files should leave the
+  // drawer on the file tree, picking Session on the session list, so opening
+  // the drawer never lands on the list belonging to the pane you just left.
+  const handleMobilePaneChange = useCallback(
+    (pane: 'session' | 'files') => {
+      setSidebarView(pane === 'files' ? 'files' : 'sessions');
+    },
+    [setSidebarView],
+  );
+
   const {
     tabs: workspaceTabs,
     activeId,
@@ -429,6 +440,7 @@ function AppContentInner() {
           onCloseSessionPane={() => sessionPane.setOpen(false)}
           sessionPaneWidth={sessionPane.width}
           onSessionPaneWidthChange={sessionPane.setWidth}
+          onMobilePaneChange={handleMobilePaneChange}
         />
       </div>
 

@@ -104,6 +104,8 @@ type ChatWebSocketDependencies = {
       updatedInput?: unknown;
       message?: string;
       rememberEntry?: unknown;
+      /** ExitPlanMode only: mode to run in once plan mode ends. */
+      permissionMode?: string;
     }
   ) => void;
   /** Claude-only today: pending tool approvals included in `chat_subscribed`. */
@@ -733,6 +735,10 @@ function handlePermissionResponse(data: AnyRecord, dependencies: ChatWebSocketDe
     updatedInput: data.updatedInput,
     message: typeof data.message === 'string' ? data.message : undefined,
     rememberEntry: data.rememberEntry,
+    // Carried only by an ExitPlanMode approval: the mode the session should run
+    // in now that plan mode is over. Without it the runtime falls back to
+    // `default` and ignores a bypassPermissions the user had already selected.
+    permissionMode: typeof data.permissionMode === 'string' ? data.permissionMode : undefined,
   });
 }
 

@@ -1276,6 +1276,31 @@ function makeCanUseTool(session, sdkOptions, emitNotification) {
           sdkOptions.disallowedTools = sdkOptions.disallowedTools.filter(entry => entry !== decision.rememberEntry);
         }
       }
+
+      // Approving ExitPlanMode ends plan mode, and the runtime picks `default`
+      // on its own unless told otherwise — so a bypassPermissions the user
+      // selected while reading the plan was dropped the moment they hit Build,
+      // and the build phase prompted for every tool. The client sends the mode
+      // to continue in with that approval; apply it before allowing, so the
+      // very first tool of the build phase already sees it.
+      //
+      // Both gates matter, as in the mid-session switch in resumePersistentSession:
+      // this callback reads sdkOptions.permissionMode, and setPermissionMode
+      // moves the SDK's own permission step.
+      if (requiresInteraction && typeof decision.permissionMode === 'string' && decision.permissionMode) {
+        try {
+          if (sdkOptions.permissionMode !== decision.permissionMode) {
+            sdkOptions.permissionMode = decision.permissionMode;
+            if (session.instance?.setPermissionMode) {
+              await session.instance.setPermissionMode(decision.permissionMode);
+            }
+          }
+        } catch (error) {
+          // A failed switch must not turn an approved plan into a denied tool.
+          console.warn(`setPermissionMode after ${toolName} approval failed:`, error?.message || error);
+        }
+      }
+
       return { behavior: 'allow', updatedInput: decision.updatedInput ?? input };
     }
 
