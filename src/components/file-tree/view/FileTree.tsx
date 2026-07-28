@@ -132,15 +132,21 @@ export default function FileTree({ selectedProject, isActive = true, onFileOpen 
           error?: string;
           moved?: unknown[];
           failed?: Array<{ path: string; error: string }>;
+          unchanged?: unknown[];
         };
         if (!response.ok) {
           throw new Error(data.error || 'Failed to move');
         }
         const failed = data.failed ?? [];
+        const count = data.moved?.length ?? 0;
         if (failed.length > 0) {
           showToast(failed.map((f) => f.error)[0] + (failed.length > 1 ? ` (+${failed.length - 1} more)` : ''), 'error');
+        } else if (count === 0) {
+          // Same-parent drop: the server reports it as unchanged, not moved.
+          // Say so — a green "Moved 1 item" for a no-op drag sends the user
+          // hunting for a folder that never left.
+          showToast(t('fileTree.toast.moveNoop', 'Already there — nothing was moved'), 'success');
         } else {
-          const count = data.moved?.length ?? roots.length;
           showToast(t('fileTree.toast.moved', 'Moved {{count}} item(s)', { count }), 'success');
         }
         refreshFiles();
