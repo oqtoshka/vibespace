@@ -10,7 +10,7 @@ import type {
   SetStateAction,
   TouchEvent,
 } from 'react';
-import { useDropzone } from 'react-dropzone';
+import { useDropzone, type FileRejection } from 'react-dropzone';
 
 import { authenticatedFetch } from '../../../utils/api';
 import { downscaleImageFiles } from '../../../utils/imageDownscale';
@@ -105,8 +105,35 @@ const MAX_QUEUED_MESSAGES = 20;
 // (3s) plus a subscribe/snapshot round-trip so live sends don't false-restore.
 const PENDING_SEND_GRACE_MS = 10_000;
 
+/**
+ * Turns a failed attachment upload into something a user can act on. A reverse
+ * proxy rejecting an oversized body answers with an HTML 413 rather than the
+ * API's JSON error shape, so the status has to carry the message on its own.
+ */
+async function describeUploadFailure(response: Response): Promise<string> {
+  if (response.status === 413) {
+    return 'The server rejected the attachment as too large (HTTP 413). A reverse proxy body limit is likely lower than the app cap.';
+  }
+
+  const body = await response.text().catch(() => '');
+  try {
+    const parsed = JSON.parse(body) as { error?: string };
+    if (parsed?.error) {
+      return parsed.error;
+    }
+  } catch {
+    // Non-JSON body (proxy error page); fall through to the status.
+  }
+
+  return `Upload failed (HTTP ${response.status})`;
+}
+
 // Attachment caps — mirrored by the server's upload-images endpoint limits.
-const MAX_ATTACHMENT_MB = 20;
+// Non-image attachments are never inlined into the prompt (the provider gets a
+// path and reads the file with its own tools), so the ceiling is about what the
+// reverse proxy and disk can take, not about context size. Matched to the file
+// tree's upload cap so both entry points refuse the same files.
+const MAX_ATTACHMENT_MB = 200;
 const MAX_ATTACHMENT_BYTES = MAX_ATTACHMENT_MB * 1024 * 1024;
 const MAX_ATTACHMENT_COUNT = 10;
 
@@ -541,37 +568,66 @@ export function useChatComposerState({
     lastAutosizedInputRef.current = target.value;
   }, []);
 
+  /**
+   * Reports files that never became attachments. This has to be a chat error
+   * bubble rather than the `imageErrors` map: that map is keyed by filename and
+   * only rendered next to an accepted attachment's chip, so a refused file has
+   * nowhere to show it and the refusal reads as "nothing happened".
+   */
+  const reportRejectedAttachments = useCallback(
+    (reasons: string[]) => {
+      const unique = [...new Set(reasons)];
+      if (unique.length === 0) {
+        return;
+      }
+      addMessage({
+        type: 'error',
+        content: unique.join('\n'),
+        timestamp: new Date(),
+      });
+    },
+    [addMessage],
+  );
+
   // Any file type is attachable (claude reads them from temp paths, opencode
   // takes them via `-f`); oversized images still get downscaled before upload.
-  const handleImageFiles = useCallback((files: File[]) => {
-    const validFiles = files.filter((file) => {
-      try {
-        if (!file || typeof file !== 'object') {
-          console.warn('Invalid file object:', file);
-          return false;
-        }
+  const handleImageFiles = useCallback(
+    (files: File[]) => {
+      const rejections: string[] = [];
+      const validFiles = files.filter((file) => {
+        try {
+          if (!file || typeof file !== 'object') {
+            console.warn('Invalid file object:', file);
+            return false;
+          }
 
-        if (!file.size || file.size > MAX_ATTACHMENT_BYTES) {
           const fileName = file.name || 'Unknown file';
-          setImageErrors((previous) => {
-            const next = new Map(previous);
-            next.set(fileName, `File too large (max ${MAX_ATTACHMENT_MB}MB)`);
-            return next;
-          });
+
+          if (!file.size) {
+            rejections.push(`${fileName} is empty and was not attached.`);
+            return false;
+          }
+
+          if (file.size > MAX_ATTACHMENT_BYTES) {
+            rejections.push(`${fileName} is larger than ${MAX_ATTACHMENT_MB}MB and was not attached.`);
+            return false;
+          }
+
+          return true;
+        } catch (error) {
+          console.error('Error validating file:', error, file);
           return false;
         }
+      });
 
-        return true;
-      } catch (error) {
-        console.error('Error validating file:', error, file);
-        return false;
+      reportRejectedAttachments(rejections);
+
+      if (validFiles.length > 0) {
+        setAttachedImages((previous) => [...previous, ...validFiles].slice(0, MAX_ATTACHMENT_COUNT));
       }
-    });
-
-    if (validFiles.length > 0) {
-      setAttachedImages((previous) => [...previous, ...validFiles].slice(0, MAX_ATTACHMENT_COUNT));
-    }
-  }, []);
+    },
+    [reportRejectedAttachments],
+  );
 
   const handlePaste = useCallback(
     (event: ClipboardEvent<HTMLTextAreaElement>) => {
@@ -594,10 +650,33 @@ export function useChatComposerState({
     [handleImageFiles],
   );
 
+  // onDrop's first argument is the ACCEPTED files only — dropzone filters
+  // anything violating maxSize/maxFiles into the second argument. Ignoring that
+  // list is what made an oversized attachment vanish without a word.
+  const handleDroppedFiles = useCallback(
+    (accepted: File[], rejected: FileRejection[]) => {
+      handleImageFiles(accepted);
+      reportRejectedAttachments(
+        rejected.map(({ file, errors }) => {
+          const fileName = file.name || 'Unknown file';
+          switch (errors[0]?.code) {
+            case 'file-too-large':
+              return `${fileName} is larger than ${MAX_ATTACHMENT_MB}MB and was not attached.`;
+            case 'too-many-files':
+              return `You can attach up to ${MAX_ATTACHMENT_COUNT} files at once.`;
+            default:
+              return `${fileName} was not attached: ${errors[0]?.message || 'unsupported file'}`;
+          }
+        }),
+      );
+    },
+    [handleImageFiles, reportRejectedAttachments],
+  );
+
   const { getRootProps, getInputProps, isDragActive, open } = useDropzone({
     maxSize: MAX_ATTACHMENT_BYTES,
     maxFiles: MAX_ATTACHMENT_COUNT,
-    onDrop: handleImageFiles,
+    onDrop: handleDroppedFiles,
     noClick: true,
     noKeyboard: true,
   });
@@ -683,7 +762,7 @@ export function useChatComposerState({
           body: formData,
         });
         if (!response.ok) {
-          throw new Error('Failed to upload images');
+          throw new Error(await describeUploadFailure(response));
         }
         const result = await response.json();
         return result.images;
