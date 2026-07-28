@@ -1618,6 +1618,7 @@ app.post('/api/projects/:projectId/files/move', authenticateToken, async (req, r
 
         const moved = [];
         const failed = [];
+        const unchanged = [];
         for (const sourcePath of sourcePaths) {
             const validation = validatePathInProject(projectRoot, String(sourcePath));
             if (!validation.valid) {
@@ -1628,8 +1629,11 @@ app.post('/api/projects/:projectId/files/move', authenticateToken, async (req, r
             const destination = path.join(resolvedTargetDir, path.basename(resolvedSource));
 
             if (destination === resolvedSource) {
-                // Dropped into its own parent — nothing to do.
-                moved.push({ from: resolvedSource, to: destination });
+                // Dropped into its own parent — nothing to do. Reported apart
+                // from `moved` so the UI doesn't announce a move that never
+                // happened (a near-miss drag reading "Moved 1 item" sends the
+                // user hunting for a folder that never left).
+                unchanged.push({ path: sourcePath });
                 continue;
             }
             if (resolvedTargetDir === resolvedSource || resolvedTargetDir.startsWith(resolvedSource + path.sep)) {
@@ -1663,7 +1667,7 @@ app.post('/api/projects/:projectId/files/move', authenticateToken, async (req, r
             }
         }
 
-        res.json({ success: failed.length === 0, moved, failed });
+        res.json({ success: failed.length === 0, moved, failed, unchanged });
     } catch (error) {
         console.error('Error moving files:', error);
         res.status(500).json({ error: error.message });
