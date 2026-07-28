@@ -129,11 +129,21 @@ VIBESPACE_MODE=multi VS_MANAGER_PORT=7000 VS_MANAGER_JWT_SECRET=dev \
   vibespace manager
 ```
 
+## Share links
+
+Public share links (`/api/share/:shareId/…`) carry no identity, so there is no
+session to route them by. The manager asks instead: on a cache miss it probes
+every enabled worker's `/api/share/:shareId/meta` and forwards to the one that
+answers 200 (or 410 — the link is real, its file is gone). Ownership is fixed
+at mint time, so a hit is cached; expiry and revocation are still decided by
+the owning worker on every request.
+
+The shareId is 24 random bytes and is itself the capability, so offering it to
+each worker discloses nothing its holder does not already have. A share no
+worker claims gets the same 404 the owning worker would have returned.
+
 ## Limitations
 
-- Public share links (`/api/share/…`) are routed by session cookie, so a link
-  opened by someone who is not its creator cannot be resolved. Cross-tenant
-  sharing needs the creator id in the URL.
 - `/api/agent` (API-key auth) and browser-use MCP bridges authenticate with
   schemes the manager does not understand; those clients must reach a worker
   directly on the internal network.
