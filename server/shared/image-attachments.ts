@@ -28,6 +28,15 @@ export type ImageAttachmentDescriptor = {
   mimeType?: string;
 };
 
+/**
+ * Ceiling for base64-inlining an image into a Claude message. Attachments may
+ * be as large as the upload cap (200MB), and reading one of those into a ~4/3
+ * sized base64 string would exhaust memory for a request the API would reject
+ * anyway. Anything above this is handed over as a path instead, like a non-image
+ * attachment. Set at the old upload cap so nothing that used to inline stopped.
+ */
+const MAX_INLINE_IMAGE_BYTES = 20 * 1024 * 1024;
+
 /** Media types the Claude Messages API accepts for base64 image blocks. */
 const CLAUDE_IMAGE_MEDIA_TYPES = new Set([
   'image/jpeg',
@@ -298,6 +307,14 @@ export async function buildClaudeUserContent(
       const canonicalPath = await fs.realpath(resolvedPath);
       if (!isAllowedImageSourcePath(canonicalPath, cwd)) {
         console.warn(`[Images] Refusing to read symlinked image outside allowed roots: ${descriptor.path}`);
+        continue;
+      }
+
+      const { size } = await fs.stat(canonicalPath);
+      if (size > MAX_INLINE_IMAGE_BYTES) {
+        fileReferences.push(
+          descriptor.name ? `${resolvedPath} (original name: ${descriptor.name})` : resolvedPath,
+        );
         continue;
       }
 

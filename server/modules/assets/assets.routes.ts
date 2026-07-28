@@ -31,11 +31,13 @@ const storage = multer.diskStorage({
 // paths (images become native image inputs, everything else a read-this-file
 // note), so nothing in the pipeline is image-specific anymore. Caps mirrored
 // client-side (MAX_ATTACHMENT_MB / MAX_ATTACHMENT_COUNT in the composer).
+const MAX_ATTACHMENT_COUNT = 10;
+
 const upload = multer({
   storage,
   limits: {
-    fileSize: 20 * 1024 * 1024, // 20MB
-    files: 10,
+    fileSize: 200 * 1024 * 1024, // 200MB
+    files: MAX_ATTACHMENT_COUNT,
   },
 });
 
@@ -45,7 +47,7 @@ const upload = multer({
  * chat history.
  */
 router.post('/images', (req, res) => {
-  upload.array('images', 5)(req, res, (err: unknown) => {
+  upload.array('images', MAX_ATTACHMENT_COUNT)(req, res, (err: unknown) => {
     if (err) {
       const message = err instanceof Error ? err.message : 'Upload failed';
       return res.status(400).json({ error: message });
