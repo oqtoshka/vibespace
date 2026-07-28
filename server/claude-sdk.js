@@ -155,6 +155,21 @@ function cancelPendingApprovalsForSession(sessionId) {
   return cancelled;
 }
 
+/**
+ * Whether the session is parked on a permission prompt the user has not
+ * answered yet. Such a session looks idle from the outside — no output, no
+ * running job — but the thing it is waiting for is the user, so the reapers
+ * must not treat the quiet as abandonment.
+ * @param {string} sessionId
+ * @returns {boolean}
+ */
+function hasPendingApprovalsForSession(sessionId) {
+  for (const [, resolver] of pendingToolApprovals.entries()) {
+    if (resolver._sessionId === sessionId) return true;
+  }
+  return false;
+}
+
 // Match stored permission entries against a tool + input combo.
 // This only supports exact tool names and the Bash(command:*) shorthand
 // used by the UI; it intentionally does not implement full glob semantics,
@@ -870,6 +885,17 @@ function endSession(session, reason = 'ended') {
     clearTimeout(session.maxLifetimeTimer);
     session.maxLifetimeTimer = null;
   }
+  // Settle any outstanding prompt BEFORE closing the stream it arrived on.
+  // Closing first strands the CLI's permission request mid-flight, and it
+  // reports the opaque "Tool permission stream closed before response
+  // received"; resolving first turns the same teardown into an ordinary
+  // "Permission request cancelled" and lets the client clear the prompt.
+  if (session.sessionId) {
+    const cancelled = cancelPendingApprovalsForSession(session.sessionId);
+    if (cancelled > 0) {
+      console.log(`[claude bg] session ${session.sessionId}: cancelled ${cancelled} pending approval(s) during ${reason}`);
+    }
+  }
   try { session.input.close(); } catch { /* noop */ }
   if (session.turnActive && session.instance?.interrupt) {
     session.instance.interrupt().catch((err) => {
@@ -901,6 +927,15 @@ function armMaxLifetimeTimer(session) {
       armMaxLifetimeTimer(session);
       return;
     }
+    // Same reasoning as the background-job extension above: a question the user
+    // has not come back to yet is outstanding work, not a leak. Interactive
+    // prompts wait indefinitely by design, and a user who steps away for longer
+    // than the cap should still find their question answerable.
+    if (hasPendingApprovalsForSession(session.sessionId)) {
+      console.log(`[claude bg] session ${session.sessionId}: max-lifetime reached with an unanswered permission prompt — extending`);
+      armMaxLifetimeTimer(session);
+      return;
+    }
     endSession(session, 'max-lifetime');
   }, SESSION_MAX_LIFETIME_MS);
   // Don't let the cap timer keep the process alive / block shutdown.
@@ -918,6 +953,26 @@ function armIdleTimer(session) {
       // A job slipped in between the result and this firing — keep alive.
       return;
     }
+
+    // Last line of defence against a stale arm. The timer is armed when a turn
+    // settles and cleared when the next one starts, but those two events race:
+    // a background job's auto-resume opens the next turn from the message
+    // stream, while the previous turn's `result` — which arms the timer — can
+    // arrive after it. Assistant output then re-arms `awaitingResult` without
+    // clearing the timer, so the session ends up mid-turn with a live reaper
+    // pointed at it, and five minutes later gets torn down under a running
+    // turn. The visible damage was an unanswered AskUserQuestion: closing the
+    // input stream drops the CLI's permission request, which surfaces in the
+    // transcript as "Tool permission stream closed before response received"
+    // and reads, on reopening the session, as though the user had declined.
+    //
+    // Re-arm rather than return so a session that really is finished still
+    // gets reaped on the next tick.
+    if (session.awaitingResult || session.turnActive || hasPendingApprovalsForSession(session.sessionId)) {
+      armIdleTimer(session);
+      return;
+    }
+
     endSession(session, 'idle-timeout');
   }, SESSION_IDLE_TIMEOUT_MS);
   // Don't let an idle session keep the process alive / block shutdown.
