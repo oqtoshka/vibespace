@@ -12,6 +12,7 @@ import { loadManagerConfig } from './config.js';
 import { createResolver } from './resolvers/index.js';
 import { createBackend } from './backends/index.js';
 import { buildProxyHeaders, proxyHttpRequest, proxyUpgrade } from './proxy.js';
+import { createShareOwnerIndex, shareIdFromPath } from './share-owners.js';
 import { installStaticHandlers } from './static-files.js';
 
 /**
@@ -36,9 +37,10 @@ const RUNNING_VERSION = (() => {
  * preview-iframe subresources, telemetry, and the API-key surfaces. They still
  * need routing to *a* worker, so they fall back to the session cookie.
  *
- * Known limitation: a share link opened by someone who isn't logged in as its
- * creator cannot be routed and will 401. Cross-tenant sharing needs the creator
- * id in the URL, which is a separate change.
+ * `/api/share/` is the exception: it is routed by asking the workers which one
+ * owns the shareId (see share-owners.js), so a link works for anyone holding
+ * it — logged out, or logged in as a different tenant. The others have no such
+ * handle and remain session-routed.
  */
 const PUBLIC_WORKER_PATHS = [
   '/api/share/',
@@ -72,6 +74,7 @@ export async function startManager(env = process.env) {
   const config = loadManagerConfig(env);
   const resolver = createResolver(config.authKind, config);
   const backend = createBackend(config.backendKind, config);
+  const shareOwners = createShareOwnerIndex({ links: config.links });
 
   const app = express();
   const server = http.createServer(app);
@@ -105,7 +108,22 @@ export async function startManager(env = process.env) {
     }
 
     let identity;
-    if (isPublicWorkerPath(url.pathname)) {
+    const shareId = shareIdFromPath(url.pathname);
+    if (shareId) {
+      const { userId, conclusive } = await shareOwners.findOwner(shareId);
+      if (userId) {
+        identity = { userId, link: config.links.get(userId) };
+      } else if (!conclusive) {
+        // A worker stayed silent, so we cannot tell an unknown share from one
+        // whose owner was too busy to answer. Saying "invalid or expired" here
+        // would brand a live link dead.
+        return res.status(503).json({ error: 'Worker unavailable' });
+      } else {
+        // Every worker answered and none claims it. Reply exactly as the owning
+        // worker would have, so a revoked link and an unknown one look alike.
+        return res.status(404).json({ error: 'This link is invalid or has expired' });
+      }
+    } else if (isPublicWorkerPath(url.pathname)) {
       const session = resolver.resolveSessionCookie(req);
       identity = session || { error: 'unauthenticated' };
     } else {
