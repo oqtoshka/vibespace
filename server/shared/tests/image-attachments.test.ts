@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, symlink, truncate, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -204,6 +204,31 @@ test('buildClaudeUserContent hands non-image types over as file references and d
     assert.ok(note.includes('attached the following file(s)'));
     assert.ok(note.includes(path.join(tempDir, 'vector.svg')));
     assert.ok(!note.includes('missing.png'));
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('buildClaudeUserContent references oversized images by path instead of inlining them', async () => {
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), 'image-attachments-'));
+  try {
+    const hugePath = path.join(tempDir, 'huge.png');
+    await writeFile(hugePath, PNG_BYTES);
+    // Sparse file: only the reported size matters, the bytes are never read.
+    await truncate(hugePath, 21 * 1024 * 1024);
+
+    const content = await buildClaudeUserContent(
+      'prompt',
+      [{ path: 'huge.png', mimeType: 'image/png' }],
+      tempDir,
+    );
+
+    assert.equal(content.length, 2);
+    assert.deepEqual(content[0], { type: 'text', text: 'prompt' });
+    assert.equal(content[1].type, 'text');
+    const note = (content[1] as { type: 'text'; text: string }).text;
+    assert.ok(note.includes('attached the following file(s)'));
+    assert.ok(note.includes(hugePath));
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }
