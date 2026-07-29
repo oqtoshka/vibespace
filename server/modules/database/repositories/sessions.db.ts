@@ -16,12 +16,13 @@ type SessionRow = {
   recap: string | null;
   recap_message_count: number | null;
   isArchived: number;
+  is_side: number;
   created_at: string;
   updated_at: string;
 };
 
 const SESSION_ROW_COLUMNS =
-  'session_id, provider, provider_session_id, project_path, jsonl_path, worktree_path, custom_name, name_source, recap, recap_message_count, isArchived, created_at, updated_at';
+  'session_id, provider, provider_session_id, project_path, jsonl_path, worktree_path, custom_name, name_source, recap, recap_message_count, isArchived, is_side, created_at, updated_at';
 
 const SQLITE_UTC_TIMESTAMP_REGEX = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
 
@@ -182,18 +183,50 @@ export const sessionsDb = {
    * stays NULL until the provider runtime announces its own id and
    * `assignProviderSessionId` records the mapping.
    */
-  createAppSession(sessionId: string, provider: string, projectPath: string): string {
+  createAppSession(
+    sessionId: string,
+    provider: string,
+    projectPath: string,
+    isSide = false,
+  ): string {
     const db = getConnection();
     const normalizedProjectPath = normalizeProjectPathForProvider(provider, projectPath);
 
     projectsDb.createProjectPath(normalizedProjectPath);
 
     db.prepare(
-      `INSERT INTO sessions (session_id, provider, provider_session_id, custom_name, name_source, project_path, jsonl_path, isArchived, created_at, updated_at)
-       VALUES (?, ?, NULL, NULL, NULL, ?, NULL, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
-    ).run(sessionId, provider, normalizedProjectPath);
+      `INSERT INTO sessions (session_id, provider, provider_session_id, custom_name, name_source, project_path, jsonl_path, isArchived, is_side, created_at, updated_at)
+       VALUES (?, ?, NULL, NULL, NULL, ?, NULL, 0, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
+    ).run(sessionId, provider, normalizedProjectPath, isSide ? 1 : 0);
 
     return sessionId;
+  },
+
+  /**
+   * Turns a `/btw` side session into an ordinary one — the "branch out" action.
+   *
+   * Nothing but the flag changes: the provider session, its transcript and the
+   * whole question-and-answer exchange are already real, so the promoted
+   * session simply appears in the sidebar and resumes where the btw left off.
+   * A title is stamped as 'derived' so the row does not show up unnamed, but
+   * only when the session has no name yet — a provider-generated or
+   * user-chosen title always wins.
+   */
+  promoteSideSession(sessionId: string, fallbackName?: string): boolean {
+    const db = getConnection();
+    const result = db
+      .prepare(
+        `UPDATE sessions
+         SET is_side = 0,
+             custom_name = COALESCE(custom_name, ?),
+             name_source = CASE WHEN custom_name IS NULL AND ? IS NOT NULL
+                                THEN 'derived' ELSE name_source END,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE session_id = ? AND is_side = 1`
+      )
+      .run(fallbackName ?? null, fallbackName ?? null, sessionId);
+
+    return result.changes > 0;
   },
 
   /**
@@ -344,6 +377,7 @@ export const sessionsDb = {
            AND project_path = ?
            AND provider_session_id IS NULL
            AND isArchived = 0
+           AND is_side = 0
          ORDER BY datetime(COALESCE(updated_at, created_at)) DESC, session_id DESC
          LIMIT 1`
       )
@@ -391,7 +425,8 @@ export const sessionsDb = {
         `SELECT ${SESSION_ROW_COLUMNS}
          FROM sessions
          WHERE project_path = ?
-           AND isArchived = 0`
+           AND isArchived = 0
+           AND is_side = 0`
       )
       .all(normalizedProjectPath) as SessionRow[];
 
@@ -425,6 +460,7 @@ export const sessionsDb = {
          FROM sessions
          WHERE project_path = ?
            AND isArchived = 0
+           AND is_side = 0
          ORDER BY datetime(COALESCE(updated_at, created_at)) DESC, session_id DESC
          LIMIT ? OFFSET ?`
       )
@@ -441,7 +477,8 @@ export const sessionsDb = {
         `SELECT COUNT(*) AS count
          FROM sessions
          WHERE project_path = ?
-           AND isArchived = 0`
+           AND isArchived = 0
+           AND is_side = 0`
       )
       .get(normalizedProjectPath) as { count: number } | undefined;
 

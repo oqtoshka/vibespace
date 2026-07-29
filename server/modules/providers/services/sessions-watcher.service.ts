@@ -148,7 +148,11 @@ export function broadcastSessionUpdate(sessionId: string): void {
 async function buildSessionUpsertedEvent(updatedProviderSessionId: string): Promise<string | null> {
   const row = sessionsDb.getSessionByProviderSessionId(updatedProviderSessionId)
     ?? sessionsDb.getSessionById(updatedProviderSessionId);
-  if (!row || row.isArchived) {
+  // `is_side` rows back a `/btw` question and are deliberately absent from the
+  // session lists, so announcing one would put it in the sidebar by the back
+  // door — the very thing the flag exists to prevent. Promoting the session
+  // clears the flag and the next change event announces it normally.
+  if (!row || row.isArchived || row.is_side) {
     return null;
   }
 
