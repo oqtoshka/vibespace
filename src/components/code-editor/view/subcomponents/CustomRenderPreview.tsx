@@ -1,5 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
+
 import { api } from '../../../../utils/api';
+import PreviewShell from '../../../preview/PreviewShell';
+import { usePreviewFullscreen } from '../../../preview/usePreviewFullscreen';
 
 /**
  * Previews a custom-format source file (e.g. a `*.flow.json` flow spec) by
@@ -25,6 +28,7 @@ export default function CustomRenderPreview({ content, projectId, path, onFileOp
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
+  const { isFullscreen, toggleFullscreen } = usePreviewFullscreen();
 
   // The rendered output postMessages cross-flow link clicks; open the target
   // file in vibespace. Scoped to this preview's iframe so multiple open flow
@@ -89,7 +93,7 @@ export default function CustomRenderPreview({ content, projectId, path, onFileOp
   }
 
   return (
-    <div className="h-full w-full bg-white">
+    <PreviewShell zoomable isFullscreen={isFullscreen} onToggleFullscreen={toggleFullscreen}>
       {html !== null ? (
         <iframe
           ref={iframeRef}
@@ -101,6 +105,6 @@ export default function CustomRenderPreview({ content, projectId, path, onFileOp
       ) : (
         <div className="flex h-full items-center justify-center text-sm text-gray-400">Rendering…</div>
       )}
-    </div>
+    </PreviewShell>
   );
 }

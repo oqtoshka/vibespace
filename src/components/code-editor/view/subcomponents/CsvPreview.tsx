@@ -1,5 +1,9 @@
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { Maximize2, Minimize2 } from 'lucide-react';
+
+import PreviewControlButton from '../../../preview/PreviewControlButton';
+import { usePreviewFullscreen } from '../../../preview/usePreviewFullscreen';
 
 type CsvPreviewProps = {
   content: string;
@@ -88,6 +92,7 @@ const NUMERIC_PATTERN = /^-?\d+(?:[.,]\d+)?%?$/;
 export default function CsvPreview({ content, fileName }: CsvPreviewProps) {
   const { t } = useTranslation('codeEditor');
   const [showAll, setShowAll] = useState(false);
+  const { isFullscreen, toggleFullscreen } = usePreviewFullscreen();
 
   const { header, rows, columnCount, totalRows } = useMemo(() => {
     const delimiter = sniffDelimiter(content, fileName);
@@ -114,20 +119,35 @@ export default function CsvPreview({ content, fileName }: CsvPreviewProps) {
   }
 
   return (
-    <div className="flex h-full flex-col bg-background">
-      <div className="flex items-center justify-between border-b border-border/60 px-3 py-1.5 text-xs text-muted-foreground">
+    <div
+      className={
+        // Wide tables are the whole reason to expand: fullscreen buys columns.
+        isFullscreen
+          ? 'fixed inset-0 z-[10000] flex flex-col bg-background'
+          : 'flex h-full flex-col bg-background'
+      }
+    >
+      <div className="flex items-center justify-between gap-2 border-b border-border/60 px-3 py-1.5 text-xs text-muted-foreground">
         <span>
           {t('csv.summary', '{{rows}} rows × {{cols}} columns', { rows: totalRows, cols: columnCount })}
         </span>
-        {truncated && (
-          <button
-            type="button"
-            onClick={() => setShowAll(true)}
-            className="rounded px-2 py-0.5 transition-colors hover:bg-accent hover:text-foreground"
+        <div className="flex items-center gap-1">
+          {truncated && (
+            <button
+              type="button"
+              onClick={() => setShowAll(true)}
+              className="rounded px-2 py-0.5 transition-colors hover:bg-accent hover:text-foreground"
+            >
+              {t('csv.showAll', 'Showing first {{count}} — show all', { count: MAX_RENDERED_ROWS })}
+            </button>
+          )}
+          <PreviewControlButton
+            title={isFullscreen ? 'Exit fullscreen (Esc)' : 'Fullscreen'}
+            onClick={toggleFullscreen}
           >
-            {t('csv.showAll', 'Showing first {{count}} — show all', { count: MAX_RENDERED_ROWS })}
-          </button>
-        )}
+            {isFullscreen ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
+          </PreviewControlButton>
+        </div>
       </div>
       <div className="flex-1 overflow-auto">
         <table className="w-max min-w-full border-collapse text-xs">

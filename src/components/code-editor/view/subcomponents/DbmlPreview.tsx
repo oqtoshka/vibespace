@@ -1,10 +1,9 @@
 import DOMPurify from 'dompurify';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Maximize, Minus, Plus, RotateCcw } from 'lucide-react';
-import { TransformWrapper, TransformComponent } from 'react-zoom-pan-pinch';
-import type { ReactZoomPanPinchRef } from 'react-zoom-pan-pinch';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { api } from '../../../../utils/api';
+import DiagramCanvas from '../../../preview/DiagramCanvas';
+import { usePreviewFullscreen } from '../../../preview/usePreviewFullscreen';
 
 /**
  * Renders a DBML source file as an ER diagram, mirroring the PlantUML preview.
@@ -14,9 +13,8 @@ import { api } from '../../../../utils/api';
  * `content` so unsaved edits preview. The returned SVG is sanitized with
  * DOMPurify before being injected.
  *
- * The SVG sits inside a react-zoom-pan-pinch canvas: wheel/pinch zoom, drag to
- * pan, plus explicit controls. On every (re)render the diagram is fitted to
- * the pane, so large schemas open fully visible instead of top-left cropped.
+ * The SVG sits in a shared `DiagramCanvas`: wheel/pinch zoom, drag to pan, and
+ * expand to fullscreen.
  */
 
 type DbmlPreviewProps = {
@@ -26,38 +24,13 @@ type DbmlPreviewProps = {
 };
 
 const RENDER_DEBOUNCE_MS = 400;
-const MIN_SCALE = 0.05;
-const MAX_SCALE = 6;
-
-function ZoomControlButton({
-  onClick,
-  title,
-  children,
-}: {
-  onClick: () => void;
-  title: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      title={title}
-      aria-label={title}
-      className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-    >
-      {children}
-    </button>
-  );
-}
 
 export default function DbmlPreview({ content, projectId, path }: DbmlPreviewProps) {
   const [svg, setSvg] = useState<string | null>(null);
   const [status, setStatus] = useState<'loading' | 'loaded' | 'error'>('loading');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
-  const transformRef = useRef<ReactZoomPanPinchRef | null>(null);
-  const diagramRef = useRef<HTMLDivElement | null>(null);
+  const { isFullscreen, toggleFullscreen } = usePreviewFullscreen();
 
   useEffect(() => {
     if (!projectId || !content.trim()) {
@@ -102,22 +75,6 @@ export default function DbmlPreview({ content, projectId, path }: DbmlPreviewPro
     [svg],
   );
 
-  const fitToView = useCallback(() => {
-    const wrapper = transformRef.current;
-    const diagram = diagramRef.current;
-    if (wrapper && diagram) {
-      wrapper.zoomToElement(diagram, undefined, 200);
-    }
-  }, []);
-
-  // Fit whenever a fresh diagram lands (initial open and live re-renders):
-  // zoomToElement needs the new SVG's layout, so run after paint.
-  useEffect(() => {
-    if (status !== 'loaded' || !sanitizedSvg) return;
-    const frame = requestAnimationFrame(() => fitToView());
-    return () => cancelAnimationFrame(frame);
-  }, [fitToView, sanitizedSvg, status]);
-
   if (status === 'error') {
     return (
       <div className="flex h-full items-start justify-center overflow-auto bg-background p-6">
@@ -139,50 +96,19 @@ export default function DbmlPreview({ content, projectId, path }: DbmlPreviewPro
   }
 
   return (
-    <div className="relative h-full overflow-hidden bg-background">
-      <TransformWrapper
-        ref={transformRef}
-        minScale={MIN_SCALE}
-        maxScale={MAX_SCALE}
-        limitToBounds={false}
-        centerOnInit
-        doubleClick={{ mode: 'toggle' }}
-        wheel={{ step: 0.15 }}
-        panning={{ velocityDisabled: true }}
-      >
-        <TransformComponent wrapperClass="!h-full !w-full" contentClass="">
-          {sanitizedSvg && (
-            <div
-              ref={diagramRef}
-              className="inline-block rounded-lg bg-white p-4 shadow-sm ring-1 ring-gray-200 dark:ring-gray-700"
-              // eslint-disable-next-line react/no-danger
-              dangerouslySetInnerHTML={{ __html: sanitizedSvg }}
-            />
-          )}
-        </TransformComponent>
-      </TransformWrapper>
-
-      {/* Zoom controls */}
-      <div className="absolute right-3 top-3 z-10 flex items-center gap-0.5 rounded-lg border border-border/60 bg-background/95 p-0.5 shadow-sm backdrop-blur">
-        <ZoomControlButton title="Zoom out" onClick={() => transformRef.current?.zoomOut(0.3)}>
-          <Minus className="h-3.5 w-3.5" />
-        </ZoomControlButton>
-        <ZoomControlButton title="Zoom in" onClick={() => transformRef.current?.zoomIn(0.3)}>
-          <Plus className="h-3.5 w-3.5" />
-        </ZoomControlButton>
-        <ZoomControlButton title="Fit to view" onClick={fitToView}>
-          <Maximize className="h-3.5 w-3.5" />
-        </ZoomControlButton>
-        <ZoomControlButton title="Reset zoom (100%)" onClick={() => transformRef.current?.resetTransform(200)}>
-          <RotateCcw className="h-3.5 w-3.5" />
-        </ZoomControlButton>
-      </div>
-
-      {status === 'loading' && (
-        <div className="pointer-events-none absolute left-3 top-3 z-10 rounded-md bg-background/90 px-2 py-1 text-xs text-muted-foreground shadow-sm">
-          Re-rendering…
-        </div>
+    <DiagramCanvas
+      fitKey={sanitizedSvg}
+      note={status === 'loading' ? 'Re-rendering…' : null}
+      isFullscreen={isFullscreen}
+      onToggleFullscreen={toggleFullscreen}
+    >
+      {sanitizedSvg && (
+        <div
+          className="inline-block rounded-lg bg-white p-4 shadow-sm ring-1 ring-gray-200 dark:ring-gray-700"
+           
+          dangerouslySetInnerHTML={{ __html: sanitizedSvg }}
+        />
       )}
-    </div>
+    </DiagramCanvas>
   );
 }

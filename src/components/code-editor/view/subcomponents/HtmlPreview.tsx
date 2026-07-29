@@ -1,6 +1,9 @@
 import { useEffect, useState } from 'react';
+
 import { api } from '../../../../utils/api';
 import { useFileDiskVersion } from '../../../../hooks/useFileDiskVersion';
+import PreviewShell from '../../../preview/PreviewShell';
+import { usePreviewFullscreen } from '../../../preview/usePreviewFullscreen';
 
 /**
  * Renders an HTML file as a live page, mirroring the markdown/PlantUML preview.
@@ -27,6 +30,7 @@ export default function HtmlPreview({ projectId, path }: HtmlPreviewProps) {
   const [entryUrl, setEntryUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const diskVersion = useFileDiskVersion(projectId, path);
+  const { isFullscreen, toggleFullscreen } = usePreviewFullscreen();
 
   useEffect(() => {
     if (!projectId || !path) {
@@ -71,7 +75,7 @@ export default function HtmlPreview({ projectId, path }: HtmlPreviewProps) {
   }
 
   return (
-    <div className="h-full w-full bg-white">
+    <PreviewShell zoomable isFullscreen={isFullscreen} onToggleFullscreen={toggleFullscreen}>
       {entryUrl && (
         <iframe
           key={entryUrl}
@@ -81,6 +85,6 @@ export default function HtmlPreview({ projectId, path }: HtmlPreviewProps) {
           className="h-full w-full border-0"
         />
       )}
-    </div>
+    </PreviewShell>
   );
 }

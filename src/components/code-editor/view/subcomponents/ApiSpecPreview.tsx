@@ -1,5 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
+
 import type { ApiSpecKind } from '../../utils/apiSpec';
+import PreviewShell from '../../../preview/PreviewShell';
+import { usePreviewFullscreen } from '../../../preview/usePreviewFullscreen';
 
 /**
  * Renders an OpenAPI/Swagger or AsyncAPI document with the standard viewers
@@ -88,6 +91,7 @@ export default function ApiSpecPreview({ content, kind }: ApiSpecPreviewProps) {
   // Rebuilding srcDoc reloads the whole viewer, so debounce live edits harder
   // than the image-based previews.
   const [debouncedContent, setDebouncedContent] = useState(content);
+  const { isFullscreen, toggleFullscreen } = usePreviewFullscreen();
 
   useEffect(() => {
     const handle = setTimeout(() => setDebouncedContent(content), RENDER_DEBOUNCE_MS);
@@ -101,13 +105,17 @@ export default function ApiSpecPreview({ content, kind }: ApiSpecPreviewProps) {
 
   // The viewers draw for a light canvas; the surrounding chrome follows the theme.
   return (
-    <div className="h-full w-full bg-background">
+    <PreviewShell
+      isFullscreen={isFullscreen}
+      onToggleFullscreen={toggleFullscreen}
+      className="bg-background"
+    >
       <iframe
         title={kind === 'asyncapi' ? 'AsyncAPI preview' : 'OpenAPI preview'}
         srcDoc={srcDoc}
         sandbox="allow-scripts allow-popups"
         className="h-full w-full border-0 bg-white"
       />
-    </div>
+    </PreviewShell>
   );
 }
