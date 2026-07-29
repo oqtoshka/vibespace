@@ -5,6 +5,7 @@ import path from 'node:path';
 import { projectsDb, sessionsDb } from '@/modules/database/index.js';
 import { chatRunRegistry } from '@/modules/websocket/index.js';
 import { providerRegistry } from '@/modules/providers/provider.registry.js';
+import { broadcastSessionUpdate } from '@/modules/providers/services/sessions-watcher.service.js';
 import type {
   FetchHistoryOptions,
   FetchHistoryResult,
@@ -18,6 +19,7 @@ type CreateAppSessionResult = {
   sessionId: string;
   provider: LLMProvider;
   projectPath: string;
+  isSide: boolean;
 };
 
 type ArchivedSessionListItem = {
@@ -120,8 +122,15 @@ export const sessionsService = {
    * chat, navigates to the returned id immediately, and the id never changes
    * for the lifetime of the conversation. The provider-native id is mapped to
    * this row later, when the provider runtime announces it mid-run.
+   *
+   * `isSide` allocates the session for a `/btw` question instead: identical in
+   * every way, but kept out of the session lists until it is promoted.
    */
-  createAppSession(provider: LLMProvider, projectPath: string): CreateAppSessionResult {
+  createAppSession(
+    provider: LLMProvider,
+    projectPath: string,
+    isSide = false,
+  ): CreateAppSessionResult {
     const normalizedProjectPath = projectPath.trim();
     if (!normalizedProjectPath) {
       throw new AppError('projectPath is required.', {
@@ -131,13 +140,45 @@ export const sessionsService = {
     }
 
     const sessionId = randomUUID();
-    sessionsDb.createAppSession(sessionId, provider, normalizedProjectPath);
+    sessionsDb.createAppSession(sessionId, provider, normalizedProjectPath, isSide);
 
     return {
       sessionId,
       provider,
       projectPath: normalizedProjectPath,
+      isSide,
     };
+  },
+
+  /**
+   * Branches a `/btw` side session out into an ordinary one.
+   *
+   * The exchange already happened against a real provider session, so there is
+   * nothing to replay or re-ask: clearing the flag is the whole operation and
+   * the user continues the conversation with its context intact.
+   */
+  promoteSideSession(sessionId: string, fallbackName?: string): { sessionId: string } {
+    const session = sessionsDb.getSessionById(sessionId);
+    if (!session) {
+      throw new AppError(`Session "${sessionId}" was not found.`, {
+        code: 'SESSION_NOT_FOUND',
+        statusCode: 404,
+      });
+    }
+
+    // Promoting an already-promoted session is a no-op rather than an error:
+    // the button can be clicked twice, and the desired end state is the same.
+    const promoted = sessionsDb.promoteSideSession(sessionId, fallbackName);
+
+    // Side sessions are suppressed from the watcher's broadcasts, so the
+    // sidebar has never heard of this one. Announce it now that it is an
+    // ordinary session, or it would stay invisible until the next full
+    // project refetch — right as the user is being navigated to it.
+    if (promoted) {
+      broadcastSessionUpdate(sessionId);
+    }
+
+    return { sessionId };
   },
 
   /**

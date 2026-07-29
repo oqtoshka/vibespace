@@ -68,6 +68,12 @@ interface UseChatComposerStateArgs {
   onInputFocusChange?: (focused: boolean) => void;
   onFileOpen?: (filePath: string, diffInfo?: unknown) => void;
   onShowSettings?: () => void;
+  /**
+   * Opens the `/btw` side panel for a quick question. Handled by the consumer
+   * because the exchange runs against its own session, entirely outside this
+   * composer's conversation.
+   */
+  onBtwCommand?: (question: string) => void;
   scrollToBottom: () => void;
   addMessage: (msg: ChatMessage) => void;
   setIsUserScrolledUp: (isScrolledUp: boolean) => void;
@@ -256,6 +262,7 @@ export function useChatComposerState({
   onInputFocusChange,
   onFileOpen,
   onShowSettings,
+  onBtwCommand,
   scrollToBottom,
   addMessage,
   setIsUserScrolledUp,
@@ -353,6 +360,14 @@ export function useChatComposerState({
           onShowSettings?.();
           break;
 
+        case 'btw': {
+          // Never goes through runSubmit: the whole point is that this question
+          // does not enter the visible conversation or its provider run.
+          const question = typeof data?.question === 'string' ? data.question : '';
+          onBtwCommand?.(question);
+          break;
+        }
+
         case 'passthrough': {
           // Provider-native command (e.g. /compact): send it verbatim as the
           // next prompt — the provider CLI executes it itself.
@@ -367,7 +382,7 @@ export function useChatComposerState({
           console.warn('Unknown built-in command action:', action);
       }
     },
-    [onFileOpen, onShowSettings, addMessage],
+    [onFileOpen, onShowSettings, onBtwCommand, addMessage],
   );
 
   const closeCommandModal = useCallback(() => {

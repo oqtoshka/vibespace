@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ArrowDownIcon, TreePine } from 'lucide-react';
 
@@ -13,6 +13,7 @@ import { useChatSessionState } from '../hooks/useChatSessionState';
 import { useChatRealtimeHandlers } from '../hooks/useChatRealtimeHandlers';
 import { useChatComposerState } from '../hooks/useChatComposerState';
 import { useBackgroundTasks } from '../hooks/useBackgroundTasks';
+import { useBtwSession } from '../hooks/useBtwSession';
 import { useSubagents } from '../hooks/useSubagents';
 import { BackgroundTasksProvider } from '../context/BackgroundTasksContext';
 import { useSessionStore } from '../../../stores/useSessionStore';
@@ -20,6 +21,7 @@ import { useSessionStore } from '../../../stores/useSessionStore';
 import ChatMessagesPane from './subcomponents/ChatMessagesPane';
 import ChatComposer from './subcomponents/ChatComposer';
 import CommandResultModal from './subcomponents/CommandResultModal';
+import BtwPanel from './subcomponents/BtwPanel';
 
 function ChatInterface({
   selectedProject,
@@ -47,7 +49,9 @@ function ChatInterface({
 
   const sessionStore = useSessionStore();
   const streamTimerRef = useRef<number | null>(null);
-  const accumulatedStreamRef = useRef('');
+  // Streamed text per session id — several sessions can stream into this one
+  // socket at a time (a background run, or a `/btw` side session).
+  const accumulatedStreamRef = useRef(new Map<string, string>());
   // When each session's `chat.subscribe` was last sent; idle acks older than
   // a later local request are discarded as stale.
   const statusCheckSentAtRef = useRef(new Map<string, number>());
@@ -61,7 +65,7 @@ function ChatInterface({
       clearTimeout(streamTimerRef.current);
       streamTimerRef.current = null;
     }
-    accumulatedStreamRef.current = '';
+    accumulatedStreamRef.current.clear();
   }, []);
 
   const {
@@ -154,6 +158,52 @@ function ChatInterface({
     onNavigateToSession?.(sessionId);
   }, [setCurrentSessionId, onSessionEstablished, onNavigateToSession]);
 
+  const { activeWorktree } = useActiveWorktree(selectedProject?.projectId ?? null);
+
+  // `/btw` — a quick question answered in its own side session, so the turn
+  // running in this conversation is neither interrupted nor queued behind.
+  // It follows the visible session's working directory so answers are about
+  // the tree the user is actually looking at.
+  const [isBtwOpen, setIsBtwOpen] = useState(false);
+  const btwCwd =
+    (selectedSession?.worktreePath as string | null | undefined)
+    || activeWorktree?.path
+    || selectedProject?.fullPath
+    || selectedProject?.path
+    || '';
+  const btwModel = provider === 'cursor'
+    ? cursorModel
+    : provider === 'codex'
+      ? codexModel
+      : provider === 'opencode'
+        ? opencodeModel
+        : claudeModel;
+  const btw = useBtwSession({
+    selectedProject,
+    provider,
+    model: btwModel,
+    cwd: btwCwd,
+  });
+  const { ask: askBtw } = btw;
+
+  const handleBtwCommand = useCallback(
+    (question: string) => {
+      setIsBtwOpen(true);
+      // `/btw` with no question just opens the panel to type in.
+      if (question.trim()) {
+        void askBtw(question);
+      }
+    },
+    [askBtw],
+  );
+
+  const handleBtwBranchOut = useCallback(async () => {
+    const promotedSessionId = await btw.promote();
+    if (!promotedSessionId) return;
+    setIsBtwOpen(false);
+    onNavigateToSession?.(promotedSessionId);
+  }, [btw, onNavigateToSession]);
+
   const {
     input,
     setInput,
@@ -225,6 +275,7 @@ function ChatInterface({
     onInputFocusChange,
     onFileOpen,
     onShowSettings,
+    onBtwCommand: handleBtwCommand,
     scrollToBottom,
     addMessage,
     setIsUserScrolledUp,
@@ -303,7 +354,6 @@ function ChatInterface({
     setPermissionMode,
   }), [pendingPermissionRequests, handlePermissionDecision, permissionMode, setPermissionMode]);
 
-  const { activeWorktree } = useActiveWorktree(selectedProject?.projectId ?? null);
   const { tasks: backgroundTasks, runningCount: backgroundRunningCount } = useBackgroundTasks(
     chatMessages,
     isProcessing,
@@ -535,6 +585,20 @@ function ChatInterface({
         onHardRefreshProviderModels={hardRefreshProviderModels}
         currentSessionId={currentSessionId || selectedSession?.id || null}
         onSelectProviderModel={selectProviderModel}
+      />
+
+      <BtwPanel
+        isOpen={isBtwOpen}
+        onClose={() => setIsBtwOpen(false)}
+        exchanges={btw.exchanges}
+        isStreaming={btw.isStreaming}
+        canPromote={btw.canPromote}
+        isPromoted={btw.isPromoted}
+        onAsk={btw.ask}
+        onAbort={btw.abort}
+        onBranchOut={handleBtwBranchOut}
+        projectId={selectedProject?.projectId ?? null}
+        projectPath={selectedProject?.fullPath || selectedProject?.path || null}
       />
       </BackgroundTasksProvider>
     </PermissionContext.Provider>
