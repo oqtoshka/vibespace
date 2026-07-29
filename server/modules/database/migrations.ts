@@ -450,6 +450,26 @@ const addSessionRecap = (db: Database): void => {
   addColumnToTableIfNotExists(db, 'sessions', columnNames, 'recap_message_count', 'INTEGER');
 };
 
+/**
+ * Marks sessions that back a `/btw` side question rather than a conversation
+ * the user opened deliberately.
+ *
+ * A side session is a real session in every respect — same provider, same
+ * project, resumable — it is just kept out of the session lists so a throwaway
+ * question does not litter the sidebar. Promoting one (the "branch out"
+ * action) clears the flag and nothing else, which is why this is a flag on the
+ * existing row instead of a separate table. Existing rows default to 0: every
+ * session that predates `/btw` was, by definition, opened deliberately.
+ */
+const addSessionIsSide = (db: Database): void => {
+  if (!tableExists(db, 'sessions')) {
+    return;
+  }
+
+  const columnNames = getTableInfo(db, 'sessions').map((column) => column.name);
+  addColumnToTableIfNotExists(db, 'sessions', columnNames, 'is_side', 'INTEGER DEFAULT 0');
+};
+
 const ensureProjectsForSessionPaths = (db: Database): void => {
   if (!tableExists(db, 'sessions')) {
     return;
@@ -503,6 +523,7 @@ export const runMigrations = (db: Database) => {
     addProviderSessionIdMapping(db);
     addSessionNameSource(db);
     addSessionRecap(db);
+    addSessionIsSide(db);
     ensureProjectsForSessionPaths(db);
 
     db.exec('CREATE INDEX IF NOT EXISTS idx_session_ids_lookup ON sessions(session_id)');

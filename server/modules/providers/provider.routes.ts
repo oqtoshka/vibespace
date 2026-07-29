@@ -535,8 +535,27 @@ router.post(
     const body = (req.body ?? {}) as Record<string, unknown>;
     const provider = parseProvider(body.provider);
     const projectPath = typeof body.projectPath === 'string' ? body.projectPath : '';
-    const result = sessionsService.createAppSession(provider, projectPath);
+    // `side: true` allocates the session behind a `/btw` question — same
+    // gateway, same lifecycle, just hidden from the session lists until the
+    // user branches it out.
+    const isSide = body.side === true;
+    const result = sessionsService.createAppSession(provider, projectPath, isSide);
     res.status(201).json(createApiSuccessResponse(result));
+  }),
+);
+
+/**
+ * Branches a `/btw` side session out into an ordinary session, so the quick
+ * question the user just asked can be carried on as a real conversation.
+ */
+router.post(
+  '/sessions/:sessionId/promote',
+  asyncHandler(async (req: Request, res: Response) => {
+    const sessionId = parseSessionId(req.params.sessionId);
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const name = typeof body.name === 'string' && body.name.trim() ? body.name.trim() : undefined;
+    const result = sessionsService.promoteSideSession(sessionId, name);
+    res.json(createApiSuccessResponse(result));
   }),
 );
 
