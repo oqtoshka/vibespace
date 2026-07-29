@@ -1,7 +1,9 @@
 import { Download, Maximize2, Minimize2, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
+
 import { api } from '../../../../utils/api';
 import { useFileDiskVersion } from '../../../../hooks/useFileDiskVersion';
+import DiagramCanvas from '../../../preview/DiagramCanvas';
 import type { CodeEditorFile } from '../../types/types';
 
 type CodeEditorImageViewProps = {
@@ -28,6 +30,7 @@ export default function CodeEditorImageView({
   onToggleFullscreen,
 }: CodeEditorImageViewProps) {
   const [objectUrl, setObjectUrl] = useState<string | null>(null);
+  const [fittableUrl, setFittableUrl] = useState<string | null>(null);
   const [status, setStatus] = useState<'loading' | 'loaded' | 'error'>('loading');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const objectUrlRef = useRef<string | null>(null);
@@ -81,7 +84,7 @@ export default function CodeEditorImageView({
   };
 
   const body = (
-    <div className="relative h-full w-full overflow-auto bg-muted">
+    <div className="relative min-h-0 w-full flex-1 overflow-hidden bg-muted">
       {status === 'error' ? (
         <div className="flex h-full w-full items-center justify-center p-8 text-center text-sm text-muted-foreground">
           <div>
@@ -94,13 +97,16 @@ export default function CodeEditorImageView({
           Loading image…
         </div>
       ) : (
-        <div className="flex h-full w-full items-center justify-center p-4">
+        // Fullscreen lives in the header above, so the canvas only carries zoom.
+        // Fit waits for onLoad — an undecoded <img> measures zero.
+        <DiagramCanvas fitKey={fittableUrl} className="bg-muted">
           <img
             src={objectUrl ?? ''}
             alt={file.name}
-            className="max-h-full max-w-full object-contain"
+            className="max-w-none"
+            onLoad={() => setFittableUrl(objectUrl)}
           />
-        </div>
+        </DiagramCanvas>
       )}
     </div>
   );
