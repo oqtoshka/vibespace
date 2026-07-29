@@ -27,7 +27,16 @@ interface UseChatRealtimeHandlersArgs {
   pendingPermissionRequests: PendingPermissionRequest[];
   setPendingPermissionRequests: Dispatch<SetStateAction<PendingPermissionRequest[]>>;
   streamTimerRef: MutableRefObject<number | null>;
-  accumulatedStreamRef: MutableRefObject<string>;
+  /**
+   * Text streamed so far, per session id.
+   *
+   * Keyed rather than a single string because more than one session can stream
+   * into this one socket at a time — a background session, or the side session
+   * behind a `/btw` question, alongside the one on screen. A shared buffer
+   * would splice their deltas together and write the mixture to whichever
+   * session's delta happened to land last.
+   */
+  accumulatedStreamRef: MutableRefObject<Map<string, string>>;
   /**
    * Highest live `seq` observed per session. Essential for reconnect catch-up:
    * `chat.subscribe` sends this value as `lastSeq` so the server replays only
@@ -235,35 +244,36 @@ export function useChatRealtimeHandlers({
       // --- Streaming: buffer for performance ---
       if (msg.kind === 'stream_delta') {
         const text = (msg.content as string) || '';
-        if (!text) return;
-        accumulatedStreamRef.current += text;
+        if (!text || !sid) return;
+        const buffers = accumulatedStreamRef.current;
+        buffers.set(sid, (buffers.get(sid) ?? '') + text);
+        // One shared timer, but it flushes every session that has buffered
+        // text — each to its own store entry — so concurrent streams stay
+        // separate while still costing a single 100ms repaint.
         if (!streamTimerRef.current) {
           streamTimerRef.current = window.setTimeout(() => {
             streamTimerRef.current = null;
-            if (sid) {
-              sessionStore.updateStreaming(sid, accumulatedStreamRef.current, provider);
-            }
+            buffers.forEach((buffered, bufferedSessionId) => {
+              sessionStore.updateStreaming(bufferedSessionId, buffered, provider);
+            });
           }, 100);
         }
         // Also route to store for non-active sessions
-        if (sid && sid !== activeViewSessionId) {
+        if (sid !== activeViewSessionId) {
           sessionStore.appendRealtime(sid, msg as unknown as NormalizedMessage);
         }
         return;
       }
 
       if (msg.kind === 'stream_end') {
-        if (streamTimerRef.current) {
-          clearTimeout(streamTimerRef.current);
-          streamTimerRef.current = null;
-        }
         if (sid) {
-          if (accumulatedStreamRef.current) {
-            sessionStore.updateStreaming(sid, accumulatedStreamRef.current, provider);
+          const buffered = accumulatedStreamRef.current.get(sid);
+          if (buffered) {
+            sessionStore.updateStreaming(sid, buffered, provider);
           }
           sessionStore.finalizeStreaming(sid);
+          accumulatedStreamRef.current.delete(sid);
         }
-        accumulatedStreamRef.current = '';
         return;
       }
 
@@ -281,16 +291,16 @@ export function useChatRealtimeHandlers({
       // --- UI side effects for specific kinds ---
       switch (msg.kind) {
         case 'complete': {
-          // Flush any remaining streaming state
-          if (streamTimerRef.current) {
-            clearTimeout(streamTimerRef.current);
-            streamTimerRef.current = null;
+          // Flush whatever this session had buffered. Other sessions keep
+          // theirs: one run finishing says nothing about the rest.
+          if (sid) {
+            const buffered = accumulatedStreamRef.current.get(sid);
+            if (buffered) {
+              sessionStore.updateStreaming(sid, buffered, provider);
+              sessionStore.finalizeStreaming(sid);
+            }
+            accumulatedStreamRef.current.delete(sid);
           }
-          if (sid && accumulatedStreamRef.current) {
-            sessionStore.updateStreaming(sid, accumulatedStreamRef.current, provider);
-            sessionStore.finalizeStreaming(sid);
-          }
-          accumulatedStreamRef.current = '';
 
           // `complete` is the unified terminal event — every provider run ends
           // with exactly one, regardless of success, failure, or abort. The

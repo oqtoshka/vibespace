@@ -206,6 +206,13 @@ const builtInCommands = [
     metadata: { type: "builtin" },
   },
   {
+    name: "/btw",
+    description:
+      "Ask a quick side question without interrupting this session",
+    namespace: "builtin",
+    metadata: { type: "builtin" },
+  },
+  {
     name: "/compact",
     description: "Compact the conversation into a summary to free up context",
     namespace: "builtin",
@@ -236,6 +243,26 @@ const builtInCommands = [
  * Each handler returns { type: 'builtin', action: string, data: any }
  */
 const builtInHandlers = {
+  /**
+   * `/btw <question>` — a quick question that must not disturb the session the
+   * user is watching.
+   *
+   * The server only parses the question here. The work happens on the client,
+   * which opens a side session (`POST /api/providers/sessions` with
+   * `side: true`) and talks to it over the ordinary chat websocket. That
+   * indirection is the whole point: the question runs as its own provider run
+   * against its own session id, so the in-flight turn is neither interrupted
+   * nor queued behind, and it works the same for every provider because it
+   * goes through the same `chat.send` path they all already use.
+   */
+  "/btw": async (args) => ({
+    type: "builtin",
+    action: "btw",
+    data: {
+      question: args.join(" ").trim(),
+    },
+  }),
+
   // Provider-native commands: forwarded verbatim as the next prompt (the
   // Claude CLI/SDK executes them itself); listed here only so the command
   // menu knows about them.

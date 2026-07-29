@@ -132,6 +132,10 @@ CREATE TABLE IF NOT EXISTS sessions (
     jsonl_path TEXT,
     worktree_path TEXT,
     isArchived BOOLEAN DEFAULT 0,
+    -- 1 while this session only backs a \`/btw\` side question. Such a session is
+    -- real and resumable but stays out of the session lists; "branching out"
+    -- a btw clears the flag and the session becomes an ordinary one.
+    is_side INTEGER DEFAULT 0,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (session_id),
