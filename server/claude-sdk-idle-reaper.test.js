@@ -13,6 +13,7 @@ const {
   isClaudeSDKSessionAlive,
   getPendingApprovalsForSession,
   resolveToolApproval,
+  TOOL_APPROVAL_TIMEOUT_MS,
   __setClaudeQueryImpl,
 } = await import('./claude-sdk.js');
 
@@ -98,6 +99,69 @@ test('a turn still in flight is not reaped by an idle timer armed by the previou
       (msgs) => msgs.filter((m) => m.kind === 'complete').length >= 2,
       'second turn completes',
     );
+  } finally {
+    await abortClaudeSDKSession(sessionId).catch(() => {});
+    __setClaudeQueryImpl(null);
+  }
+});
+
+// Ordinary tool prompts (Bash, Edit, …) used to expire after 55s and return
+// deny, which the CLI reports to the model as "The user doesn't want to proceed
+// with this tool use". A user who simply wasn't looking at the tab came back to
+// a transcript claiming they had declined something they never saw — so no
+// permission prompt may answer itself, whatever the tool.
+test('an unanswered prompt for an ordinary tool never resolves into a deny', async () => {
+  const sessionId = 'approval-no-timeout-1';
+  const captured = {};
+
+  const fakeQuery = ({ prompt, options }) => {
+    const reader = prompt[Symbol.asyncIterator]();
+    const gen = (async function* () {
+      await reader.next();
+      captured.decision = options.canUseTool('Bash', { command: 'npx jest --silent' }, {});
+      yield resultMsg(sessionId);
+      await captured.answered;
+      yield resultMsg(sessionId);
+    })();
+    gen.interrupt = async () => {};
+    gen.setModel = async () => {};
+    gen.setPermissionMode = async () => {};
+    return gen;
+  };
+
+  let release;
+  captured.answered = new Promise((r) => { release = r; });
+
+  __setClaudeQueryImpl(fakeQuery);
+  const writer = makeRecordingWriter();
+
+  try {
+    await queryClaudeSDK('run the tests', { sessionId, ephemeral: false }, writer);
+
+    const request = writer.messages.find((m) => m.kind === 'permission_request');
+    assert.ok(request, 'the prompt should have reached the client');
+
+    // The real guard: no default deadline at all. A wall-clock wait can only
+    // prove the absence of a *short* timer, and the one that caused this was
+    // 55s — longer than any test should sit.
+    assert.equal(TOOL_APPROVAL_TIMEOUT_MS, 0, 'ordinary tool prompts must have no deadline by default');
+
+    // Belt and braces: nothing else in the wait settles it early either.
+    const sentinel = Symbol('unanswered');
+    const outcome = await Promise.race([
+      captured.decision,
+      delay(300).then(() => sentinel),
+    ]);
+    assert.equal(outcome, sentinel, 'the prompt must not answer itself');
+    assert.equal(getPendingApprovalsForSession(sessionId).length, 1, 'the prompt is still answerable');
+    assert.ok(
+      !writer.messages.some((m) => m.kind === 'permission_cancelled'),
+      'no cancellation should have been announced to the client',
+    );
+
+    resolveToolApproval(request.requestId, { allow: true });
+    assert.equal((await captured.decision).behavior, 'allow');
+    release();
   } finally {
     await abortClaudeSDKSession(sessionId).catch(() => {});
     __setClaudeQueryImpl(null);
