@@ -43,7 +43,15 @@ const pendingToolApprovals = new Map();
 // emit a second one when its generator winds down.
 const abortedSessionIds = new Set();
 
-const TOOL_APPROVAL_TIMEOUT_MS = parseInt(process.env.CLAUDE_TOOL_APPROVAL_TIMEOUT_MS, 10) || 55000;
+// 0 = a permission prompt waits indefinitely for a human. It used to expire
+// after 55s and return deny, which the CLI reports to the model as "The user
+// doesn't want to proceed with this tool use" — so a user who was simply not
+// looking at the tab came back to a transcript claiming they had declined
+// something they never saw. Nothing about the wait leaks: both reapers extend
+// the session while an approval is pending, teardown/abort settle the prompt
+// explicitly, and chat attach replays outstanding prompts to a returning
+// client. Set the env var to restore a bound.
+const TOOL_APPROVAL_TIMEOUT_MS = parseInt(process.env.CLAUDE_TOOL_APPROVAL_TIMEOUT_MS, 10) || 0;
 
 const TOOLS_REQUIRING_INTERACTION = new Set(['AskUserQuestion', 'ExitPlanMode']);
 
@@ -1404,6 +1412,9 @@ function makeCanUseTool(session, sdkOptions, emitNotification) {
     }));
 
     const decision = await waitForToolApproval(requestId, {
+      // Interactive prompts wait indefinitely even if the env var reinstates a
+      // bound for ordinary tools: there is no sane way to answer a question on
+      // the user's behalf.
       timeoutMs: requiresInteraction ? 0 : undefined,
       signal: context?.signal,
       metadata: {
@@ -2223,6 +2234,7 @@ export {
   resolveToolApproval,
   getPendingApprovalsForSession,
   reconnectSessionWriter,
+  TOOL_APPROVAL_TIMEOUT_MS,
   __setClaudeQueryImpl,
   __setRewindHistoryImpl
 };
