@@ -509,6 +509,19 @@ export function useChatComposerState({
     ],
   );
 
+  const showModelsModal = useCallback(() => {
+    executeCommand(
+      {
+        name: '/models',
+        description: 'View available models for the current provider',
+        namespace: 'builtin',
+        metadata: { type: 'builtin' },
+      } as SlashCommand,
+      '/models',
+      { preserveInput: true },
+    );
+  }, [executeCommand]);
+
   const showCostModal = useCallback(() => {
     executeCommand(
       {
@@ -1645,6 +1658,8 @@ export function useChatComposerState({
     commandModalPayload,
     closeCommandModal,
     showCostModal,
+    showModelsModal,
+    activeModel,
     rewindMessage,
     queuedMessages,
     removeQueuedMessage,

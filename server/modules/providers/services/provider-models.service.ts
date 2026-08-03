@@ -357,6 +357,45 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
     });
   };
 
+  /**
+   * The model this session's *next* turn will actually run on.
+   *
+   * Consulted in the same order the resume path itself uses: a picker override
+   * that has not been consumed by a turn yet, then the model the transcript
+   * shows the session last ran on, then the catalog default. The composer
+   * readout and the `/models` picker both resolve through here so they can
+   * never disagree about what is selected.
+   */
+  const resolveSessionActiveModel = async (
+    provider: LLMProvider,
+    sessionId?: string | null,
+  ): Promise<{ model: string; overridden: boolean }> => {
+    const normalizedSessionId = typeof sessionId === 'string' ? sessionId.trim() : '';
+
+    if (normalizedSessionId) {
+      try {
+        const changed = await getChangedActiveModel(provider, normalizedSessionId);
+        if (changed.changed && changed.model?.trim()) {
+          return { model: changed.model.trim(), overridden: true };
+        }
+      } catch {
+        // Fall through to the transcript-backed lookup.
+      }
+
+      try {
+        const current = await getCurrentActiveModel(provider, normalizedSessionId);
+        if (current?.model?.trim()) {
+          return { model: current.model.trim(), overridden: false };
+        }
+      } catch {
+        // Fall through to the catalog default.
+      }
+    }
+
+    const { models } = await getProviderModels(provider);
+    return { model: models.DEFAULT, overridden: false };
+  };
+
   const resolveResumeModel = async (
     provider: LLMProvider,
     sessionId: string | undefined,
@@ -400,6 +439,7 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
     getProviderModels,
     getCurrentActiveModel,
     getChangedActiveModel,
+    resolveSessionActiveModel,
     changeActiveModel,
     resolveResumeModel,
     clearCache,
