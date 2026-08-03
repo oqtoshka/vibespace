@@ -32,6 +32,31 @@ export const isValidRefreshedToken = (token) =>
   typeof token === 'string' &&
   /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(token);
 
+/**
+ * Collapses one rotation burst into a single token change.
+ *
+ * The server re-issues a token on every request made past its half-life, so a
+ * screenful of concurrent calls each come back with their OWN distinct new
+ * token. Applying all of them fanned a single rotation out into N `setToken`
+ * calls, and every consumer keyed on the token value re-ran for each — which
+ * is what made opening a session flash the loading screen several times.
+ *
+ * Dropping the extras is safe: the token they would replace is merely past
+ * half-life, not expired, and the first one accepted is fresh, so nothing
+ * rotates again until the next half-life.
+ */
+let lastAcceptedRotationAt = 0;
+const TOKEN_ROTATION_COLLAPSE_MS = 10000;
+
+const shouldApplyRefreshedToken = (refreshedToken) => {
+  if (!isValidRefreshedToken(refreshedToken)) return false;
+  if (refreshedToken === localStorage.getItem('auth-token')) return false;
+  const now = Date.now();
+  if (now - lastAcceptedRotationAt < TOKEN_ROTATION_COLLAPSE_MS) return false;
+  lastAcceptedRotationAt = now;
+  return true;
+};
+
 // Utility function for authenticated API calls
 export const authenticatedFetch = (url, options = {}) => {
   const token = localStorage.getItem('auth-token');
@@ -55,7 +80,7 @@ export const authenticatedFetch = (url, options = {}) => {
     },
   }).then(async (response) => {
     const refreshedToken = response.headers.get('X-Refreshed-Token');
-    if (isValidRefreshedToken(refreshedToken)) {
+    if (shouldApplyRefreshedToken(refreshedToken)) {
       persistAuthToken(refreshedToken);
       // Let AuthContext pick up the rotated token so consumers holding the
       // React copy (e.g. the WebSocket URL) don't keep using the stale one
