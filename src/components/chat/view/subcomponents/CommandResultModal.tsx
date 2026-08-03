@@ -632,7 +632,17 @@ export default function CommandResultModal({
           </Button>
         </div>
 
-        <div className="settings-content-enter min-h-0 flex-1 overflow-hidden px-4 py-4 sm:px-6 sm:py-5">
+        {/* Help and Models own their scrolling (each renders its own flex-1
+            scroller); Cost and Status are plain stacks, so the body has to
+            scroll for them or their last rows are clipped by the fixed
+            modal height. */}
+        <div
+          className={`settings-content-enter min-h-0 flex-1 px-4 py-4 sm:px-6 sm:py-5 ${
+            payload?.kind === 'cost' || payload?.kind === 'status'
+              ? 'scrollbar-thin overflow-y-auto'
+              : 'overflow-hidden'
+          }`}
+        >
           {payload?.kind === 'help' && <HelpContent data={payload.data as HelpCommandData} />}
           {payload?.kind === 'models' && (
             <ModelsContent
