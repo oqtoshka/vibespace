@@ -394,6 +394,16 @@ router.get(
   }),
 );
 
+router.get(
+  '/:provider/sessions/:sessionId/active-model',
+  asyncHandler(async (req: Request, res: Response) => {
+    const provider = parseProvider(req.params.provider);
+    const sessionId = parseSessionId(req.params.sessionId);
+    const active = await providerModelsService.resolveSessionActiveModel(provider, sessionId);
+    res.json(createApiSuccessResponse({ provider, sessionId, ...active }));
+  }),
+);
+
 router.post(
   '/:provider/sessions/:sessionId/active-model',
   asyncHandler(async (req: Request, res: Response) => {
