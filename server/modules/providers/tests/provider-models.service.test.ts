@@ -318,6 +318,53 @@ test('provider models service delegates active model change requests to the prov
   assert.equal(changedModel.model, 'opus');
 });
 
+test('resolveSessionActiveModel reports the override, the transcript model, then the default', async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'provider-active-model-'));
+  const activeModelChangesPath = path.join(tempRoot, 'session-model-changes.json');
+
+  try {
+    const service = createProviderModelsService({
+      cachePath: createEphemeralCachePath(),
+      activeModelChangesPath,
+      resolveProvider: (provider) => ({
+        models: {
+          getSupportedModels: async () => createModels(`${provider}-default`),
+          getCurrentActiveModel: async (sessionId) => createCurrentActiveModel(
+            sessionId ? `${provider}-${sessionId}` : `${provider}-default`,
+          ),
+          changeActiveModel: async (input) => createSessionActiveModelChange(provider, input),
+        },
+      }),
+    });
+
+    await writeProviderSessionActiveModelChange('claude', {
+      sessionId: 'session-pinned',
+      model: 'fable',
+    }, {
+      filePath: activeModelChangesPath,
+    });
+
+    // A picker change that no turn has consumed yet still outranks the
+    // transcript — that is the model the next turn will run on.
+    assert.deepEqual(
+      await service.resolveSessionActiveModel('claude', 'session-pinned'),
+      { model: 'fable', overridden: true },
+    );
+
+    assert.deepEqual(
+      await service.resolveSessionActiveModel('claude', 'session-plain'),
+      { model: 'claude-session-plain', overridden: false },
+    );
+
+    assert.deepEqual(
+      await service.resolveSessionActiveModel('claude', null),
+      { model: 'claude-default', overridden: false },
+    );
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test('resolveResumeModel prefers a stored changed model over the requested one', async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'provider-model-change-'));
   const activeModelChangesPath = path.join(tempRoot, 'session-model-changes.json');

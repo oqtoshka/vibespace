@@ -15,6 +15,7 @@ import { useChatComposerState } from '../hooks/useChatComposerState';
 import { useBackgroundTasks } from '../hooks/useBackgroundTasks';
 import { useBtwSession } from '../hooks/useBtwSession';
 import { useSubagents } from '../hooks/useSubagents';
+import { useSessionActiveModel } from '../hooks/useSessionActiveModel';
 import { BackgroundTasksProvider } from '../context/BackgroundTasksContext';
 import { useSessionStore } from '../../../stores/useSessionStore';
 
@@ -171,17 +172,39 @@ function ChatInterface({
     || selectedProject?.fullPath
     || selectedProject?.path
     || '';
-  const btwModel = provider === 'cursor'
+  // The provider's picker default — what a *new* conversation starts on.
+  const providerDefaultModel = provider === 'cursor'
     ? cursorModel
     : provider === 'codex'
       ? codexModel
       : provider === 'opencode'
         ? opencodeModel
         : claudeModel;
+  // The model the next turn will actually run on — shown in the composer
+  // toolbar and used for /btw side questions. An existing session can be
+  // pinned to something other than the picker default, and the server owns
+  // that override, so the default is only a fallback here.
+  const { activeModel: activeProviderModel, refresh: refreshActiveProviderModel } = useSessionActiveModel({
+    provider,
+    sessionId: currentSessionId || selectedSession?.id || null,
+    fallbackModel: providerDefaultModel,
+    isProcessing,
+  });
+
+  // Picking a model for a live session writes a server-side override rather
+  // than touching the picker default, so the readout has to be re-read.
+  const handleSelectProviderModel = useCallback<typeof selectProviderModel>(
+    async (targetProvider, model, sessionId) => {
+      const result = await selectProviderModel(targetProvider, model, sessionId);
+      refreshActiveProviderModel();
+      return result;
+    },
+    [selectProviderModel, refreshActiveProviderModel],
+  );
   const btw = useBtwSession({
     selectedProject,
     provider,
-    model: btwModel,
+    model: activeProviderModel,
     cwd: btwCwd,
   });
   const { ask: askBtw } = btw;
@@ -249,6 +272,7 @@ function ChatInterface({
     commandModalPayload,
     closeCommandModal,
     showCostModal,
+    showModelsModal,
     rewindMessage,
     queuedMessages,
     removeQueuedMessage,
@@ -511,6 +535,9 @@ function ChatInterface({
           tokenBudget={tokenBudget}
           contextUsage={contextUsage}
           onShowTokenUsage={showCostModal}
+          activeModel={activeProviderModel}
+          providerModelOptions={providerModelCatalog[provider]?.OPTIONS ?? []}
+          onShowModels={showModelsModal}
           backgroundTasks={backgroundTasks}
           backgroundRunningCount={backgroundRunningCount}
           subagents={subagents}
@@ -584,7 +611,7 @@ function ChatInterface({
         providerModelsRefreshing={providerModelsRefreshing}
         onHardRefreshProviderModels={hardRefreshProviderModels}
         currentSessionId={currentSessionId || selectedSession?.id || null}
-        onSelectProviderModel={selectProviderModel}
+        onSelectProviderModel={handleSelectProviderModel}
       />
 
       <BtwPanel
