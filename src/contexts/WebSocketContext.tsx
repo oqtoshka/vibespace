@@ -103,6 +103,26 @@ const useWebSocketProviderState = (): WebSocketContextType => {
   const [isConnected, setIsConnected] = useState(false);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const { token } = useAuth();
+  /**
+   * The token is read when a socket is *opened*, never while one is live — the
+   * server authenticates the upgrade and does not re-check the JWT afterwards.
+   * Keeping it in a ref is what lets the connect effect ignore rotation: the
+   * next connect (reconnect, re-login) still picks up the freshest value.
+   */
+  const tokenRef = useRef(token);
+  // Layout effects run before passive ones, so the ref is current by the time
+  // the connect effect below fires on the same render.
+  useLayoutEffect(() => {
+    tokenRef.current = token;
+  }, [token]);
+  // `authenticatedFetch` rotates the token once it passes half-life, and every
+  // response in flight at that moment carries its OWN new token — so a burst of
+  // concurrent requests used to produce a burst of `setToken` calls. Keyed on
+  // the token value, this effect tore down and rebuilt the socket for each one,
+  // and every reconnect dispatches `websocket_reconnected`, which makes
+  // subscribers re-fetch: the UI visibly reloaded itself several times over.
+  // Only the presence of a session can require a (dis)connect.
+  const isAuthenticated = Boolean(token);
 
   const dispatch = useCallback((event: ServerEvent) => {
     for (const listener of listenersRef.current) {
@@ -117,10 +137,13 @@ const useWebSocketProviderState = (): WebSocketContextType => {
 
   useEffect(() => {
     // The cleanup below sets unmountedRef = true. Without this reset, every
-    // re-run of the effect (e.g. on token refresh) would short-circuit connect()
-    // at its unmounted guard and leave the socket permanently disconnected.
+    // re-run of the effect (e.g. on login after a logout) would short-circuit
+    // connect() at its unmounted guard and leave the socket permanently
+    // disconnected.
     unmountedRef.current = false;
-    connect();
+    if (isAuthenticated) {
+      connect();
+    }
 
     return () => {
       unmountedRef.current = true;
@@ -131,13 +154,13 @@ const useWebSocketProviderState = (): WebSocketContextType => {
         wsRef.current.close();
       }
     };
-  }, [token]); // everytime token changes, we reconnect
+  }, [isAuthenticated]); // log in / log out — a rotated token reuses the live socket
 
   const connect = useCallback(() => {
     if (unmountedRef.current) return; // Prevent connection if unmounted
     try {
       // Construct WebSocket URL
-      const wsUrl = buildWebSocketUrl(token);
+      const wsUrl = buildWebSocketUrl(tokenRef.current);
 
       if (!wsUrl) return console.warn('No authentication token found for WebSocket connection');
 
@@ -199,7 +222,7 @@ const useWebSocketProviderState = (): WebSocketContextType => {
     } catch (error) {
       console.error('Error creating WebSocket connection:', error);
     }
-  }, [token, dispatch]); // everytime token changes, we reconnect
+  }, [dispatch]); // the token is read through tokenRef, so rotation can't churn this
 
   const sendMessage = useCallback((message: unknown) => {
     const socket = wsRef.current;

@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { IS_PLATFORM } from '../../../constants/config';
 import { api } from '../../../utils/api';
 import { clearAuthToken, persistAuthToken, readAuthToken } from '../../../utils/authToken';
@@ -33,6 +33,24 @@ export function AuthProvider({ children }: AuthProviderProps) {
   const [needsSetup, setNeedsSetup] = useState(false);
   const [hasCompletedOnboarding, setHasCompletedOnboarding] = useState(true);
   const [error, setError] = useState<string | null>(null);
+
+  /**
+   * Read inside `checkAuthStatus` instead of closing over `token`, so a rotated
+   * token does not rebuild that callback. Rebuilding it re-ran the effect that
+   * calls it, which flips `isLoading` and makes ProtectedRoute swap the whole
+   * app for the loading screen: the session view unmounted and remounted — a
+   * visible "refresh", several in a row, because a burst of concurrent requests
+   * each come back with their own X-Refreshed-Token.
+   */
+  const tokenRef = useRef(token);
+  // Layout effects run before passive ones, so the ref is current before any
+  // effect that reads it fires on the same render.
+  useLayoutEffect(() => {
+    tokenRef.current = token;
+  }, [token]);
+  // Only gaining or losing a session warrants re-validating; rotation does not
+  // change who is signed in.
+  const hasToken = Boolean(token);
 
   const setSession = useCallback((nextUser: AuthUser, nextToken: string) => {
     setUser(nextUser);
@@ -107,7 +125,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
 
       setNeedsSetup(false);
 
-      if (!token) {
+      if (!tokenRef.current) {
         return;
       }
 
@@ -131,7 +149,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
     } finally {
       setIsLoading(false);
     }
-  }, [checkOnboardingStatus, clearSession, token]);
+  }, [checkOnboardingStatus, clearSession]);
 
   useEffect(() => {
     if (IS_PLATFORM) {
@@ -144,7 +162,9 @@ export function AuthProvider({ children }: AuthProviderProps) {
     }
 
     void checkAuthStatus();
-  }, [checkAuthStatus, checkOnboardingStatus]);
+    // `hasToken`, not `token`: signing in or out re-validates, a rotation does
+    // not — the latter used to blank the app behind the loading screen.
+  }, [checkAuthStatus, checkOnboardingStatus, hasToken]);
 
   const login = useCallback<AuthContextValue['login']>(
     async (username, password) => {
