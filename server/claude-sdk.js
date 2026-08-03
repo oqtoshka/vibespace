@@ -31,7 +31,7 @@ import { describeTool } from './services/notification-content.js';
 import { describeAssistantActivity } from './services/activity-status.js';
 import { sessionsService } from './modules/providers/services/sessions.service.js';
 import { providerAuthService } from './modules/providers/services/provider-auth.service.js';
-import { createNormalizedMessage, resolveConfiguredContextWindow } from './shared/utils.js';
+import { createCompleteMessage, createNormalizedMessage, resolveConfiguredContextWindow } from './shared/utils.js';
 import { rememberContextUsage } from './shared/context-usage-cache.js';
 import { scheduleSessionRecap } from './services/session-recap.service.js';
 import { broadcastSessionUpdate } from './modules/providers/index.js';
@@ -1625,6 +1625,34 @@ function finalizeSession(session) {
   // from this session — and sessions are torn down on idle, which is exactly
   // the quiet the debounce is waiting for. Cancelling here would mean the
   // recap almost never ran.
+
+  // A turn that dies before its `result` — the SDK stream throws, or the
+  // session is torn down mid-turn — never reaches settleTurn, so the run it
+  // was streaming into stays `running` in the registry forever: every client
+  // shows the session as processing, the next send bounces off
+  // RUN_IN_PROGRESS, and /health's activeSessions never falls back to zero.
+  // `chat.send` and the queue drain each have this safety net in their own
+  // `finally` (completeRunIfCurrent / completeRun); a background auto-resume
+  // opens its run from down here — via `acquireResumeRun` — and had none, so
+  // two oqto sessions whose CLI died under an auto-resume left the count
+  // pinned at 2 for days.
+  //
+  // The registry drops a duplicate terminal `complete`, so emitting one here
+  // is a no-op on every path that already settled.
+  if ((session.awaitingResult || session.turnActive) && !session.handedOffToRetry) {
+    session.awaitingResult = false;
+    session.turnActive = false;
+    try {
+      session.writer.send(createCompleteMessage({
+        provider: 'claude',
+        sessionId: session.sessionId || session.options.sessionId || null,
+        exitCode: 1,
+      }));
+    } catch (error) {
+      console.warn(`[claude] session ${session.sessionId}: terminal complete on teardown failed:`, error?.message || error);
+    }
+  }
+
   completeTurn(session);
   session.finalizeDeferred?.resolve();
   clearIdleTimer(session);
@@ -1652,6 +1680,11 @@ async function handleSessionError(session, error) {
   const notResumable = /No conversation found with session ID/i.test(String(error?.message || ''));
   if (notResumable && sessionId && !session.options._resumeFallback) {
     console.warn(`Session ${sessionId} is not resumable, starting a new session instead`);
+    // The retry below streams into THIS session's writer — the same chat-run.
+    // Its teardown must therefore not emit the run's terminal `complete`, or
+    // the run ends (and gets evicted) while the replacement query is still
+    // streaming into it.
+    session.handedOffToRetry = true;
     session.writer.send(createNormalizedMessage({
       kind: 'error',
       content: 'This session has no resumable conversation — sending your message to a new session instead.',
