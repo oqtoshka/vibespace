@@ -10,6 +10,8 @@ import {
   __setRewindHistoryImpl,
 } from './claude-sdk.js';
 
+const delay = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
+
 // A writer that records every normalized message the session pushes out, and
 // lets a test await the moment a predicate becomes true.
 function makeRecordingWriter() {
@@ -117,6 +119,69 @@ test('background job completion auto-resumes the agent with a task-notification'
 
     // After both turns drain with no pending jobs, two completes total.
     await writer.waitFor((msgs) => msgs.filter((m) => m.kind === 'complete').length >= 2, 'second complete');
+  } finally {
+    await abortClaudeSDKSession(sessionId).catch(() => {});
+    __setClaudeQueryImpl(null);
+  }
+});
+
+// The run registry only flips a run to `completed` when a terminal `complete`
+// passes through it, and `chat.send` / the queue drain each guarantee one from
+// their own `finally`. A background auto-resume opens its run inside the SDK
+// loop, so when the CLI died under the resumed turn nothing ever settled it:
+// the session showed as processing on every client, further sends bounced off
+// RUN_IN_PROGRESS, and /health's activeSessions kept counting it for days.
+test('a turn that dies mid-stream still emits its terminal complete', async () => {
+  const sessionId = 'crash-after-resume-1';
+  const captured = {};
+
+  const fakeQuery = ({ prompt }) => {
+    const reader = prompt[Symbol.asyncIterator]();
+    const gen = (async function* () {
+      await reader.next();
+      yield assistantText('launching background poll', sessionId);
+      yield taskStarted('t1', sessionId);
+      yield resultMsg(sessionId);                 // turn 1 settles → complete #1
+
+      yield taskNotification('t1', sessionId);    // auto-resume opens the next run
+      captured.injectedMessage = (await reader.next()).value;
+      // …and the CLI dies under it, the way SIGTERM surfaces from the SDK.
+      throw new Error('Claude Code process exited with code 143');
+    })();
+    gen.interrupt = async () => {};
+    gen.setModel = async () => {};
+    gen.setPermissionMode = async () => {};
+    return gen;
+  };
+
+  __setClaudeQueryImpl(fakeQuery);
+  const writer = makeRecordingWriter();
+
+  try {
+    // Resolves when turn 1 settles; the auto-resume and the crash happen after.
+    await queryClaudeSDK('watch the host', { sessionId, ephemeral: false }, writer);
+
+    // The error path awaits an installed-provider check before tearing down, so
+    // poll rather than racing a fixed deadline.
+    const deadline = Date.now() + 8000;
+    while (writer.messages.filter((m) => m.kind === 'complete').length < 2 && Date.now() < deadline) {
+      await delay(10);
+    }
+
+    assert.ok(captured.injectedMessage, 'the background task should have auto-resumed the agent');
+
+    const errors = writer.messages.filter((m) => m.kind === 'error');
+    assert.equal(errors.length, 1, 'the crash should be reported once');
+    assert.equal(
+      writer.messages.filter((m) => m.kind === 'complete').length,
+      2,
+      'the resumed run must settle too — otherwise it stays "running" forever',
+    );
+
+    const last = writer.messages[writer.messages.length - 1];
+    assert.equal(last.kind, 'complete');
+    assert.equal(last.exitCode, 1, 'a crashed turn is not a success');
+    assert.equal(last.success, false);
   } finally {
     await abortClaudeSDKSession(sessionId).catch(() => {});
     __setClaudeQueryImpl(null);
