@@ -1222,9 +1222,13 @@ function handleCommandLifecycle(session, message) {
 
     // Show the prompt in the transcript at the point it actually landed. The
     // durable copy is the runtime's own `queued_command` attachment row, which
-    // replaces this on the next history load.
+    // replaces this on the next history load — keyed by the same uuid we
+    // stamped the injection with (the runtime echoes it as `source_uuid`), so
+    // the merge drops this live row by id instead of stacking a second bubble
+    // once the transcript sync lands.
     if (entry.content.trim()) {
       session.writer.send(createNormalizedMessage({
+        id: message.command_uuid,
         kind: 'text',
         role: 'user',
         content: entry.content,
