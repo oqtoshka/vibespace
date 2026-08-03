@@ -190,30 +190,72 @@ function transformCodexEvent(event) {
   }
 }
 
+const CODEX_SANDBOX_MODES = ['read-only', 'workspace-write', 'danger-full-access'];
+const CODEX_APPROVAL_POLICIES = ['untrusted', 'on-failure', 'on-request', 'never'];
+
+/**
+ * Read a deployment-wide override for one of the Codex thread options.
+ * An unrecognised value is ignored rather than passed on — the SDK would reject
+ * it and take the whole session down with it.
+ * @param {string} name - environment variable to read
+ * @param {string[]} allowed - values the Codex SDK accepts
+ * @returns {string|null}
+ */
+function readCodexOptionOverride(name, allowed) {
+  const value = process.env[name]?.trim();
+  if (!value) {
+    return null;
+  }
+
+  if (!allowed.includes(value)) {
+    console.warn(`[Codex] Ignoring ${name}="${value}" — expected one of: ${allowed.join(', ')}`);
+    return null;
+  }
+
+  return value;
+}
+
 /**
  * Map permission mode to Codex SDK options
+ *
+ * VS_CODEX_SANDBOX / VS_CODEX_APPROVAL pin the result regardless of the mode the
+ * user picked. That exists for containerised deployments, where codex's own
+ * sandbox cannot run at all: bubblewrap needs an unprivileged user namespace, and
+ * Docker's default seccomp profile denies CLONE_NEWUSER, so every command under
+ * `workspace-write` dies with "bwrap: No permissions to create a new namespace"
+ * and only `danger-full-access` gets any work done. The container is already the
+ * isolation boundary there, so the sandbox being lost is a sandbox nested inside
+ * a sandbox. Unset — the default — nothing changes.
+ *
  * @param {string} permissionMode - 'default', 'acceptEdits', or 'bypassPermissions'
  * @returns {object} - { sandboxMode, approvalPolicy }
  */
 function mapPermissionModeToCodexOptions(permissionMode) {
-  switch (permissionMode) {
-    case 'acceptEdits':
-      return {
-        sandboxMode: 'workspace-write',
-        approvalPolicy: 'never'
-      };
-    case 'bypassPermissions':
-      return {
-        sandboxMode: 'danger-full-access',
-        approvalPolicy: 'never'
-      };
-    case 'default':
-    default:
-      return {
-        sandboxMode: 'workspace-write',
-        approvalPolicy: 'untrusted'
-      };
-  }
+  const options = (() => {
+    switch (permissionMode) {
+      case 'acceptEdits':
+        return {
+          sandboxMode: 'workspace-write',
+          approvalPolicy: 'never'
+        };
+      case 'bypassPermissions':
+        return {
+          sandboxMode: 'danger-full-access',
+          approvalPolicy: 'never'
+        };
+      case 'default':
+      default:
+        return {
+          sandboxMode: 'workspace-write',
+          approvalPolicy: 'untrusted'
+        };
+    }
+  })();
+
+  return {
+    sandboxMode: readCodexOptionOverride('VS_CODEX_SANDBOX', CODEX_SANDBOX_MODES) ?? options.sandboxMode,
+    approvalPolicy: readCodexOptionOverride('VS_CODEX_APPROVAL', CODEX_APPROVAL_POLICIES) ?? options.approvalPolicy
+  };
 }
 
 /**
