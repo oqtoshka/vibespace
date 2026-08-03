@@ -41,23 +41,19 @@ const resolveCommandModel = async (provider, catalog, sessionId) => {
     return catalog.DEFAULT;
   }
 
-  // A model change made from the picker applies on the session's next turn.
-  // Until that turn runs, the transcript still shows the old model — surface
-  // the pending selection so reopening the picker reflects what the user chose.
+  // Shared with the composer's model readout: a picker change applies on the
+  // session's next turn, so until that turn runs the override outranks what
+  // the transcript still shows.
   try {
-    const changed = await providerModelsService.getChangedActiveModel(provider, sessionId);
-    if (changed?.changed && changed.model?.trim()) {
-      return changed.model.trim();
+    const active = await providerModelsService.resolveSessionActiveModel(provider, sessionId);
+    if (active?.model) {
+      return active.model;
     }
   } catch {
-    // Fall through to the transcript-backed lookup.
+    // Fall through to the catalog default.
   }
 
-  const currentActiveModel = await providerModelsService.getCurrentActiveModel(
-    provider,
-    sessionId,
-  );
-  return currentActiveModel?.model || catalog.DEFAULT;
+  return catalog.DEFAULT;
 };
 
 // When the active model is the `default` alias, surface what it resolves to so

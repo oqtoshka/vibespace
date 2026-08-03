@@ -11,7 +11,7 @@ import type {
   RefObject,
   TouchEvent,
 } from 'react';
-import { MessageSquareIcon, XIcon, Clock3, Loader2, PaperclipIcon, ChevronDown, Check, ArrowUpIcon, ActivityIcon, MoreHorizontalIcon } from 'lucide-react';
+import { MessageSquareIcon, XIcon, Clock3, Loader2, PaperclipIcon, ChevronDown, Check, ArrowUpIcon, ActivityIcon, MoreHorizontalIcon, CpuIcon } from 'lucide-react';
 
 import type { QueuedMessage } from '../../hooks/useChatComposerState';
 
@@ -78,6 +78,11 @@ interface ChatComposerProps {
   tokenBudget: Record<string, unknown> | null;
   contextUsage: ContextUsage | null;
   onShowTokenUsage: () => void;
+  /** Raw model id for the active provider, e.g. `claude-opus-5`. */
+  activeModel: string;
+  /** Catalog options for the active provider, used to resolve a display label. */
+  providerModelOptions: ProviderModelOption[];
+  onShowModels: () => void;
   backgroundTasks: BackgroundTask[];
   backgroundRunningCount: number;
   subagents: Subagent[];
@@ -140,6 +145,9 @@ export default function ChatComposer({
   onSelectEffort,
   tokenBudget,
   contextUsage,
+  activeModel,
+  providerModelOptions,
+  onShowModels,
   backgroundTasks,
   backgroundRunningCount,
   subagents,
@@ -252,6 +260,15 @@ export default function ChatComposer({
   );
   const selectedEffortLabel = effort === 'default' ? 'Default' : effort;
 
+  // The model the next turn will run on, shown at a glance in the toolbar. The
+  // catalog carries a friendly label; a session pinned to an id the catalog
+  // doesn't know (older model, or the catalog still loading) falls back to the
+  // raw id rather than showing nothing.
+  const activeModelLabel = useMemo(() => {
+    const match = providerModelOptions.find((option) => option.value === activeModel);
+    return match?.label || activeModel || '';
+  }, [providerModelOptions, activeModel]);
+
   const hasBackgroundTasks = backgroundTasks.length > 0;
   const hasSubagents = subagents.length > 0;
   // Everything that changes the toolbar's natural width without changing the
@@ -264,6 +281,11 @@ export default function ChatComposer({
     effortOptions.length,
     permissionMode,
     selectedEffortLabel,
+    activeModelLabel,
+    // The token readout widens as the count grows ("1.2k" → "141.8k · 43%").
+    // Without it in the signature the row is measured once at "0" and then
+    // silently clipped for the rest of the session.
+    `${formatTokenCount(readUsedTokens(tokenBudget))}${contextUsage ? '%' : ''}`.length,
     slashCommandsCount,
     i18n.language,
   ].join('|');
@@ -580,6 +602,22 @@ export default function ChatComposer({
               </div>
             </button>
 
+            {/* Which model the next turn runs on. Sits next to the mode pill
+                because both answer "what happens when I hit send?", and both
+                are easy to leave switched by accident. */}
+            {activeModelLabel && !isToolbarCollapsed && (
+              <button
+                type="button"
+                onClick={onShowModels}
+                className="flex h-8 min-w-0 items-center gap-1.5 rounded-lg border border-border/60 bg-muted/40 px-2 text-xs font-medium text-foreground transition-all duration-200 hover:bg-muted"
+                title={`Model: ${activeModel} — click to change`}
+                aria-label={`Model: ${activeModelLabel}. Click to change`}
+              >
+                <CpuIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                <span className="max-w-24 truncate lg:max-w-40">{activeModelLabel}</span>
+              </button>
+            )}
+
             {availableEffortOptions.length > 0 && !isToolbarCollapsed && (
               <div ref={effortDropdownRef} className="relative">
                 <button
@@ -701,6 +739,26 @@ export default function ChatComposer({
                 align="left"
                 className="w-56 max-w-[85vw] overflow-hidden rounded-xl border border-border bg-card p-1 shadow-lg"
               >
+                {activeModelLabel && (
+                  <>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        onShowModels();
+                        setIsOverflowOpen(false);
+                      }}
+                      className="flex w-full items-center gap-2 rounded-lg px-2 py-2 text-left text-sm text-foreground transition-colors hover:bg-accent/70"
+                      title={activeModel}
+                    >
+                      <CpuIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
+                      <span className="flex-1">{t('input.model', { defaultValue: 'Model' })}</span>
+                      <span className="max-w-32 truncate text-xs text-muted-foreground">{activeModelLabel}</span>
+                    </button>
+                    <div className="my-1 border-t border-border/50" />
+                  </>
+                )}
+
                 {availableEffortOptions.length > 0 && (
                   <>
                     <div className="px-2 pb-1 pt-1.5 text-[11px] font-medium text-muted-foreground">
