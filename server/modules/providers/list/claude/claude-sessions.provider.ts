@@ -549,8 +549,13 @@ export class ClaudeSessionsProvider implements IProviderSessions {
       if (!prompt.trim()) {
         return [];
       }
+      // Key it by the uuid the injection was stamped with (echoed back as
+      // `source_uuid`) so it collides with the live row the gateway emitted
+      // when the runtime picked the message up — otherwise the two ids differ
+      // and the prompt renders twice, once at enqueue and once at delivery.
+      const sourceUuid = typeof attachment.source_uuid === 'string' ? attachment.source_uuid : '';
       return [createNormalizedMessage({
-        id: raw.uuid || generateMessageId('claude'),
+        id: sourceUuid || raw.uuid || generateMessageId('claude'),
         sessionId,
         timestamp: raw.timestamp || new Date().toISOString(),
         provider: PROVIDER,
