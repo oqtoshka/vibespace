@@ -11,6 +11,7 @@ import { PaletteOpsProvider, usePaletteOpsRegister } from '../../contexts/Palett
 import { useDeviceSettings } from '../../hooks/useDeviceSettings';
 import { useSessionProtection } from '../../hooks/useSessionProtection';
 import { useUiPreferences } from '../../hooks/useUiPreferences';
+import { usePageTitle } from '../../hooks/usePageTitle';
 import { useProjectsState } from '../../hooks/useProjectsState';
 import { useWorkspaceTabs } from '../../hooks/useWorkspaceTabs';
 import { useSessionPane, NEW_SESSION_KEY, type SessionView } from '../../hooks/useSessionPane';
@@ -160,6 +161,8 @@ function AppContentInner() {
 
   const tabs = useWorkspaceTabs({ projectId: selectedProject?.projectId ?? null });
   const sessionPane = useSessionPane(selectedProject?.projectId ?? null);
+
+  usePageTitle({ project: selectedProject, session: selectedSession, t });
 
   // Trace the upstream selection drivers so the debug log shows what changed
   // before each tab/expand reaction (helps spot project/session ping-pong).

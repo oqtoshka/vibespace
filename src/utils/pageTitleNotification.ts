@@ -87,6 +87,20 @@ function handlePageInactive(): void {
   }
 }
 
+/**
+ * Swap the title's base text, preserving a completion indicator if one is up.
+ * The base tracks the selected project/session, and both can change while the
+ * tab sits in the background with the marker still doing its job.
+ */
+export const setBasePageTitle = (baseTitle: string): void => {
+  if (typeof document === 'undefined') {
+    return;
+  }
+
+  const prefix = document.title.startsWith(getIndicatorPrefix()) ? getIndicatorPrefix() : '';
+  document.title = `${prefix}${baseTitle}`;
+};
+
 export const showCompletionTitleIndicator = (): void => {
   if (typeof document === 'undefined' || typeof window === 'undefined') {
     return;
