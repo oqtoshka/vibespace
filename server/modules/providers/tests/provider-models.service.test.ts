@@ -394,3 +394,50 @@ test('resolveResumeModel prefers a stored changed model over the requested one',
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
+
+test('resolveResumeModel leaves a resumed session on its own model', async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'provider-model-resume-'));
+  const activeModelChangesPath = path.join(tempRoot, 'session-model-changes.json');
+
+  try {
+    const service = createProviderModelsService({
+      activeModelChangesPath,
+      resolveProvider: (provider) => ({
+        models: {
+          getSupportedModels: async () => createModels(`${provider}-models`),
+          getCurrentActiveModel: async () => createCurrentActiveModel(`${provider}-active`),
+          changeActiveModel: async (input) => createSessionActiveModelChange(provider, input),
+        },
+      }),
+    });
+
+    // The composer sends its per-provider picker model on every turn. On a
+    // conversation that already ran, that is not a request to switch — honoring
+    // it dragged every session onto whatever was last picked elsewhere.
+    // The requested model is a *valid* catalog entry — without the guard it
+    // would be forwarded, which is exactly the switch nobody asked for.
+    const resumed = await service.resolveResumeModel('claude', 'session-789', 'claude-models', {
+      resuming: true,
+    });
+    assert.equal(resumed, undefined);
+
+    // A brand-new conversation still starts on the picker default.
+    const fresh = await service.resolveResumeModel('claude', 'session-789', 'claude-models');
+    assert.equal(fresh, 'claude-models');
+
+    // An explicit per-session override still moves a resumed session.
+    await writeProviderSessionActiveModelChange('claude', {
+      sessionId: 'session-789',
+      model: 'fable',
+    }, {
+      filePath: activeModelChangesPath,
+    });
+
+    const overridden = await service.resolveResumeModel('claude', 'session-789', 'claude-models', {
+      resuming: true,
+    });
+    assert.equal(overridden, 'fable');
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
