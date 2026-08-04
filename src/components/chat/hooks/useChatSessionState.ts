@@ -397,8 +397,6 @@ export function useChatSessionState({
       if (!hasMoreMessages || !selectedSession || !selectedProject) return false;
 
       isLoadingMoreRef.current = true;
-      const previousScrollHeight = container.scrollHeight;
-      const previousScrollTop = container.scrollTop;
 
       try {
         const slot = await sessionStore.fetchMore(selectedSession.id, {
@@ -419,7 +417,15 @@ export function useChatSessionState({
           return false;
         }
 
-        pendingScrollRestoreRef.current = { height: previousScrollHeight, top: previousScrollTop };
+        // Anchor on where the reader is *now*, not on where they were when the
+        // request went out. A phone keeps flick-scrolling through the round
+        // trip, so the pre-fetch position was hundreds of pixels stale by the
+        // time the page landed — and restoring to it yanked the view back down
+        // every few inches of upward scrolling.
+        pendingScrollRestoreRef.current = {
+          height: container.scrollHeight,
+          top: container.scrollTop,
+        };
         setHasMoreMessages(slot.hasMore);
         setTotalMessages(slot.total);
         setVisibleMessageCount((prev) => prev + MESSAGES_PER_PAGE);
@@ -496,7 +502,12 @@ export function useChatSessionState({
     const newScrollHeight = container.scrollHeight;
     container.scrollTop = top + Math.max(newScrollHeight - height, 0);
     pendingScrollRestoreRef.current = null;
-  }, [chatMessages.length]);
+    // `visibleMessageCount` matters as much as the message count: a page whose
+    // messages the store already held grows the window without growing
+    // `chatMessages`, and keying on length alone left the restore pending
+    // forever — the view shifted, and the still-set ref then muted the
+    // follow-the-bottom effect for the rest of the session.
+  }, [chatMessages.length, visibleMessageCount]);
 
   // Reset scroll/pagination state on session change
   useEffect(() => {
@@ -903,8 +914,6 @@ export function useChatSessionState({
     }
 
     const container = scrollContainerRef.current;
-    const previousScrollHeight = container ? container.scrollHeight : 0;
-    const previousScrollTop = container ? container.scrollTop : 0;
 
     try {
       const slot = await sessionStore.fetchFromServer(requestSessionId, {
@@ -915,8 +924,13 @@ export function useChatSessionState({
       if (currentSessionId !== requestSessionId) return;
 
       if (slot) {
+        // Measured after the fetch for the same reason as the paged load: the
+        // reader goes on scrolling while the whole transcript is on the wire.
         if (container) {
-          pendingScrollRestoreRef.current = { height: previousScrollHeight, top: previousScrollTop };
+          pendingScrollRestoreRef.current = {
+            height: container.scrollHeight,
+            top: container.scrollTop,
+          };
         }
 
         setHasMoreMessages(false);
