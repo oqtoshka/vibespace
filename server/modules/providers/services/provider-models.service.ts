@@ -396,10 +396,23 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
     return { model: models.DEFAULT, overridden: false };
   };
 
+  /**
+   * `resuming` marks a conversation that already has a model of its own — a
+   * warm session, or a transcript being resumed.
+   *
+   * The composer rides its per-provider picker model on *every* turn, but that
+   * value is only the default for NEW conversations. Applying it to a
+   * conversation that already ran silently moved that session's model and made
+   * the CLI announce a switch nobody asked for: pick Fable once and the next
+   * message sent in any other session dragged it back to the stored default.
+   * A conversation that already has a model is moved only by an explicit
+   * per-session override.
+   */
   const resolveResumeModel = async (
     provider: LLMProvider,
     sessionId: string | undefined,
     requestedModel?: string | null,
+    { resuming = false }: { resuming?: boolean } = {},
   ): Promise<string | undefined> => {
     const normalizedRequestedModel = typeof requestedModel === 'string' ? requestedModel.trim() : '';
     if (!sessionId?.trim()) {
@@ -411,7 +424,7 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
       return changedModel.model.trim();
     }
 
-    if (!normalizedRequestedModel) {
+    if (resuming || !normalizedRequestedModel) {
       return undefined;
     }
 
