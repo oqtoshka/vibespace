@@ -1750,13 +1750,20 @@ async function reuseSession(session, command, options, ws) {
     session.turnActive = false;
   }
 
-  // Apply a mid-session model switch if the user changed it.
+  // Apply a mid-session model switch if the user changed it — and *only* then.
+  // This session is warm, so it already has a model; `options.model` is just
+  // the composer's per-provider default riding along on every message, and
+  // falling back to it here is what switched sessions the user never touched.
   try {
-    const resolvedModel = await providerModelsService.resolveResumeModel('claude', session.sessionId, options.model);
-    const wanted = resolvedModel || options.model;
-    if (wanted && wanted !== session.model && session.instance?.setModel) {
-      await session.instance.setModel(wanted);
-      session.model = wanted;
+    const resolvedModel = await providerModelsService.resolveResumeModel(
+      'claude',
+      session.sessionId,
+      options.model,
+      { resuming: true },
+    );
+    if (resolvedModel && resolvedModel !== session.model && session.instance?.setModel) {
+      await session.instance.setModel(resolvedModel);
+      session.model = resolvedModel;
     }
   } catch (err) {
     console.warn(`setModel during reuse for ${session.sessionId} failed:`, err?.message || err);
@@ -1834,7 +1841,16 @@ async function reuseSession(session, command, options, ws) {
 async function startPersistentSession(command, options, ws) {
   const { sessionId, sessionSummary } = options;
 
-  const resolvedModel = await providerModelsService.resolveResumeModel('claude', sessionId, options.model);
+  // A resumed conversation keeps the model it already ran on unless an
+  // override says otherwise; only a genuinely new one starts on the composer's
+  // per-provider default. `undefined` means "send no --model", which is what
+  // makes the resume inherit the transcript's own model.
+  const resolvedModel = await providerModelsService.resolveResumeModel(
+    'claude',
+    sessionId,
+    options.model,
+    { resuming: options.resume === true },
+  );
   // Validate any requested reasoning effort against the live model catalog
   // (falls back to the static definition when the catalog can't be loaded).
   let effortModels = CLAUDE_FALLBACK_MODELS;
@@ -1843,7 +1859,7 @@ async function startPersistentSession(command, options, ws) {
   } catch (error) {
     console.warn('[Claude SDK] Unable to load provider models for effort validation:', error?.message || error);
   }
-  const sdkOptions = mapCliOptionsToSDK({ ...options, model: resolvedModel || options.model, effortModels });
+  const sdkOptions = mapCliOptionsToSDK({ ...options, model: resolvedModel, effortModels });
 
   const mcpServers = await loadMcpConfig(options.cwd);
   if (mcpServers) {
