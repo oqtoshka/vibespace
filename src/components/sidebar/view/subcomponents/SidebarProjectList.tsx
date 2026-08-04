@@ -1,9 +1,7 @@
-import { useEffect } from 'react';
 import type { TFunction } from 'i18next';
 
 import type { LoadingProgress, Project, ProjectSession, LLMProvider } from '../../../../types/app';
 import type { MCPServerStatus, SessionWithProvider } from '../../types/types';
-import { APP_TITLE } from '../../../../constants/config';
 
 import SidebarProjectItem from './SidebarProjectItem';
 import SidebarProjectsState from './SidebarProjectsState';
@@ -99,15 +97,6 @@ export default function SidebarProjectList({
       t={t}
     />
   );
-
-  useEffect(() => {
-    let baseTitle = APP_TITLE;
-    const displayName = selectedProject?.displayName?.trim();
-    if (displayName) {
-      baseTitle = `${displayName} - ${baseTitle}`;
-    }
-    document.title = baseTitle;
-  }, [selectedProject]);
 
   const showProjects = !isLoading && projects.length > 0 && filteredProjects.length > 0;
 
