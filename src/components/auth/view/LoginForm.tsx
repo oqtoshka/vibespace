@@ -6,6 +6,7 @@ import { useAuth } from '../context/AuthContext';
 import AuthErrorAlert from './AuthErrorAlert';
 import AuthInputField from './AuthInputField';
 import AuthScreenLayout from './AuthScreenLayout';
+import SsoLogin from './SsoLogin';
 
 type LoginFormState = {
   username: string;
@@ -24,7 +25,7 @@ const initialState: LoginFormState = {
  */
 export default function LoginForm() {
   const { t } = useTranslation('auth');
-  const { login } = useAuth();
+  const { login, sso } = useAuth();
 
   const [formState, setFormState] = useState<LoginFormState>(initialState);
   const [errorMessage, setErrorMessage] = useState('');
@@ -54,6 +55,13 @@ export default function LoginForm() {
     },
     [formState.password, formState.username, login, t],
   );
+
+  // The server has handed login to an identity provider, and its password
+  // endpoints answer 403 — offering the credential form would be offering a
+  // door that no longer opens.
+  if (sso) {
+    return <SsoLogin sso={sso} />;
+  }
 
   return (
     <AuthScreenLayout

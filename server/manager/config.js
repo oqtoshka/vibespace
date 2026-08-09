@@ -1,5 +1,7 @@
 import crypto from 'crypto';
 
+import { loadOidcConfig } from '../shared/oidc.js';
+
 /**
  * Manager configuration, assembled from the environment.
  *
@@ -12,7 +14,7 @@ import crypto from 'crypto';
 const DEFAULT_PORT = 7000;
 const USERNAME_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/i;
 
-function parseUserMap(env) {
+function parseUserMap(env, { requirePasswordHash }) {
   const encoded = env.VS_MANAGER_USERS_B64;
   const plain = env.VS_MANAGER_USERS;
 
@@ -50,7 +52,9 @@ function parseUserMap(env) {
     if (!entry || typeof entry !== 'object') {
       throw new Error(`Manager user "${username}" must map to an object.`);
     }
-    if (typeof entry.passwordHash !== 'string' || !entry.passwordHash) {
+    // Under SSO the provider holds the credential, so the map degenerates to an
+    // allow-list plus a worker address and a hash would only be dead weight.
+    if (requirePasswordHash && (typeof entry.passwordHash !== 'string' || !entry.passwordHash)) {
       throw new Error(`Manager user "${username}" is missing passwordHash.`);
     }
     if (typeof entry.upstream !== 'string' || !entry.upstream) {
@@ -64,7 +68,9 @@ function parseUserMap(env) {
       throw new Error(`Manager user "${username}" has an invalid upstream URL: ${entry.upstream}`);
     }
 
-    credentials.set(username, entry.passwordHash);
+    if (typeof entry.passwordHash === 'string' && entry.passwordHash) {
+      credentials.set(username, entry.passwordHash);
+    }
     links.set(username, {
       user_id: username,
       upstream: entry.upstream,
@@ -95,15 +101,17 @@ function resolveJwtSecret(env) {
 }
 
 export function loadManagerConfig(env = process.env) {
-  const { credentials, links } = parseUserMap(env);
+  const authKind = env.VS_MANAGER_AUTH || 'password';
+  const { credentials, links } = parseUserMap(env, { requirePasswordHash: authKind === 'password' });
 
   return {
     credentials,
     links,
+    oidc: loadOidcConfig(env),
     jwtSecret: resolveJwtSecret(env),
     port: Number.parseInt(env.VS_MANAGER_PORT || String(DEFAULT_PORT), 10),
     host: env.VS_MANAGER_HOST || env.HOST || '0.0.0.0',
-    authKind: env.VS_MANAGER_AUTH || 'password',
+    authKind,
     backendKind: env.VS_WORKER_BACKEND || 'static',
     cookieSecure: env.VS_MANAGER_COOKIE_SECURE || 'auto',
   };
