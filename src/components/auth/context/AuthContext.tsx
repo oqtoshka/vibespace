@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+
 import { IS_PLATFORM } from '../../../constants/config';
 import { api } from '../../../utils/api';
 import { clearAuthToken, persistAuthToken, readAuthToken } from '../../../utils/authToken';
@@ -12,6 +13,7 @@ import type {
   AuthUser,
   AuthUserPayload,
   OnboardingStatusPayload,
+  SsoConfig,
 } from '../types';
 import { parseJsonSafely, resolveApiErrorMessage } from '../utils';
 
@@ -31,6 +33,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
   const [token, setToken] = useState<string | null>(() => readAuthToken());
   const [isLoading, setIsLoading] = useState(true);
   const [needsSetup, setNeedsSetup] = useState(false);
+  const [sso, setSso] = useState<SsoConfig | null>(null);
   const [hasCompletedOnboarding, setHasCompletedOnboarding] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -117,6 +120,17 @@ export function AuthProvider({ children }: AuthProviderProps) {
 
       const statusResponse = await api.auth.status();
       const statusPayload = await parseJsonSafely<AuthStatusPayload>(statusResponse);
+
+      // An older server sends neither field and means password auth; a login
+      // URL is what makes SSO actionable, so both must be present to switch.
+      setSso(
+        statusPayload?.authMode === 'oidc' && statusPayload.loginUrl
+          ? {
+              loginUrl: statusPayload.loginUrl,
+              providerLabel: statusPayload.providerLabel || 'single sign-on',
+            }
+          : null,
+      );
 
       if (statusPayload?.needsSetup) {
         setNeedsSetup(true);
@@ -223,9 +237,20 @@ export function AuthProvider({ children }: AuthProviderProps) {
     clearSession();
 
     if (tokenToInvalidate) {
-      void api.auth.logout().catch((caughtError: unknown) => {
-        console.error('Logout endpoint error:', caughtError);
-      });
+      void api.auth
+        .logout()
+        .then(async (response: Response) => {
+          // Under SSO the provider may want to end its own session too;
+          // otherwise signing out here is undone by the next silent
+          // re-authentication.
+          const payload = await parseJsonSafely<AuthSessionPayload>(response);
+          if (payload?.redirectTo) {
+            window.location.href = payload.redirectTo;
+          }
+        })
+        .catch((caughtError: unknown) => {
+          console.error('Logout endpoint error:', caughtError);
+        });
     }
   }, [clearSession, token]);
 
@@ -236,6 +261,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
       isLoading,
       needsSetup,
       hasCompletedOnboarding,
+      sso,
       error,
       login,
       register,
@@ -251,6 +277,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
       needsSetup,
       refreshOnboardingStatus,
       register,
+      sso,
       token,
       user,
     ],

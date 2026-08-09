@@ -49,9 +49,11 @@ Both seams are selected by env and dispatched through a registry, so a
 downstream deployment adds a file and a `case` rather than editing the proxy.
 
 **Identity resolvers** (`resolvers/`, `VS_MANAGER_AUTH`) turn a request into
-`{ userId, link }`. Upstream ships `password`. A deployment that authenticates
-at the edge — client certificates, SSO — registers its own resolver; the
-manager core never inspects a token itself.
+`{ userId, link }`. Upstream ships `password` and `oidc`. A deployment that
+authenticates some other way — client certificates, a bespoke SSO — registers
+its own resolver; the manager core never inspects a token itself. The session
+half (JWT, cookie, refresh) is shared by all of them in `resolvers/session.js`,
+so a new resolver only writes a login flow.
 
 ```
 resolveUser(req, url)      -> { userId, link, refreshedToken? }
@@ -103,6 +105,54 @@ masking rejects values containing braces and quotes.
   "sanyaz": { "passwordHash": "$2b$12$…", "upstream": "http://127.0.0.1:7102", "workerToken": "…", "enabled": false }
 }
 ```
+
+## Single sign-on (`VS_MANAGER_AUTH=oidc`)
+
+Authorization code flow with PKCE against any OpenID Connect provider. The
+provider proves *who* someone is; the user map still decides *whether* they get
+in and which worker they land on — an identity provider usually serves more
+than this one application, so "authenticated" is not "authorized". A user the
+provider knows but the map does not gets `unmapped`, exactly as a stale session
+would. Under `oidc` the map's `passwordHash` becomes optional and the entry
+degenerates to an allow-list plus a worker address.
+
+Once the callback succeeds the session is the ordinary manager JWT — same
+cookie, same refresh, same proxy path. Nothing downstream of login changes, and
+workers stay unaware there is an identity provider at all.
+
+| variable | purpose |
+|---|---|
+| `VS_OIDC_ISSUER` | e.g. `https://auth.example.com/application/o/vibespace/` — keep the trailing slash Authentik gives you |
+| `VS_OIDC_CLIENT_ID` / `VS_OIDC_CLIENT_SECRET` | provider credentials; the secret is optional (public client + PKCE) |
+| `VS_OIDC_REDIRECT_URI` | must match the provider's registration exactly; derived from the request when unset |
+| `VS_OIDC_USERNAME_CLAIM` | default `preferred_username`; must resolve to a username-shaped value, since it is the map key and the `X-Vibespace-User` value |
+| `VS_OIDC_ALLOWED_USERS` | optional extra allow-list; the user map is already the authority here |
+| `VS_OIDC_LABEL` | button text — "Continue with Authentik" |
+| `VS_OIDC_SCOPES` | default `openid profile email` |
+| `VS_OIDC_END_SESSION_ON_LOGOUT` | also end the provider's session, so logout is not undone by a silent re-login |
+
+`/api/auth/login` and `/register` stay mounted and answer 403: a live password
+endpoint would be a way around SSO, not a fallback for it.
+
+### Authentik setup
+
+1. Create an **OAuth2/OpenID Provider**: authorization code flow, client type
+   confidential, redirect URI `https://<host>/api/auth/oidc/callback` (exact
+   match, no trailing slash).
+2. Sign it to an **Application** and copy the *OpenID Configuration Issuer*
+   from the provider page into `VS_OIDC_ISSUER`.
+3. Make sure the username Authentik sends matches a key in the user map. If
+   your usernames are email addresses, point `VS_OIDC_USERNAME_CLAIM` at a
+   claim that is not — a value like `you@example.com` is refused rather than
+   sanitized, because rewriting it would route the login to a tenant nobody
+   named.
+4. Bind whatever policy decides who may use VibeSpace to the application; the
+   user map is a second gate, not the first one.
+
+The single-user server (`VIBESPACE_MODE=local`) reads the same `VS_OIDC_*`
+variables and needs no `VS_MANAGER_AUTH`. There `VS_OIDC_ALLOWED_USERS` is
+**required** — it is the only allow-list, since there is no user map — and the
+first successful sign-in provisions the one local user row.
 
 Worker: `VIBESPACE_MODE=worker`, `SERVER_PORT`, `VS_WORKER_TOKEN`, plus the
 ordinary `DATABASE_PATH`, `HOME` and `WORKSPACES_ROOT` — pointed somewhere

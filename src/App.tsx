@@ -2,7 +2,7 @@ import { BrowserRouter as Router, Route, Routes } from 'react-router-dom';
 import { I18nextProvider } from 'react-i18next';
 
 import { ThemeProvider } from './contexts/ThemeContext';
-import { AuthProvider, ProtectedRoute } from './components/auth';
+import { AuthProvider, ProtectedRoute, SsoCallback } from './components/auth';
 import { TaskMasterProvider } from './contexts/TaskMasterContext';
 import { TasksSettingsProvider } from './contexts/TasksSettingsContext';
 import { WebSocketProvider } from './contexts/WebSocketContext';
@@ -137,6 +137,9 @@ export default function App() {
           <Routes>
             {/* Public, no-login file share viewer — rendered outside the auth gate. */}
             <Route path="/share/:shareId" element={<SharedFileViewer />} />
+            {/* Where SSO redirects land. Outside the gate by necessity: it runs
+                before there is a session for the gate to check. */}
+            <Route path="/auth/callback" element={<SsoCallback />} />
             {/* Everything else is the authenticated app. */}
             <Route path="/*" element={<AuthedApp />} />
           </Routes>
