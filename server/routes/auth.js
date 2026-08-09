@@ -1,9 +1,12 @@
 import express from 'express';
 import bcrypt from 'bcrypt';
+
 import { userDb } from '../modules/database/index.js';
 import { getConnection } from '../modules/database/connection.js';
 import { generateToken, authenticateToken } from '../middleware/auth.js';
 import { IS_WORKER_MODE } from '../constants/config.js';
+
+import { LOCAL_OIDC_CONFIG, createLocalOidcRouter } from './auth-oidc.js';
 
 const router = express.Router();
 const db = getConnection();
@@ -13,10 +16,33 @@ const db = getConnection();
 // clear answer instead of a confusing 401 from the identity check.
 const MANAGED_BY_MANAGER = { error: 'Authentication is managed by the VibeSpace manager.' };
 
+// With an identity provider configured, the password endpoints must close: a
+// live /login is a way around SSO, not a fallback for it.
+const oidcRouter = createLocalOidcRouter();
+if (oidcRouter) {
+  router.use(oidcRouter);
+}
+
+const PASSWORD_LOGIN_DISABLED = () => ({
+  error: `Password login is disabled — sign in with ${LOCAL_OIDC_CONFIG.label}.`,
+});
+
 // Check auth status and setup requirements
 router.get('/status', async (req, res) => {
   if (IS_WORKER_MODE) {
     return res.json({ needsSetup: false, isAuthenticated: false });
+  }
+
+  if (LOCAL_OIDC_CONFIG) {
+    // The first sign-in provisions the user row, so there is no setup screen
+    // to show even on an empty database.
+    return res.json({
+      needsSetup: false,
+      isAuthenticated: false,
+      authMode: 'oidc',
+      loginUrl: '/api/auth/oidc/login',
+      providerLabel: LOCAL_OIDC_CONFIG.label,
+    });
   }
 
   try {
@@ -35,6 +61,10 @@ router.get('/status', async (req, res) => {
 router.post('/register', async (req, res) => {
   if (IS_WORKER_MODE) {
     return res.status(403).json(MANAGED_BY_MANAGER);
+  }
+
+  if (LOCAL_OIDC_CONFIG) {
+    return res.status(403).json({ error: 'Accounts are managed by the identity provider.' });
   }
 
   try {
@@ -98,6 +128,10 @@ router.post('/register', async (req, res) => {
 router.post('/login', async (req, res) => {
   if (IS_WORKER_MODE) {
     return res.status(403).json(MANAGED_BY_MANAGER);
+  }
+
+  if (LOCAL_OIDC_CONFIG) {
+    return res.status(403).json(PASSWORD_LOGIN_DISABLED());
   }
 
   try {
