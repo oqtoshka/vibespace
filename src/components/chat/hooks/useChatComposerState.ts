@@ -110,6 +110,8 @@ const MAX_QUEUED_MESSAGES = 20;
 // restored into the composer. Must comfortably exceed the ws reconnect delay
 // (3s) plus a subscribe/snapshot round-trip so live sends don't false-restore.
 const PENDING_SEND_GRACE_MS = 10_000;
+/** Reconnect resends of one unacked send before falling back to the composer. */
+const MAX_SEND_RESEND_ATTEMPTS = 3;
 
 /**
  * Turns a failed attachment upload into something a user can act on. A reverse
@@ -301,6 +303,16 @@ export function useChatComposerState({
   // where the client thought the session idle. Consumed one-shot by the
   // 'vibespace:run-in-progress' listener below.
   const lastSubmittedRef = useRef<{ sessionId: string; content: string; images: File[]; clientMsgId: string } | null>(null);
+  // The exact frame of the send still awaiting its ack, replayed verbatim when
+  // the socket comes back. `sendMessage` only buffers frames written while the
+  // socket is closed; one written into a socket that is dying but still reads
+  // OPEN (a proxy restart, a laptop waking) is swallowed with no error and no
+  // buffered copy, so the reconnect is the only chance to deliver it. The
+  // server recognises the repeated clientMsgId and re-acks instead of running
+  // it twice.
+  const inFlightSendRef = useRef<
+    { sessionId: string; clientMsgId: string; frame: unknown; attempts: number } | null
+  >(null);
   const selectedProjectId = selectedProject?.projectId;
 
   const handleBuiltInCommand = useCallback(
@@ -928,7 +940,7 @@ export function useChatComposerState({
       // One message shape for every provider. The backend resolves the
       // provider, project path, and provider-native resume id from the
       // session row; `options` only carries composer-level preferences.
-      sendMessage({
+      const frame = {
         type: 'chat.send',
         sessionId: targetSessionId,
         clientMsgId,
@@ -945,7 +957,14 @@ export function useChatComposerState({
           sessionSummary,
           images: uploadedImages,
         },
-      });
+      };
+      inFlightSendRef.current = {
+        sessionId: targetSessionId,
+        clientMsgId,
+        frame,
+        attempts: 0,
+      };
+      sendMessage(frame);
 
       return true;
     },
@@ -1126,6 +1145,11 @@ export function useChatComposerState({
         return;
       }
       lastSubmittedRef.current = null;
+      // It rides the queue from here; a reconnect must not also replay the
+      // direct frame.
+      if (inFlightSendRef.current?.clientMsgId === pending.clientMsgId) {
+        inFlightSendRef.current = null;
+      }
       // The rejected direct send is re-journaled as a queue item inside
       // enqueueMessage; drop its 'send' journal entry so it can't be
       // restored a second time later.
@@ -1153,6 +1177,12 @@ export function useChatComposerState({
       }
       const ids = stale.map((entry) => entry.id);
       removePendingSends(sessionId, ids);
+      // Its text is going back into the composer, so the retained frame must
+      // not be replayed by a later reconnect — that would deliver the message
+      // the user is now holding in the input box.
+      if (inFlightSendRef.current && ids.includes(inFlightSendRef.current.clientMsgId)) {
+        inFlightSendRef.current = null;
+      }
       window.dispatchEvent(
         new CustomEvent('vibespace:drop-outbound-frames', { detail: { ids } }),
       );
@@ -1241,10 +1271,43 @@ export function useChatComposerState({
         return;
       }
       removePendingSends(detail.sessionId, [detail.clientMsgId]);
+      if (inFlightSendRef.current?.clientMsgId === detail.clientMsgId) {
+        inFlightSendRef.current = null;
+      }
     };
     window.addEventListener('vibespace:send-acked', onSendAcked);
     return () => window.removeEventListener('vibespace:send-acked', onSendAcked);
   }, []);
+
+  // A send whose frame was written into a socket that died before the server
+  // read it leaves no trace to retry from: it is not in the outbound buffer
+  // (the socket still read OPEN, so nothing was buffered) and the ack it is
+  // waiting for will never come. The reconnect is the retry. Bounded attempts
+  // so a frame the server keeps not acking for some other reason stops rather
+  // than replaying on every reconnect; after that the staleness sweep restores
+  // it into the composer as before.
+  useEffect(() => {
+    const onReconnected = () => {
+      const pending = inFlightSendRef.current;
+      if (!pending) {
+        return;
+      }
+      const stillUnacked = readPendingSends(pending.sessionId).some(
+        (entry) => entry.id === pending.clientMsgId && entry.kind === 'send',
+      );
+      if (!stillUnacked) {
+        inFlightSendRef.current = null;
+        return;
+      }
+      if (pending.attempts >= MAX_SEND_RESEND_ATTEMPTS) {
+        return;
+      }
+      pending.attempts += 1;
+      sendMessage(pending.frame);
+    };
+    window.addEventListener('vibespace:websocket-reconnected', onReconnected);
+    return () => window.removeEventListener('vibespace:websocket-reconnected', onReconnected);
+  }, [sendMessage]);
 
   // Sweep for lost sends even when no queue/run events arrive at all (dead
   // socket, or a reload that left journal entries behind): shortly after the
