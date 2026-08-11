@@ -8,6 +8,7 @@ import { useWebSocket } from '../../../contexts/WebSocketContext';
 import PermissionContext from '../../../contexts/PermissionContext';
 import { QuickSettingsPanel } from '../../quick-settings-panel';
 import type { ChatInterfaceProps, Provider  } from '../types/types';
+import type { LLMProvider } from '../../../types/app';
 import { useChatProviderState } from '../hooks/useChatProviderState';
 import { useChatSessionState } from '../hooks/useChatSessionState';
 import { useChatRealtimeHandlers } from '../hooks/useChatRealtimeHandlers';
@@ -161,6 +162,20 @@ function ChatInterface({
 
   const { activeWorktree } = useActiveWorktree(selectedProject?.projectId ?? null);
 
+  // Every keystroke re-renders this component (the composer's input state lives
+  // in useChatComposerState below), so anything fed to the memoized transcript
+  // must be referentially stable — an inline closure here re-renders all visible
+  // messages on every key press. handleRewindTruncate additionally feeds
+  // rewindMessage's deps, whose identity gates MessageComponent's memo.
+  const handleSetProvider = useCallback(
+    (nextProvider: LLMProvider) => setProvider(nextProvider as Provider),
+    [setProvider],
+  );
+  const handleRewindTruncate = useCallback(
+    (sessionId: string, messageUuid: string) => sessionStore.rewindTo(sessionId, messageUuid),
+    [sessionStore],
+  );
+
   // `/btw` — a quick question answered in its own side session, so the turn
   // running in this conversation is neither interrupted nor queued behind.
   // It follows the visible session's working directory so answers are about
@@ -304,7 +319,7 @@ function ChatInterface({
     addMessage,
     setIsUserScrolledUp,
     setPendingPermissionRequests,
-    onRewindTruncate: (sessionId, messageUuid) => sessionStore.rewindTo(sessionId, messageUuid),
+    onRewindTruncate: handleRewindTruncate,
   });
 
   // On WebSocket reconnect, re-fetch the current session's messages from the
@@ -466,7 +481,7 @@ function ChatInterface({
           selectedSession={selectedSession}
           currentSessionId={currentSessionId}
           provider={provider}
-          setProvider={(nextProvider) => setProvider(nextProvider as Provider)}
+          setProvider={handleSetProvider}
           textareaRef={textareaRef}
           claudeModel={claudeModel}
           setClaudeModel={setClaudeModel}
