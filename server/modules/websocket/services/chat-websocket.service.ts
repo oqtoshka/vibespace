@@ -142,6 +142,64 @@ function sendJson(ws: WebSocket, payload: unknown): void {
 }
 
 /**
+ * Client message ids of recently accepted `chat.send` frames, per app session.
+ *
+ * A send is acked over the very socket it arrived on. When that socket dies in
+ * between — a proxy restart drops the connection while the frame is already
+ * being handled — the ack is written into a closed socket and the client, which
+ * has no receipt, re-sends the message on reconnect. Without a memory of what
+ * was already accepted that resend starts a second run for the same text (or is
+ * bounced as RUN_IN_PROGRESS and re-queued, which delivers it twice).
+ *
+ * Bounded per session and swept by age: this only has to outlive a reconnect,
+ * not the session.
+ */
+const acceptedSends = new Map<string, Map<string, number>>();
+const ACCEPTED_SEND_TTL_MS = 10 * 60 * 1000;
+const MAX_ACCEPTED_SENDS_PER_SESSION = 50;
+
+function wasSendAccepted(sessionId: string, clientMsgId: string): boolean {
+  const accepted = acceptedSends.get(sessionId);
+  if (!accepted) {
+    return false;
+  }
+  const at = accepted.get(clientMsgId);
+  if (at === undefined) {
+    return false;
+  }
+  if (Date.now() - at > ACCEPTED_SEND_TTL_MS) {
+    accepted.delete(clientMsgId);
+    return false;
+  }
+  return true;
+}
+
+function rememberAcceptedSend(sessionId: string, clientMsgId: string): void {
+  let accepted = acceptedSends.get(sessionId);
+  if (!accepted) {
+    accepted = new Map<string, number>();
+    acceptedSends.set(sessionId, accepted);
+  }
+
+  const now = Date.now();
+  accepted.set(clientMsgId, now);
+
+  for (const [id, at] of accepted) {
+    if (now - at > ACCEPTED_SEND_TTL_MS) {
+      accepted.delete(id);
+    }
+  }
+  // Insertion order is oldest-first, so the excess is taken off the front.
+  while (accepted.size > MAX_ACCEPTED_SENDS_PER_SESSION) {
+    const oldest = accepted.keys().next();
+    if (oldest.done) {
+      break;
+    }
+    accepted.delete(oldest.value);
+  }
+}
+
+/**
  * Reports a protocol-level failure to the requesting client.
  *
  * Protocol errors deliberately use their own `kind` (instead of the provider
@@ -329,6 +387,21 @@ async function handleChatSend(
     return;
   }
 
+  // A resend of something already accepted (the client's ack died with its
+  // socket). Re-ack it and stop — checked before `startRun` so the duplicate
+  // can neither open a second run nor be bounced as RUN_IN_PROGRESS, which the
+  // client would answer by queueing the same message a second time.
+  const clientMsgId = typeof data.clientMsgId === 'string' ? data.clientMsgId : '';
+  if (clientMsgId && wasSendAccepted(sessionId, clientMsgId)) {
+    sendJson(ws, {
+      kind: 'send_ack',
+      sessionId,
+      clientMsgId,
+      timestamp: new Date().toISOString(),
+    });
+    return;
+  }
+
   const provider = session.provider as LLMProvider;
   const spawnFn = dependencies.spawnFns[provider];
   if (!spawnFn) {
@@ -360,8 +433,12 @@ async function handleChatSend(
   // events, and replayed events from a previous run falsely ack a send that
   // never arrived. Sent after the run is registered, so the ack means "this
   // exact frame was accepted and a run started for it".
-  const clientMsgId = typeof data.clientMsgId === 'string' ? data.clientMsgId : '';
+  //
+  // Recorded before the ack is written: if the socket is already gone the ack
+  // goes nowhere, and the record is what lets the client's resend be
+  // recognised instead of run twice.
   if (clientMsgId) {
+    rememberAcceptedSend(sessionId, clientMsgId);
     sendJson(ws, {
       kind: 'send_ack',
       sessionId,
