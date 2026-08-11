@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
+import React, { createContext, memo, useContext, useEffect, useMemo, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
@@ -327,7 +327,7 @@ const markdownComponents = {
   ),
 };
 
-export function Markdown({
+function MarkdownBase({
   children,
   className,
   onFileOpen = null,
@@ -411,3 +411,8 @@ export function Markdown({
     </MarkdownFileContext.Provider>
   );
 }
+
+// The remark/rehype/Prism pipeline is the priciest render in the transcript;
+// all props are primitives or stable references, so memo lets unchanged
+// messages skip the re-parse when a parent re-renders.
+export const Markdown = memo(MarkdownBase);
