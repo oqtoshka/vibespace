@@ -119,6 +119,10 @@ export function useChatRealtimeHandlers({
       switch (msg.kind) {
         case 'websocket_reconnected':
           onWebSocketReconnect?.();
+          // The composer replays a send still waiting for its ack: the socket
+          // that carried it may have died before the server read the frame,
+          // and nothing else would ever retry it.
+          window.dispatchEvent(new CustomEvent('vibespace:websocket-reconnected'));
           return;
 
         case 'send_ack': {
