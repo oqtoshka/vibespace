@@ -1,3 +1,7 @@
+import fsSync from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
 import Database from 'better-sqlite3';
 import crossSpawn from 'cross-spawn';
 
@@ -54,7 +58,10 @@ export const OPENCODE_FALLBACK_MODELS: ProviderModelsDefinition = {
 };
 
 const OPEN_CODE_MODELS_TIMEOUT_MS = 20_000;
-const MODEL_ID_LINE = /^[a-z0-9][a-z0-9._-]*\/[a-z0-9][a-z0-9._-]*$/i;
+// `<provider>/<model>`, where the model half may itself contain slashes: a
+// custom openai-compatible provider addresses HuggingFace-style ids such as
+// `dudin/cyankiwi/Qwen3.6-27B-AWQ-INT4`.
+const MODEL_ID_LINE = /^[a-z0-9][a-z0-9._-]*(?:\/[a-z0-9][a-z0-9._-]*)+$/i;
 // cross-spawn resolves .cmd shims/PATHEXT on Windows and delegates to
 // child_process.spawn everywhere else.
 const spawnFunction = crossSpawn;
@@ -233,18 +240,28 @@ const isSupportedOpenCodeModelId = (id: string): boolean => (
   readOpenCodeModelParts(id).upstreamProvider.toLowerCase() !== 'google'
 );
 
+/**
+ * Rebuilds the fully qualified `<providerID>/<id>` value `opencode run --model`
+ * expects.
+ *
+ * The verbose block reports the *bare* model id, which for a custom
+ * openai-compatible provider can itself contain a slash
+ * (`{"id": "cyankiwi/Qwen3.6-27B-AWQ-INT4", "providerID": "dudin"}`). Treating
+ * any slash as "already qualified" dropped the provider half and made every
+ * such run exit 1, so qualification keys off the provider prefix instead.
+ */
 const readOpenCodeVerboseModelId = (model: OpenCodeVerboseModel): string | null => {
   const id = readOptionalString(model.id);
   if (!id) {
     return null;
   }
 
-  if (id.includes('/')) {
+  const upstreamProvider = readOptionalString(model.providerID);
+  if (!upstreamProvider || id === upstreamProvider || id.startsWith(`${upstreamProvider}/`)) {
     return id;
   }
 
-  const upstreamProvider = readOptionalString(model.providerID);
-  return upstreamProvider ? `${upstreamProvider}/${id}` : id;
+  return `${upstreamProvider}/${id}`;
 };
 
 const labelForOpenCodeModelId = (id: string): string => {
@@ -308,7 +325,28 @@ const mapOpenCodeVerboseModel = (model: OpenCodeVerboseModel): ProviderModelOpti
   };
 };
 
-export const buildOpenCodeDefinitionFromIds = (ids: string[]): ProviderModelsDefinition => {
+/**
+ * Resolves the model the composer preselects.
+ *
+ * The user's own `model` from `opencode.json` wins, so pointing OpenCode at a
+ * self-hosted provider is enough to make VibeSpace default to it too. Only when
+ * that is absent (or names a model the CLI no longer lists) does the hosted
+ * fallback, then the first listed model, apply.
+ */
+const pickOpenCodeDefault = (
+  options: ProviderModelOption[],
+  configuredModel?: string | null,
+): string => (
+  options.find((option) => option.value === configuredModel)?.value
+    ?? options.find((option) => option.value === OPENCODE_FALLBACK_MODELS.DEFAULT)?.value
+    ?? options[0]?.value
+    ?? OPENCODE_FALLBACK_MODELS.DEFAULT
+);
+
+export const buildOpenCodeDefinitionFromIds = (
+  ids: string[],
+  configuredModel?: string | null,
+): ProviderModelsDefinition => {
   const options: ProviderModelOption[] = ids
     .filter(isSupportedOpenCodeModelId)
     .map((value) => ({
@@ -317,18 +355,15 @@ export const buildOpenCodeDefinitionFromIds = (ids: string[]): ProviderModelsDef
       description: descriptionForOpenCodeModelId(value),
     }));
 
-  const defaultValue = options.find((option) => option.value === OPENCODE_FALLBACK_MODELS.DEFAULT)?.value
-    ?? options[0]?.value
-    ?? OPENCODE_FALLBACK_MODELS.DEFAULT;
-
   return {
     OPTIONS: options,
-    DEFAULT: defaultValue,
+    DEFAULT: pickOpenCodeDefault(options, configuredModel),
   };
 };
 
 export const buildOpenCodeDefinitionFromVerboseModels = (
   models: OpenCodeVerboseModel[],
+  configuredModel?: string | null,
 ): ProviderModelsDefinition => {
   const options: ProviderModelOption[] = [];
   const seenValues = new Set<string>();
@@ -347,13 +382,9 @@ export const buildOpenCodeDefinitionFromVerboseModels = (
     return OPENCODE_FALLBACK_MODELS;
   }
 
-  const defaultValue = options.find((option) => option.value === OPENCODE_FALLBACK_MODELS.DEFAULT)?.value
-    ?? options[0]?.value
-    ?? OPENCODE_FALLBACK_MODELS.DEFAULT;
-
   return {
     OPTIONS: options,
-    DEFAULT: defaultValue,
+    DEFAULT: pickOpenCodeDefault(options, configuredModel),
   };
 };
 
@@ -381,6 +412,93 @@ const parseOpenCodeSessionModelValue = (rawModel: unknown): string | null => {
     ?? readOptionalString(record.name)
     ?? readOptionalString(record.value)
     ?? null;
+};
+
+// Mirrors OpenCode's own global config lookup: an explicit OPENCODE_CONFIG file
+// wins, otherwise every candidate under the config dir is loaded in order and
+// the last one that declares a model wins.
+const OPEN_CODE_CONFIG_FILES = ['config.json', 'opencode.json', 'opencode.jsonc'];
+
+const readOpenCodeConfigDir = (): string => (
+  process.env.OPENCODE_CONFIG_DIR?.trim()
+    || path.join(process.env.XDG_CONFIG_HOME?.trim() || path.join(os.homedir(), '.config'), 'opencode')
+);
+
+export const listOpenCodeConfigPaths = (): string[] => {
+  const explicitConfig = process.env.OPENCODE_CONFIG?.trim();
+  if (explicitConfig) {
+    return [explicitConfig];
+  }
+
+  const configDir = readOpenCodeConfigDir();
+  return OPEN_CODE_CONFIG_FILES.map((fileName) => path.join(configDir, fileName));
+};
+
+/**
+ * Removes `//` and block comments so `opencode.jsonc` parses with `JSON.parse`.
+ * String literals are skipped so a URL inside a value survives intact.
+ */
+export const stripJsonComments = (source: string): string => {
+  let output = '';
+  let inString = false;
+  let escaped = false;
+  let index = 0;
+
+  while (index < source.length) {
+    const character = source[index];
+
+    if (inString) {
+      output += character;
+      if (escaped) {
+        escaped = false;
+      } else if (character === '\\') {
+        escaped = true;
+      } else if (character === '"') {
+        inString = false;
+      }
+      index += 1;
+      continue;
+    }
+
+    if (character === '"') {
+      inString = true;
+      output += character;
+      index += 1;
+      continue;
+    }
+
+    if (character === '/' && source[index + 1] === '/') {
+      const lineEnd = source.indexOf('\n', index);
+      index = lineEnd < 0 ? source.length : lineEnd;
+      continue;
+    }
+
+    if (character === '/' && source[index + 1] === '*') {
+      const blockEnd = source.indexOf('*/', index + 2);
+      index = blockEnd < 0 ? source.length : blockEnd + 2;
+      continue;
+    }
+
+    output += character;
+    index += 1;
+  }
+
+  return output;
+};
+
+export const readOpenCodeConfiguredModel = (): string | null => {
+  let configuredModel: string | null = null;
+
+  for (const configPath of listOpenCodeConfigPaths()) {
+    try {
+      const parsed = JSON.parse(stripJsonComments(fsSync.readFileSync(configPath, 'utf8')));
+      configuredModel = readOptionalString(readObjectRecord(parsed)?.model) ?? configuredModel;
+    } catch {
+      // A missing or malformed config simply leaves the previous value in place.
+    }
+  }
+
+  return configuredModel;
 };
 
 const runOpenCodeModelsCommand = (): Promise<string> => new Promise((resolve, reject) => {
@@ -443,9 +561,10 @@ export class OpenCodeProviderModels implements IProviderModels {
   async getSupportedModels(): Promise<ProviderModelsDefinition> {
     try {
       const stdout = await runOpenCodeModelsCommand();
+      const configuredModel = readOpenCodeConfiguredModel();
       const verboseModels = parseOpenCodeVerboseModelsStdout(stdout);
       if (verboseModels.length > 0) {
-        return buildOpenCodeDefinitionFromVerboseModels(verboseModels);
+        return buildOpenCodeDefinitionFromVerboseModels(verboseModels, configuredModel);
       }
 
       const ids = parseOpenCodeModelsStdout(stdout);
@@ -453,7 +572,7 @@ export class OpenCodeProviderModels implements IProviderModels {
         return OPENCODE_FALLBACK_MODELS;
       }
 
-      return buildOpenCodeDefinitionFromIds(ids);
+      return buildOpenCodeDefinitionFromIds(ids, configuredModel);
     } catch {
       return OPENCODE_FALLBACK_MODELS;
     }
