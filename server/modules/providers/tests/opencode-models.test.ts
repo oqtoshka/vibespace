@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
 
 import {
@@ -6,6 +9,8 @@ import {
   buildOpenCodeDefinitionFromIds,
   parseOpenCodeModelsStdout,
   parseOpenCodeVerboseModelsStdout,
+  readOpenCodeConfiguredModel,
+  stripJsonComments,
 } from '@/modules/providers/list/opencode/opencode-models.provider.js';
 
 test('OpenCode models provider parses plain CLI output and removes duplicates', () => {
@@ -21,6 +26,18 @@ openai/gpt-5.5-pro
     'opencode/big-pickle',
     'anthropic/claude-opus-4-7-fast',
     'openai/gpt-5.5-pro',
+  ]);
+});
+
+test('OpenCode models provider keeps ids whose model half contains a slash', () => {
+  const ids = parseOpenCodeModelsStdout(`
+dudin/cyankiwi/Qwen3.6-27B-AWQ-INT4
+opencode/big-pickle
+`);
+
+  assert.deepEqual(ids, [
+    'dudin/cyankiwi/Qwen3.6-27B-AWQ-INT4',
+    'opencode/big-pickle',
   ]);
 });
 
@@ -139,4 +156,95 @@ google/model-alpha
       },
     },
   ]);
+});
+
+test('OpenCode models provider qualifies custom-provider models whose id contains a slash', () => {
+  const models = parseOpenCodeVerboseModelsStdout(`
+dudin/cyankiwi/Qwen3.6-27B-AWQ-INT4
+{
+  "id": "cyankiwi/Qwen3.6-27B-AWQ-INT4",
+  "providerID": "dudin",
+  "name": "Qwen 3.6 27B (AWQ INT4)"
+}
+opencode/big-pickle
+{
+  "id": "big-pickle",
+  "providerID": "opencode",
+  "name": "Big Pickle"
+}
+`);
+
+  const definition = buildOpenCodeDefinitionFromVerboseModels(models);
+
+  assert.deepEqual(definition.OPTIONS.map((option) => option.value), [
+    'dudin/cyankiwi/Qwen3.6-27B-AWQ-INT4',
+    'opencode/big-pickle',
+  ]);
+});
+
+test('OpenCode models provider prefers the model configured in opencode.json', () => {
+  const models = parseOpenCodeVerboseModelsStdout(`
+opencode/big-pickle
+{
+  "id": "big-pickle",
+  "providerID": "opencode",
+  "name": "Big Pickle"
+}
+dudin/cyankiwi/Qwen3.6-27B-AWQ-INT4
+{
+  "id": "cyankiwi/Qwen3.6-27B-AWQ-INT4",
+  "providerID": "dudin",
+  "name": "Qwen 3.6 27B (AWQ INT4)"
+}
+`);
+
+  assert.equal(
+    buildOpenCodeDefinitionFromVerboseModels(models, 'dudin/cyankiwi/Qwen3.6-27B-AWQ-INT4').DEFAULT,
+    'dudin/cyankiwi/Qwen3.6-27B-AWQ-INT4',
+  );
+  assert.equal(buildOpenCodeDefinitionFromVerboseModels(models, 'gone/model').DEFAULT, 'opencode/big-pickle');
+  assert.equal(buildOpenCodeDefinitionFromVerboseModels(models).DEFAULT, 'opencode/big-pickle');
+});
+
+test('OpenCode models provider reads the configured model out of a commented config', async (t) => {
+  const configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-config-'));
+  const previousConfigDir = process.env.OPENCODE_CONFIG_DIR;
+  const previousConfig = process.env.OPENCODE_CONFIG;
+
+  delete process.env.OPENCODE_CONFIG;
+  process.env.OPENCODE_CONFIG_DIR = configDir;
+
+  t.after(() => {
+    if (previousConfigDir === undefined) {
+      delete process.env.OPENCODE_CONFIG_DIR;
+    } else {
+      process.env.OPENCODE_CONFIG_DIR = previousConfigDir;
+    }
+    if (previousConfig !== undefined) {
+      process.env.OPENCODE_CONFIG = previousConfig;
+    }
+    fs.rmSync(configDir, { recursive: true, force: true });
+  });
+
+  assert.equal(readOpenCodeConfiguredModel(), null);
+
+  fs.writeFileSync(path.join(configDir, 'config.json'), JSON.stringify({ model: 'opencode/big-pickle' }));
+  assert.equal(readOpenCodeConfiguredModel(), 'opencode/big-pickle');
+
+  // Later candidates override earlier ones, matching OpenCode's own loader.
+  fs.writeFileSync(
+    path.join(configDir, 'opencode.jsonc'),
+    `{
+  // self-hosted vLLM
+  "model": "dudin/cyankiwi/Qwen3.6-27B-AWQ-INT4" /* not opencode zen */
+}`,
+  );
+  assert.equal(readOpenCodeConfiguredModel(), 'dudin/cyankiwi/Qwen3.6-27B-AWQ-INT4');
+});
+
+test('stripJsonComments leaves comment-like sequences inside strings alone', () => {
+  assert.equal(
+    stripJsonComments('{"baseURL": "https://llm.dudin.net/v1", // trailing\n "a": 1}'),
+    '{"baseURL": "https://llm.dudin.net/v1", \n "a": 1}',
+  );
 });
