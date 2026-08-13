@@ -105,6 +105,65 @@ const formatOpenCodeError = (raw: AnyRecord): string => {
   return ref ? `${detail} (ref ${ref})` : detail;
 };
 
+/**
+ * Unwraps the `part` envelope every streamed OpenCode event carries.
+ *
+ * `opencode run --format json` prints `{type, timestamp, sessionID, part}` for
+ * text, reasoning, tool and step events — only `error` is flat. Reading the
+ * payload off the event itself found nothing, so tool calls arrived as a
+ * nameless "Tool" with `{}` for input and no result, and streamed text and
+ * reasoning were dropped entirely. Falling back to the event keeps flat
+ * payloads working.
+ */
+const readEventPart = (raw: AnyRecord): AnyRecord => readObjectRecord(raw.part) ?? raw;
+
+type ToolMessageMeta = {
+  id: string;
+  sessionId: string | null;
+  timestamp: string;
+  toolIdFallback: string;
+};
+
+/**
+ * Builds a tool message from an OpenCode `tool` part.
+ *
+ * Shared by the live stream and the history reader because both are handed the
+ * same part shape — the two diverged once already, and only the history side
+ * knew that name, input and output live under `part`/`part.state`.
+ */
+const buildToolUseMessage = (part: AnyRecord, meta: ToolMessageMeta): NormalizedMessage => {
+  const state = readObjectRecord(part.state) ?? {};
+  const status = readOptionalString(state.status);
+  const output = state.output ?? part.output;
+  const error = state.error ?? part.error;
+
+  const message = createNormalizedMessage({
+    id: meta.id,
+    sessionId: meta.sessionId,
+    timestamp: meta.timestamp,
+    provider: PROVIDER,
+    kind: 'tool_use',
+    toolName: readOptionalString(part.tool) ?? readOptionalString(part.name) ?? 'Tool',
+    toolInput: state.input ?? part.input ?? part.arguments ?? {},
+    toolId: readOptionalString(part.callID) ?? readOptionalString(part.toolCallId) ?? meta.toolIdFallback,
+  });
+
+  // A part that reports its status is authoritative: a running tool has no
+  // result yet even if it already carries partial output.
+  const hasResult = status
+    ? status === 'completed' || status === 'error'
+    : output !== undefined || error !== undefined;
+  if (hasResult) {
+    const isError = status === 'error' || (!status && error !== undefined);
+    message.toolResult = {
+      content: formatToolContent(isError ? error ?? output : output ?? error),
+      isError,
+    };
+  }
+
+  return message;
+};
+
 const hasUserRole = (value: unknown): boolean => {
   const record = readObjectRecord(value);
   return readOptionalString(record?.role) === 'user';
@@ -241,10 +300,16 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
     }
 
     const type = readOptionalString(raw.type) ?? readOptionalString(raw.event);
-    const eventSessionId = readOptionalString(raw.sessionID) ?? readOptionalString(raw.sessionId) ?? sessionId;
+    const part = readEventPart(raw);
+    const eventSessionId = readOptionalString(raw.sessionID)
+      ?? readOptionalString(raw.sessionId)
+      ?? readOptionalString(part.sessionID)
+      ?? sessionId;
     const timestamp = normalizeProviderTimestamp(raw.time ?? raw.timestamp);
     const baseId = readOptionalString(raw.id)
+      ?? readOptionalString(part.id)
       ?? readOptionalString(raw.messageID)
+      ?? readOptionalString(part.messageID)
       ?? generateMessageId('opencode');
 
     if (type === 'text') {
@@ -254,7 +319,7 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
         return [];
       }
 
-      const content = extractText(raw.text ?? raw.delta ?? raw.message);
+      const content = extractText(part.text ?? part.delta ?? raw.message);
       if (!content.trim()) {
         return [];
       }
@@ -270,7 +335,7 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
     }
 
     if (type === 'reasoning') {
-      const content = extractText(raw.text ?? raw.delta ?? raw.message);
+      const content = extractText(part.text ?? part.delta ?? raw.message);
       if (!content.trim()) {
         return [];
       }
@@ -286,27 +351,12 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
     }
 
     if (type === 'tool_use') {
-      const toolName = readOptionalString(raw.tool) ?? readOptionalString(raw.name) ?? 'Tool';
-      const toolId = readOptionalString(raw.callID) ?? readOptionalString(raw.toolCallId) ?? baseId;
-      const toolMessage = createNormalizedMessage({
+      return [buildToolUseMessage(part, {
         id: baseId,
         sessionId: eventSessionId,
         timestamp,
-        provider: PROVIDER,
-        kind: 'tool_use',
-        toolName,
-        toolInput: raw.input ?? raw.arguments ?? {},
-        toolId,
-      });
-
-      if (raw.output !== undefined || raw.error !== undefined) {
-        toolMessage.toolResult = {
-          content: formatToolContent(raw.output ?? raw.error),
-          isError: raw.error !== undefined,
-        };
-      }
-
-      return [toolMessage];
+        toolIdFallback: baseId,
+      })];
     }
 
     if (type === 'error') {
@@ -471,27 +521,12 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
       }
 
       if (partType === 'tool') {
-        const state = readObjectRecord(partData.state) ?? {};
-        const status = readOptionalString(state.status);
-        const toolMessage = createNormalizedMessage({
+        normalized.push(buildToolUseMessage(partData, {
           id: baseId,
           sessionId,
           timestamp,
-          provider: PROVIDER,
-          kind: 'tool_use',
-          toolName: readOptionalString(partData.tool) ?? 'Tool',
-          toolInput: state.input ?? partData.input ?? {},
-          toolId: readOptionalString(partData.callID) ?? row.part_id,
-        });
-
-        if (status === 'completed' || status === 'error') {
-          toolMessage.toolResult = {
-            content: formatToolContent(state.output ?? state.error),
-            isError: status === 'error',
-          };
-        }
-
-        normalized.push(toolMessage);
+          toolIdFallback: row.part_id,
+        }));
         continue;
       }
 
