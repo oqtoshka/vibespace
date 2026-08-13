@@ -16,8 +16,10 @@ import type {
 import {
   buildDefaultProviderCurrentActiveModel,
   getOpenCodeDatabasePath,
+  isDatabaseLockedError,
   readObjectRecord,
   readOptionalString,
+  stripAnsi,
   writeProviderSessionActiveModelChange,
 } from '@/shared/utils.js';
 
@@ -61,6 +63,12 @@ export const OPENCODE_FALLBACK_MODELS: ProviderModelsDefinition = {
 };
 
 const OPEN_CODE_MODELS_TIMEOUT_MS = 20_000;
+// Three attempts, ~1.5 s of waiting in total. opencode holds the lock for
+// longer than its own 5 s busy_timeout only while it prunes or checkpoints the
+// WAL, and that window is short; anything longer than this and the composer is
+// better served by a provisional catalog it re-checks in a minute.
+const OPEN_CODE_MODELS_LOCK_RETRIES = 3;
+const OPEN_CODE_MODELS_LOCK_RETRY_DELAY_MS = 500;
 // `<provider>/<model>`, where the model half may itself contain slashes: a
 // custom openai-compatible provider addresses HuggingFace-style ids such as
 // `dudin/cyankiwi/Qwen3.6-27B-AWQ-INT4`.
@@ -552,7 +560,7 @@ const runOpenCodeModelsCommand = (): Promise<string> => new Promise((resolve, re
 
   openCodeProcess.on('close', (code) => {
     if (code !== 0) {
-      finish(new Error(stderr.trim() || `opencode models exited with code ${code}`), '');
+      finish(new Error(stripAnsi(stderr).trim() || `opencode models exited with code ${code}`), '');
       return;
     }
 
@@ -560,10 +568,41 @@ const runOpenCodeModelsCommand = (): Promise<string> => new Promise((resolve, re
   });
 });
 
+const sleep = (milliseconds: number): Promise<void> => new Promise((resolve) => {
+  setTimeout(resolve, milliseconds);
+});
+
+/**
+ * Runs the catalog probe, retrying only when opencode.db was locked.
+ *
+ * The probe reads the same database an `opencode run` writes to, so a busy
+ * agent turn makes it fail for a reason that has nothing to do with the
+ * catalog. Falling back then is actively harmful: the fallback lists hosted
+ * Anthropic/OpenAI ids a self-hosted install cannot run, and the composer shows
+ * them for the next minute. Every other failure still fails on the first
+ * attempt — retrying a missing binary or a bad config just delays the answer.
+ */
+const runOpenCodeModelsCommandWithRetry = async (): Promise<string> => {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await runOpenCodeModelsCommand();
+    } catch (error) {
+      if (attempt >= OPEN_CODE_MODELS_LOCK_RETRIES || !isDatabaseLockedError(error)) {
+        throw error;
+      }
+
+      console.warn(
+        `[OpenCode] opencode.db was locked while reading the model catalog; retrying (${attempt}/${OPEN_CODE_MODELS_LOCK_RETRIES - 1}).`,
+      );
+      await sleep(OPEN_CODE_MODELS_LOCK_RETRY_DELAY_MS * attempt);
+    }
+  }
+};
+
 export class OpenCodeProviderModels implements IProviderModels {
   async getSupportedModels(): Promise<ProviderModelsDefinition> {
     try {
-      const stdout = await runOpenCodeModelsCommand();
+      const stdout = await runOpenCodeModelsCommandWithRetry();
       const configuredModel = readOpenCodeConfiguredModel();
       const verboseModels = parseOpenCodeVerboseModelsStdout(stdout);
       if (verboseModels.length > 0) {
@@ -581,7 +620,14 @@ export class OpenCodeProviderModels implements IProviderModels {
 
       return buildOpenCodeDefinitionFromIds(ids, configuredModel);
     } catch (error) {
-      console.warn('[OpenCode] Unable to read the model catalog; using the fallback catalog:', error);
+      if (isDatabaseLockedError(error)) {
+        console.warn(
+          '[OpenCode] opencode.db stayed locked across every attempt; using the fallback catalog for the next minute.',
+        );
+      } else {
+        console.warn('[OpenCode] Unable to read the model catalog; using the fallback catalog:', error);
+      }
+
       return OPENCODE_FALLBACK_MODELS;
     }
   }

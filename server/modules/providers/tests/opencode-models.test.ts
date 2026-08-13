@@ -9,6 +9,7 @@ import {
   buildOpenCodeDefinitionFromIds,
   parseOpenCodeModelsStdout,
   parseOpenCodeVerboseModelsStdout,
+  OpenCodeProviderModels,
   readOpenCodeConfiguredModel,
   stripJsonComments,
 } from '@/modules/providers/list/opencode/opencode-models.provider.js';
@@ -247,4 +248,71 @@ test('stripJsonComments leaves comment-like sequences inside strings alone', () 
     stripJsonComments('{"baseURL": "https://llm.dudin.net/v1", // trailing\n "a": 1}'),
     '{"baseURL": "https://llm.dudin.net/v1", \n "a": 1}',
   );
+});
+
+// The catalog probe shells out to the same `opencode` binary an agent run uses,
+// against the same single-writer WAL database, so it loses that race routinely.
+// Falling back on a lost race is what put hosted Anthropic ids in the composer
+// of a self-hosted install.
+test('OpenCode models provider retries the catalog probe past a locked database', async () => {
+  const binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-lock-'));
+  const counterPath = path.join(binDir, 'attempts');
+  const originalPath = process.env.PATH;
+
+  fs.writeFileSync(counterPath, '0');
+  fs.writeFileSync(
+    path.join(binDir, 'opencode'),
+    `#!/bin/sh
+attempt=$(cat "${counterPath}")
+attempt=$((attempt + 1))
+printf '%s' "$attempt" > "${counterPath}"
+if [ "$attempt" -lt 3 ]; then
+  printf '\\033[91m\\033[1mError: \\033[0mUnexpected error\\n\\ndatabase is locked\\n' >&2
+  exit 1
+fi
+echo "dudin/only-real-model"
+`,
+    { mode: 0o755 },
+  );
+  process.env.PATH = `${binDir}${path.delimiter}${originalPath ?? ''}`;
+
+  test.after(() => {
+    process.env.PATH = originalPath;
+    fs.rmSync(binDir, { recursive: true, force: true });
+  });
+
+  const models = await new OpenCodeProviderModels().getSupportedModels();
+
+  assert.equal(fs.readFileSync(counterPath, 'utf8'), '3');
+  assert.equal(models.PROVISIONAL, undefined);
+  assert.deepEqual(models.OPTIONS.map((option) => option.value), ['dudin/only-real-model']);
+});
+
+test('OpenCode models provider gives up immediately on failures that are not locks', async () => {
+  const binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'opencode-broken-'));
+  const counterPath = path.join(binDir, 'attempts');
+  const originalPath = process.env.PATH;
+
+  fs.writeFileSync(counterPath, '0');
+  fs.writeFileSync(
+    path.join(binDir, 'opencode'),
+    `#!/bin/sh
+attempt=$(cat "${counterPath}")
+printf '%s' "$((attempt + 1))" > "${counterPath}"
+echo "config is not valid JSON" >&2
+exit 1
+`,
+    { mode: 0o755 },
+  );
+  process.env.PATH = `${binDir}${path.delimiter}${originalPath ?? ''}`;
+
+  test.after(() => {
+    process.env.PATH = originalPath;
+    fs.rmSync(binDir, { recursive: true, force: true });
+  });
+
+  const models = await new OpenCodeProviderModels().getSupportedModels();
+
+  assert.equal(fs.readFileSync(counterPath, 'utf8'), '1');
+  assert.equal(models.PROVISIONAL, true);
 });

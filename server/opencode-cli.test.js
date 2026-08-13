@@ -221,3 +221,127 @@ test('spawnOpenCode passes permission mode flags and env to the CLI', async () =
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
+
+/**
+ * Fake `opencode` whose `run` fails with a locked database for the first
+ * `lockedAttempts` invocations, counting them in `attemptsPath`.
+ *
+ * `models --verbose` always answers so the catalog probe the run makes on its
+ * way in does not become the thing under test.
+ */
+async function createLockingOpenCodeExecutable(binDir, attemptsPath, lockedAttempts) {
+  const scriptPath = path.join(binDir, 'opencode.js');
+  await writeFile(scriptPath, `
+const fs = require('node:fs');
+if (process.argv[2] === 'models') {
+  console.log('dudin/only-real-model');
+  process.exit(0);
+}
+
+const attempt = Number(fs.readFileSync(${JSON.stringify(attemptsPath)}, 'utf8')) + 1;
+fs.writeFileSync(${JSON.stringify(attemptsPath)}, String(attempt));
+
+if (attempt <= ${lockedAttempts}) {
+  // Byte-for-byte what opencode writes when it loses the race for opencode.db,
+  // colour codes included: it never checks isTTY.
+  process.stderr.write('\\u001b[91m\\u001b[1mError: \\u001b[0mUnexpected error\\n\\ndatabase is locked\\n');
+  process.exit(1);
+}
+
+console.log(JSON.stringify({ type: 'text', sessionID: 'open-lock-1', part: { type: 'text', text: 'ran on the retry' } }));
+`, 'utf8');
+
+  if (process.platform === 'win32') {
+    await writeFile(path.join(binDir, 'opencode.cmd'), '@echo off\r\nnode "%~dp0opencode.js" %*\r\n', 'utf8');
+    return;
+  }
+
+  const commandPath = path.join(binDir, 'opencode');
+  await writeFile(commandPath, '#!/bin/sh\nnode "$(dirname "$0")/opencode.js" "$@"\n', 'utf8');
+  await chmod(commandPath, 0o755);
+}
+
+async function withLockingOpenCode(lockedAttempts, assertions) {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'opencode-cli-lock-'));
+  const attemptsPath = path.join(tempRoot, 'attempts');
+  const pathKey = findEnvKey('PATH');
+  const pathExtKey = findEnvKey('PATHEXT');
+  const previousPath = process.env[pathKey];
+  const previousPathExt = process.env[pathExtKey];
+  const messages = [];
+  const writer = {
+    userId: null,
+    sessionId: null,
+    send(message) {
+      messages.push(message);
+    },
+    setSessionId(sessionId) {
+      this.sessionId = sessionId;
+    },
+  };
+
+  try {
+    await writeFile(attemptsPath, '0', 'utf8');
+    await createLockingOpenCodeExecutable(tempRoot, attemptsPath, lockedAttempts);
+    process.env[pathKey] = `${tempRoot}${path.delimiter}${previousPath || ''}`;
+    if (process.platform === 'win32') {
+      process.env[pathExtKey] = previousPathExt?.toUpperCase().includes('.CMD')
+        ? previousPathExt
+        : `.COM;.EXE;.BAT;.CMD${previousPathExt ? `;${previousPathExt}` : ''}`;
+    }
+
+    let runError = null;
+    try {
+      await spawnOpenCode('Hi', { cwd: tempRoot }, writer);
+    } catch (error) {
+      runError = error;
+    }
+
+    await assertions({
+      messages,
+      runError,
+      attempts: Number(await readFile(attemptsPath, 'utf8')),
+    });
+  } finally {
+    if (previousPath === undefined) {
+      delete process.env[pathKey];
+    } else {
+      process.env[pathKey] = previousPath;
+    }
+
+    if (previousPathExt === undefined) {
+      delete process.env[pathExtKey];
+    } else {
+      process.env[pathExtKey] = previousPathExt;
+    }
+
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+}
+
+// Every opencode on the machine writes to one WAL database, so a run can die at
+// init because another one — or this server's own catalog probe — held the lock
+// past opencode's 5 s busy_timeout. Nothing ran, so re-running repeats nothing.
+test('OpenCode run that loses the race for opencode.db is retried, not surfaced', async () => {
+  await withLockingOpenCode(1, ({ messages, runError, attempts }) => {
+    assert.equal(runError, null);
+    assert.equal(attempts, 2);
+    assert.equal(messages.some((message) => message.kind === 'error'), false);
+    assert.equal(messages.filter((message) => message.kind === 'complete').length, 1);
+  });
+});
+
+test('OpenCode run that keeps losing it reports the lock once, in plain text', async () => {
+  await withLockingOpenCode(5, ({ messages, runError, attempts }) => {
+    assert.notEqual(runError, null);
+    // One retry, then it tells the user instead of retrying forever.
+    assert.equal(attempts, 2);
+
+    const errors = messages.filter((message) => message.kind === 'error');
+    assert.equal(errors.length, 1);
+    assert.match(errors[0].content, /database is locked/);
+    assert.match(errors[0].content, /Nothing was lost and nothing is corrupt/);
+    // The colour codes never reach the browser.
+    assert.doesNotMatch(errors[0].content, /\u001B/);
+  });
+});
