@@ -64,7 +64,11 @@ export class OpenCodeSessionSynchronizer implements IProviderSessionSynchronizer
     try {
       const sinceMillis = since?.getTime() ?? null;
       const limitClause = limit ? 'LIMIT ?' : '';
-      const params = limit ? [sinceMillis, sinceMillis, limit] : [sinceMillis, sinceMillis];
+      // Every scan reads the whole session table rather than only what changed
+      // since the last one: OpenCode's sessions live in a single database the
+      // user also drives from the CLI and the TUI, and a cursor-filtered scan
+      // left everything older than the app's first scan invisible in the
+      // sidebar. It is one indexed read over a table of session rows.
       const rows = db.prepare(`
         SELECT
           s.id AS id,
@@ -76,15 +80,19 @@ export class OpenCodeSessionSynchronizer implements IProviderSessionSynchronizer
         FROM session s
         LEFT JOIN project p ON p.id = s.project_id
         WHERE s.time_archived IS NULL
-          AND (? IS NULL OR COALESCE(s.time_updated, s.time_created, 0) >= ?)
         ORDER BY COALESCE(s.time_updated, s.time_created, 0) DESC, s.id DESC
         ${limitClause}
-      `).all(...params) as OpenCodeSessionRow[];
+      `).all(...(limit ? [limit] : [])) as OpenCodeSessionRow[];
 
       let processed = 0;
       let firstSessionId: string | null = null;
       for (const row of rows) {
-        const indexedSessionId = this.upsertSession(db, row);
+        // Re-importing a session must not undo an archive the user asked for,
+        // so only a session that saw activity since the last scan is allowed to
+        // return to the active list.
+        const touched = Number(row.time_updated ?? row.time_created ?? 0);
+        const isNewlyActive = sinceMillis === null || touched >= sinceMillis;
+        const indexedSessionId = this.upsertSession(db, row, { preserveArchived: !isNewlyActive });
         if (!indexedSessionId) {
           continue;
         }
@@ -105,7 +113,11 @@ export class OpenCodeSessionSynchronizer implements IProviderSessionSynchronizer
     }
   }
 
-  private upsertSession(db: Database.Database, row: OpenCodeSessionRow): string | null {
+  private upsertSession(
+    db: Database.Database,
+    row: OpenCodeSessionRow,
+    options: { preserveArchived?: boolean } = {},
+  ): string | null {
     const sessionId = readOptionalString(row.id);
     const projectPath = readOptionalString(row.directory) ?? readOptionalString(row.worktree);
     if (!sessionId || !projectPath) {
@@ -162,6 +174,8 @@ export class OpenCodeSessionSynchronizer implements IProviderSessionSynchronizer
       normalizeProviderTimestamp(row.time_created),
       normalizeProviderTimestamp(row.time_updated ?? row.time_created),
       null,
+      null,
+      { preserveArchived: options.preserveArchived },
     );
   }
 
