@@ -89,6 +89,13 @@ export type ProviderModelOption = {
 export type ProviderModelsDefinition = {
   OPTIONS: ProviderModelOption[];
   DEFAULT: string;
+  /**
+   * Set when the adapter could not read the provider's real catalog and is
+   * returning a hardcoded guess. Such a list must not be cached for the normal
+   * multi-day TTL: it would pin the composer to models the install may not be
+   * able to run long after the underlying failure was fixed.
+   */
+  PROVISIONAL?: boolean;
 };
 
 /**

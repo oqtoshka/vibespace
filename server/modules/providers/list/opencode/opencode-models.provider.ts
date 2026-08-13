@@ -55,6 +55,9 @@ export const OPENCODE_FALLBACK_MODELS: ProviderModelsDefinition = {
     },
   ],
   DEFAULT: 'anthropic/claude-sonnet-4-5',
+  // Only ever returned when `opencode models` could not be read, so it is a
+  // guess about a CLI whose own config decides the answer.
+  PROVISIONAL: true,
 };
 
 const OPEN_CODE_MODELS_TIMEOUT_MS = 20_000;
@@ -569,11 +572,16 @@ export class OpenCodeProviderModels implements IProviderModels {
 
       const ids = parseOpenCodeModelsStdout(stdout);
       if (ids.length === 0) {
+        // Falling back silently is how a broken `opencode models` turned into a
+        // composer offering hosted Anthropic/OpenAI ids that a self-hosted
+        // install cannot run — with nothing in the log to say why.
+        console.warn('[OpenCode] `opencode models --verbose` listed no models; using the fallback catalog.');
         return OPENCODE_FALLBACK_MODELS;
       }
 
       return buildOpenCodeDefinitionFromIds(ids, configuredModel);
-    } catch {
+    } catch (error) {
+      console.warn('[OpenCode] Unable to read the model catalog; using the fallback catalog:', error);
       return OPENCODE_FALLBACK_MODELS;
     }
   }
@@ -629,5 +637,27 @@ export class OpenCodeProviderModels implements IProviderModels {
     input: ProviderChangeActiveModelInput,
   ): Promise<ProviderSessionActiveModelChange> {
     return writeProviderSessionActiveModelChange('opencode', input);
+  }
+
+  /**
+   * Fingerprints the OpenCode config files the catalog is derived from.
+   *
+   * `opencode models --verbose` reports whatever `opencode.json` declares, so a
+   * provider or model renamed there invalidates the cached catalog. Without
+   * this the composer served a three-day-old list: after a self-hosted model id
+   * changed, every send still went out with the retired id and the run came
+   * back as an opaque provider error.
+   */
+  async getCatalogFingerprint(): Promise<string | null> {
+    return listOpenCodeConfigPaths()
+      .map((configPath) => {
+        try {
+          const stats = fsSync.statSync(configPath);
+          return `${configPath}:${stats.mtimeMs}:${stats.size}`;
+        } catch {
+          return `${configPath}:absent`;
+        }
+      })
+      .join('|');
   }
 }
