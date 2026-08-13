@@ -559,6 +559,41 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
   }
 
   /**
+   * Erases one session from `opencode.db`.
+   *
+   * OpenCode keeps every session in one shared database, so a permanent delete
+   * in the app used to leave the conversation behind: it stayed resumable
+   * through `opencode --session`, and the synchronizer imported it back into
+   * the sidebar on the next scan. The `part`/`message` rows are removed
+   * explicitly rather than left to `ON DELETE CASCADE`, which only fires while
+   * `PRAGMA foreign_keys` is on; the remaining per-session tables
+   * (`session_input`, `todo`, …) do cascade off the `session` row.
+   */
+  async deleteSession(providerSessionId: string): Promise<boolean> {
+    const dbPath = getOpenCodeDatabasePath();
+    if (!fsSync.existsSync(dbPath)) {
+      return false;
+    }
+
+    const db = new Database(dbPath, { fileMustExist: true });
+    try {
+      db.pragma('foreign_keys = ON');
+      const remove = db.transaction((sessionId: string) => {
+        db.prepare('DELETE FROM part WHERE session_id = ?').run(sessionId);
+        db.prepare('DELETE FROM message WHERE session_id = ?').run(sessionId);
+        return db.prepare('DELETE FROM session WHERE id = ?').run(sessionId).changes;
+      });
+
+      return remove(providerSessionId) > 0;
+    } catch (error) {
+      console.warn(`[OpenCodeProvider] Failed to delete session ${providerSessionId}:`, error);
+      return false;
+    } finally {
+      db.close();
+    }
+  }
+
+  /**
    * Rewinds an OpenCode session by deleting every `message` (and its `part`
    * rows) at or after the anchor message, in the same `(time_created, id)` order
    * the history reader uses. Resuming `opencode run --session <id>` then reads

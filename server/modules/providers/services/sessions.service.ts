@@ -52,6 +52,26 @@ async function removeFileIfExists(filePath: string): Promise<boolean> {
 }
 
 /**
+ * Asks the provider to erase its own copy of one session, when it can.
+ *
+ * Optional on the provider contract: file-backed providers already lose the
+ * session with their transcript file, so only shared-store providers implement
+ * it. A failure here must not abort the delete — the app row still goes.
+ */
+async function deleteProviderSession(
+  provider: LLMProvider,
+  providerSessionId: string,
+): Promise<boolean> {
+  try {
+    const sessions = providerRegistry.resolveProvider(provider).sessions;
+    return await sessions.deleteSession?.(providerSessionId) ?? false;
+  } catch (error) {
+    console.warn(`[Sessions] Provider "${provider}" failed to delete ${providerSessionId}:`, error);
+    return false;
+  }
+}
+
+/**
  * Archive rows need a stable project label even when the owning project is not
  * part of the active sidebar payload. This lightweight resolver keeps the
  * archive API self-contained while still matching the project's stored display
@@ -335,6 +355,15 @@ export const sessionsService = {
       removedFromDisk = await removeFileIfExists(session.jsonl_path);
     }
 
+    // Providers with a shared store (OpenCode's single sqlite database) have no
+    // per-session file to unlink, so the row above is not the whole session.
+    // Without this the conversation stayed resumable in the provider CLI and
+    // came back into the sidebar on the next sync.
+    const removedFromProvider = await deleteProviderSession(
+      session.provider as LLMProvider,
+      session.provider_session_id ?? session.session_id,
+    );
+
     const deleted = sessionsDb.deleteSessionById(sessionId);
     if (!deleted) {
       throw new AppError(`Session "${sessionId}" was not found.`, {
@@ -346,7 +375,7 @@ export const sessionsService = {
     return {
       sessionId,
       action: 'deleted',
-      deletedFromDisk: removedFromDisk,
+      deletedFromDisk: removedFromDisk || removedFromProvider,
     };
   },
 
