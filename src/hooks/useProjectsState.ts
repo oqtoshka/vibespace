@@ -106,14 +106,22 @@ const getProjectSessions = (project: Project): ProjectSession[] => {
 
 const countLoadedProjectSessions = (project: Project): number => getProjectSessions(project).length;
 
-/** Which per-provider list on a project a session belongs to. */
-const SESSION_LIST_KEY_BY_PROVIDER: Record<string, keyof Project> = {
-  claude: 'sessions',
-  codex: 'codexSessions',
-  cursor: 'cursorSessions',
-  gemini: 'geminiSessions',
-  opencode: 'opencodeSessions',
-};
+/**
+ * Every list a session could be sitting in.
+ *
+ * The server sends them all in `sessions`, each tagged with its own provider;
+ * the per-provider buckets are legacy and no payload fills them any more. They
+ * are still searched when updating a session in place, so a client holding an
+ * older snapshot keeps working — but nothing renders them, so a session may
+ * only ever be *inserted* into `sessions`.
+ */
+const SESSION_LIST_KEYS: Array<keyof Project> = [
+  'sessions',
+  'codexSessions',
+  'cursorSessions',
+  'geminiSessions',
+  'opencodeSessions',
+];
 
 /**
  * Applies one `session_upserted` delta to the project list.
@@ -136,7 +144,7 @@ const upsertSessionIntoProjects = (
     let projectChanged = false;
     const nextProject: Project = { ...project };
 
-    for (const listKey of Object.values(SESSION_LIST_KEY_BY_PROVIDER)) {
+    for (const listKey of SESSION_LIST_KEYS) {
       const list = nextProject[listKey] as ProjectSession[] | undefined;
       if (!Array.isArray(list)) continue;
 
@@ -160,12 +168,10 @@ const upsertSessionIntoProjects = (
     return updated;
   }
 
-  // Not on the list yet — a session that has only just been indexed.
+  // Not on the list yet — a session that has only just been indexed. It goes
+  // into `sessions` whatever its provider: that is the one list the sidebar
+  // reads, and the provider travels with the row instead of with the bucket.
   if (!projectId || !provider) {
-    return projects;
-  }
-  const listKey = SESSION_LIST_KEY_BY_PROVIDER[provider];
-  if (!listKey) {
     return projects;
   }
 
@@ -173,10 +179,10 @@ const upsertSessionIntoProjects = (
     if (project.projectId !== projectId) return project;
 
     changed = true;
-    const list = (project[listKey] as ProjectSession[] | undefined) ?? [];
+    const list = project.sessions ?? [];
     return {
       ...project,
-      [listKey]: [{ ...incoming, id: sessionId, __provider: provider } as ProjectSession, ...list],
+      sessions: [{ ...incoming, id: sessionId, __provider: provider } as ProjectSession, ...list],
     };
   });
 };
