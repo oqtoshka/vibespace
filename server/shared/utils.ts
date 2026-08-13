@@ -1125,6 +1125,22 @@ export function getOpenCodeDatabasePath(): string {
   return path.join(os.homedir(), '.local', 'share', 'opencode', 'opencode.db');
 }
 
+/**
+ * Directory the background title/recap summariser runs its OpenCode turns in.
+ *
+ * The helper must not run in the user's project. OpenCode writes a session row
+ * for every `run`, the whole store is imported into the sidebar, and the
+ * importer binds a never-seen provider id to the newest unmapped app row of the
+ * same project — so a helper started while the user's brand-new chat was still
+ * waiting for its provider id would be adopted by that chat's row, and the
+ * helper's cleanup would then delete the user's session. A directory no app
+ * session can ever live in takes that whole class of collision away, and the
+ * summariser loses nothing: it only ever reads the transcript it was handed.
+ */
+export function getOpenCodeHelperWorkspace(): string {
+  return path.join(os.homedir(), '.vibespace', 'opencode-helper');
+}
+
 // CSI/OSC sequences. OpenCode colours its stderr unconditionally — it never
 // checks isTTY — so anything we forward to the browser arrives wrapped in
 // escape codes that the UI renders literally ("[91m[1mError: [0m...").
