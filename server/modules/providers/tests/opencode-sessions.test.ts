@@ -379,6 +379,40 @@ test('OpenCode sessions provider normalizes quoted live text and skips user echo
   assert.deepEqual(userEcho, []);
 });
 
+test('OpenCode sessions provider surfaces the structured error payload', () => {
+  const provider = new OpenCodeSessionsProvider();
+
+  // The shape a failed `opencode run --format json` actually emits.
+  const structured = provider.normalizeMessage({
+    type: 'error',
+    sessionID: 'open-session-live',
+    error: {
+      name: 'UnknownError',
+      data: { message: 'Unexpected server error. Check server logs for details.', ref: 'err_a3fe1b20' },
+    },
+  }, null);
+
+  assert.equal(structured.length, 1);
+  assert.equal(structured[0]?.kind, 'error');
+  assert.equal(
+    structured[0]?.content,
+    'UnknownError: Unexpected server error. Check server logs for details. (ref err_a3fe1b20)',
+  );
+
+  const flat = provider.normalizeMessage({
+    type: 'error',
+    sessionID: 'open-session-live',
+    error: 'plain failure',
+  }, null);
+  assert.equal(flat[0]?.content, 'plain failure');
+
+  const empty = provider.normalizeMessage({
+    type: 'error',
+    sessionID: 'open-session-live',
+  }, null);
+  assert.equal(empty[0]?.content, 'Unknown OpenCode error');
+});
+
 test('OpenCode sessions provider reads sqlite history and token usage', { concurrency: false }, async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'opencode-session-history-'));
   const workspacePath = path.join(tempRoot, 'workspace');

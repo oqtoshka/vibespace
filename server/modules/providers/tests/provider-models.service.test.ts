@@ -7,6 +7,7 @@ import test from 'node:test';
 import {
   createProviderModelsService,
   PROVIDER_MODELS_CACHE_TTL_MS,
+  PROVIDER_MODELS_PROVISIONAL_CACHE_TTL_MS,
 } from '@/modules/providers/services/provider-models.service.js';
 import type {
   ProviderChangeActiveModelInput,
@@ -60,7 +61,11 @@ test('provider models service delegates to the resolved provider model adapter',
 
   const models = await service.getProviderModels('codex', { bypassCache: true });
 
-  assert.deepEqual(calls, ['codex']);
+  // Every resolution goes to the requested provider. The count is deliberately
+  // not asserted: one lookup resolves the adapter more than once (catalog read
+  // plus fingerprint read), which is an implementation detail of caching.
+  assert.ok(calls.length > 0);
+  assert.deepEqual([...new Set(calls)], ['codex']);
   assert.equal(models.models.DEFAULT, 'codex-models');
   assert.equal(models.cache.source, 'fresh');
 });
@@ -125,6 +130,87 @@ test('provider models are cached for the three-day ttl', async () => {
     const refreshed = await service.getProviderModels('codex');
     assert.equal(loadCount, 2);
     assert.equal(refreshed.models.DEFAULT, 'codex-2');
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('a provisional catalog is only cached for a minute', async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'provider-model-cache-provisional-'));
+  let currentTime = 1_000;
+  let loadCount = 0;
+
+  try {
+    const service = createProviderModelsService({
+      cachePath: path.join(tempRoot, 'models-cache.json'),
+      now: () => currentTime,
+      resolveProvider: () => ({
+        models: {
+          getSupportedModels: async () => {
+            loadCount += 1;
+            return { ...createModels(`opencode-${loadCount}`), PROVISIONAL: true };
+          },
+          getCurrentActiveModel: async () => createCurrentActiveModel('opencode-active'),
+          changeActiveModel: async (input) => createSessionActiveModelChange('opencode', input),
+        },
+      }),
+    });
+
+    await service.getProviderModels('opencode');
+    currentTime += PROVIDER_MODELS_PROVISIONAL_CACHE_TTL_MS - 1;
+    await service.getProviderModels('opencode');
+    assert.equal(loadCount, 1);
+
+    currentTime += 2;
+    const refreshed = await service.getProviderModels('opencode');
+    assert.equal(loadCount, 2);
+    assert.equal(refreshed.models.DEFAULT, 'opencode-2');
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('a changed catalog fingerprint drops a cached entry before its ttl', async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'provider-model-cache-fingerprint-'));
+  const cachePath = path.join(tempRoot, 'models-cache.json');
+  let fingerprint = 'config-v1';
+  let loadCount = 0;
+
+  const buildService = () => createProviderModelsService({
+    cachePath,
+    resolveProvider: (provider) => ({
+      models: {
+        getSupportedModels: async () => {
+          loadCount += 1;
+          return createModels(`${provider}-${loadCount}`);
+        },
+        getCurrentActiveModel: async () => createCurrentActiveModel(`${provider}-active`),
+        changeActiveModel: async (input) => createSessionActiveModelChange(provider, input),
+        getCatalogFingerprint: async () => fingerprint,
+      },
+    }),
+  });
+
+  try {
+    const service = buildService();
+    const first = await service.getProviderModels('opencode');
+    assert.equal(first.models.DEFAULT, 'opencode-1');
+    assert.equal((await service.getProviderModels('opencode')).models.DEFAULT, 'opencode-1');
+    assert.equal(loadCount, 1);
+
+    // The user edits opencode.json: the cached catalog may now name models the
+    // provider no longer serves, so the TTL must not keep it alive.
+    fingerprint = 'config-v2';
+    const refreshed = await service.getProviderModels('opencode');
+    assert.equal(refreshed.models.DEFAULT, 'opencode-2');
+    assert.equal(loadCount, 2);
+
+    // The persisted copy is fingerprinted too, so a restart does not resurrect
+    // the stale list from disk.
+    fingerprint = 'config-v3';
+    const restarted = await buildService().getProviderModels('opencode');
+    assert.equal(restarted.models.DEFAULT, 'opencode-3');
+    assert.equal(restarted.cache.source, 'fresh');
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
