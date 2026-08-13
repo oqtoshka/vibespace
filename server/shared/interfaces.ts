@@ -73,6 +73,18 @@ export interface IProviderModels {
   changeActiveModel(
     input: ProviderChangeActiveModelInput,
   ): Promise<ProviderSessionActiveModelChange>;
+
+  /**
+   * Returns a token that changes whenever the inputs behind this provider's
+   * catalog change, or `null` when the provider cannot tell.
+   *
+   * The models cache holds an entry for three days, which is fine while the
+   * catalog is stable and wrong the moment the user edits the provider's own
+   * config: the composer keeps offering a model the backend no longer serves
+   * and every run fails. Providers that read a local config implement this so
+   * the cached entry is dropped as soon as that config is touched.
+   */
+  getCatalogFingerprint?(): Promise<string | null>;
 }
 
 // ---------------------------

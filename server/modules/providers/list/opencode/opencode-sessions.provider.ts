@@ -73,6 +73,38 @@ const extractText = (value: unknown): string => {
   return unwrapJsonStringLiteral(text);
 };
 
+/**
+ * Renders an OpenCode `error` event into one readable line.
+ *
+ * OpenCode does not send a flat string: a failed run emits
+ * `{"type":"error","error":{"name":"UnknownError","data":{"message":"…","ref":"err_…"}}}`.
+ * Reading only `raw.error`/`raw.message` as strings therefore threw away the
+ * whole payload and left the chat showing a bare "Unknown OpenCode error" —
+ * which is what a run against a model the server no longer serves looked like.
+ * The `ref` is kept because it is the id to grep for in OpenCode's own log.
+ */
+const formatOpenCodeError = (raw: AnyRecord): string => {
+  const flat = readOptionalString(raw.error) ?? readOptionalString(raw.message);
+  if (flat) {
+    return flat;
+  }
+
+  const error = readObjectRecord(raw.error);
+  const data = readObjectRecord(error?.data);
+  const name = readOptionalString(error?.name);
+  const message = readOptionalString(data?.message)
+    ?? readOptionalString(error?.message)
+    ?? readOptionalString(data?.error);
+  const ref = readOptionalString(data?.ref);
+
+  const detail = [name, message].filter(Boolean).join(': ');
+  if (!detail) {
+    return 'Unknown OpenCode error';
+  }
+
+  return ref ? `${detail} (ref ${ref})` : detail;
+};
+
 const hasUserRole = (value: unknown): boolean => {
   const record = readObjectRecord(value);
   return readOptionalString(record?.role) === 'user';
@@ -284,7 +316,7 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
         timestamp,
         provider: PROVIDER,
         kind: 'error',
-        content: readOptionalString(raw.error) ?? readOptionalString(raw.message) ?? 'Unknown OpenCode error',
+        content: formatOpenCodeError(raw),
       })];
     }
 
