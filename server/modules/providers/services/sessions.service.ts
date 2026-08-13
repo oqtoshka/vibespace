@@ -205,9 +205,23 @@ export const sessionsService = {
     const dropIndexedRow = (): void => {
       try {
         const row = sessionsDb.getSessionByProviderSessionId(providerSessionId);
-        if (row) {
-          sessionsDb.deleteSessionById(row.session_id);
+        if (!row) {
+          return;
         }
+
+        // Only ever a row the importer created for this helper, which is keyed
+        // by the provider id itself. An app-allocated row carries a chat the
+        // user started and opened, and reaching one here means the id was bound
+        // to somebody else's conversation — deleting it would take that
+        // conversation with it, which is precisely what must not happen.
+        if (row.session_id !== providerSessionId) {
+          console.warn(
+            `[Sessions] Refusing to drop app session ${row.session_id}: it claimed the helper id ${providerSessionId}.`,
+          );
+          return;
+        }
+
+        sessionsDb.deleteSessionById(row.session_id);
       } catch (error) {
         console.warn(`[Sessions] Could not drop the indexed row for ${providerSessionId}:`, error);
       }

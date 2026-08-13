@@ -1,5 +1,5 @@
 import fsSync from 'node:fs';
-import { mkdtemp, rm, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, unlink, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -13,7 +13,7 @@ import { providerModelsService } from './modules/providers/services/provider-mod
 import { notifyRunFailed, notifyRunStopped } from './services/notification-orchestrator.js';
 import { scheduleSessionRecap } from './services/session-recap.service.js';
 import { broadcastSessionUpdate } from './modules/providers/index.js';
-import { createCompleteMessage, createNormalizedMessage, flattenPromptForWindowsShell, getOpenCodeDatabasePath, isDatabaseLockedError, stripAnsi } from './shared/utils.js';
+import { createCompleteMessage, createNormalizedMessage, flattenPromptForWindowsShell, getOpenCodeDatabasePath, getOpenCodeHelperWorkspace, isDatabaseLockedError, stripAnsi } from './shared/utils.js';
 
 // Every `opencode` process on this machine writes to one WAL database, so a
 // second run — or a terminal opencode, or this server's own catalog probe —
@@ -150,8 +150,17 @@ function readOpenCodeTokenUsage(sessionId) {
  *
  * `--agent plan` is the read-only agent, which is all a summariser needs; it
  * takes the place of the tool deny-list the Claude path passes.
+ *
+ * It deliberately does NOT run in the conversation's own directory: the store
+ * importer binds an unrecognised provider id to the newest unmapped app row of
+ * the same project, so a helper started while a brand-new chat was still
+ * waiting for its own id would be adopted by that chat — and the cleanup below
+ * would then delete the user's session along with the helper's.
  */
 async function runOpenCodeRecapQuery(prompt, options, writer) {
+  const workspace = getOpenCodeHelperWorkspace();
+  await mkdir(workspace, { recursive: true });
+
   let helperSessionId = null;
   const capturingWriter = {
     userId: null,
@@ -168,7 +177,7 @@ async function runOpenCodeRecapQuery(prompt, options, writer) {
 
   try {
     await spawnOpenCode(prompt, {
-      cwd: options.cwd,
+      cwd: workspace,
       model: options.model,
       permissionMode: 'plan',
       ephemeral: true,

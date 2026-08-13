@@ -7,6 +7,7 @@ import { sessionsDb } from '@/modules/database/index.js';
 import type { IProviderSessionSynchronizer } from '@/shared/interfaces.js';
 import {
   getOpenCodeDatabasePath,
+  getOpenCodeHelperWorkspace,
   normalizeProviderTimestamp,
   normalizeSessionName,
   readJsonRecord,
@@ -121,6 +122,14 @@ export class OpenCodeSessionSynchronizer implements IProviderSessionSynchronizer
     const sessionId = readOptionalString(row.id);
     const projectPath = readOptionalString(row.directory) ?? readOptionalString(row.worktree);
     if (!sessionId || !projectPath) {
+      return null;
+    }
+
+    // Turns the background summariser ran on its own behalf. They are deleted
+    // again as soon as the answer is in, so importing one only ever produces a
+    // sidebar entry that vanishes — or worse, lets the helper claim the app row
+    // of a chat still waiting for its provider id.
+    if (path.resolve(projectPath) === getOpenCodeHelperWorkspace()) {
       return null;
     }
 
