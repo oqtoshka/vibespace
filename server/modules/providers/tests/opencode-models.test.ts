@@ -10,6 +10,7 @@ import {
   parseOpenCodeModelsStdout,
   parseOpenCodeVerboseModelsStdout,
   OpenCodeProviderModels,
+  __testing,
   readOpenCodeConfiguredModel,
   stripJsonComments,
 } from '@/modules/providers/list/opencode/opencode-models.provider.js';
@@ -315,4 +316,22 @@ exit 1
 
   assert.equal(fs.readFileSync(counterPath, 'utf8'), '1');
   assert.equal(models.PROVISIONAL, true);
+});
+
+// A session row stores the model split in two, and the id half alone is
+// neither something `opencode run --model` accepts nor anything the catalog
+// lists — so the picker could not highlight what the session was running, and
+// a background turn launched with it exited 1.
+test('OpenCode session model values keep their provider half', () => {
+  const parse = __testing.parseOpenCodeSessionModelValue;
+
+  assert.equal(
+    parse('{"id":"zhiqing/Huihui-Qwen3.6-27B-abliterated-AWQ","providerID":"dudin","variant":"default"}'),
+    'dudin/zhiqing/Huihui-Qwen3.6-27B-abliterated-AWQ',
+  );
+  // Already qualified, or no provider to qualify with: left alone.
+  assert.equal(parse('{"id":"dudin/model-a","providerID":"dudin"}'), 'dudin/model-a');
+  assert.equal(parse('{"id":"anthropic/claude-sonnet-4-5"}'), 'anthropic/claude-sonnet-4-5');
+  assert.equal(parse('anthropic/claude-sonnet-4-5'), 'anthropic/claude-sonnet-4-5');
+  assert.equal(parse(''), null);
 });

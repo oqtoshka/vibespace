@@ -26,6 +26,7 @@
 import { promises as fs } from 'fs';
 
 import { sessionsDb } from '../modules/database/repositories/sessions.db.js';
+import { sessionsService } from '../modules/providers/services/sessions.service.js';
 
 /**
  * Quiet period before summarising. Long enough that a normal back-and-forth
@@ -47,8 +48,13 @@ const RECAP_PROMPT_CHARS = 12000;
 const MAX_TITLE_CHARS = 60;
 const MAX_RECAP_CHARS = 400;
 
-/** Model for the summarising call — cheap and fast, this runs per session. */
-const RECAP_MODEL = 'haiku';
+/**
+ * Model for the summarising call when the caller names none — Claude's cheap
+ * tier, because this runs once per session. Providers without a cheap tier of
+ * their own pass the session's current model instead, which is the only one
+ * they are certain can serve the request at all.
+ */
+const DEFAULT_RECAP_MODEL = 'haiku';
 
 /** sessionId -> pending debounce timer. */
 const pendingRecaps = new Map();
@@ -65,14 +71,14 @@ const inFlightRecaps = new Set();
  * assistant's prose, which is what a recap is a summary of.
  *
  * @param {string} jsonlPath
- * @returns {Promise<Array<{role: string, text: string}>>}
+ * @returns {Promise<{messages: Array<{role: string, text: string}>, total: number}>}
  */
 async function readTranscriptTail(jsonlPath) {
   let content;
   try {
     content = await fs.readFile(jsonlPath, 'utf8');
   } catch {
-    return [];
+    return { messages: [], total: 0 };
   }
 
   const messages = [];
@@ -113,7 +119,61 @@ async function readTranscriptTail(jsonlPath) {
     });
   }
 
-  return messages.slice(-RECAP_TRANSCRIPT_LINES);
+  // `total` is the whole conversation, not the tail: it is what tells an idle
+  // session apart from one that has moved on. Comparing tail lengths would
+  // stop every session dead at RECAP_TRANSCRIPT_LINES, since past that point
+  // the tail is always exactly that long and no recap would ever refresh.
+  return { messages: messages.slice(-RECAP_TRANSCRIPT_LINES), total: messages.length };
+}
+
+/**
+ * The same tail, for a provider that keeps no transcript file.
+ *
+ * OpenCode stores conversations in one shared SQLite database rather than a
+ * file per session, so there is nothing to read line by line. Its history
+ * reader already returns the normalized messages the UI renders, which is the
+ * same material `readTranscriptTail` extracts from a JSONL — tool calls and
+ * their results excluded, since they are most of the bytes and almost none of
+ * the meaning.
+ *
+ * @param {string} sessionId - App session id.
+ * @param {Function} [fetchHistory] - Test seam; defaults to the session service.
+ * @returns {Promise<{messages: Array<{role: string, text: string}>, total: number}>}
+ */
+async function readIndexedTranscriptTail(
+  sessionId,
+  fetchHistory = (id, options) => sessionsService.fetchHistory(id, options),
+) {
+  let history;
+  try {
+    // A generous multiple of the line budget: the page is counted in messages
+    // of every kind, and only the text ones survive the filter below.
+    history = await fetchHistory(sessionId, { limit: RECAP_TRANSCRIPT_LINES * 4, offset: 0 });
+  } catch {
+    return { messages: [], total: 0 };
+  }
+
+  const messages = [];
+  for (const message of history.messages ?? []) {
+    if (message?.kind !== 'text') continue;
+
+    const text = typeof message.content === 'string' ? message.content.trim() : '';
+    if (!text) continue;
+    if (text.startsWith('<local-command') || text.startsWith('<system-reminder')) continue;
+
+    messages.push({
+      role: message.role === 'user' ? 'user' : 'assistant',
+      text: text.length > RECAP_MESSAGE_CHARS ? `${text.slice(0, RECAP_MESSAGE_CHARS)}…` : text,
+    });
+  }
+
+  // `total` counts every message in the session, not just the readable ones on
+  // this page — an approximation, but a monotonic one, which is all the
+  // idle-session check needs.
+  return {
+    messages: messages.slice(-RECAP_TRANSCRIPT_LINES),
+    total: Math.max(history.total ?? 0, messages.length),
+  };
 }
 
 function buildRecapPrompt(messages) {
@@ -181,29 +241,42 @@ function parseRecapResponse(text) {
  * @param {Object} params
  * @param {string} params.sessionId - Runtime session id (app or provider id).
  * @param {string} params.cwd - Project root; the helper session runs here.
- * @param {Function} params.runQuery - `queryClaudeSDK`, injected to keep this
- *   module free of a cycle back into the SDK layer.
+ * @param {Function} params.runQuery - The provider's own query entry point,
+ *   injected to keep this module free of a cycle back into the runtime layer.
+ * @param {string} [params.model] - Model for the summarising call. Defaults to
+ *   Claude's cheap tier; other providers pass what they can actually run.
  * @param {Function} [params.onRecap] - Called with the stored result so the
  *   caller can push it to connected clients.
  */
-async function generateRecap({ sessionId, cwd, runQuery, onRecap }) {
+async function generateRecap({ sessionId, cwd, runQuery, model, onRecap }) {
   const session = sessionsDb.getSessionById(sessionId)
     ?? sessionsDb.getSessionByProviderSessionId(sessionId);
-  if (!session?.jsonl_path) return;
+  if (!session) return;
 
-  const messages = await readTranscriptTail(session.jsonl_path);
+  // A transcript file when the provider keeps one per session, the indexed
+  // history when it keeps a shared store instead (OpenCode).
+  const { messages, total } = session.jsonl_path
+    ? await readTranscriptTail(session.jsonl_path)
+    : await readIndexedTranscriptTail(session.session_id);
   // One exchange is not yet a session worth describing.
   if (messages.length < 2) return;
 
   // Nothing new since the last recap — the debounce fired on an idle session.
-  if (session.recap && session.recap_message_count === messages.length) return;
+  if (session.recap && session.recap_message_count === total) return;
 
   let responseText = '';
   const writer = {
+    // The helper run has no user behind it, so nothing it does may raise a
+    // notification.
+    userId: null,
     send: (data) => {
       try {
         const parsed = typeof data === 'string' ? JSON.parse(data) : data;
-        if (parsed?.kind === 'text' && typeof parsed.content === 'string') {
+        // Whole assistant messages (Claude) and streamed fragments (OpenCode)
+        // are the same text arriving under two kinds; no runtime emits both
+        // for the same content, so accumulating both cannot double-count.
+        if ((parsed?.kind === 'text' || parsed?.kind === 'stream_delta')
+          && typeof parsed.content === 'string') {
           responseText += parsed.content;
         }
       } catch {
@@ -215,7 +288,7 @@ async function generateRecap({ sessionId, cwd, runQuery, onRecap }) {
 
   await runQuery(buildRecapPrompt(messages), {
     cwd,
-    model: RECAP_MODEL,
+    model: model || DEFAULT_RECAP_MODEL,
     permissionMode: 'bypassPermissions',
     // Nothing to do but read the text it was handed.
     toolsSettings: { disallowedTools: ['Bash', 'Edit', 'Write', 'Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch', 'Task'] },
@@ -233,7 +306,7 @@ async function generateRecap({ sessionId, cwd, runQuery, onRecap }) {
   const rowId = session.session_id;
 
   if (result.recap) {
-    sessionsDb.updateSessionRecap(rowId, result.recap, messages.length);
+    sessionsDb.updateSessionRecap(rowId, result.recap, total);
   }
   // 'ai' never overwrites a name the user set by hand — that ranking lives in
   // shouldReplaceSessionName and updateSessionCustomName honours it via
@@ -257,7 +330,7 @@ async function generateRecap({ sessionId, cwd, runQuery, onRecap }) {
  *
  * @param {Object} params - See {@link generateRecap}.
  */
-export function scheduleSessionRecap({ sessionId, cwd, runQuery, onRecap }) {
+export function scheduleSessionRecap({ sessionId, cwd, runQuery, model, onRecap }) {
   if (!sessionId || !cwd || typeof runQuery !== 'function') return;
 
   const existing = pendingRecaps.get(sessionId);
@@ -270,7 +343,7 @@ export function scheduleSessionRecap({ sessionId, cwd, runQuery, onRecap }) {
     if (inFlightRecaps.has(sessionId)) return;
 
     inFlightRecaps.add(sessionId);
-    generateRecap({ sessionId, cwd, runQuery, onRecap })
+    generateRecap({ sessionId, cwd, runQuery, model, onRecap })
       .catch((error) => {
         console.warn(`[recap] ${sessionId} failed:`, error?.message || error);
       })
@@ -295,4 +368,9 @@ export function cancelSessionRecap(sessionId) {
 }
 
 /** Test seam. */
-export const __testing = { readTranscriptTail, parseRecapResponse, buildRecapPrompt };
+export const __testing = {
+  readTranscriptTail,
+  readIndexedTranscriptTail,
+  parseRecapResponse,
+  buildRecapPrompt,
+};
