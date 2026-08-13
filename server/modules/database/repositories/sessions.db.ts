@@ -82,9 +82,14 @@ export const sessionsDb = {
     createdAt?: string,
     updatedAt?: string,
     jsonlPath?: string | null,
-    nameSource?: SessionNameSource | null
+    nameSource?: SessionNameSource | null,
+    options: { preserveArchived?: boolean } = {}
   ): string {
     const db = getConnection();
+    // Indexing a session normally means it saw activity, which un-archives it.
+    // A provider that re-imports its whole store on every scan has to be able
+    // to opt out, or a refresh would silently undo every archive.
+    const archivedAssignment = options.preserveArchived ? '' : 'isArchived = 0,';
     const createdAtValue = normalizeTimestamp(createdAt);
     const updatedAtValue = normalizeTimestamp(updatedAt);
 
@@ -125,7 +130,7 @@ export const sessionsDb = {
            project_path = ?,
            jsonl_path = ?,
            worktree_path = ?,
-           isArchived = 0,
+           ${archivedAssignment}
            custom_name = COALESCE(?, custom_name),
            name_source = COALESCE(?, name_source)
          WHERE session_id = ?`
@@ -156,7 +161,7 @@ export const sessionsDb = {
          project_path = excluded.project_path,
          jsonl_path = excluded.jsonl_path,
          worktree_path = excluded.worktree_path,
-         isArchived = 0,
+         ${archivedAssignment}
          custom_name = COALESCE(excluded.custom_name, sessions.custom_name),
          name_source = COALESCE(excluded.name_source, sessions.name_source)`
     ).run(

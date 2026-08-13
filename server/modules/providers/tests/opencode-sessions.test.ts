@@ -9,6 +9,7 @@ import Database from 'better-sqlite3';
 import { closeConnection, initializeDatabase, sessionsDb } from '@/modules/database/index.js';
 import { OpenCodeSessionSynchronizer } from '@/modules/providers/list/opencode/opencode-session-synchronizer.provider.js';
 import { OpenCodeSessionsProvider } from '@/modules/providers/list/opencode/opencode-sessions.provider.js';
+import { sessionsService } from '@/modules/providers/services/sessions.service.js';
 import { appendImagesInputTag } from '@/shared/image-attachments.js';
 
 const patchHomeDir = (nextHomeDir: string) => {
@@ -315,6 +316,94 @@ test('OpenCode session synchronizer adopts the pending app session before watche
         assert.equal(sessionsDb.getAllSessions().length, 1);
         assert.equal(sessionsDb.getSessionById('app-session-race')?.provider_session_id, 'open-session-1');
       });
+    });
+  } finally {
+    restoreHomeDir();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('OpenCode session synchronizer imports every session, cursor or not, without undoing archives', { concurrency: false }, async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'opencode-session-sync-full-'));
+  const workspacePath = path.join(tempRoot, 'workspace');
+  await mkdir(workspacePath, { recursive: true });
+  const restoreHomeDir = patchHomeDir(tempRoot);
+
+  try {
+    await createOpenCodeDatabase(tempRoot, workspacePath);
+    await withIsolatedDatabase(async () => {
+      const synchronizer = new OpenCodeSessionSynchronizer();
+
+      // The session was last touched in 2023; a cursor-filtered scan skipped it
+      // and it never appeared in the sidebar.
+      assert.equal(await synchronizer.synchronize(new Date()), 1);
+      assert.equal(sessionsDb.getSessionById('open-session-1')?.provider, 'opencode');
+
+      // Re-importing it must not drag an archived session back into the list.
+      sessionsDb.updateSessionIsArchived('open-session-1', true);
+      await synchronizer.synchronize(new Date());
+      assert.equal(Boolean(sessionsDb.getSessionById('open-session-1')?.isArchived), true);
+
+      // Activity since the cursor still restores it, as it always did.
+      await synchronizer.synchronize(new Date(1_700_000_000_000));
+      assert.equal(Boolean(sessionsDb.getSessionById('open-session-1')?.isArchived), false);
+    });
+  } finally {
+    restoreHomeDir();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('OpenCode sessions provider erases a deleted session from opencode.db', { concurrency: false }, async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'opencode-session-delete-'));
+  const workspacePath = path.join(tempRoot, 'workspace');
+  await mkdir(workspacePath, { recursive: true });
+  const restoreHomeDir = patchHomeDir(tempRoot);
+
+  try {
+    await createOpenCodeDatabase(tempRoot, workspacePath);
+    const provider = new OpenCodeSessionsProvider();
+
+    assert.equal(await provider.deleteSession('open-session-1'), true);
+
+    const db = new Database(path.join(tempRoot, '.local', 'share', 'opencode', 'opencode.db'), { readonly: true });
+    try {
+      const count = (table: string) =>
+        (db.prepare(`SELECT COUNT(*) AS total FROM ${table}`).get() as { total: number }).total;
+      assert.equal(count('session'), 0);
+      assert.equal(count('message'), 0);
+      assert.equal(count('part'), 0);
+    } finally {
+      db.close();
+    }
+
+    // Deleting the same session twice is not an error, just a no-op.
+    assert.equal(await provider.deleteSession('open-session-1'), false);
+  } finally {
+    restoreHomeDir();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('Permanent delete of an OpenCode session reaches opencode.db', { concurrency: false }, async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'opencode-session-delete-service-'));
+  const workspacePath = path.join(tempRoot, 'workspace');
+  await mkdir(workspacePath, { recursive: true });
+  const restoreHomeDir = patchHomeDir(tempRoot);
+
+  try {
+    await createOpenCodeDatabase(tempRoot, workspacePath);
+    await withIsolatedDatabase(async () => {
+      sessionsDb.createSession('open-session-1', 'opencode', workspacePath, 'Indexed');
+
+      const result = await sessionsService.deleteOrArchiveSessionById('open-session-1', { force: true });
+      assert.equal(result.action, 'deleted');
+      assert.equal(result.deletedFromDisk, true);
+      assert.equal(sessionsDb.getSessionById('open-session-1'), null);
+
+      // The point of the feature: the next scan must not find it again.
+      assert.equal(await new OpenCodeSessionSynchronizer().synchronize(), 0);
+      assert.equal(sessionsDb.getAllSessions().length, 0);
     });
   } finally {
     restoreHomeDir();
