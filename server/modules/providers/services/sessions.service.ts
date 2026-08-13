@@ -15,6 +15,13 @@ import type {
 } from '@/shared/types.js';
 import { AppError } from '@/shared/utils.js';
 
+/**
+ * How long after discarding a helper session to re-check that the session
+ * indexer did not import it in the meantime. Comfortably past the watcher's
+ * 500 ms / 2 s debounce.
+ */
+const PROVIDER_SESSION_SWEEP_MS = 5_000;
+
 type CreateAppSessionResult = {
   sessionId: string;
   provider: LLMProvider;
@@ -162,12 +169,58 @@ export const sessionsService = {
     const sessionId = randomUUID();
     sessionsDb.createAppSession(sessionId, provider, normalizedProjectPath, isSide);
 
+    // The sidebar is fed by the transcript watcher, which cannot see a session
+    // the provider has not written anything for yet. Without this the new chat
+    // is missing from the list until the provider's store changes on disk and
+    // the watcher's next poll catches it — up to several seconds after the
+    // user is already looking at the conversation, and never at all if they
+    // send nothing. Side sessions stay hidden by design.
+    if (!isSide) {
+      broadcastSessionUpdate(sessionId);
+    }
+
     return {
       sessionId,
       provider,
       projectPath: normalizedProjectPath,
       isSide,
     };
+  },
+
+  /**
+   * Throws away a provider session created purely to serve a background call.
+   *
+   * A helper turn (the title/recap summariser) has to run somewhere, and a
+   * provider backed by a shared store gives it a session in that store like
+   * any other. Left alone it would show up in the sidebar on the next import,
+   * so both the provider's copy and any row already indexed for it go.
+   */
+  async discardProviderSession(provider: LLMProvider, providerSessionId: string): Promise<void> {
+    if (!providerSessionId) {
+      return;
+    }
+
+    await deleteProviderSession(provider, providerSessionId);
+
+    const dropIndexedRow = (): void => {
+      try {
+        const row = sessionsDb.getSessionByProviderSessionId(providerSessionId);
+        if (row) {
+          sessionsDb.deleteSessionById(row.session_id);
+        }
+      } catch (error) {
+        console.warn(`[Sessions] Could not drop the indexed row for ${providerSessionId}:`, error);
+      }
+    };
+
+    dropIndexedRow();
+
+    // And once more after the watcher's debounce window. The helper session
+    // lives for as long as its turn takes, so a scan can read it out of the
+    // provider's store just before this delete and write the row just after —
+    // leaving a session in the sidebar that no longer exists anywhere else.
+    const sweep = setTimeout(dropIndexedRow, PROVIDER_SESSION_SWEEP_MS);
+    sweep.unref?.();
   },
 
   /**

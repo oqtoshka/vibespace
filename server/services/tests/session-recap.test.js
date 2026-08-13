@@ -6,7 +6,7 @@ import test from 'node:test';
 
 import { __testing } from '../session-recap.service.js';
 
-const { readTranscriptTail, parseRecapResponse, buildRecapPrompt } = __testing;
+const { readTranscriptTail, readIndexedTranscriptTail, parseRecapResponse, buildRecapPrompt } = __testing;
 
 const jsonl = (entries) => entries.map((entry) => JSON.stringify(entry)).join('\n');
 
@@ -23,10 +23,13 @@ test('readTranscriptTail keeps user and assistant prose', async () => {
     { type: 'assistant', message: { content: [{ type: 'text', text: 'Found two bugs.' }] } },
   ]));
 
-  assert.deepEqual(await readTranscriptTail(file), [
-    { role: 'user', text: 'fix the prune job' },
-    { role: 'assistant', text: 'Found two bugs.' },
-  ]);
+  assert.deepEqual(await readTranscriptTail(file), {
+    messages: [
+      { role: 'user', text: 'fix the prune job' },
+      { role: 'assistant', text: 'Found two bugs.' },
+    ],
+    total: 2,
+  });
 });
 
 test('readTranscriptTail drops tool traffic, which is most of the bytes', async () => {
@@ -37,10 +40,13 @@ test('readTranscriptTail drops tool traffic, which is most of the bytes', async 
     { type: 'assistant', message: { content: [{ type: 'text', text: 'All 259 pass.' }] } },
   ]));
 
-  assert.deepEqual(await readTranscriptTail(file), [
-    { role: 'user', text: 'run the tests' },
-    { role: 'assistant', text: 'All 259 pass.' },
-  ]);
+  assert.deepEqual(await readTranscriptTail(file), {
+    messages: [
+      { role: 'user', text: 'run the tests' },
+      { role: 'assistant', text: 'All 259 pass.' },
+    ],
+    total: 2,
+  });
 });
 
 test('readTranscriptTail skips host chatter that is not conversation', async () => {
@@ -50,7 +56,10 @@ test('readTranscriptTail skips host chatter that is not conversation', async () 
     { type: 'user', message: { content: [{ type: 'text', text: 'actual question' }] } },
   ]));
 
-  assert.deepEqual(await readTranscriptTail(file), [{ role: 'user', text: 'actual question' }]);
+  assert.deepEqual(await readTranscriptTail(file), {
+    messages: [{ role: 'user', text: 'actual question' }],
+    total: 1,
+  });
 });
 
 test('readTranscriptTail truncates a pasted wall of text', async () => {
@@ -58,7 +67,7 @@ test('readTranscriptTail truncates a pasted wall of text', async () => {
     { type: 'user', message: { content: [{ type: 'text', text: 'x'.repeat(5000) }] } },
   ]));
 
-  const [message] = await readTranscriptTail(file);
+  const [message] = (await readTranscriptTail(file)).messages;
   assert.equal(message.text.length, 601, 'capped at 600 chars plus the ellipsis');
   assert.ok(message.text.endsWith('…'));
 });
@@ -70,19 +79,25 @@ test('readTranscriptTail keeps only the tail of a long session', async () => {
   }));
   const file = await writeTranscript(jsonl(entries));
 
-  const messages = await readTranscriptTail(file);
+  const { messages, total } = await readTranscriptTail(file);
   assert.equal(messages.length, 40);
   assert.equal(messages.at(-1).text, 'message 99', 'the newest exchange must survive');
+  // The count is the whole session, not the tail: a recap that compared tail
+  // lengths would freeze at 40 and never refresh again.
+  assert.equal(total, 100);
 });
 
 test('readTranscriptTail survives a missing file and a corrupt line', async () => {
-  assert.deepEqual(await readTranscriptTail('/nope/missing.jsonl'), []);
+  assert.deepEqual(await readTranscriptTail('/nope/missing.jsonl'), { messages: [], total: 0 });
 
   const file = await writeTranscript([
     '{ not json',
     JSON.stringify({ type: 'user', message: { content: [{ type: 'text', text: 'still read' }] } }),
   ].join('\n'));
-  assert.deepEqual(await readTranscriptTail(file), [{ role: 'user', text: 'still read' }]);
+  assert.deepEqual(await readTranscriptTail(file), {
+    messages: [{ role: 'user', text: 'still read' }],
+    total: 1,
+  });
 });
 
 test('parseRecapResponse reads a bare object', () => {
@@ -123,4 +138,68 @@ test('buildRecapPrompt labels roles and includes the transcript', () => {
   assert.match(prompt, /Assistant: done/);
   assert.match(prompt, /"title"/);
   assert.match(prompt, /"recap"/);
+});
+
+// OpenCode keeps every conversation in one shared SQLite store rather than a
+// file per session, so the recap for one is built from the indexed history the
+// UI renders instead of a transcript on disk.
+test('readIndexedTranscriptTail keeps the prose and drops the plumbing', async () => {
+  const history = {
+    total: 6,
+    messages: [
+      { kind: 'text', role: 'user', content: 'fix the prune job' },
+      { kind: 'tool_use', role: 'assistant', toolName: 'bash', content: 'docker prune' },
+      { kind: 'tool_result', role: 'user', content: 'reclaimed 4GB' },
+      { kind: 'thinking', role: 'assistant', content: 'the cron is wrong' },
+      { kind: 'text', role: 'assistant', content: 'Found two bugs.' },
+      { kind: 'text', role: 'user', content: '   ' },
+    ],
+  };
+
+  assert.deepEqual(await readIndexedTranscriptTail('app-1', async () => history), {
+    messages: [
+      { role: 'user', text: 'fix the prune job' },
+      { role: 'assistant', text: 'Found two bugs.' },
+    ],
+    total: 6,
+  });
+});
+
+test('readIndexedTranscriptTail applies the same caps as the file reader', async () => {
+  const messages = Array.from({ length: 100 }, (_, index) => ({
+    kind: 'text',
+    role: 'user',
+    content: `message ${index}`,
+  }));
+  messages.push({ kind: 'text', role: 'assistant', content: 'x'.repeat(5000) });
+
+  const { messages: tail, total } = await readIndexedTranscriptTail(
+    'app-1',
+    async () => ({ total: messages.length, messages }),
+  );
+
+  assert.equal(tail.length, 40);
+  assert.equal(tail.at(-1).text.length, 601, 'capped at 600 chars plus the ellipsis');
+  assert.equal(total, 101, 'the count is the whole session, so the recap keeps refreshing');
+});
+
+test('readIndexedTranscriptTail skips host chatter and survives a failed read', async () => {
+  const chatter = {
+    total: 2,
+    messages: [
+      { kind: 'text', role: 'user', content: '<local-command-name>/compact</local-command-name>' },
+      { kind: 'text', role: 'user', content: 'actual question' },
+    ],
+  };
+  assert.deepEqual(await readIndexedTranscriptTail('app-1', async () => chatter), {
+    messages: [{ role: 'user', text: 'actual question' }],
+    total: 2,
+  });
+
+  assert.deepEqual(
+    await readIndexedTranscriptTail('app-1', async () => {
+      throw new Error('session not found');
+    }),
+    { messages: [], total: 0 },
+  );
 });
