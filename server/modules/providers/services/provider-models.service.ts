@@ -17,6 +17,12 @@ import type {
 import { readProviderSessionActiveModelChange } from '@/shared/utils.js';
 
 export const PROVIDER_MODELS_CACHE_TTL_MS = 3 * 24 * 60 * 60 * 1000;
+/**
+ * A catalog the adapter flagged as a guess (`PROVISIONAL`) is held only long
+ * enough to keep a burst of composer lookups from re-spawning the provider CLI.
+ * Holding it for the full TTL would outlive whatever made the real read fail.
+ */
+export const PROVIDER_MODELS_PROVISIONAL_CACHE_TTL_MS = 60 * 1000;
 const PROVIDER_MODELS_CACHE_VERSION = 2;
 const UNCACHED_PROVIDERS = new Set<LLMProvider>(['claude']);
 
@@ -35,6 +41,13 @@ type ProviderModelsCacheEntry = {
   updatedAt: number;
   expiresAt: number;
   models: ProviderModelsDefinition;
+  /**
+   * Provider-reported token for the inputs the catalog was built from (see
+   * `IProviderModels.getCatalogFingerprint`). A cached entry whose fingerprint
+   * no longer matches is stale regardless of its TTL. Absent for providers that
+   * do not report one, and for entries written before this field existed.
+   */
+  fingerprint?: string | null;
 };
 
 type ProviderModelsCacheFile = {
@@ -84,6 +97,11 @@ const isProviderModelsCacheEntry = (value: unknown): value is ProviderModelsCach
   && typeof (value as ProviderModelsCacheEntry).updatedAt === 'number'
   && typeof (value as ProviderModelsCacheEntry).expiresAt === 'number'
   && isProviderModelsDefinition((value as ProviderModelsCacheEntry).models)
+  && (
+    (value as ProviderModelsCacheEntry).fingerprint === undefined
+    || (value as ProviderModelsCacheEntry).fingerprint === null
+    || typeof (value as ProviderModelsCacheEntry).fingerprint === 'string'
+  )
 );
 
 const readProviderModelsCacheFile = async (
@@ -145,17 +163,36 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
   let persistedCacheLoaded = false;
   let persistedCacheLoadPromise: Promise<void> | null = null;
 
+  /**
+   * Reads the provider's catalog fingerprint, or null when it does not report
+   * one. A provider that throws here must not take the whole lookup down — the
+   * caller then behaves exactly as it did before fingerprints existed.
+   */
+  const readCatalogFingerprint = async (provider: LLMProvider): Promise<string | null> => {
+    try {
+      return await resolveProvider(provider).models.getCatalogFingerprint?.() ?? null;
+    } catch (error) {
+      console.warn(`Unable to read ${provider} model catalog fingerprint:`, error);
+      return null;
+    }
+  };
+
   const pruneExpiredMemoryEntry = (
     provider: LLMProvider,
     currentTime: number,
     source: ProviderModelsCacheInfo['source'],
+    fingerprint: string | null,
   ): ProviderModelsResult | null => {
     const cachedEntry = memoryCache.get(provider);
     if (!cachedEntry) {
       return null;
     }
 
-    if (cachedEntry.expiresAt > currentTime) {
+    // A fingerprint mismatch outranks the TTL: the config the catalog was read
+    // from has changed, so the cached list may name models the provider no
+    // longer accepts. `?? null` normalizes entries written before the field.
+    const isCurrent = (cachedEntry.fingerprint ?? null) === fingerprint;
+    if (isCurrent && cachedEntry.expiresAt > currentTime) {
       return {
         models: cachedEntry.models,
         cache: toProviderModelsCacheInfo(cachedEntry, source),
@@ -202,12 +239,17 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
   const setCacheEntry = async (
     provider: LLMProvider,
     models: ProviderModelsDefinition,
+    fingerprint: string | null,
   ): Promise<ProviderModelsCacheEntry> => {
     const currentTime = now();
+    const ttl = models.PROVISIONAL
+      ? PROVIDER_MODELS_PROVISIONAL_CACHE_TTL_MS
+      : PROVIDER_MODELS_CACHE_TTL_MS;
     const entry: ProviderModelsCacheEntry = {
       updatedAt: currentTime,
-      expiresAt: currentTime + PROVIDER_MODELS_CACHE_TTL_MS,
+      expiresAt: currentTime + ttl,
       models,
+      fingerprint,
     };
 
     memoryCache.set(provider, entry);
@@ -217,10 +259,14 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
 
   const loadAndCacheModels = (
     provider: LLMProvider,
+    // Read before the catalog, not after: a config edit that lands mid-fetch
+    // then leaves a fingerprint the next lookup rejects, instead of stamping
+    // the new fingerprint onto a catalog read from the old config.
+    fingerprint: string | null,
   ): Promise<ProviderModelsResult> => {
     const request = resolveProvider(provider).models.getSupportedModels()
       .then(async (models) => {
-        const entry = await setCacheEntry(provider, models);
+        const entry = await setCacheEntry(provider, models, fingerprint);
         return {
           models,
           cache: toProviderModelsCacheInfo(entry, 'fresh'),
@@ -270,16 +316,18 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
       return loadDirectModels(provider);
     }
 
+    const fingerprint = await readCatalogFingerprint(provider);
+
     if (options.bypassCache) {
       const pendingRequest = pendingRequests.get(provider);
       if (pendingRequest) {
         return pendingRequest;
       }
 
-      return loadAndCacheModels(provider);
+      return loadAndCacheModels(provider, fingerprint);
     }
 
-    const cachedModels = pruneExpiredMemoryEntry(provider, now(), 'memory');
+    const cachedModels = pruneExpiredMemoryEntry(provider, now(), 'memory', fingerprint);
     if (cachedModels) {
       return cachedModels;
     }
@@ -291,7 +339,7 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
 
     await loadPersistedCache();
 
-    const persistedModels = pruneExpiredMemoryEntry(provider, now(), 'disk');
+    const persistedModels = pruneExpiredMemoryEntry(provider, now(), 'disk', fingerprint);
     if (persistedModels) {
       return persistedModels;
     }
@@ -301,7 +349,7 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
       return postLoadPendingRequest;
     }
 
-    return loadAndCacheModels(provider);
+    return loadAndCacheModels(provider, fingerprint);
   };
 
   const getCurrentActiveModel = async (
