@@ -166,6 +166,16 @@ export interface IProviderSessions {
    * can be safely rewound implement it.
    */
   rewindHistory?(sessionId: string, messageUuid: string): Promise<RewindResult>;
+  /**
+   * Erases this session from the provider's own store.
+   *
+   * Permanent delete only removes the app's row and, for providers that keep
+   * one transcript file per session, that file. Providers backed by a shared
+   * store have no file to unlink, so the conversation survived the delete and
+   * the session synchronizer imported it straight back. Implement this to make
+   * the delete reach the provider. Returns whether anything was removed.
+   */
+  deleteSession?(providerSessionId: string): Promise<boolean>;
 }
 
 // ---------------------------
