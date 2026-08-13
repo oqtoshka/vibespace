@@ -379,6 +379,69 @@ test('OpenCode sessions provider normalizes quoted live text and skips user echo
   assert.deepEqual(userEcho, []);
 });
 
+test('OpenCode sessions provider unwraps the streamed part envelope', () => {
+  const provider = new OpenCodeSessionsProvider();
+
+  // Captured from `opencode run --format json`: every event except `error`
+  // nests its payload under `part`, and a tool's name, input and output are
+  // only reachable through it.
+  const [tool] = provider.normalizeMessage({
+    type: 'tool_use',
+    timestamp: 1786620193876,
+    sessionID: 'ses_005236a3bffe',
+    part: {
+      type: 'tool',
+      tool: 'read',
+      callID: 'chatcmpl-tool-8df38c8fb760a0db',
+      id: 'prt_ffadca612001',
+      state: {
+        status: 'completed',
+        input: { filePath: '/tmp/ocwork/note.txt' },
+        output: '<content>\n1: hello world\n</content>',
+      },
+    },
+  }, null);
+
+  assert.equal(tool?.kind, 'tool_use');
+  assert.equal(tool?.toolName, 'read');
+  assert.equal(tool?.toolId, 'chatcmpl-tool-8df38c8fb760a0db');
+  assert.deepEqual(tool?.toolInput, { filePath: '/tmp/ocwork/note.txt' });
+  assert.equal(tool?.toolResult?.isError, false);
+  assert.equal(tool?.toolResult?.content, '<content>\n1: hello world\n</content>');
+
+  const [text] = provider.normalizeMessage({
+    type: 'text',
+    sessionID: 'ses_005236a3bffe',
+    part: { type: 'text', id: 'prt_ffadcae4e001', text: 'The file contains: `hello world`' },
+  }, null);
+  assert.equal(text?.kind, 'stream_delta');
+  assert.equal(text?.content, 'The file contains: `hello world`');
+
+  const [reasoning] = provider.normalizeMessage({
+    type: 'reasoning',
+    sessionID: 'ses_005236a3bffe',
+    part: { type: 'reasoning', text: 'thinking it through' },
+  }, null);
+  assert.equal(reasoning?.kind, 'thinking');
+  assert.equal(reasoning?.content, 'thinking it through');
+
+  // A tool still running carries no result, so the card must stay pending.
+  const [running] = provider.normalizeMessage({
+    type: 'tool_use',
+    sessionID: 'ses_005236a3bffe',
+    part: { type: 'tool', tool: 'bash', state: { status: 'running', input: { command: 'ls' } } },
+  }, null);
+  assert.equal(running?.toolResult, undefined);
+
+  const [failed] = provider.normalizeMessage({
+    type: 'tool_use',
+    sessionID: 'ses_005236a3bffe',
+    part: { type: 'tool', tool: 'bash', state: { status: 'error', error: 'command not found' } },
+  }, null);
+  assert.equal(failed?.toolResult?.isError, true);
+  assert.equal(failed?.toolResult?.content, 'command not found');
+});
+
 test('OpenCode sessions provider surfaces the structured error payload', () => {
   const provider = new OpenCodeSessionsProvider();
 
