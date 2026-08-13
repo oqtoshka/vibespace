@@ -11,7 +11,19 @@ import { sessionsService } from './modules/providers/services/sessions.service.j
 import { providerAuthService } from './modules/providers/services/provider-auth.service.js';
 import { providerModelsService } from './modules/providers/services/provider-models.service.js';
 import { notifyRunFailed, notifyRunStopped } from './services/notification-orchestrator.js';
-import { createCompleteMessage, createNormalizedMessage, flattenPromptForWindowsShell, getOpenCodeDatabasePath } from './shared/utils.js';
+import { createCompleteMessage, createNormalizedMessage, flattenPromptForWindowsShell, getOpenCodeDatabasePath, isDatabaseLockedError, stripAnsi } from './shared/utils.js';
+
+// Every `opencode` process on this machine writes to one WAL database, so a
+// second run — or a terminal opencode, or this server's own catalog probe —
+// can hold the lock past opencode's 5 s busy_timeout and the run dies at init
+// with nothing sent. The message alone reads like corruption; it is not.
+const OPEN_CODE_DATABASE_LOCKED_HINT = 'Another opencode process was writing to opencode.db and did not let go in time. '
+  + 'Nothing was lost and nothing is corrupt — send the message again.';
+// One retry. The lock is held by a writer that is finishing something short (a
+// prune, a WAL checkpoint); if a second attempt a second later still loses, the
+// holder is wedged and retrying harder only delays telling the user.
+const OPEN_CODE_DATABASE_LOCKED_RETRIES = 1;
+const OPEN_CODE_DATABASE_LOCKED_RETRY_DELAY_MS = 1_000;
 
 // cross-spawn resolves .cmd shims/PATHEXT on Windows and delegates to
 // child_process.spawn everywhere else.
@@ -154,6 +166,14 @@ async function spawnOpenCode(command, options = {}, ws) {
     // Unified lifecycle contract: exactly one terminal `complete` per run
     // (close and error handlers can both fire for spawn failures).
     let completeSent = false;
+    // Set as soon as the CLI writes anything at all. A run that dies before
+    // this is a run that never reached the model, so re-running it repeats
+    // nothing — no tool ran, no tokens were spent, no history was appended.
+    let producedOutput = false;
+    // The lock error is withheld while a retry is still possible; showing it
+    // and then succeeding is worse than showing nothing.
+    let heldLockError = null;
+    let lockRetriesLeft = OPEN_CODE_DATABASE_LOCKED_RETRIES;
 
     const notifyTerminalState = ({ code = null, error = null } = {}) => {
       if (terminalNotificationSent) {
@@ -180,6 +200,20 @@ async function spawnOpenCode(command, options = {}, ws) {
         sessionName: sessionSummary,
         error: error || `OpenCode CLI exited with code ${code}`,
       });
+    };
+
+    // Everything the CLI writes to stderr becomes an error bubble. A lock
+    // error carries the hint: on its own the message reads like a corrupt
+    // database, which is the one thing it never means.
+    const sendStderr = (text, forSessionId) => {
+      ws.send(createNormalizedMessage({
+        kind: 'error',
+        content: isDatabaseLockedError(text)
+          ? `${text.trim()}\n\n${OPEN_CODE_DATABASE_LOCKED_HINT}`
+          : text,
+        sessionId: forSessionId,
+        provider: 'opencode',
+      }));
     };
 
     const registerSession = (nextSessionId) => {
@@ -284,113 +318,137 @@ async function spawnOpenCode(command, options = {}, ws) {
         args.push(flattenPromptForWindowsShell(appendImagesInputTag(command.trim(), images)));
       }
 
-      opencodeProcess = spawnFunction('opencode', args, {
-        cwd: workingDir,
-        stdio: ['pipe', 'pipe', 'pipe'],
-        env: { ...process.env, ...permissionOptions.env },
-      });
-
-      activeOpenCodeProcesses.set(processKey, opencodeProcess);
-      opencodeProcess.sessionId = processKey;
-      opencodeProcess.stdin.end();
-
-      opencodeProcess.stdout.on('data', (data) => {
-        stdoutLineBuffer += data.toString();
-        const completeLines = stdoutLineBuffer.split(/\r?\n/);
-        stdoutLineBuffer = completeLines.pop() || '';
-
-        completeLines.forEach((line) => {
-          processOpenCodeOutputLine(line.trim());
+      const startAttempt = () => {
+        opencodeProcess = spawnFunction('opencode', args, {
+          cwd: workingDir,
+          stdio: ['pipe', 'pipe', 'pipe'],
+          env: { ...process.env, ...permissionOptions.env },
         });
-      });
 
-      opencodeProcess.stderr.on('data', (data) => {
-        const stderrText = data.toString();
-        if (!stderrText.trim()) {
-          return;
-        }
+        activeOpenCodeProcesses.set(processKey, opencodeProcess);
+        opencodeProcess.sessionId = processKey;
+        opencodeProcess.stdin.end();
 
-        ws.send(createNormalizedMessage({
-          kind: 'error',
-          content: stderrText,
-          sessionId: capturedSessionId || sessionId || null,
-          provider: 'opencode',
-        }));
-      });
+        opencodeProcess.stdout.on('data', (data) => {
+          producedOutput = true;
+          stdoutLineBuffer += data.toString();
+          const completeLines = stdoutLineBuffer.split(/\r?\n/);
+          stdoutLineBuffer = completeLines.pop() || '';
 
-      opencodeProcess.on('close', async (code) => {
-        const finalSessionId = capturedSessionId || sessionId || processKey;
-        activeOpenCodeProcesses.delete(finalSessionId);
-        activeOpenCodeProcesses.delete(processKey);
+          completeLines.forEach((line) => {
+            processOpenCodeOutputLine(line.trim());
+          });
+        });
 
-        if (stdoutLineBuffer.trim()) {
-          processOpenCodeOutputLine(stdoutLineBuffer.trim());
-          stdoutLineBuffer = '';
-        }
+        opencodeProcess.stderr.on('data', (data) => {
+          // OpenCode colours stderr whether or not it is talking to a terminal,
+          // so the raw bytes would otherwise reach the browser as escape codes.
+          const stderrText = stripAnsi(data.toString());
+          if (!stderrText.trim()) {
+            return;
+          }
 
-        const tokenBudget = readOpenCodeTokenUsage(finalSessionId);
-        if (tokenBudget) {
-          ws.send(createNormalizedMessage({
-            kind: 'status',
-            text: 'token_budget',
-            tokenBudget,
-            sessionId: finalSessionId,
-            provider: 'opencode',
-          }));
-        }
+          if (!producedOutput && lockRetriesLeft > 0 && isDatabaseLockedError(stderrText)) {
+            heldLockError = stderrText;
+            return;
+          }
 
-        // Terminal complete — skipped for aborted runs (abort-session
-        // already sent the aborted complete on this run's behalf).
-        if (!completeSent && !opencodeProcess.aborted) {
-          completeSent = true;
-          ws.send(createCompleteMessage({ provider: 'opencode', sessionId: finalSessionId, exitCode: code }));
-        }
+          sendStderr(stderrText, capturedSessionId || sessionId || null);
+        });
 
-        if (code === 0) {
-          notifyTerminalState({ code });
-          resolve();
-          return;
-        }
+        opencodeProcess.on('close', async (code) => {
+          const finalSessionId = capturedSessionId || sessionId || processKey;
+          activeOpenCodeProcesses.delete(finalSessionId);
+          activeOpenCodeProcesses.delete(processKey);
 
-        if (code === 127 || code === null) {
-          const installed = await providerAuthService.isProviderInstalled('opencode');
-          if (!installed) {
+          // Lost the race for opencode.db before the run began. Retry it
+          // rather than making the user re-send: the failure is another
+          // process's write lock, not anything about this request.
+          if (heldLockError && code !== 0 && !producedOutput && !opencodeProcess.aborted) {
+            lockRetriesLeft -= 1;
+            heldLockError = null;
+            stdoutLineBuffer = '';
+            console.warn('[OpenCode] opencode.db was locked before the run started; retrying once.');
+            setTimeout(startAttempt, OPEN_CODE_DATABASE_LOCKED_RETRY_DELAY_MS);
+            return;
+          }
+
+          if (heldLockError) {
+            sendStderr(heldLockError, finalSessionId);
+            heldLockError = null;
+          }
+
+          if (stdoutLineBuffer.trim()) {
+            processOpenCodeOutputLine(stdoutLineBuffer.trim());
+            stdoutLineBuffer = '';
+          }
+
+          const tokenBudget = readOpenCodeTokenUsage(finalSessionId);
+          if (tokenBudget) {
             ws.send(createNormalizedMessage({
-              kind: 'error',
-              content: 'OpenCode CLI is not installed. Install it from https://opencode.ai/docs/',
+              kind: 'status',
+              text: 'token_budget',
+              tokenBudget,
               sessionId: finalSessionId,
               provider: 'opencode',
             }));
           }
-        }
 
-        notifyTerminalState({ code });
-        reject(new Error(code === null ? 'OpenCode CLI process was terminated' : `OpenCode CLI exited with code ${code}`));
-      });
+          // Terminal complete — skipped for aborted runs (abort-session
+          // already sent the aborted complete on this run's behalf).
+          if (!completeSent && !opencodeProcess.aborted) {
+            completeSent = true;
+            ws.send(createCompleteMessage({ provider: 'opencode', sessionId: finalSessionId, exitCode: code }));
+          }
 
-      opencodeProcess.on('error', async (error) => {
-        const finalSessionId = capturedSessionId || sessionId || processKey;
-        activeOpenCodeProcesses.delete(finalSessionId);
-        activeOpenCodeProcesses.delete(processKey);
+          if (code === 0) {
+            notifyTerminalState({ code });
+            resolve();
+            return;
+          }
 
-        const installed = await providerAuthService.isProviderInstalled('opencode');
-        const errorContent = !installed
-          ? 'OpenCode CLI is not installed. Install it from https://opencode.ai/docs/'
-          : error.message;
+          if (code === 127 || code === null) {
+            const installed = await providerAuthService.isProviderInstalled('opencode');
+            if (!installed) {
+              ws.send(createNormalizedMessage({
+                kind: 'error',
+                content: 'OpenCode CLI is not installed. Install it from https://opencode.ai/docs/',
+                sessionId: finalSessionId,
+                provider: 'opencode',
+              }));
+            }
+          }
 
-        ws.send(createNormalizedMessage({
-          kind: 'error',
-          content: errorContent,
-          sessionId: finalSessionId,
-          provider: 'opencode',
-        }));
-        if (!completeSent && !opencodeProcess.aborted) {
-          completeSent = true;
-          ws.send(createCompleteMessage({ provider: 'opencode', sessionId: finalSessionId, exitCode: 1 }));
-        }
-        notifyTerminalState({ error });
-        reject(error);
-      });
+          notifyTerminalState({ code });
+          reject(new Error(code === null ? 'OpenCode CLI process was terminated' : `OpenCode CLI exited with code ${code}`));
+        });
+
+        opencodeProcess.on('error', async (error) => {
+          const finalSessionId = capturedSessionId || sessionId || processKey;
+          activeOpenCodeProcesses.delete(finalSessionId);
+          activeOpenCodeProcesses.delete(processKey);
+
+          const installed = await providerAuthService.isProviderInstalled('opencode');
+          const errorContent = !installed
+            ? 'OpenCode CLI is not installed. Install it from https://opencode.ai/docs/'
+            : error.message;
+
+          ws.send(createNormalizedMessage({
+            kind: 'error',
+            content: errorContent,
+            sessionId: finalSessionId,
+            provider: 'opencode',
+          }));
+          if (!completeSent && !opencodeProcess.aborted) {
+            completeSent = true;
+            ws.send(createCompleteMessage({ provider: 'opencode', sessionId: finalSessionId, exitCode: 1 }));
+          }
+          notifyTerminalState({ error });
+          reject(error);
+        });
+      };
+
+      startAttempt();
     }).catch(reject);
   });
 }

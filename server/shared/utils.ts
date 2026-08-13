@@ -1125,6 +1125,39 @@ export function getOpenCodeDatabasePath(): string {
   return path.join(os.homedir(), '.local', 'share', 'opencode', 'opencode.db');
 }
 
+// CSI/OSC sequences. OpenCode colours its stderr unconditionally — it never
+// checks isTTY — so anything we forward to the browser arrives wrapped in
+// escape codes that the UI renders literally ("[91m[1mError: [0m...").
+const ANSI_ESCAPE_PATTERN = new RegExp(
+  '[\\u001B\\u009B][[\\]()#;?]*'
+  + '(?:(?:\\d{1,4}(?:;\\d{0,4})*)?[\\dA-PR-TZcf-ntqry=><~]'
+  + '|(?:[a-zA-Z\\d]*(?:;[-a-zA-Z\\d\\/#&.:=?%@~_]*)*)?\\u0007)',
+  'g',
+);
+
+export function stripAnsi(value: string): string {
+  return value.replace(ANSI_ESCAPE_PATTERN, '');
+}
+
+/**
+ * True when a failure is SQLite's "database is locked" against opencode.db.
+ *
+ * opencode.db is a single WAL database shared by every `opencode` invocation —
+ * the agent runs, the `opencode models` probe this server spawns, and any
+ * opencode the user has open in a terminal. OpenCode sets
+ * `busy_timeout = 5000`, so this only surfaces when a writer holds the lock for
+ * longer than five seconds, which the 79 MB `event` table makes routine during
+ * a prune or a WAL checkpoint. Nothing is corrupt and nothing is wrong with the
+ * request: the same call succeeds on the next attempt.
+ */
+export function isDatabaseLockedError(error: unknown): boolean {
+  const text = error instanceof Error
+    ? `${error.message} ${(error as { code?: string }).code ?? ''}`
+    : String(error ?? '');
+
+  return /database is locked|SQLITE_BUSY/i.test(stripAnsi(text));
+}
+
 /**
  * Decodes an OpenCode text payload that was persisted as a JSON string literal.
  *
