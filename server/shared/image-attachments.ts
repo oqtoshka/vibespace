@@ -346,6 +346,81 @@ export async function buildClaudeUserContent(
   return blocks;
 }
 
+/** One attachment as OpenCode's HTTP prompt API takes it. */
+export type OpenCodePromptFile = {
+  uri: string;
+  name?: string;
+};
+
+export type OpenCodePromptAttachments = {
+  /** Images inlined as `data:` URIs, ready for `prompt.files`. */
+  files: OpenCodePromptFile[];
+  /** Everything that could not be inlined, to be listed for the agent to read. */
+  passthrough: ImageAttachmentDescriptor[];
+};
+
+/**
+ * Splits chat attachments for an OpenCode HTTP turn.
+ *
+ * Images are inlined as `data:` URIs because that is the only form the server
+ * turns into a real image part: a `file://` URI is rejected outright by the
+ * OpenAI-compatible transport ("media must contain valid base64"), and the
+ * read-it-from-disk route loses the image to tool-result flattening.
+ *
+ * Anything that is not an inlineable image — a PDF, a log, an oversized photo —
+ * is handed back untouched so the caller can list it for the agent to open with
+ * its own tools, exactly as the `run` transport does.
+ */
+export async function buildOpenCodePromptAttachments(
+  images: unknown,
+  cwd?: string,
+): Promise<OpenCodePromptAttachments> {
+  const files: OpenCodePromptFile[] = [];
+  const passthrough: ImageAttachmentDescriptor[] = [];
+
+  for (const descriptor of normalizeImageDescriptors(images)) {
+    const resolvedPath = resolveImageAbsolutePath(cwd, descriptor.path);
+    if (!isAllowedImageSourcePath(resolvedPath, cwd)) {
+      // Same trust boundary as every other provider builder: only the upload
+      // store and the run's own directory.
+      console.warn(`[Images] Refusing to attach file outside allowed roots: ${descriptor.path}`);
+      continue;
+    }
+
+    const mediaType = resolveImageMediaType(descriptor);
+    if (!mediaType || !mediaType.startsWith('image/')) {
+      passthrough.push(descriptor);
+      continue;
+    }
+
+    try {
+      const canonicalPath = await fs.realpath(resolvedPath);
+      if (!isAllowedImageSourcePath(canonicalPath, cwd)) {
+        console.warn(`[Images] Refusing to attach symlinked image outside allowed roots: ${descriptor.path}`);
+        continue;
+      }
+
+      const { size } = await fs.stat(canonicalPath);
+      if (size > MAX_INLINE_IMAGE_BYTES) {
+        passthrough.push(descriptor);
+        continue;
+      }
+
+      const bytes = await fs.readFile(canonicalPath);
+      files.push({
+        uri: `data:${mediaType};base64,${bytes.toString('base64')}`,
+        name: descriptor.name || path.basename(resolvedPath),
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[Images] Failed to read image ${descriptor.path}: ${message}`);
+      passthrough.push(descriptor);
+    }
+  }
+
+  return { files, passthrough };
+}
+
 type CodexInputItem =
   | { type: 'text'; text: string }
   | { type: 'local_image'; path: string };
