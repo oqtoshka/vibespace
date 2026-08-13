@@ -255,24 +255,28 @@ const isSupportedOpenCodeModelId = (id: string): boolean => (
  * Rebuilds the fully qualified `<providerID>/<id>` value `opencode run --model`
  * expects.
  *
- * The verbose block reports the *bare* model id, which for a custom
- * openai-compatible provider can itself contain a slash
- * (`{"id": "cyankiwi/Qwen3.6-27B-AWQ-INT4", "providerID": "dudin"}`). Treating
- * any slash as "already qualified" dropped the provider half and made every
- * such run exit 1, so qualification keys off the provider prefix instead.
+ * Both the catalog listing and the session row report the *bare* model id
+ * beside its provider, and for a custom openai-compatible provider that id can
+ * itself contain a slash (`{"id": "cyankiwi/Qwen3.6-27B-AWQ-INT4",
+ * "providerID": "dudin"}`). Treating any slash as "already qualified" dropped
+ * the provider half and made every such run exit 1, so qualification keys off
+ * the provider prefix instead.
  */
+const qualifyOpenCodeModelId = (id: string, upstreamProvider: string | null): string => {
+  if (!upstreamProvider || id === upstreamProvider || id.startsWith(`${upstreamProvider}/`)) {
+    return id;
+  }
+
+  return `${upstreamProvider}/${id}`;
+};
+
 const readOpenCodeVerboseModelId = (model: OpenCodeVerboseModel): string | null => {
   const id = readOptionalString(model.id);
   if (!id) {
     return null;
   }
 
-  const upstreamProvider = readOptionalString(model.providerID);
-  if (!upstreamProvider || id === upstreamProvider || id.startsWith(`${upstreamProvider}/`)) {
-    return id;
-  }
-
-  return `${upstreamProvider}/${id}`;
+  return qualifyOpenCodeModelId(id, readOptionalString(model.providerID) ?? null);
 };
 
 const labelForOpenCodeModelId = (id: string): string => {
@@ -418,11 +422,19 @@ const parseOpenCodeSessionModelValue = (rawModel: unknown): string | null => {
     return null;
   }
 
-  return readOptionalString(record.id)
+  const id = readOptionalString(record.id)
     ?? readOptionalString(record.model)
     ?? readOptionalString(record.name)
-    ?? readOptionalString(record.value)
-    ?? null;
+    ?? readOptionalString(record.value);
+  if (!id) {
+    return null;
+  }
+
+  // Sessions store the model split in two — `{"id": "zhiqing/Qwen3.6-27B",
+  // "providerID": "dudin"}` — and the id half alone is not something
+  // `opencode run --model` accepts, nor does it match any catalog entry, so
+  // the picker could never highlight what the session was actually running.
+  return qualifyOpenCodeModelId(id, readOptionalString(record.providerID) ?? null);
 };
 
 // Mirrors OpenCode's own global config lookup: an explicit OPENCODE_CONFIG file
@@ -598,6 +610,9 @@ const runOpenCodeModelsCommandWithRetry = async (): Promise<string> => {
     }
   }
 };
+
+/** Test seam. */
+export const __testing = { parseOpenCodeSessionModelValue };
 
 export class OpenCodeProviderModels implements IProviderModels {
   async getSupportedModels(): Promise<ProviderModelsDefinition> {

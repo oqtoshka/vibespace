@@ -134,7 +134,10 @@ function queuePendingWatcherUpdate(
  */
 export function broadcastSessionUpdate(sessionId: string): void {
   if (!sessionId) return;
-  queuePendingWatcherUpdate('change', 'claude', sessionId);
+  // Resolved rather than assumed: this path also carries brand-new sessions
+  // and OpenCode recaps, so a hardcoded provider would mislabel them.
+  const provider = (sessionsDb.getSessionById(sessionId)?.provider ?? 'claude') as LLMProvider;
+  queuePendingWatcherUpdate('change', provider, sessionId);
 }
 
 /**

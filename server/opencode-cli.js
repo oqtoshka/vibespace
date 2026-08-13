@@ -11,6 +11,8 @@ import { sessionsService } from './modules/providers/services/sessions.service.j
 import { providerAuthService } from './modules/providers/services/provider-auth.service.js';
 import { providerModelsService } from './modules/providers/services/provider-models.service.js';
 import { notifyRunFailed, notifyRunStopped } from './services/notification-orchestrator.js';
+import { scheduleSessionRecap } from './services/session-recap.service.js';
+import { broadcastSessionUpdate } from './modules/providers/index.js';
 import { createCompleteMessage, createNormalizedMessage, flattenPromptForWindowsShell, getOpenCodeDatabasePath, isDatabaseLockedError, stripAnsi } from './shared/utils.js';
 
 // Every `opencode` process on this machine writes to one WAL database, so a
@@ -135,6 +137,97 @@ function readOpenCodeTokenUsage(sessionId) {
       db.close();
     }
   }
+}
+
+/**
+ * Runs one throwaway OpenCode turn on behalf of the background title/recap
+ * summariser.
+ *
+ * OpenCode has no stateless completion mode — `run` always writes a session to
+ * opencode.db — and that whole store is imported into the sidebar, so a recap
+ * left to its own devices would add one junk session per generation. The
+ * helper's session is therefore deleted again as soon as the answer is in.
+ *
+ * `--agent plan` is the read-only agent, which is all a summariser needs; it
+ * takes the place of the tool deny-list the Claude path passes.
+ */
+async function runOpenCodeRecapQuery(prompt, options, writer) {
+  let helperSessionId = null;
+  const capturingWriter = {
+    userId: null,
+    send: (message) => {
+      if (message?.kind === 'session_created' && message.newSessionId) {
+        helperSessionId = message.newSessionId;
+      }
+      writer.send(message);
+    },
+    setSessionId: (sessionId) => {
+      helperSessionId = sessionId;
+    },
+  };
+
+  try {
+    await spawnOpenCode(prompt, {
+      cwd: options.cwd,
+      model: options.model,
+      permissionMode: 'plan',
+      ephemeral: true,
+    }, capturingWriter);
+  } finally {
+    if (helperSessionId) {
+      await sessionsService.discardProviderSession('opencode', helperSessionId).catch((error) => {
+        console.warn('[OpenCode] Could not discard the recap helper session:', error?.message || error);
+      });
+    }
+  }
+}
+
+/**
+ * Queues the background title/recap refresh for a finished OpenCode turn.
+ *
+ * The model is the session's own current one, resolved here rather than inside
+ * the service: OpenCode has no cheap tier to fall back on the way Claude has
+ * haiku, so the only model known to be reachable is the one the conversation
+ * is already running on.
+ */
+async function queueOpenCodeRecap({ sessionId, cwd, ws }) {
+  if (!sessionId || !cwd) {
+    return;
+  }
+
+  let model;
+  try {
+    ({ model } = await providerModelsService.resolveSessionActiveModel('opencode', sessionId));
+  } catch (error) {
+    console.warn('[OpenCode] Could not resolve the recap model:', error?.message || error);
+    return;
+  }
+
+  scheduleSessionRecap({
+    sessionId,
+    cwd,
+    model,
+    runQuery: runOpenCodeRecapQuery,
+    onRecap: (result) => {
+      // The turn is long over by now, so this rides the run's writer only if it
+      // is still attached; a closed one is not an error.
+      try {
+        ws?.send?.(createNormalizedMessage({
+          kind: 'status',
+          text: 'session_recap',
+          sessionRecap: result,
+          sessionId: result.sessionId,
+          provider: 'opencode',
+        }));
+      } catch {
+        // Client gone — the recap is in the database either way.
+      }
+      // Everyone else hears about it through the same per-session delta the
+      // transcript watcher uses; a recap is a database write with no file
+      // change behind it, so without this nothing would ever be told.
+      broadcastSessionUpdate(result.sessionId);
+    },
+  });
 }
 
 async function spawnOpenCode(command, options = {}, ws) {
@@ -403,6 +496,11 @@ async function spawnOpenCode(command, options = {}, ws) {
 
           if (code === 0) {
             notifyTerminalState({ code });
+            // Skipped for the summariser's own turns, or each recap would
+            // schedule another one.
+            if (!options.ephemeral) {
+              void queueOpenCodeRecap({ sessionId: finalSessionId, cwd: workingDir, ws });
+            }
             resolve();
             return;
           }
