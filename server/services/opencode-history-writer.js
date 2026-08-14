@@ -70,7 +70,11 @@ export function persistOpenCodeTurn(turn) {
     db.pragma('busy_timeout = 5000');
 
     const created = startedAt ?? Date.now();
-    const completed = endedAt ?? Date.now();
+    // The transcript is ordered by `(time_created, id)`, and ids are random, so
+    // a turn that starts and finishes inside the same millisecond can be read
+    // back with the answer above the question. One millisecond of separation is
+    // what keeps the pair in the order it happened.
+    const completed = Math.max(endedAt ?? Date.now(), created + 1);
     const userMessageId = generateId('msg');
     const assistantId = assistantMessageId ?? generateId('msg');
     const usage = tokens ?? { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } };
