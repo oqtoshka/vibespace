@@ -29,6 +29,8 @@ const SUPPORTED_ALGORITHMS = ['RS256', 'RS384', 'RS512', 'PS256', 'PS384', 'PS51
 const DISCOVERY_TTL_MS = 60 * 60 * 1000;
 const JWKS_TTL_MS = 10 * 60 * 1000;
 const CLOCK_TOLERANCE_SECONDS = 60;
+/** How long any single call to the identity provider may take. */
+const PROVIDER_TIMEOUT_MS = 10_000;
 
 /** The in-flight login's state/nonce/verifier travel in this cookie. */
 export const FLOW_COOKIE = 'vibespace_oidc_flow';
@@ -149,9 +151,18 @@ export function createOidcClient(config, { fetchImpl = globalThis.fetch } = {}) 
   async function getJson(url, init) {
     let response;
     try {
-      response = await fetchImpl(url, init);
+      // A provider that accepts the connection and then never answers would
+      // otherwise hold the request until Node's own five-minute ceiling, and
+      // the sign-in button spins for all of it. Authentik does exactly this
+      // when one of its workers is wedged: the connection is made, the reply
+      // never comes. Ten seconds is far longer than a healthy token exchange
+      // and short enough to fail into a message the user can act on.
+      response = await fetchImpl(url, { signal: AbortSignal.timeout(PROVIDER_TIMEOUT_MS), ...init });
     } catch (error) {
-      throw new OidcError('provider_unreachable', `Could not reach ${url}: ${error.message}`);
+      const detail = error.name === 'TimeoutError'
+        ? `no answer within ${PROVIDER_TIMEOUT_MS / 1000}s`
+        : error.message;
+      throw new OidcError('provider_unreachable', `Could not reach ${url}: ${detail}`);
     }
 
     const body = await response.text();
