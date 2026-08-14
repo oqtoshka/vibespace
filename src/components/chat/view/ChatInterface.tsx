@@ -133,6 +133,7 @@ function ChatInterface({
     showLoadAllOverlay,
     createDiff,
     scrollContainerRef,
+    transcriptListRef,
     scrollToBottom,
     scrollToBottomAndReset,
     handleScroll,
@@ -469,6 +470,7 @@ function ChatInterface({
         )}
         <ChatMessagesPane
           scrollContainerRef={scrollContainerRef}
+          transcriptListRef={transcriptListRef}
           onWheel={handleScroll}
           onTouchMove={handleScroll}
           isLoadingSessionMessages={isLoadingSessionMessages}
