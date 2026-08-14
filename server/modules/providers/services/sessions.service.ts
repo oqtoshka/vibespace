@@ -79,6 +79,51 @@ async function deleteProviderSession(
 }
 
 /**
+ * Permanently deletes every session that belongs to one project path.
+ *
+ * Deleting a project has to take its conversations with it, and deleting the
+ * app's own rows is not enough to do that: a provider that keeps its sessions
+ * in one shared store (OpenCode's `opencode.db`) still has them, so the next
+ * synchronizer pass re-imports each one — and re-creating a session re-creates
+ * the project row it hangs off, which brought the whole deleted project back
+ * into the sidebar. Each session therefore goes through the same steps a single
+ * force-delete takes: unlink the transcript, ask the provider to erase its own
+ * copy, then drop the row.
+ *
+ * Every session is attempted even if an earlier one fails, so one unreadable
+ * transcript cannot leave the rest of the project half-deleted.
+ */
+export async function deleteSessionsForProjectPath(projectPath: string): Promise<number> {
+  const sessions = sessionsDb.getSessionsByProjectPathIncludingArchived(projectPath);
+  let deleted = 0;
+
+  for (const session of sessions) {
+    try {
+      if (session.jsonl_path) {
+        await removeFileIfExists(session.jsonl_path);
+      }
+
+      await deleteProviderSession(
+        session.provider as LLMProvider,
+        session.provider_session_id ?? session.session_id,
+      );
+
+      if (sessionsDb.deleteSessionById(session.session_id)) {
+        deleted += 1;
+      }
+    } catch (error) {
+      console.warn(`[Sessions] Failed to delete ${session.session_id} with its project:`, error);
+    }
+  }
+
+  // Backstop for rows the loop could not delete individually: the project row is
+  // about to go, and sessions may not outlive the foreign key that owns them.
+  sessionsDb.deleteSessionsByProjectPath(projectPath);
+
+  return deleted;
+}
+
+/**
  * Archive rows need a stable project label even when the owning project is not
  * part of the active sidebar payload. This lightweight resolver keeps the
  * archive API self-contained while still matching the project's stored display
