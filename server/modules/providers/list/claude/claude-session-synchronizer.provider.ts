@@ -1,6 +1,6 @@
 import os from 'node:os';
 import path from 'node:path';
-import { readFile } from 'node:fs/promises';
+import { open, stat } from 'node:fs/promises';
 
 import { sessionsDb } from '@/modules/database/index.js';
 import { claimPendingCliSession } from '@/modules/providers/services/pending-cli-sessions.service.js';
@@ -41,6 +41,34 @@ const TITLE_EVENTS = [
 ] as const satisfies ReadonlyArray<{ type: string; field: string; source: SessionNameSource }>;
 
 type TitleCandidate = { name: string; source: SessionNameSource };
+
+/**
+ * Where the last title scan of a transcript stopped, and what it had found.
+ *
+ * The watcher re-indexes a transcript on every append, and a live session is
+ * appended to constantly — so reading the whole file each time is O(session
+ * size) work per message. On this developer's Mac that meant 38 full reads of a
+ * 93 MB transcript in 11 minutes: ~200 ms of blocked event loop apiece plus
+ * gigabytes of allocation churn, which is exactly the kind of stall that makes
+ * the deployment's health probe time out and restart the server underneath live
+ * agent runs.
+ *
+ * Transcripts are append-only, and the scan takes the newest event of each
+ * kind, so resuming from the previous end-of-file and letting new events
+ * override the remembered ones gives the same answer as re-reading everything.
+ */
+type TitleScanState = {
+  sessionId: string;
+  /** Bytes already scanned. Always a line boundary, never mid-record. */
+  consumedBytes: number;
+  /** Newest value seen so far per title event type. */
+  found: Map<string, string>;
+};
+
+const titleScanCache = new Map<string, TitleScanState>();
+// A full rescan walks every transcript ever written, so the cache needs a
+// ceiling. Entries are tiny; dropping all of them just costs one re-read each.
+const TITLE_SCAN_CACHE_LIMIT = 1000;
 
 /**
  * Session indexer for Claude transcript artifacts.
@@ -224,46 +252,42 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
     filePath: string,
     sessionId: string
   ): Promise<TitleCandidate | null> {
-    const found = new Map<string, string>();
+    let found = new Map<string, string>();
 
     try {
-      const content = await readFile(filePath, 'utf8');
-      const lines = content.split(/\r?\n/);
+      const { size } = await stat(filePath);
+      const cached = titleScanCache.get(filePath);
+      // A shrunken file is a rewrite (a rewind truncates the transcript), so
+      // the remembered tail no longer describes it — start over.
+      const resumable = Boolean(cached && cached.sessionId === sessionId && size >= cached.consumedBytes);
+      const offset = resumable ? cached!.consumedBytes : 0;
+      if (resumable) {
+        found = new Map(cached!.found);
+      }
 
-      for (let index = lines.length - 1; index >= 0; index -= 1) {
-        const line = lines[index]?.trim();
-        if (!line) {
-          continue;
-        }
+      if (size > offset) {
+        const chunk = await readByteRange(filePath, offset, size - offset);
+        // The CLI may be halfway through writing the last record. Stop at the
+        // final newline and leave the rest for the next event, so the resume
+        // point is always a record boundary (and never splits a UTF-8 char).
+        const lastNewline = chunk.lastIndexOf(0x0a);
+        if (lastNewline >= 0) {
+          const complete = chunk.subarray(0, lastNewline + 1);
+          collectTitleEvents(complete.toString('utf8'), sessionId, found);
 
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(line);
-        } catch {
-          continue;
-        }
-
-        const data = parsed as Record<string, unknown>;
-        if (data.sessionId !== sessionId || typeof data.type !== 'string') {
-          continue;
-        }
-
-        const event = TITLE_EVENTS.find((entry) => entry.type === data.type);
-        if (!event || found.has(event.type)) {
-          continue;
-        }
-
-        const value = data[event.field];
-        if (typeof value === 'string' && value.trim()) {
-          found.set(event.type, value);
-          // The best-ranked event is all we need; stop once it's in hand.
-          if (event.type === TITLE_EVENTS[0].type) {
-            break;
+          if (titleScanCache.size >= TITLE_SCAN_CACHE_LIMIT && !titleScanCache.has(filePath)) {
+            titleScanCache.clear();
           }
+          titleScanCache.set(filePath, {
+            sessionId,
+            consumedBytes: offset + lastNewline + 1,
+            found: new Map(found),
+          });
         }
       }
     } catch {
       // Ignore missing/unreadable files so sync can continue.
+      titleScanCache.delete(filePath);
     }
 
     for (const event of TITLE_EVENTS) {
@@ -274,5 +298,65 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
     }
 
     return null;
+  }
+}
+
+/** Reads `length` bytes from `offset` without pulling the whole file in. */
+async function readByteRange(filePath: string, offset: number, length: number): Promise<Buffer> {
+  const handle = await open(filePath, 'r');
+  try {
+    const buffer = Buffer.allocUnsafe(length);
+    const { bytesRead } = await handle.read(buffer, 0, length, offset);
+    return buffer.subarray(0, bytesRead);
+  } finally {
+    await handle.close();
+  }
+}
+
+/**
+ * Folds one newly appended slice of a transcript into `found`.
+ *
+ * Scanning backwards means the newest event of each type in this slice wins,
+ * and because the slice is newer than everything already in `found`, it also
+ * outranks what a previous pass recorded for the same type.
+ */
+function collectTitleEvents(text: string, sessionId: string, found: Map<string, string>): void {
+  const lines = text.split(/\r?\n/);
+  const seenHere = new Set<string>();
+
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    const line = lines[index]?.trim();
+    if (!line) {
+      continue;
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(line);
+    } catch {
+      continue;
+    }
+
+    const data = parsed as Record<string, unknown>;
+    if (data.sessionId !== sessionId || typeof data.type !== 'string') {
+      continue;
+    }
+
+    const event = TITLE_EVENTS.find((entry) => entry.type === data.type);
+    if (!event || seenHere.has(event.type)) {
+      continue;
+    }
+
+    const value = data[event.field];
+    if (typeof value === 'string' && value.trim()) {
+      seenHere.add(event.type);
+      found.set(event.type, value);
+      // The best-ranked event shadows the others for good — a later slice
+      // carrying only a `last-prompt` still loses to it — so there is nothing
+      // left to learn from the rest of this slice.
+      if (event.type === TITLE_EVENTS[0].type || seenHere.size === TITLE_EVENTS.length) {
+        break;
+      }
+    }
   }
 }
