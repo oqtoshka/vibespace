@@ -9,6 +9,20 @@ const __dirname = getModuleDir(import.meta.url);
 // same top-level .env file from both /server/load-env.js and /dist-server/server/load-env.js.
 const APP_ROOT = findAppRoot(__dirname);
 
+// libuv runs every async filesystem call on a thread pool that defaults to
+// four threads, and this server is almost entirely filesystem work: transcript
+// reads, watcher syncs, static assets. Four is enough to be saturated by a
+// burst of session indexing, and once it is, unrelated reads — including the
+// one that answers `GET /` — wait behind the whole queue. That is what a
+// wedged-looking server with an idle CPU actually is.
+//
+// libuv sizes the pool the first time something uses it, so this has to be set
+// before any async work starts: this file is the process's first import and
+// only reads synchronously.
+if (!process.env.UV_THREADPOOL_SIZE) {
+  process.env.UV_THREADPOOL_SIZE = '16';
+}
+
 try {
   const envPath = path.join(APP_ROOT, '.env');
   const envFile = fs.readFileSync(envPath, 'utf8');
