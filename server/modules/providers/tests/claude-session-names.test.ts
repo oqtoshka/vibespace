@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -111,6 +111,51 @@ test('an explicit rename is never overwritten by a later sync', async () => {
     const row = sessionsDb.getSessionById(SESSION_ID);
     assert.equal(row?.custom_name, 'My own name');
     assert.equal(row?.name_source, 'user');
+  });
+});
+
+// The title scan resumes from where the previous one stopped instead of
+// re-reading the transcript (see TitleScanState), so the two ways that resume
+// point can lie both need holding down.
+const transcriptPath = (homeDir: string) =>
+  path.join(homeDir, '.claude', 'projects', 'proj', `${SESSION_ID}.jsonl`);
+
+test('a record still being written is not consumed until its newline lands', async () => {
+  await withIsolatedHome(async ({ homeDir }) => {
+    const filePath = transcriptPath(homeDir);
+    const synchronizer = new ClaudeSessionSynchronizer();
+
+    await writeFile(filePath, `${JSON.stringify(head)}\n${JSON.stringify(lastPrompt('first'))}\n`, 'utf8');
+    await synchronizer.synchronizeFile(filePath);
+    assert.equal(sessionsDb.getSessionById(SESSION_ID)?.custom_name, 'first');
+
+    // The watcher fires on every write, so it routinely catches the CLI
+    // mid-record. Consuming those bytes would lose the record for good.
+    const second = JSON.stringify(lastPrompt('second'));
+    await appendFile(filePath, second.slice(0, 20), 'utf8');
+    await synchronizer.synchronizeFile(filePath);
+    assert.equal(sessionsDb.getSessionById(SESSION_ID)?.custom_name, 'first');
+
+    await appendFile(filePath, `${second.slice(20)}\n`, 'utf8');
+    await synchronizer.synchronizeFile(filePath);
+    assert.equal(sessionsDb.getSessionById(SESSION_ID)?.custom_name, 'second');
+  });
+});
+
+test('a transcript that shrank is scanned from the beginning again', async () => {
+  await withIsolatedHome(async ({ homeDir }) => {
+    const filePath = transcriptPath(homeDir);
+    const synchronizer = new ClaudeSessionSynchronizer();
+
+    await writeFile(filePath, `${JSON.stringify(head)}\n${JSON.stringify(aiTitle('Alpha release notes'))}\n`, 'utf8');
+    await synchronizer.synchronizeFile(filePath);
+    assert.equal(sessionsDb.getSessionById(SESSION_ID)?.custom_name, 'Alpha release notes');
+
+    // A rewind truncates the transcript, so the remembered tail describes a
+    // file that no longer exists.
+    await writeFile(filePath, `${JSON.stringify(head)}\n${JSON.stringify(aiTitle('Beta notes'))}\n`, 'utf8');
+    await synchronizer.synchronizeFile(filePath);
+    assert.equal(sessionsDb.getSessionById(SESSION_ID)?.custom_name, 'Beta notes');
   });
 });
 
