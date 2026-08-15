@@ -92,7 +92,13 @@ export interface NormalizedMessage {
   toolName?: string;
   toolInput?: unknown;
   toolId?: string;
-  toolResult?: { content: string; isError: boolean; toolUseResult?: unknown } | null;
+  toolResult?: {
+    content: string;
+    isError: boolean;
+    toolUseResult?: unknown;
+    /** The run was killed mid-tool (server restart), not refused by the user. */
+    interruptedByShutdown?: boolean;
+  } | null;
   isError?: boolean;
   text?: string;
   tokens?: number;

@@ -211,6 +211,7 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
               content: formatToolResultContent(tr.content),
               isError: Boolean(tr.isError),
               toolUseResult: (tr as any).toolUseResult,
+              interruptedByShutdown: Boolean((tr as any).interruptedByShutdown),
             }
           : null;
 
