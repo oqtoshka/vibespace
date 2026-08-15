@@ -1297,17 +1297,47 @@ export async function readFileTimestamps(
 // ---------------------------
 //----------------- SESSION SYNCHRONIZER JSONL PARSING HELPERS ------------
 /**
+ * Parsed lookup files, keyed by the file and the fields read out of it.
+ *
+ * The synchronizers rebuild their lookup map on *every* file event, and the
+ * files they read are whole-history indexes: `~/.claude/history.jsonl` is over
+ * a megabyte and five thousand records here, re-streamed and re-parsed dozens
+ * of times a minute while a session is live. All of that work goes through
+ * libuv's four-thread pool, which the rest of the server — static files,
+ * transcript reads — has to share.
+ */
+const lookupMapCache = new Map<string, { mtimeMs: number; size: number; lookup: Map<string, string> }>();
+
+/**
  * Builds a first-seen key/value lookup map from a JSONL file.
  *
  * Use this for provider index files where session id -> display name metadata
  * is stored line-by-line. The first value for each key wins, preserving the
  * earliest known label while avoiding repeated map overwrites.
+ *
+ * The result is cached until the file's size or mtime changes, and the cached
+ * map is handed back as-is: callers read from it and must not mutate it.
  */
 export async function buildLookupMap(
   filePath: string,
   keyField: string,
   valueField: string
 ): Promise<Map<string, string>> {
+  const cacheKey = `${filePath} ${keyField} ${valueField}`;
+  let signature: { mtimeMs: number; size: number } | null = null;
+
+  try {
+    const fileStat = await stat(filePath);
+    signature = { mtimeMs: fileStat.mtimeMs, size: fileStat.size };
+
+    const cached = lookupMapCache.get(cacheKey);
+    if (cached && cached.mtimeMs === signature.mtimeMs && cached.size === signature.size) {
+      return cached.lookup;
+    }
+  } catch {
+    // An unreadable index is handled below the same way an empty one is.
+  }
+
   const lookup = new Map<string, string>();
 
   try {
@@ -1330,6 +1360,12 @@ export async function buildLookupMap(
     }
   } catch {
     // Missing or unreadable lookup files should not block session sync.
+  }
+
+  // Only cache against a signature that was actually read: a file that could
+  // not be stat'd has to be retried rather than remembered as empty.
+  if (signature) {
+    lookupMapCache.set(cacheKey, { ...signature, lookup });
   }
 
   return lookup;
