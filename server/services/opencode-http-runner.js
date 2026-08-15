@@ -1,6 +1,7 @@
 import { appendImagesInputTag, buildOpenCodePromptAttachments } from '../shared/image-attachments.js';
 import { createCompleteMessage, createNormalizedMessage } from '../shared/utils.js';
 import { readOpenCodeTokenUsage } from '../shared/opencode-token-usage.js';
+import { sendOpenCodeContextUsage } from '../shared/opencode-context.js';
 import { providerModelsService } from '../modules/providers/services/provider-models.service.js';
 import { sessionsService } from '../modules/providers/services/sessions.service.js';
 
@@ -541,6 +542,20 @@ export async function runOpenCodeHttpTurn(command, options, ws, hooks = {}) {
       provider: 'opencode',
     }));
   }
+
+  // The budget above is what the session has *spent*; this is how full the
+  // window is. They diverge without limit, because every turn resends the
+  // conversation — see readContextOccupancy.
+  //
+  // Deliberately not awaited: sizing an unknown model's window can cost a
+  // `opencode models` spawn, and a gauge is never worth holding a finished
+  // turn's `complete` behind. It arrives on its own a moment later.
+  void sendOpenCodeContextUsage({
+    ws,
+    sessionId: activeSessionId,
+    modelId: resolvedModel,
+    tokens: lastStepTokens,
+  });
 
   // An aborted run already had its terminal `complete` sent on its behalf.
   if (!handle.aborted) {

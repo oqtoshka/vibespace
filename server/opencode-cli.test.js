@@ -13,7 +13,10 @@ async function createFakeOpenCodeExecutable(binDir) {
   const scriptPath = path.join(binDir, 'opencode.js');
   await writeFile(scriptPath, `
 const capturePath = process.env.OPENCODE_ARGS_CAPTURE;
-if (capturePath) {
+// A finished turn also asks the CLI for the model catalog, to size the context
+// gauge. That is a second invocation of this same fake, and it must not
+// overwrite the capture of the run these tests are actually inspecting.
+if (capturePath && process.argv[2] !== 'models') {
   require('node:fs').writeFileSync(capturePath, JSON.stringify({
     args: process.argv.slice(2),
     permissionEnv: process.env.OPENCODE_PERMISSION ?? null,

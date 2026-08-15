@@ -185,6 +185,26 @@ export const api = {
       method: 'DELETE',
     });
   },
+  // OpenCode's context window and compaction settings. `model` is optional —
+  // the server falls back to the model the config itself names as default.
+  openCodeCompaction: (model = null) => {
+    const params = new URLSearchParams();
+    if (model) params.set('model', model);
+    const qs = params.toString();
+    return authenticatedFetch(`/api/providers/opencode/compaction${qs ? `?${qs}` : ''}`);
+  },
+  // Fields left out are untouched; a field sent as null is removed from the
+  // config so OpenCode's own default applies again.
+  saveOpenCodeCompaction: (patch) =>
+    authenticatedFetch('/api/providers/opencode/compaction', {
+      method: 'PUT',
+      body: JSON.stringify(patch),
+    }),
+  saveOpenCodeModelInputLimit: (model, inputTokens) =>
+    authenticatedFetch('/api/providers/opencode/model-limit', {
+      method: 'PUT',
+      body: JSON.stringify({ model, inputTokens }),
+    }),
   searchConversationsUrl: (query, limit = 50) => {
     const token = localStorage.getItem('auth-token');
     const params = new URLSearchParams({ q: query, limit: String(limit) });
