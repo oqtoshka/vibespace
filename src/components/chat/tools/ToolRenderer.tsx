@@ -2,6 +2,7 @@ import React, { memo, useMemo, useCallback } from 'react';
 
 import type { Project } from '../../../types/app';
 import type { SubagentChildTool } from '../types/types';
+import { SHUTDOWN_INTERRUPTION_NOTE, isShutdownInterrupted } from '../utils/toolInterruption';
 
 import { getToolConfig } from './configs/toolConfigs';
 import { OneLineDisplay, BashCommandDisplay, CollapsibleDisplay, ToolDiffViewer, MarkdownContent, FileListContent, TodoListContent, TaskListContent, TextContent, QuestionAnswerContent, SubagentContainer } from './components';
@@ -56,6 +57,10 @@ const CLAUDE_DENIAL_MESSAGES = [
 
 function deriveToolStatus(toolResult: any): ToolStatus {
   if (!toolResult) return 'running';
+  // The CLI records a killed-mid-tool run with the same wording it uses for a
+  // real refusal ("The user doesn't want to proceed…"), so only its own
+  // `interruptedByShutdown` stamp can tell the two apart. Check it first.
+  if (isShutdownInterrupted(toolResult)) return 'interrupted';
   if (toolResult.isError) {
     const content = String(toolResult.content || '').toLowerCase().trim();
     if (CLAUDE_DENIAL_MESSAGES.some((msg) => content.includes(msg))) {
@@ -137,21 +142,26 @@ export const ToolRenderer: React.FC<ToolRendererProps> = memo(({
     const description = typeof parsedData === 'object' && parsedData !== null && 'description' in parsedData
       ? String(parsedData.description || '')
       : undefined;
-    const output = typeof toolResult?.content === 'string'
+    const rawOutput = typeof toolResult?.content === 'string'
       ? toolResult.content
       : toolResult?.content != null
         ? String(toolResult.content)
         : '';
+    // A shutdown carries the CLI's refusal boilerplate as its "output"; showing
+    // it verbatim tells the reader they declined the command.
+    const interrupted = isShutdownInterrupted(toolResult);
+    const output = interrupted ? SHUTDOWN_INTERRUPTION_NOTE : rawOutput;
     return (
       <BashCommandDisplay
         command={command}
         description={description}
         output={output}
-        isError={Boolean(toolResult?.isError)}
+        isError={!interrupted && Boolean(toolResult?.isError)}
         status={toolStatus !== 'completed' ? toolStatus : undefined}
         // Commands stay collapsed by default; only failures auto-expand so they
-        // remain visible.
-        defaultOpen={false}
+        // remain visible. An interruption expands too — the badge alone doesn't
+        // say the server, not the reader, ended the command.
+        defaultOpen={interrupted}
       />
     );
   }

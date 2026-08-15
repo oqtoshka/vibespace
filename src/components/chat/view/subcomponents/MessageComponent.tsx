@@ -10,6 +10,7 @@ import type {
   Provider,
 } from '../../types/types';
 import { formatUsageLimitText } from '../../utils/chatFormatting';
+import { SHUTDOWN_INTERRUPTION_NOTE, isShutdownInterrupted } from '../../utils/toolInterruption';
 import type { Project } from '../../../../types/app';
 import { ToolRenderer, shouldHideToolResult } from '../../tools';
 import { Reasoning, ReasoningTrigger, ReasoningContent } from '../../../../shared/view/ui';
@@ -423,7 +424,25 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
 
                 {/* Tool Result Section — Bash renders its output inside the command row above. */}
                 {message.toolResult && message.toolName !== 'Bash' && !shouldHideToolResult(message.toolName || 'UnknownTool', message.toolResult) && (
-                  message.toolResult.isError ? (
+                  isShutdownInterrupted(message.toolResult) ? (
+                    // Killed mid-tool by a restart. The CLI's own result text
+                    // reads as a user refusal, so it is replaced rather than
+                    // shown — see toolInterruption.ts.
+                    <div
+                      id={`tool-result-${message.toolId}`}
+                      className="relative mt-2 scroll-mt-4 rounded border border-amber-200/60 bg-amber-50/50 p-3 dark:border-amber-800/40 dark:bg-amber-950/10"
+                    >
+                      <div className="relative mb-2 flex items-center gap-1.5">
+                        <svg className="h-4 w-4 text-amber-500 dark:text-amber-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01M5 19h14a2 2 0 001.84-2.75L13.74 4a2 2 0 00-3.48 0l-7.1 12.25A2 2 0 004.99 19z" />
+                        </svg>
+                        <span className="text-xs font-medium text-amber-700 dark:text-amber-300">{t('messageTypes.interrupted')}</span>
+                      </div>
+                      <div className="relative text-sm text-amber-900 dark:text-amber-100">
+                        {SHUTDOWN_INTERRUPTION_NOTE}
+                      </div>
+                    </div>
+                  ) : message.toolResult.isError ? (
                     // Error results - red error box with content
                     <div
                       id={`tool-result-${message.toolId}`}
