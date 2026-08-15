@@ -127,6 +127,61 @@ test('fetchHistory does not flag transcriptMissing for a transcript that exists'
   });
 });
 
+const SHUTDOWN_SESSION = '55555555-5555-4555-8555-555555555555';
+
+// A tool that was in flight when the CLI was shut down (here: the watchdog
+// kickstarting a momentarily unresponsive vibespace) is written to the
+// transcript with the *same* result text as a real refusal — "The user doesn't
+// want to proceed…" — and `interruptedByShutdown: true`. Only that flag
+// separates the two, so it has to survive into the message the UI renders;
+// without it the transcript tells the reader they declined a prompt they were
+// never shown.
+test('fetchHistory carries interruptedByShutdown onto a tool result the CLI closed out', async () => {
+  await withIsolatedDatabase(async (tempDir) => {
+    const projectDir = path.join(tempDir, 'projects', '-demo');
+    await mkdir(projectDir, { recursive: true });
+    const mainFile = path.join(projectDir, `${SHUTDOWN_SESSION}.jsonl`);
+    await writeFile(mainFile, jsonl(
+      {
+        type: 'assistant',
+        sessionId: SHUTDOWN_SESSION,
+        cwd: '/demo',
+        uuid: 'a1',
+        timestamp: '2026-01-01T00:00:00.000Z',
+        message: { role: 'assistant', content: [{ type: 'tool_use', id: 'tool1', name: 'Bash', input: { command: 'sleep 30' } }] },
+      },
+      {
+        type: 'user',
+        sessionId: SHUTDOWN_SESSION,
+        cwd: '/demo',
+        uuid: 'u1',
+        timestamp: '2026-01-01T00:00:01.000Z',
+        toolUseResult: 'User rejected tool use',
+        toolDenialKind: 'user-rejected',
+        interruptedByShutdown: true,
+        message: {
+          role: 'user',
+          content: [{
+            type: 'tool_result',
+            tool_use_id: 'tool1',
+            is_error: true,
+            content: "The user doesn't want to proceed with this tool use.",
+          }],
+        },
+      },
+    ));
+
+    sessionsDb.createSession(SHUTDOWN_SESSION, 'claude', '/demo', 'Demo', undefined, undefined, mainFile);
+
+    const result = await new ClaudeSessionsProvider().fetchHistory(SHUTDOWN_SESSION, { limit: null });
+    const toolUse = result.messages.find((message) => message.kind === 'tool_use' && message.toolId === 'tool1');
+
+    assert.ok(toolUse, 'the tool_use message should be present');
+    assert.equal(toolUse?.toolResult?.isError, true);
+    assert.equal(toolUse?.toolResult?.interruptedByShutdown, true);
+  });
+});
+
 const REWIND_SESSION = '33333333-3333-4333-8333-333333333333';
 
 function conversationJsonl(): string {

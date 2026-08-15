@@ -15,6 +15,7 @@ type ClaudeToolResult = {
   isError: boolean;
   subagentTools?: unknown;
   toolUseResult?: unknown;
+  interruptedByShutdown?: boolean;
 };
 
 type ClaudeHistoryResult =
@@ -608,6 +609,11 @@ export class ClaudeSessionsProvider implements IProviderSessions {
               // the live path never learns e.g. a subagent's agentId, so the
               // transcript viewer can't resolve running agents.
               toolUseResult: raw.toolUseResult ?? raw.tool_use_result,
+              // The CLI writes its ordinary "user rejected this tool" result
+              // when it is killed with a tool in flight, and stamps the row
+              // with this flag. Carry it so the UI doesn't blame the reader
+              // for a tool the server's own restart killed.
+              interruptedByShutdown: Boolean(raw.interruptedByShutdown),
             }));
           } else if (part.type === 'text') {
             const text = part.text || '';
@@ -899,6 +905,7 @@ export class ClaudeSessionsProvider implements IProviderSessions {
               isError: Boolean(part.is_error),
               subagentTools: raw.subagentTools,
               toolUseResult: raw.toolUseResult,
+              interruptedByShutdown: Boolean(raw.interruptedByShutdown),
             });
           }
         }
@@ -923,6 +930,7 @@ export class ClaudeSessionsProvider implements IProviderSessions {
             : JSON.stringify(toolResult.content),
           isError: toolResult.isError,
           toolUseResult: toolResult.toolUseResult,
+          interruptedByShutdown: toolResult.interruptedByShutdown,
         };
         msg.subagentTools = toolResult.subagentTools;
       }
