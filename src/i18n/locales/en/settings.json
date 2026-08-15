@@ -5,7 +5,8 @@
     "permissions": "Permissions",
     "mcpServers": "MCP Servers",
     "skills": "Skills",
-    "appearance": "Appearance"
+    "appearance": "Appearance",
+    "context": "Context"
   },
   "account": {
     "title": "Account",
@@ -569,5 +570,47 @@
     "installAriaLabel": "Plugin git repository URL",
     "tab": "tab",
     "runningStatus": "running"
+  },
+  "contextSettings": {
+    "title": "Context & compaction",
+    "subtitle": "For {{model}}, from {{path}}",
+    "noModel": "No default model is set in {{path}}, so the window is unknown.",
+    "loading": "Reading OpenCode configuration…",
+    "retry": "Try again",
+    "window": "Context window",
+    "maxOutput": "Max output",
+    "compactsAt": "Compacts at",
+    "unknownWindow": "OpenCode did not report a window for this model, so there is nothing to measure against and compaction cannot be timed.",
+    "afterCompaction": "What survives a compaction",
+    "placeholderDefault": "default",
+    "reservedInert": "This model declares no input ceiling, so OpenCode currently ignores any threshold and compacts at window minus max output. Saving a threshold declares the ceiling for you, which is what makes the setting take effect.",
+    "save": "Save",
+    "savedNotice": "Saved to opencode.json",
+    "auto": {
+      "label": "Compact automatically",
+      "description": "Summarise the conversation when it reaches the threshold below. Turned off, a full window becomes an error instead."
+    },
+    "compactAt": {
+      "label": "Compact when context reaches",
+      "description": "Tokens. Leave empty for OpenCode's own timing.",
+      "descriptionWithPercent": "{{percent}}% of the window. Leave empty for OpenCode's own timing."
+    },
+    "preserve": {
+      "label": "Keep recent messages verbatim",
+      "description": "Tokens of the most recent conversation left uncompressed. Empty means a quarter of the window."
+    },
+    "tailTurns": {
+      "label": "Keep last turns",
+      "description": "A hard floor on how many recent turns stay verbatim, whatever the token budget says."
+    },
+    "prune": {
+      "label": "Drop old tool output instead of summarising it",
+      "description": "Cheaper and faster, but the agent loses what those tools actually returned."
+    },
+    "errors": {
+      "notANumber": "Those fields take a whole number of tokens, or nothing at all.",
+      "aboveWindow": "Compaction has to start below the window itself — otherwise it never starts.",
+      "modelNotOwned": "This model comes from OpenCode's own catalog, so its limits cannot be edited here."
+    }
   }
 }

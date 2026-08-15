@@ -402,6 +402,12 @@ Custom commands can be created in:
           used: contextUsage ? contextUsage.totalTokens : used,
           total: contextUsage ? contextUsage.maxTokens : total,
         },
+        // What the session has *spent*, kept separate from what it occupies.
+        // The two diverge without limit — every turn resends the conversation,
+        // so an OpenCode session against a 64k window had spent 200k — and
+        // collapsing them into one "tokens used" row is what made the panel
+        // look like it was reporting an impossible context.
+        ...(used > 0 ? { sessionTotalTokens: used } : {}),
         ...(contextUsage ? { contextUsage } : {}),
         ...(hasTokenBreakdown
           ? {

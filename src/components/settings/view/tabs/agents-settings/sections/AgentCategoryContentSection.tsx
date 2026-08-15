@@ -5,6 +5,7 @@ import type { SkillsProject } from '../../../../../skills/types';
 import { ProviderSkills } from '../../../../../skills';
 
 import AccountContent from './content/AccountContent';
+import ContextContent from './content/ContextContent';
 import PermissionsContent from './content/PermissionsContent';
 
 export default function AgentCategoryContentSection({
@@ -72,6 +73,8 @@ export default function AgentCategoryContentSection({
           onPermissionModeChange={onCodexPermissionModeChange}
         />
       )}
+
+      {selectedCategory === 'context' && selectedAgent === 'opencode' && <ContextContent />}
 
       {selectedCategory === 'mcp' && (
         // SettingsProject.name is populated from the DB projectId by
