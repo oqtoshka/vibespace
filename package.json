@@ -1,6 +1,6 @@
 {
   "name": "@vibespace-ai/vibespace",
-  "version": "1.38.27",
+  "version": "1.38.28",
   "productName": "VibeSpace",
   "description": "A web-based UI for Claude Code CLI",
   "type": "module",
