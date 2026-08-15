@@ -298,6 +298,8 @@ export type NormalizedMessage = {
     content?: string;
     isError?: boolean;
     toolUseResult?: unknown;
+    /** The run was killed mid-tool (server restart), not refused by the user. */
+    interruptedByShutdown?: boolean;
   };
   isError?: boolean;
   text?: string;
