@@ -63,6 +63,54 @@ interface ScrollAnchor {
   offset: number;
 }
 
+/**
+ * How far into a message to look for the anchor. Deep enough to get past the
+ * wrappers a message is built from, shallow enough that the element survives
+ * the re-render a prepended page causes and can still be measured afterwards.
+ */
+const SCROLL_ANCHOR_MAX_DEPTH = 3;
+
+/**
+ * Picks what to hold still: the first element that starts at or below the top
+ * edge of the viewport.
+ *
+ * The obvious choice — the topmost element still on screen — is wrong, and
+ * wrong in exactly the case the reader meets while scrolling up through the
+ * transcript for the first time. That element is *clipped* by the top edge, so
+ * when its own contents settle a moment later (a code block highlights, an
+ * image decodes) it grows downwards while its top stays exactly where it was.
+ * The measured drift is zero, no correction is made, and everything the reader
+ * is looking at slides down the screen. Measured in a real engine with
+ * `overflow-anchor: none`: the anchor reported 0 px of drift while the reader
+ * was pushed 200 px. Scrolling back through the same messages afterwards is
+ * smooth, because by then they have finished settling — which is why this only
+ * ever bit on the way up through new ground.
+ *
+ * An element that starts below the edge has nothing clipped above it, so any
+ * height change above it — inside its own ancestors included — moves it, and a
+ * correction that puts it back puts the whole viewport back with it.
+ */
+function pickScrollAnchorElement(scope: Element, containerTop: number, depth: number): Element | null {
+  for (const element of Array.from(scope.children)) {
+    const rect = element.getBoundingClientRect();
+    if (rect.bottom <= containerTop) continue;
+
+    if (rect.top >= containerTop) return element;
+
+    // Clipped by the edge. Its own children may still start below it.
+    if (depth < SCROLL_ANCHOR_MAX_DEPTH && element.children.length > 0) {
+      const deeper = pickScrollAnchorElement(element, containerTop, depth + 1);
+      if (deeper) return deeper;
+    }
+
+    // Nothing inside it starts below the edge, so the next sibling is the
+    // closest thing that does — it begins where this element ends.
+    return element.nextElementSibling ?? element;
+  }
+
+  return null;
+}
+
 /* ------------------------------------------------------------------ */
 /*  Helper: Convert a ChatMessage to a NormalizedMessage for the store */
 /* ------------------------------------------------------------------ */
@@ -426,14 +474,10 @@ export function useChatSessionState({
     if (!container || !list) return;
 
     const containerTop = container.getBoundingClientRect().top;
-    for (const element of Array.from(list.children)) {
-      const rect = element.getBoundingClientRect();
-      if (rect.bottom > containerTop) {
-        scrollAnchorRef.current = { element, offset: rect.top - containerTop };
-        return;
-      }
-    }
-    scrollAnchorRef.current = null;
+    const element = pickScrollAnchorElement(list, containerTop, 0);
+    scrollAnchorRef.current = element
+      ? { element, offset: element.getBoundingClientRect().top - containerTop }
+      : null;
   }, [transcriptList]);
 
   /**
@@ -453,7 +497,15 @@ export function useChatSessionState({
   const restoreScrollAnchor = useCallback(() => {
     const container = scrollContainerRef.current;
     const anchor = scrollAnchorRef.current;
-    if (!container || !anchor || !anchor.element.isConnected) return;
+    if (!container || !anchor) return;
+
+    // The anchor can be an element inside a message, which a re-render is free
+    // to replace. A detached one cannot be measured, so drop it and let the
+    // next scroll event pick a fresh one rather than hold a dead reference.
+    if (!anchor.element.isConnected) {
+      scrollAnchorRef.current = null;
+      return;
+    }
 
     const containerTop = container.getBoundingClientRect().top;
     const drift = anchor.element.getBoundingClientRect().top - containerTop - anchor.offset;
