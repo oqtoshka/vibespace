@@ -250,10 +250,6 @@ async function onUpdate(
   filePath: string,
   provider: LLMProvider
 ): Promise<void> {
-  if (!isWatcherTargetFile(provider, filePath)) {
-    return;
-  }
-
   try {
     const result = await sessionSynchronizerService.synchronizeProviderFile(provider, filePath);
     if (!result.indexed) {
@@ -271,6 +267,58 @@ async function onUpdate(
       eventType,
       filePath,
       error: message,
+    });
+  }
+}
+
+/**
+ * Runs the per-file syncs a few at a time, collapsing repeats of the same file.
+ *
+ * Every watcher event used to start a full sync of its own with no ceiling.
+ * The watchers poll hundreds of transcripts, and a live session is appended to
+ * several times a second, so one file would be re-synced dozens of times back
+ * to back — each pass streaming the file, the provider's history index and the
+ * transcript itself through libuv's four-thread pool. Saturate that pool and
+ * every other filesystem read queues behind it, including the one that serves
+ * `GET /`: the server stops answering HTTP for minutes while the CPU sits
+ * idle, which is exactly what the deployment's health probe kills it for.
+ *
+ * A sync always reads the file as it stands when it runs, so a repeat event
+ * for a file already waiting adds nothing and is folded into the pending one.
+ */
+const WATCHER_SYNC_CONCURRENCY = 2;
+
+const pendingFileSyncs = new Map<string, { provider: LLMProvider; eventType: WatcherEventType }>();
+let activeFileSyncs = 0;
+
+function enqueueFileSync(
+  eventType: WatcherEventType,
+  filePath: string,
+  provider: LLMProvider
+): void {
+  if (!isWatcherTargetFile(provider, filePath)) {
+    return;
+  }
+
+  // Keep the earlier event type: an `add` that a `change` caught up with is
+  // still the file's first sighting, and the flush reports it as such.
+  const pending = pendingFileSyncs.get(filePath);
+  pendingFileSyncs.set(filePath, { provider, eventType: pending?.eventType ?? eventType });
+  drainFileSyncQueue();
+}
+
+function drainFileSyncQueue(): void {
+  while (activeFileSyncs < WATCHER_SYNC_CONCURRENCY && pendingFileSyncs.size > 0) {
+    const [filePath, pending] = pendingFileSyncs.entries().next().value as [
+      string,
+      { provider: LLMProvider; eventType: WatcherEventType },
+    ];
+    pendingFileSyncs.delete(filePath);
+    activeFileSyncs += 1;
+
+    void onUpdate(pending.eventType, filePath, pending.provider).finally(() => {
+      activeFileSyncs -= 1;
+      drainFileSyncQueue();
     });
   }
 }
@@ -304,10 +352,10 @@ export async function initializeSessionsWatcher(): Promise<void> {
 
       watcher
         .on('add', (filePath: string) => {
-          void onUpdate('add', filePath, provider);
+          enqueueFileSync('add', filePath, provider);
         })
         .on('change', (filePath: string) => {
-          void onUpdate('change', filePath, provider);
+          enqueueFileSync('change', filePath, provider);
         })
         .on('error', (error: unknown) => {
           const message = error instanceof Error ? error.message : String(error);
@@ -342,6 +390,7 @@ export async function closeSessionsWatcher(): Promise<void> {
     })
   );
   watchers.length = 0;
+  pendingFileSyncs.clear();
   pendingWatcherUpdate = null;
   pendingWatcherUpdateStartedAt = null;
   watcherRefreshInFlight = false;

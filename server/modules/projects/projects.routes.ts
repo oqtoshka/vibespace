@@ -265,7 +265,15 @@ router.delete(
   asyncHandler(async (req, res) => {
     const projectId = typeof req.params.projectId === 'string' ? req.params.projectId : '';
     const force = req.query.force === 'true';
+
+    // A delete that never came back left nothing behind to investigate: no
+    // request line, no duration, no way to tell a slow delete from a request
+    // that never reached the handler. Both ends are logged for that reason.
+    console.log('[Projects] Delete requested', { projectId, force });
+    const startedAt = Date.now();
     await deleteOrArchiveProject(projectId, force);
+    console.log('[Projects] Delete finished', { projectId, force, ms: Date.now() - startedAt });
+
     res.json({ success: true });
   }),
 );
