@@ -6,6 +6,7 @@ import crossSpawn from 'cross-spawn';
 
 import { appendImagesInputTag, normalizeImageDescriptors } from './shared/image-attachments.js';
 import { readOpenCodeTokenUsage } from './shared/opencode-token-usage.js';
+import { sendOpenCodeContextUsage } from './shared/opencode-context.js';
 import { runOpenCodeHttpTurn } from './services/opencode-http-runner.js';
 import { sessionsService } from './modules/providers/services/sessions.service.js';
 import { providerAuthService } from './modules/providers/services/provider-auth.service.js';
@@ -449,6 +450,15 @@ async function spawnOpenCode(command, options = {}, ws) {
               provider: 'opencode',
             }));
           }
+
+          // What the session has spent, above; how full the window is, here.
+          // The turn's own counts are gone with the process, so this reads them
+          // back out of the messages `run` just wrote.
+          void sendOpenCodeContextUsage({
+            ws,
+            sessionId: finalSessionId,
+            modelId: resolvedModel,
+          });
 
           // Terminal complete — skipped for aborted runs (abort-session
           // already sent the aborted complete on this run's behalf).

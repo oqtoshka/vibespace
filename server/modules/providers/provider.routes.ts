@@ -7,6 +7,11 @@ import { providerModelsService } from '@/modules/providers/services/provider-mod
 import { providerSkillsService } from '@/modules/providers/services/skills.service.js';
 import { sessionConversationsSearchService } from '@/modules/providers/services/session-conversations-search.service.js';
 import { sessionsService } from '@/modules/providers/services/sessions.service.js';
+import {
+  describeOpenCodeCompaction,
+  writeOpenCodeCompactionConfig,
+  writeOpenCodeModelInputLimit,
+} from '@/shared/opencode-context.js';
 import type {
   LLMProvider,
   McpScope,
@@ -708,5 +713,100 @@ router.get('/search/sessions', asyncHandler(async (req: Request, res: Response) 
     }
   }
 }));
+
+/**
+ * Reads an optional positive integer that the client may also clear.
+ *
+ * `null` is a value here, not a missing field: it is how the settings form
+ * says "drop this key and go back to OpenCode's own default", which is not the
+ * same as writing whatever that default happens to be today.
+ */
+const parseOptionalTokenField = (value: unknown, name: string): number | null | undefined => {
+  if (value === undefined) return undefined;
+  if (value === null || value === '') return null;
+
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0 || !Number.isInteger(parsed)) {
+    throw new AppError(`${name} must be a positive whole number of tokens, or null to unset it.`, {
+      code: 'INVALID_REQUEST_BODY',
+      statusCode: 400,
+    });
+  }
+
+  return parsed;
+};
+
+const parseOptionalBooleanField = (value: unknown, name: string): boolean | undefined => {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'boolean') {
+    throw new AppError(`${name} must be true or false.`, {
+      code: 'INVALID_REQUEST_BODY',
+      statusCode: 400,
+    });
+  }
+
+  return value;
+};
+
+router.get(
+  '/opencode/compaction',
+  asyncHandler(async (req: Request, res: Response) => {
+    const model = readOptionalQueryString(req.query.model) ?? null;
+    res.json(createApiSuccessResponse(await describeOpenCodeCompaction(model)));
+  }),
+);
+
+router.put(
+  '/opencode/compaction',
+  asyncHandler(async (req: Request, res: Response) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    await writeOpenCodeCompactionConfig({
+      auto: parseOptionalBooleanField(body.auto, 'auto'),
+      prune: parseOptionalBooleanField(body.prune, 'prune'),
+      tailTurns: parseOptionalTokenField(body.tailTurns, 'tailTurns'),
+      preserveRecentTokens: parseOptionalTokenField(body.preserveRecentTokens, 'preserveRecentTokens'),
+      reserved: parseOptionalTokenField(body.reserved, 'reserved'),
+    });
+
+    const model = typeof body.model === 'string' && body.model.trim() ? body.model.trim() : null;
+    res.json(createApiSuccessResponse(await describeOpenCodeCompaction(model)));
+  }),
+);
+
+/**
+ * Declares a model's input ceiling, which is what makes `reserved` mean
+ * anything — see writeOpenCodeModelInputLimit.
+ */
+router.put(
+  '/opencode/model-limit',
+  asyncHandler(async (req: Request, res: Response) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const model = typeof body.model === 'string' ? body.model.trim() : '';
+    if (!model.includes('/')) {
+      throw new AppError('model must be a "provider/model" id.', {
+        code: 'INVALID_REQUEST_BODY',
+        statusCode: 400,
+      });
+    }
+
+    const inputTokens = parseOptionalTokenField(body.inputTokens, 'inputTokens');
+    if (inputTokens === undefined) {
+      throw new AppError('inputTokens is required (a token count, or null to unset it).', {
+        code: 'INVALID_REQUEST_BODY',
+        statusCode: 400,
+      });
+    }
+
+    const limit = await writeOpenCodeModelInputLimit(model, inputTokens);
+    if (!limit) {
+      throw new AppError(
+        `${model} is not declared in this OpenCode config, so its limits cannot be edited here.`,
+        { code: 'MODEL_NOT_CONFIGURABLE', statusCode: 409 },
+      );
+    }
+
+    res.json(createApiSuccessResponse(await describeOpenCodeCompaction(model)));
+  }),
+);
 
 export default router;

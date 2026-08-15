@@ -408,13 +408,74 @@ function CostContent({ data }: { data: CostCommandData }) {
   const used = Number(data.tokenUsage?.used ?? 0);
   const total = Number(data.tokenUsage?.total ?? 0);
   const contextUsage = data.contextUsage && data.contextUsage.maxTokens > 0 ? data.contextUsage : null;
+  // `used` is the context occupancy once a live reading exists; the running
+  // spend comes alongside it so both can be shown for what they are.
+  const sessionTotal = Number(data.sessionTotalTokens ?? used);
   const model = data.model || 'Unknown';
   const provider = getProviderLabel(data.provider, data.provider || 'Unknown');
   const hasBreakdown =
     typeof data.tokenBreakdown?.input === 'number' ||
     typeof data.tokenBreakdown?.output === 'number';
+  // The threshold arrives as an absolute token count (see
+  // resolveCompactAtPercent), which is also the number that answers the
+  // question people actually open this panel with: how much room is left.
+  const compactAtTokens = contextUsage && contextUsage.isAutoCompactEnabled
+    ? Number(contextUsage.autoCompactThreshold)
+    : NaN;
+  const hasCompactAt = Number.isFinite(compactAtTokens) && compactAtTokens > 1;
+  const compactAtPercent = contextUsage
+    ? resolveCompactAtPercent(contextUsage.autoCompactThreshold, contextUsage.maxTokens)
+    : null;
+  const remainingTokens = hasCompactAt
+    ? Math.max(0, compactAtTokens - contextUsage!.totalTokens)
+    : contextUsage
+      ? Math.max(0, contextUsage.maxTokens - contextUsage.totalTokens)
+      : 0;
+
   const usageRows = [
-    { label: 'Total tokens used', value: formatNumber(used), icon: Activity },
+    // The window first: everything below is measured against it, and reading
+    // a used-figure without it is what made this panel look like it was
+    // reporting more context than the model has.
+    ...(contextUsage
+      ? [
+          {
+            label: 'Context window',
+            value: formatNumber(contextUsage.maxTokens),
+            icon: Gauge,
+          },
+          {
+            label: 'Context in use',
+            value: `${formatNumber(contextUsage.totalTokens)} (${Math.round(contextUsage.percentage)}%)`,
+            icon: Gauge,
+          },
+          {
+            label: hasCompactAt ? 'Room before auto-compact' : 'Room left',
+            value: formatNumber(remainingTokens),
+            icon: Activity,
+          },
+          {
+            label: 'Auto-compact',
+            value: contextUsage.isAutoCompactEnabled
+              ? hasCompactAt
+                ? `On — at ${formatNumber(compactAtTokens)}${compactAtPercent === null ? '' : ` (${compactAtPercent}%)`}`
+                : compactAtPercent === null
+                  ? 'On'
+                  : `On — at ${compactAtPercent}%`
+              : 'Off',
+            icon: Activity,
+          },
+        ]
+      : total > 0
+        ? [{ label: 'Context window', value: formatNumber(total), icon: Gauge }]
+        : []),
+    {
+      // Not the context: a session resends its conversation every turn, so this
+      // climbs past the window and keeps going. It is what the session cost,
+      // which is a different question from how full it is.
+      label: contextUsage ? 'Tokens spent this session' : 'Total tokens used',
+      value: formatNumber(sessionTotal),
+      icon: Coins,
+    },
     ...(hasBreakdown
       ? [
           {
@@ -435,38 +496,6 @@ function CostContent({ data }: { data: CostCommandData }) {
             icon: TerminalSquare,
           },
         ]),
-    ...(total > 0
-      ? [{ label: 'Context window', value: formatNumber(total), icon: Gauge }]
-      : []),
-    ...(contextUsage
-      ? [
-          {
-            label: 'Context used',
-            value: `${Math.round(contextUsage.percentage)}%`,
-            icon: Gauge,
-          },
-          {
-            label: 'Auto-compact',
-            value: contextUsage.isAutoCompactEnabled
-              ? `On${(() => {
-                  // The threshold is an absolute token count, not a fraction —
-                  // see resolveCompactAtPercent. Show both, since the token
-                  // figure is the one that answers "how much room is left?".
-                  const percent = resolveCompactAtPercent(
-                    contextUsage.autoCompactThreshold,
-                    contextUsage.maxTokens,
-                  );
-                  if (percent === null) return '';
-                  const tokens = Number(contextUsage.autoCompactThreshold);
-                  return tokens > 1
-                    ? ` — at ${tokens.toLocaleString()} (${percent}%)`
-                    : ` — at ${percent}%`;
-                })()}`
-              : 'Off',
-            icon: Activity,
-          },
-        ]
-      : []),
   ];
 
   return (

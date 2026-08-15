@@ -180,6 +180,13 @@ export type CostCommandData = {
     input?: number;
     output?: number;
   };
+  /**
+   * What the session has spent in total, which is not what it occupies: every
+   * turn resends the conversation, so this climbs past the context window and
+   * keeps climbing. `tokenUsage.used` is the occupancy once a live reading
+   * exists, so the two are reported separately.
+   */
+  sessionTotalTokens?: number;
   /** Present only when the session had a live runtime to read. */
   contextUsage?: ContextUsage;
   provider?: string;
