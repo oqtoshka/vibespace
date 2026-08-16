@@ -175,7 +175,15 @@ function ChatMessagesPane({
       ref={scrollContainerRef}
       onWheel={onWheel}
       onTouchMove={onTouchMove}
-      className={`chat-messages-pane relative min-h-0 flex-1 overflow-y-auto overflow-x-hidden pt-3 sm:pt-4 ${
+      // `overflow-anchor: none` on purpose. Chrome and Firefox correct the
+      // scroll position themselves when content above the reader changes size;
+      // WebKit does not, so this pane carries its own correction regardless.
+      // Running both means two mechanisms compensating for the same shift, and
+      // no way to tell from script which of them already acted — the reader
+      // ends up moved by exactly the amount the browser had already handled.
+      // One mechanism, the same on every engine, and the one there are tests
+      // for.
+      className={`chat-messages-pane relative min-h-0 flex-1 overflow-y-auto overflow-x-hidden [overflow-anchor:none] pt-3 sm:pt-4 ${
         hasActivityIndicator ? 'pb-12 sm:pb-14' : 'pb-3 sm:pb-4'
       }`}
     >
