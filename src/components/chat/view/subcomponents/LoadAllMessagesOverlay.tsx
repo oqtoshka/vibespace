@@ -36,6 +36,9 @@ export default function LoadAllMessagesOverlay({
 
   return (
     <div
+      // Never the scroll anchor: `sticky` pins its rect to the top edge, so an
+      // anchor here reports zero drift while the transcript slides underneath.
+      data-transcript-anchor="skip"
       className={`pointer-events-none sticky top-2 z-20 flex justify-center ${!isLoadingAllMessages ? 'load-all-overlay-auto-fade' : ''}`}
       style={!isLoadingAllMessages ? { animation: 'loadAllOverlayAutoFade 2500ms ease forwards' } : undefined}
     >
