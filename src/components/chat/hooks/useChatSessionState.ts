@@ -12,6 +12,16 @@ import { createCachedDiffCalculator, type DiffCalculator } from '../utils/messag
 import { normalizedToChatMessages } from './useChatMessages';
 
 const MESSAGES_PER_PAGE = 20;
+/**
+ * How far above the reader older messages start loading.
+ *
+ * Roughly two screens. Loading only once they hit the very top means the wait
+ * always happens where it is most disruptive: the transcript ends under them,
+ * then grows upward, and no correction makes arriving content feel like it was
+ * already there. Fetching a couple of screens ahead means the page is usually
+ * in place before they reach it, and scrolling up just continues.
+ */
+const LOAD_OLDER_AHEAD_PX = 1200;
 const INITIAL_VISIBLE_MESSAGES = 100;
 
 /**
@@ -675,8 +685,13 @@ export function useChatSessionState({
       wasNearTopRef.current = false;
     }
 
+    // Fetch ahead of the reader rather than at the ceiling. The lock stops one
+    // approach from queueing several pages; leaving the zone — which a
+    // prepended page does on its own, by pushing the reader's position down the
+    // taller content — arms the next one.
     if (!allMessagesLoadedRef.current) {
-      if (!scrolledNearTop) { topLoadLockRef.current = false; return; }
+      const withinLoadAheadZone = container.scrollTop < LOAD_OLDER_AHEAD_PX;
+      if (!withinLoadAheadZone) { topLoadLockRef.current = false; return; }
       if (topLoadLockRef.current) {
         if (container.scrollTop > 20) topLoadLockRef.current = false;
         return;
