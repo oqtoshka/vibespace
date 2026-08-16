@@ -588,20 +588,31 @@
     clip-path: inset(-8px -8px 0 -8px);
   }
 
+  /*
+   * Paint and layout containment only. `content-visibility: auto` used to be
+   * here too, and it was the transcript's scroll-jump bug — the one that
+   * survived three attempts to fix it in the scroll-anchoring code, because it
+   * was never a scroll-anchoring bug.
+   *
+   * A skipped message collapses to `contain-intrinsic-size`, and the value can
+   * only ever be a guess: these were 180/240/96px against real messages that
+   * run anywhere from 48px to well over 800px. Scrolling up through an old
+   * session, every message crossing the viewport's edge swapped its guess for
+   * its real height, changing the height of the content *above* the reader and
+   * shoving the transcript under them. Measured in Chromium, scrolling up 240
+   * frames through a 200-message transcript: 51 shifts of 8px or more, worst
+   * 700px, 10.6k px of unexplained movement in total — and exactly 0 with the
+   * property removed. The jumps in the iOS screen recording that finally pinned
+   * this down were 183-243px, squarely in that range.
+   *
+   * `contain-intrinsic-size: auto` remembers the real height, but only once a
+   * message has been rendered at least once, so it cannot help the first trip
+   * upward — which is precisely the trip the reader complains about. There is
+   * no value that makes this safe, so the property is gone. Pagination already
+   * bounds how much of a transcript is in the DOM.
+   */
   .chat-message {
     contain: layout style paint;
-    content-visibility: auto;
-    contain-intrinsic-size: auto 180px;
-  }
-
-  .chat-message.assistant {
-    contain-intrinsic-size: auto 240px;
-  }
-
-  .chat-message.user,
-  .chat-message.tool,
-  .chat-message.error {
-    contain-intrinsic-size: auto 96px;
   }
 
   /* Mobile touch optimization and safe areas */
