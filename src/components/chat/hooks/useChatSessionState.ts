@@ -61,6 +61,16 @@ interface UseChatSessionStateArgs {
 interface ScrollAnchor {
   element: Element;
   offset: number;
+  /**
+   * Where the reader was when the anchor was taken.
+   *
+   * Without this the correction cannot tell the two things that move an element
+   * apart: content growing above it, and the reader scrolling past it. They are
+   * indistinguishable in viewport coordinates and opposite in meaning — one must
+   * be undone, the other must never be. Content shifts do not touch `scrollTop`;
+   * the reader's own scrolling is exactly `scrollTop`.
+   */
+  scrollTop: number;
 }
 
 /**
@@ -487,7 +497,11 @@ export function useChatSessionState({
     const containerTop = container.getBoundingClientRect().top;
     const element = pickScrollAnchorElement(list, containerTop, 0);
     scrollAnchorRef.current = element
-      ? { element, offset: element.getBoundingClientRect().top - containerTop }
+      ? {
+        element,
+        offset: element.getBoundingClientRect().top - containerTop,
+        scrollTop: container.scrollTop,
+      }
       : null;
   }, [transcriptList]);
 
@@ -520,12 +534,26 @@ export function useChatSessionState({
     }
 
     const containerTop = container.getBoundingClientRect().top;
-    const drift = anchor.element.getBoundingClientRect().top - containerTop - anchor.offset;
+    // How far the anchor sits from where it was left, and how much of that the
+    // reader did themselves. A resize is observed at the end of a frame, but the
+    // reader keeps moving through it — scroll events are coalesced during a
+    // momentum scroll, so by the time this runs the reader is routinely past the
+    // position the last processed event recorded. Correcting the raw viewport
+    // difference hands back that travel: a small, constant tug backwards on
+    // every settle, for the whole way up through content being rendered for the
+    // first time. Subtracting their own scrolling leaves only what the content
+    // did, which is the only thing worth undoing.
+    const movedInViewport = anchor.element.getBoundingClientRect().top - containerTop - anchor.offset;
+    const readerScrolled = container.scrollTop - anchor.scrollTop;
+    const drift = movedInViewport + readerScrolled;
     // Sub-pixel drift is layout rounding, not movement. Correcting it would
     // write to scrollTop on every resize for no visible gain.
     if (Math.abs(drift) < 1) return;
 
     container.scrollTop += drift;
+    // The anchor's frame of reference moves with the correction; leaving it
+    // behind would make the next call re-apply this same drift.
+    anchor.scrollTop = container.scrollTop;
     // Claim the scroll event this write will fire, so the handler doesn't read
     // it as the reader moving and re-anchor to it.
     lastScrollTopRef.current = container.scrollTop;
