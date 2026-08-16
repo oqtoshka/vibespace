@@ -89,9 +89,20 @@ const SCROLL_ANCHOR_MAX_DEPTH = 3;
  * An element that starts below the edge has nothing clipped above it, so any
  * height change above it — inside its own ancestors included — moves it, and a
  * correction that puts it back puts the whole viewport back with it.
+ *
+ * Elements marked `data-transcript-anchor="skip"` are passed over. The
+ * transcript's own furniture lives among the messages — the "showing 50 of 900"
+ * banner, the load-all pill — and anchoring to any of it breaks the correction
+ * outright. The pill is the worst of them: it is `sticky`, so once stuck its
+ * rect stays pinned to the top edge no matter how far the content beneath it
+ * moves. Anchored to that, every measurement reports zero drift while the
+ * reader is being pushed down the page, which is silent and total failure. It
+ * is also mounted on a timer and unmounted 2.5 s later, and it sits above the
+ * first message, so while it exists it wins this search every time.
  */
 function pickScrollAnchorElement(scope: Element, containerTop: number, depth: number): Element | null {
   for (const element of Array.from(scope.children)) {
+    if (element.getAttribute('data-transcript-anchor') === 'skip') continue;
     const rect = element.getBoundingClientRect();
     if (rect.bottom <= containerTop) continue;
 
@@ -500,10 +511,11 @@ export function useChatSessionState({
     if (!container || !anchor) return;
 
     // The anchor can be an element inside a message, which a re-render is free
-    // to replace. A detached one cannot be measured, so drop it and let the
-    // next scroll event pick a fresh one rather than hold a dead reference.
+    // to replace. A detached one cannot be measured, so take a fresh one now
+    // rather than wait for the next scroll event: content settles while the
+    // reader holds still, and no scroll event is coming to re-arm us.
     if (!anchor.element.isConnected) {
-      scrollAnchorRef.current = null;
+      recordScrollAnchor();
       return;
     }
 
@@ -517,7 +529,7 @@ export function useChatSessionState({
     // Claim the scroll event this write will fire, so the handler doesn't read
     // it as the reader moving and re-anchor to it.
     lastScrollTopRef.current = container.scrollTop;
-  }, []);
+  }, [recordScrollAnchor]);
 
   const loadOlderMessages = useCallback(
     async (container: HTMLDivElement) => {
