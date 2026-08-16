@@ -252,6 +252,16 @@ export function useChatSessionState({
   // Held only while the reader is up in the history; null means they are at the
   // bottom following the run, where the anchor is the bottom itself.
   const scrollAnchorRef = useRef<ScrollAnchor | null>(null);
+  /**
+   * Distance from the reader to the end of the transcript, held across a
+   * "load all" so their place can be restored once the full list is in.
+   *
+   * The element anchor cannot survive that operation: it refetches from offset
+   * 0 and re-keys the list, so the anchored node is replaced and there is
+   * nothing left to measure against. Distance from the *end* needs no node at
+   * all, and every message a load-all adds is older, so it holds exactly.
+   */
+  const pendingBottomAnchorRef = useRef<number | null>(null);
   const pendingInitialScrollRef = useRef(true);
   const messagesOffsetRef = useRef(0);
   // Last observed scrollTop, so a scroll event can tell which way the reader
@@ -706,8 +716,24 @@ export function useChatSessionState({
   // highlighted, an image finally decoded. Runs before paint, so the correction
   // is never visible as a jump.
   useLayoutEffect(() => {
+    // A load-all has just replaced the list. Put the reader back the distance
+    // they were from the end, then re-anchor so the settling that follows —
+    // hundreds of newly rendered messages above them — is held by the usual
+    // mechanism. Without this the reader keeps their old scrollTop, which after
+    // a few hundred older messages arrive above is the top of the session.
+    const pendingFromBottom = pendingBottomAnchorRef.current;
+    if (pendingFromBottom !== null) {
+      pendingBottomAnchorRef.current = null;
+      const container = scrollContainerRef.current;
+      if (container) {
+        container.scrollTop = container.scrollHeight - pendingFromBottom;
+        lastScrollTopRef.current = container.scrollTop;
+        recordScrollAnchor();
+        return;
+      }
+    }
     restoreScrollAnchor();
-  }, [chatMessages.length, visibleMessageCount, restoreScrollAnchor]);
+  }, [chatMessages.length, visibleMessageCount, recordScrollAnchor, restoreScrollAnchor]);
 
   // A commit is only the start of the layout changes: markdown, syntax
   // highlighting and images settle over the frames that follow, and each of
@@ -729,6 +755,7 @@ export function useChatSessionState({
     }
     topLoadLockRef.current = false;
     scrollAnchorRef.current = null;
+    pendingBottomAnchorRef.current = null;
     wasNearTopRef.current = false;
     lastScrollTopRef.current = 0;
     setIsUserScrolledUp(false);
@@ -1169,6 +1196,14 @@ export function useChatSessionState({
       if (currentSessionId !== requestSessionId) return;
 
       if (slot) {
+        // Measured here, in the last moment before the state change that
+        // renders the full transcript, so it describes the layout the reader is
+        // actually looking at.
+        const container = scrollContainerRef.current;
+        pendingBottomAnchorRef.current = container
+          ? container.scrollHeight - container.scrollTop
+          : null;
+
         setHasMoreMessages(false);
         setTotalMessages(slot.total);
         messagesOffsetRef.current = slot.total;
