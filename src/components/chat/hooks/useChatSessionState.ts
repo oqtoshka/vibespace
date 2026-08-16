@@ -62,15 +62,18 @@ interface ScrollAnchor {
   element: Element;
   offset: number;
   /**
-   * Where the reader was when the anchor was taken.
+   * The anchor's distance from the top of the transcript's content, which no
+   * amount of scrolling changes — only content above it growing or shrinking.
    *
-   * Without this the correction cannot tell the two things that move an element
-   * apart: content growing above it, and the reader scrolling past it. They are
-   * indistinguishable in viewport coordinates and opposite in meaning — one must
-   * be undone, the other must never be. Content shifts do not touch `scrollTop`;
-   * the reader's own scrolling is exactly `scrollTop`.
+   * This is what makes the correction safe. Viewport position alone cannot say
+   * *why* an element moved, and there are three answers: content above it
+   * changed size, the reader scrolled, or the browser's own scroll anchoring
+   * already compensated (Chrome and Firefox do; WebKit does not, which is why
+   * any of this exists). Only the first should ever be undone, and undoing
+   * either of the others throws the reader — once by handing back their own
+   * travel, once by re-applying a correction the browser already made.
    */
-  scrollTop: number;
+  contentTop: number;
 }
 
 /**
@@ -500,7 +503,7 @@ export function useChatSessionState({
       ? {
         element,
         offset: element.getBoundingClientRect().top - containerTop,
-        scrollTop: container.scrollTop,
+        contentTop: element.getBoundingClientRect().top - list.getBoundingClientRect().top,
       }
       : null;
   }, [transcriptList]);
@@ -533,31 +536,40 @@ export function useChatSessionState({
       return;
     }
 
+    const list = transcriptList;
+    if (!list) return;
+
     const containerTop = container.getBoundingClientRect().top;
-    // How far the anchor sits from where it was left, and how much of that the
-    // reader did themselves. A resize is observed at the end of a frame, but the
-    // reader keeps moving through it — scroll events are coalesced during a
-    // momentum scroll, so by the time this runs the reader is routinely past the
-    // position the last processed event recorded. Correcting the raw viewport
-    // difference hands back that travel: a small, constant tug backwards on
-    // every settle, for the whole way up through content being rendered for the
-    // first time. Subtracting their own scrolling leaves only what the content
-    // did, which is the only thing worth undoing.
-    const movedInViewport = anchor.element.getBoundingClientRect().top - containerTop - anchor.offset;
-    const readerScrolled = container.scrollTop - anchor.scrollTop;
-    const drift = movedInViewport + readerScrolled;
+    const rect = anchor.element.getBoundingClientRect();
+
+    // What the content did, in a frame of reference scrolling cannot touch.
+    const grewAbove = rect.top - list.getBoundingClientRect().top - anchor.contentTop;
+    // What the reader sees, which conflates all three causes.
+    const movedInViewport = rect.top - containerTop - anchor.offset;
+
+    // Correct only as much as the content actually moved, and never past it.
+    // Everything this needs to get right falls out of that one clamp: a browser
+    // that already anchored leaves nothing in `movedInViewport` to correct, a
+    // reader who scrolled has no `grewAbove` to justify correcting them, and a
+    // genuine shift on WebKit has both and is corrected exactly once.
+    const drift = grewAbove > 0
+      ? Math.max(0, Math.min(movedInViewport, grewAbove))
+      : Math.min(0, Math.max(movedInViewport, grewAbove));
+
+    // The growth has now been accounted for either way — by us, by the browser,
+    // or by being the reader's own doing. Re-base so the next call measures the
+    // next change and not this one again.
+    anchor.contentTop = rect.top - list.getBoundingClientRect().top;
+
     // Sub-pixel drift is layout rounding, not movement. Correcting it would
     // write to scrollTop on every resize for no visible gain.
     if (Math.abs(drift) < 1) return;
 
     container.scrollTop += drift;
-    // The anchor's frame of reference moves with the correction; leaving it
-    // behind would make the next call re-apply this same drift.
-    anchor.scrollTop = container.scrollTop;
     // Claim the scroll event this write will fire, so the handler doesn't read
     // it as the reader moving and re-anchor to it.
     lastScrollTopRef.current = container.scrollTop;
-  }, [recordScrollAnchor]);
+  }, [recordScrollAnchor, transcriptList]);
 
   const loadOlderMessages = useCallback(
     async (container: HTMLDivElement) => {
