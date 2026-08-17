@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
+import http from 'node:http';
 import { mkdtemp, readFile, rm, writeFile, mkdir } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
 import {
+  clearOpenCodeModelLimitCache,
   describeOpenCodeCompaction,
   getOpenCodeConfigPath,
   parseOpenCodeModelLimits,
@@ -12,6 +14,7 @@ import {
   readContextOccupancy,
   readOpenCodeCompactionConfig,
   resolveCompactionThreshold,
+  resolveOpenCodeModelLimit,
   writeOpenCodeCompactionConfig,
   writeOpenCodeModelInputLimit,
   type OpenCodeCompactionConfig,
@@ -105,7 +108,7 @@ test('the model catalog is read for its limits', () => {
   ].join('\n');
 
   const limits = parseOpenCodeModelLimits(stdout);
-  assert.deepEqual(limits.get('dudin/local'), { context: 65_536, input: null, output: 8_192 });
+  assert.deepEqual(limits.get('dudin/local'), { context: 65_536, input: null, output: 8_192, source: 'catalog' });
   assert.equal(limits.has('other/broken'), false);
 });
 
@@ -149,7 +152,7 @@ test('an input ceiling can be declared for a model the config owns', async () =>
 
   await withConfig(config, async (configPath) => {
     const limit = await writeOpenCodeModelInputLimit('dudin/local', 60_000);
-    assert.deepEqual(limit, { context: 65_536, input: 60_000, output: 8_192 });
+    assert.deepEqual(limit, { context: 65_536, input: 60_000, output: 8_192, source: 'config' });
 
     const written = JSON.parse(await readFile(configPath, 'utf8'));
     // The rest of the model entry has to survive: its name is what the model
@@ -179,7 +182,7 @@ test('the settings screen describes the default model when no session names one'
 
     const described = await describeOpenCodeCompaction(null);
     assert.equal(described.model, 'dudin/local');
-    assert.deepEqual(described.limit, { context: 65_536, input: null, output: 8_192 });
+    assert.deepEqual(described.limit, { context: 65_536, input: null, output: 8_192, source: 'config' });
     assert.equal(described.compactAtTokens, 57_344);
     assert.equal(described.reservedHonored, false);
   });
@@ -195,4 +198,162 @@ test('a model the config does not declare is refused rather than invented', asyn
   await withConfig({ model: 'anthropic/claude-sonnet-4-5' }, async () => {
     assert.equal(await writeOpenCodeModelInputLimit('anthropic/claude-sonnet-4-5', 100_000), null);
   });
+});
+
+/**
+ * A throwaway vLLM. The point of these tests is that the *server* decides the
+ * window and the config follows, so the window here is deliberately not the one
+ * in the config.
+ */
+async function withFakeEngine(
+  maxModelLen: number,
+  run: (baseURL: string) => Promise<void>,
+): Promise<void> {
+  const server = http.createServer((_req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({
+      object: 'list',
+      data: [{ id: 'local', object: 'model', owned_by: 'vllm', max_model_len: maxModelLen }],
+    }));
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address() as { port: number };
+  try {
+    await run(`http://127.0.0.1:${port}/v1`);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+}
+
+const engineConfig = (baseURL: string, context: number, extra: Record<string, unknown> = {}) => ({
+  model: 'dudin/local',
+  provider: {
+    dudin: {
+      npm: '@ai-sdk/openai-compatible',
+      options: { baseURL },
+      models: { local: { name: 'Local (4090)', limit: { context, output: 8_192, ...extra } } },
+    },
+  },
+});
+
+test('the serving stack\'s window overrides a stale one, and the config is corrected', async () => {
+  await withFakeEngine(139_264, async (baseURL) => {
+    await withConfig(engineConfig(baseURL, 65_536), async (configPath) => {
+      clearOpenCodeModelLimitCache();
+
+      const limit = await resolveOpenCodeModelLimit('dudin/local');
+      assert.equal(limit?.context, 139_264);
+      assert.equal(limit?.source, 'provider');
+
+      // Written down, because OpenCode reads this file to decide when to
+      // compact. A gauge that knew better than the runtime would be worse than
+      // no gauge.
+      const written = JSON.parse(await readFile(configPath, 'utf8'));
+      assert.equal(written.provider.dudin.models.local.limit.context, 139_264);
+      assert.equal(written.provider.dudin.models.local.limit.output, 8_192);
+      assert.equal(written.provider.dudin.models.local.name, 'Local (4090)');
+
+      // And the threshold moves with it, which is the whole point.
+      assert.equal(
+        resolveCompactionThreshold(limit!, defaults),
+        139_264 - 8_192,
+      );
+    });
+  });
+});
+
+test('a window that shrank is followed down as well as up', async () => {
+  // The deployment losing VRAM is the dangerous direction: a request sized
+  // against the old window is refused outright, not silently truncated.
+  await withFakeEngine(32_768, async (baseURL) => {
+    await withConfig(engineConfig(baseURL, 139_264), async (configPath) => {
+      clearOpenCodeModelLimitCache();
+
+      assert.equal((await resolveOpenCodeModelLimit('dudin/local'))?.context, 32_768);
+      const written = JSON.parse(await readFile(configPath, 'utf8'));
+      assert.equal(written.provider.dudin.models.local.limit.context, 32_768);
+    });
+  });
+});
+
+test('an input ceiling written as "the window" moves with the window', async () => {
+  // writeOpenCodeModelInputLimit only ever writes the window into limit.input;
+  // left behind, it would pin the compaction threshold to the old window.
+  await withFakeEngine(139_264, async (baseURL) => {
+    await withConfig(engineConfig(baseURL, 65_536, { input: 65_536 }), async (configPath) => {
+      clearOpenCodeModelLimitCache();
+      await resolveOpenCodeModelLimit('dudin/local');
+
+      const written = JSON.parse(await readFile(configPath, 'utf8'));
+      assert.equal(written.provider.dudin.models.local.limit.input, 139_264);
+    });
+  });
+});
+
+test('an input ceiling the user chose is left alone', async () => {
+  await withFakeEngine(139_264, async (baseURL) => {
+    await withConfig(engineConfig(baseURL, 65_536, { input: 50_000 }), async (configPath) => {
+      clearOpenCodeModelLimitCache();
+      await resolveOpenCodeModelLimit('dudin/local');
+
+      const written = JSON.parse(await readFile(configPath, 'utf8'));
+      assert.equal(written.provider.dudin.models.local.limit.context, 139_264);
+      assert.equal(written.provider.dudin.models.local.limit.input, 50_000);
+    });
+  });
+});
+
+test('a config value stands when the server will not answer', async () => {
+  await withConfig(engineConfig('http://127.0.0.1:1/v1', 65_536), async (configPath) => {
+    clearOpenCodeModelLimitCache();
+
+    const limit = await resolveOpenCodeModelLimit('dudin/local');
+    assert.equal(limit?.context, 65_536);
+    assert.equal(limit?.source, 'config');
+
+    const written = JSON.parse(await readFile(configPath, 'utf8'));
+    assert.equal(written.provider.dudin.models.local.limit.context, 65_536);
+  });
+});
+
+test('tracking can be turned off for a deliberately smaller window', async () => {
+  await withFakeEngine(139_264, async (baseURL) => {
+    await withConfig(engineConfig(baseURL, 65_536), async (configPath) => {
+      clearOpenCodeModelLimitCache();
+      process.env.VIBESPACE_OPENCODE_TRACK_MODEL_WINDOW = '0';
+      try {
+        const limit = await resolveOpenCodeModelLimit('dudin/local');
+        assert.equal(limit?.context, 65_536);
+        assert.equal(limit?.source, 'config');
+
+        const written = JSON.parse(await readFile(configPath, 'utf8'));
+        assert.equal(written.provider.dudin.models.local.limit.context, 65_536);
+      } finally {
+        delete process.env.VIBESPACE_OPENCODE_TRACK_MODEL_WINDOW;
+      }
+    });
+  });
+});
+
+test('the server is asked once, not once per turn', async () => {
+  let requests = 0;
+  const server = http.createServer((_req, res) => {
+    requests += 1;
+    res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({
+      data: [{ id: 'local', max_model_len: 139_264 }],
+    }));
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address() as { port: number };
+
+  try {
+    await withConfig(engineConfig(`http://127.0.0.1:${port}/v1`, 65_536), async () => {
+      clearOpenCodeModelLimitCache();
+      for (let turn = 0; turn < 5; turn += 1) {
+        assert.equal((await resolveOpenCodeModelLimit('dudin/local'))?.context, 139_264);
+      }
+      assert.equal(requests, 1);
+    });
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
 });

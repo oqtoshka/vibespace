@@ -580,6 +580,8 @@
     "window": "Context window",
     "maxOutput": "Max output",
     "compactsAt": "Compacts at",
+    "windowFromProvider": "reported by the provider",
+    "windowFromConfig": "as declared in config",
     "unknownWindow": "OpenCode did not report a window for this model, so there is nothing to measure against and compaction cannot be timed.",
     "afterCompaction": "What survives a compaction",
     "placeholderDefault": "default",

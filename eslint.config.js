@@ -164,6 +164,7 @@ export default tseslint.config(
             "server/shared/image-attachments.ts",
             "server/shared/context-usage-cache.ts",
             "server/shared/opencode-context.ts",
+            "server/shared/openai-context-probe.ts",
           ], // classify shared utility files so modules can depend on them explicitly
           mode: "file",
         },
