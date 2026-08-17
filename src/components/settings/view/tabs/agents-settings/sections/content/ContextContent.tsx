@@ -17,6 +17,8 @@ type ModelLimit = {
   context: number;
   input: number | null;
   output: number;
+  /** `provider` means the serving stack was asked, so the window tracks redeploys. */
+  source?: 'config' | 'provider' | 'catalog';
 };
 
 type CompactionSettings = {
@@ -277,6 +279,17 @@ export default function ContextContent() {
               {t('contextSettings.window', { defaultValue: 'Context window' })}
             </div>
             <div className="mt-1 font-mono text-lg text-foreground">{formatTokens(limit.context)}</div>
+            {/*
+              * Worth saying out loud which of the two it is. A self-hosted
+              * model's window changes with every redeploy, so "the config says
+              * so" and "the server says so" are very different claims about the
+              * same number.
+              */}
+            <div className="mt-0.5 text-[0.6875rem] text-muted-foreground">
+              {limit.source === 'provider'
+                ? t('contextSettings.windowFromProvider', { defaultValue: 'reported by the provider' })
+                : t('contextSettings.windowFromConfig', { defaultValue: 'as declared in config' })}
+            </div>
           </div>
           <div className="rounded-lg border border-border bg-muted/40 p-3">
             <div className="text-xs uppercase tracking-wide text-muted-foreground">
