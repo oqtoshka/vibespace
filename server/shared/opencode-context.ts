@@ -8,6 +8,7 @@ import Database from 'better-sqlite3';
 
 import { createNormalizedMessage, getOpenCodeDatabasePath } from '@/shared/utils.js';
 import { rememberContextUsage } from '@/shared/context-usage-cache.js';
+import { probeOpenAIContextWindow, resolveApiKey } from '@/shared/openai-context-probe.js';
 import type { ContextUsage } from '@/shared/types.js';
 
 /**
@@ -38,6 +39,12 @@ export type OpenCodeModelLimit = {
    */
   input: number | null;
   output: number;
+  /**
+   * Where `context` came from. `provider` means the serving stack was asked and
+   * answered, which is the only source that stays true across a redeploy — see
+   * `resolveProviderReportedWindow`.
+   */
+  source?: 'config' | 'provider' | 'catalog';
 };
 
 /** One turn's context occupancy, in the shape OpenCode reports it. */
@@ -190,11 +197,38 @@ export async function writeOpenCodeModelInputLimit(
   modelId: string,
   inputTokens: number | null,
 ): Promise<OpenCodeModelLimit | null> {
+  return patchConfiguredModelLimit(modelId, (limit) => {
+    if (inputTokens === null) {
+      delete limit.input;
+    } else {
+      limit.input = inputTokens;
+    }
+  });
+}
+
+const splitModelId = (modelId: string): { providerId: string; modelKey: string } | null => {
   const separator = modelId.indexOf('/');
   if (separator <= 0) return null;
+  return { providerId: modelId.slice(0, separator), modelKey: modelId.slice(separator + 1) };
+};
 
-  const providerId = modelId.slice(0, separator);
-  const modelKey = modelId.slice(separator + 1);
+/**
+ * Rewrites one model's `limit` block in the user's config, leaving everything
+ * else — the provider's npm package, the model's display name, other models —
+ * exactly as it was.
+ *
+ * Returns null for a model the config does not declare. Those come from
+ * OpenCode's own catalog and have no entry here to amend; fabricating one would
+ * shadow the real catalog with a partial copy.
+ */
+async function patchConfiguredModelLimit(
+  modelId: string,
+  mutate: (limit: Record<string, unknown>) => void,
+): Promise<OpenCodeModelLimit | null> {
+  const parts = splitModelId(modelId);
+  if (!parts) return null;
+
+  const { providerId, modelKey } = parts;
   const configPath = getOpenCodeConfigPath();
   const existing = readConfigFileSync() ?? {};
 
@@ -205,11 +239,7 @@ export async function writeOpenCodeModelInputLimit(
   if (!providers || !provider || !models || !model) return null;
 
   const limit = { ...(asRecord(model.limit) ?? {}) };
-  if (inputTokens === null) {
-    delete limit.input;
-  } else {
-    limit.input = inputTokens;
-  }
+  mutate(limit);
 
   const next = {
     ...existing,
@@ -230,17 +260,45 @@ export async function writeOpenCodeModelInputLimit(
   return readModelLimitFromConfig(modelId);
 }
 
+/**
+ * Corrects a model's declared window to what its server reports.
+ *
+ * Written into the config rather than kept in memory because OpenCode reads
+ * this file to decide when to compact. A gauge that knew the real window while
+ * the runtime still compacted against a stale one would be worse than no gauge:
+ * the reader would watch the bar sit at 45% and then see the conversation
+ * summarised anyway.
+ *
+ * A stale `limit.input` is moved along with it. That field is only ever written
+ * here as "the window" (see `writeOpenCodeModelInputLimit`), so leaving it
+ * behind would pin the compaction threshold to the old window and undo the
+ * correction — while an input ceiling the user set to something else is theirs
+ * and is left alone.
+ */
+export async function writeOpenCodeModelContextLimit(
+  modelId: string,
+  contextTokens: number,
+): Promise<OpenCodeModelLimit | null> {
+  if (!Number.isFinite(contextTokens) || contextTokens <= 0) return null;
+
+  return patchConfiguredModelLimit(modelId, (limit) => {
+    const previousContext = readNumber(limit.context);
+    if (readNumber(limit.input) > 0 && readNumber(limit.input) === previousContext) {
+      limit.input = contextTokens;
+    }
+    limit.context = contextTokens;
+  });
+}
+
 let modelLimitCache: { readAt: number; limits: Map<string, OpenCodeModelLimit> } | null = null;
 
 function readModelLimitFromConfig(modelId: string): OpenCodeModelLimit | null {
-  const separator = modelId.indexOf('/');
-  if (separator <= 0) return null;
+  const parts = splitModelId(modelId);
+  if (!parts) return null;
 
-  const providerId = modelId.slice(0, separator);
-  const modelKey = modelId.slice(separator + 1);
   const providers = asRecord(readConfigFileSync()?.provider);
-  const models = asRecord(asRecord(providers?.[providerId])?.models);
-  const limit = asRecord(asRecord(models?.[modelKey])?.limit);
+  const models = asRecord(asRecord(providers?.[parts.providerId])?.models);
+  const limit = asRecord(asRecord(models?.[parts.modelKey])?.limit);
   if (!limit) return null;
 
   const context = readNumber(limit.context);
@@ -250,7 +308,76 @@ function readModelLimitFromConfig(modelId: string): OpenCodeModelLimit | null {
     context,
     input: readPositiveOrNull(limit.input),
     output: readNumber(limit.output),
+    source: 'config',
   };
+}
+
+/**
+ * The endpoint a config-declared model is served from, when there is one.
+ *
+ * Only custom providers have this. A model from OpenCode's catalog is reached
+ * through the vendor's own SDK and its window is a published fact, not a
+ * deployment detail, so there is nothing to probe.
+ */
+function readModelEndpointFromConfig(
+  modelId: string,
+): { baseURL: string; modelKey: string; apiKey: string | null } | null {
+  const parts = splitModelId(modelId);
+  if (!parts) return null;
+
+  const provider = asRecord(asRecord(readConfigFileSync()?.provider)?.[parts.providerId]);
+  const models = asRecord(provider?.models);
+  if (!provider || !asRecord(models?.[parts.modelKey])) return null;
+
+  const options = asRecord(provider.options);
+  const baseURL = typeof options?.baseURL === 'string' ? options.baseURL.trim() : '';
+  if (!baseURL) return null;
+
+  return { baseURL, modelKey: parts.modelKey, apiKey: resolveApiKey(options?.apiKey) };
+}
+
+/** How long a probed window is trusted before the server is asked again. */
+const PROBE_TTL_MS = 5 * 60 * 1000;
+/** A server that would not answer is retried sooner, but not on every turn. */
+const PROBE_FAILURE_TTL_MS = 60 * 1000;
+
+const probeCache = new Map<string, { readAt: number; context: number | null }>();
+
+/**
+ * Whether to follow the serving stack's own answer about the window.
+ *
+ * On by default, because for a self-hosted model the config value is a guess
+ * with a shelf life and the server's answer is not. Set to `0`/`false` to keep
+ * a hand-written `limit.context` exactly as written — which is what you want if
+ * you are deliberately running below the deployment's real window.
+ */
+function isWindowTrackingEnabled(): boolean {
+  const setting = process.env.VIBESPACE_OPENCODE_TRACK_MODEL_WINDOW?.trim().toLowerCase();
+  return setting !== '0' && setting !== 'false' && setting !== 'off';
+}
+
+/**
+ * What the serving stack says this model's window is, cached so a gauge costs
+ * one HTTP GET per five minutes rather than one per turn.
+ */
+async function resolveProviderReportedWindow(modelId: string): Promise<number | null> {
+  if (!isWindowTrackingEnabled()) return null;
+
+  const endpoint = readModelEndpointFromConfig(modelId);
+  if (!endpoint) return null;
+
+  const cached = probeCache.get(modelId);
+  const ttl = cached?.context === null ? PROBE_FAILURE_TTL_MS : PROBE_TTL_MS;
+  if (cached && Date.now() - cached.readAt < ttl) return cached.context;
+
+  const probed = await probeOpenAIContextWindow(endpoint);
+  probeCache.set(modelId, { readAt: Date.now(), context: probed?.context ?? null });
+
+  if (probed) {
+    console.log(`[opencode context] ${modelId} reports a ${probed.context.toLocaleString()} token window (${probed.via})`);
+  }
+
+  return probed?.context ?? null;
 }
 
 function runOpenCodeModels(): Promise<string> {
@@ -300,6 +427,7 @@ export function parseOpenCodeModelLimits(stdout: string): Map<string, OpenCodeMo
           context,
           input: readPositiveOrNull(limit?.input),
           output: readNumber(limit?.output),
+          source: 'catalog',
         });
       }
     } catch {
@@ -319,12 +447,28 @@ export function parseOpenCodeModelLimits(stdout: string): Map<string, OpenCodeMo
  * there and answering from it costs a file read. Everything else — the models
  * OpenCode knows from its own catalog — needs the CLI, which is slow enough to
  * be worth caching and never worth blocking a turn on.
+ *
+ * For a config-declared model the serving stack gets the last word, and the
+ * config is corrected when it disagrees. `limit.context` for a self-hosted model
+ * describes a deployment, not the weights, and it goes out of date every time
+ * the server restarts with a different `--max-model-len`.
  */
 export async function resolveOpenCodeModelLimit(modelId: string | null | undefined): Promise<OpenCodeModelLimit | null> {
   if (!modelId) return null;
 
   const fromConfig = readModelLimitFromConfig(modelId);
-  if (fromConfig) return fromConfig;
+  if (fromConfig) {
+    const reported = await resolveProviderReportedWindow(modelId);
+    if (!reported) return fromConfig;
+    if (reported === fromConfig.context) return { ...fromConfig, source: 'provider' };
+
+    console.log(
+      `[opencode context] correcting ${modelId} window `
+      + `${fromConfig.context.toLocaleString()} -> ${reported.toLocaleString()} in ${getOpenCodeConfigPath()}`,
+    );
+    const corrected = await writeOpenCodeModelContextLimit(modelId, reported);
+    return corrected ? { ...corrected, source: 'provider' } : { ...fromConfig, context: reported, source: 'provider' };
+  }
 
   const fresh = modelLimitCache && Date.now() - modelLimitCache.readAt < MODEL_LIMIT_TTL_MS;
   if (!fresh) {
@@ -337,6 +481,7 @@ export async function resolveOpenCodeModelLimit(modelId: string | null | undefin
 /** Test seam. */
 export function clearOpenCodeModelLimitCache(): void {
   modelLimitCache = null;
+  probeCache.clear();
 }
 
 /**
