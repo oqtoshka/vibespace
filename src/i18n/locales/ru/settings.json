@@ -491,6 +491,8 @@
     "window": "Окно контекста",
     "maxOutput": "Максимум вывода",
     "compactsAt": "Сжатие при",
+    "windowFromProvider": "сообщено провайдером",
+    "windowFromConfig": "как указано в конфиге",
     "unknownWindow": "OpenCode не сообщил размер окна для этой модели — сравнивать не с чем, и момент сжатия задать нельзя.",
     "afterCompaction": "Что переживает сжатие",
     "placeholderDefault": "по умолчанию",
