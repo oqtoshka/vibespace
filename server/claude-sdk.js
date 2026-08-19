@@ -86,6 +86,19 @@ const SESSION_MAX_LIFETIME_MS = parseInt(process.env.CLAUDE_SESSION_MAX_LIFETIME
 const TASK_NUDGE_MAX = parseInt(process.env.VIBESPACE_TASK_NUDGE_MAX, 10) || 5;
 const TASK_NUDGE_ENABLED = !['0', 'false', 'off'].includes((process.env.VIBESPACE_TASK_NUDGE || '').trim().toLowerCase());
 
+// Auto-compact window for Claude sessions, in tokens. The CLI's "auto" choice
+// is tuned per model (~300k on current large-window models); we compact
+// earlier so long sessions summarize before the context gets that expensive.
+// Applied through the SDK's flag-settings layer, so it scopes to vibespace
+// sessions without touching ~/.claude/settings.json; a host-level
+// CLAUDE_CODE_AUTO_COMPACT_WINDOW env var still outranks it. Set
+// VIBESPACE_CLAUDE_AUTO_COMPACT_WINDOW=auto to fall back to the CLI default.
+const AUTO_COMPACT_WINDOW = (() => {
+  const raw = (process.env.VIBESPACE_CLAUDE_AUTO_COMPACT_WINDOW || '').trim().toLowerCase();
+  if (raw === 'auto' || raw === '0' || raw === 'off') return null;
+  return parseInt(raw, 10) || 256000;
+})();
+
 function createRequestId() {
   if (typeof crypto.randomUUID === 'function') {
     return crypto.randomUUID();
@@ -383,6 +396,11 @@ function mapCliOptionsToSDK(options = {}) {
   // Map setting sources for CLAUDE.md loading
   // This loads CLAUDE.md from project, user (~/.config/claude/CLAUDE.md), and local directories
   sdkOptions.settingSources = ['project', 'user', 'local'];
+
+  // Compact earlier than the model-tuned "auto" window (see AUTO_COMPACT_WINDOW).
+  if (AUTO_COMPACT_WINDOW) {
+    sdkOptions.settings = { autoCompactWindow: AUTO_COMPACT_WINDOW };
+  }
 
   // Helper calls (commit messages, agent REST one-shots, the title/recap
   // generator) are conversations only in the mechanical sense: nothing resumes
