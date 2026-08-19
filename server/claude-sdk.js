@@ -33,6 +33,7 @@ import { sessionsService } from './modules/providers/services/sessions.service.j
 import { providerAuthService } from './modules/providers/services/provider-auth.service.js';
 import { createCompleteMessage, createNormalizedMessage, resolveConfiguredContextWindow } from './shared/utils.js';
 import { rememberContextUsage } from './shared/context-usage-cache.js';
+import { readOpenClaudeTasks } from './shared/claude-task-ledger.js';
 import { scheduleSessionRecap } from './services/session-recap.service.js';
 import { broadcastSessionUpdate } from './modules/providers/index.js';
 
@@ -73,6 +74,17 @@ const SESSION_IDLE_TIMEOUT_MS = parseInt(process.env.CLAUDE_SESSION_IDLE_TIMEOUT
 // Hard cap so a wedged background job (or a never-completing monitor) can't leak
 // a Claude subprocess forever.
 const SESSION_MAX_LIFETIME_MS = parseInt(process.env.CLAUDE_SESSION_MAX_LIFETIME_MS, 10) || 2 * 60 * 60 * 1000;
+
+// A session that goes idle while its own task ledger (~/.claude/tasks/<id>/)
+// still holds open items is nudged to continue instead of being reaped: the
+// model declared that work and hasn't closed it, so an idle turn boundary is
+// not the end of the session. Bounded so a confused model can't run all night:
+// at most TASK_NUDGE_MAX nudges per session, and two consecutive nudges that
+// produce no tool calls and no ledger change give up early with a notification.
+// The model exits the loop by editing the ledger — completing, deleting, or
+// re-scoping its tasks. VIBESPACE_TASK_NUDGE=0 disables the mechanism.
+const TASK_NUDGE_MAX = parseInt(process.env.VIBESPACE_TASK_NUDGE_MAX, 10) || 5;
+const TASK_NUDGE_ENABLED = !['0', 'false', 'off'].includes((process.env.VIBESPACE_TASK_NUDGE || '').trim().toLowerCase());
 
 function createRequestId() {
   if (typeof crypto.randomUUID === 'function') {
@@ -862,7 +874,13 @@ function captureAssistantSummary(session, message) {
   const textParts = [];
   for (const b of blocks) {
     if (b?.type === 'text' && b.text) textParts.push(b.text);
-    else if (b?.type === 'tool_use' && b.name) session.turnToolNames.push(b.name);
+    else if (b?.type === 'tool_use' && b.name) {
+      session.turnToolNames.push(b.name);
+      // Session-lifetime counter, never reset per turn: the task-nudge stall
+      // detector compares it across nudges to tell "worked but didn't update
+      // the ledger yet" from "did nothing at all".
+      session.toolUseCount += 1;
+    }
   }
   if (textParts.length) session.lastAssistantText = textParts.join('\n').trim();
 }
@@ -944,7 +962,23 @@ function armMaxLifetimeTimer(session) {
       armMaxLifetimeTimer(session);
       return;
     }
-    endSession(session, 'max-lifetime');
+    // An overnight session working through its declared task ledger is
+    // outstanding work too — extend while items are open and nudging still has
+    // budget, in the same logged whole-cap steps as the job extension above.
+    // A wedged session stops earning extensions once the stall detector or the
+    // nudge budget trips, so the original leak bound still holds.
+    readOpenClaudeTasks(session.sessionId)
+      .catch(() => [])
+      .then((open) => {
+        if (session.ended) return;
+        const nudges = session.taskNudges;
+        if (TASK_NUDGE_ENABLED && open.length > 0 && nudges.count < TASK_NUDGE_MAX && nudges.stalls < 2) {
+          console.log(`[claude bg] session ${session.sessionId}: max-lifetime reached with ${open.length} open ledger task(s) — extending`);
+          armMaxLifetimeTimer(session);
+          return;
+        }
+        endSession(session, 'max-lifetime');
+      });
   }, SESSION_MAX_LIFETIME_MS);
   // Don't let the cap timer keep the process alive / block shutdown.
   session.maxLifetimeTimer.unref?.();
@@ -981,10 +1015,96 @@ function armIdleTimer(session) {
       return;
     }
 
-    endSession(session, 'idle-timeout');
+    // Last gate before teardown: the model's own task ledger. The read is
+    // async, so the session can change state underneath it — every outcome
+    // re-checks before acting.
+    maybeContinueOpenTasks(session)
+      .catch((err) => {
+        console.warn(`[claude tasks] ledger check failed for ${session.sessionId}:`, err?.message || err);
+        return false;
+      })
+      .then((handled) => {
+        if (handled || session.ended) return;
+        if (session.pendingTasks.size > 0 || session.awaitingResult || session.turnActive
+          || hasPendingApprovalsForSession(session.sessionId)) {
+          armIdleTimer(session);
+          return;
+        }
+        endSession(session, 'idle-timeout');
+      });
   }, SESSION_IDLE_TIMEOUT_MS);
   // Don't let an idle session keep the process alive / block shutdown.
   session.idleTimer.unref?.();
+}
+
+/**
+ * The idle reaper's last gate: a session whose task ledger still holds open
+ * items is not finished, whatever the turn boundary says — the model declared
+ * that work and hasn't closed it. Injects a continuation turn the same way a
+ * background-job auto-resume does, so the model either keeps working or
+ * explicitly closes/re-scopes its tasks; the ledger edit is the exit from the
+ * loop.
+ *
+ * Returns true when the reaper should stand down (a nudge was injected, or the
+ * session grew a live turn under the ledger read). Returns false when the
+ * session is genuinely done, the mechanism is off, or nudging has demonstrably
+ * stopped helping — the bail-out paths notify the user before handing the
+ * session back to the reaper.
+ */
+async function maybeContinueOpenTasks(session) {
+  if (!TASK_NUDGE_ENABLED || session.ephemeral || session.ended || !session.sessionId) return false;
+  if (session.input.closed) return false;
+
+  const open = await readOpenClaudeTasks(session.sessionId);
+  if (open.length === 0) return false;
+
+  // State may have moved while we were on disk; a live turn owns the session.
+  if (session.ended || session.input.closed) return false;
+  if (session.turnActive || session.awaitingResult || session.pendingTasks.size > 0) return true;
+
+  // Stall detection: a nudge that produced no tool calls AND left the ledger
+  // untouched did nothing. Two of those in a row mean nudging isn't helping.
+  const nudges = session.taskNudges;
+  const fingerprint = open.map((t) => `${t.id}:${t.status}`).join(',');
+  if (nudges.count > 0 && fingerprint === nudges.fingerprint && session.toolUseCount === nudges.toolCount) {
+    nudges.stalls += 1;
+  } else {
+    nudges.stalls = 0;
+  }
+
+  if (nudges.count >= TASK_NUDGE_MAX || nudges.stalls >= 2) {
+    const subjects = open.map((t) => t.subject).join('; ');
+    const why = nudges.stalls >= 2 ? 'no progress across two nudges' : `nudge budget (${TASK_NUDGE_MAX}) exhausted`;
+    console.log(`[claude tasks] session ${session.sessionId}: giving up (${why}) with ${open.length} open task(s): ${subjects}`);
+    notifyRunFailed({
+      userId: session.userId,
+      provider: 'claude',
+      sessionId: session.sessionId,
+      sessionName: session.sessionSummary,
+      error: `Went idle with ${open.length} open task(s) — ${why}: ${subjects}`,
+    });
+    return false;
+  }
+
+  nudges.count += 1;
+  nudges.fingerprint = fingerprint;
+  nudges.toolCount = session.toolUseCount;
+
+  ensureRunForServerStartedTurn(session, 'Resuming — open tasks remain');
+  console.log(`[claude tasks] session ${session.sessionId}: idle with ${open.length} open task(s) — nudging (${nudges.count}/${TASK_NUDGE_MAX})`);
+  session.input.push(makeUserMessage(buildOpenTasksNudge(open)));
+  return true;
+}
+
+function buildOpenTasksNudge(open) {
+  return [
+    '[session supervisor] Automated check: this session went idle, but its task list still has open items:',
+    ...open.map((t) => `- #${t.id} [${t.status}] ${t.subject}`),
+    '',
+    'Continue working through them now. If an item is no longer relevant or cannot proceed, '
+      + 'close it explicitly — mark it completed, delete it, or replace it with a re-scoped task — '
+      + 'and say why. Do not stop while tasks remain open.',
+  ].join('\n');
 }
 
 /**
@@ -1896,6 +2016,9 @@ async function startPersistentSession(command, options, ws) {
     awaitingResult: true,
     lastAssistantText: '',
     turnToolNames: [],
+    toolUseCount: 0,
+    // Task-nudge bookkeeping (see maybeContinueOpenTasks).
+    taskNudges: { count: 0, stalls: 0, fingerprint: null, toolCount: 0 },
     // Last label pushed to the activity indicator, so repeat tool calls of the
     // same shape don't spam identical status messages down the socket.
     lastActivityText: undefined,
