@@ -165,6 +165,7 @@ export default tseslint.config(
             "server/shared/context-usage-cache.ts",
             "server/shared/opencode-context.ts",
             "server/shared/openai-context-probe.ts",
+            "server/shared/claude-task-ledger.ts",
           ], // classify shared utility files so modules can depend on them explicitly
           mode: "file",
         },
