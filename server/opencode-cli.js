@@ -12,6 +12,7 @@ import { sessionsService } from './modules/providers/services/sessions.service.j
 import { providerAuthService } from './modules/providers/services/provider-auth.service.js';
 import { providerModelsService } from './modules/providers/services/provider-models.service.js';
 import { notifyRunFailed, notifyRunStopped } from './services/notification-orchestrator.js';
+import { planTaskContinuation } from './services/task-continuation.js';
 import { scheduleSessionRecap } from './services/session-recap.service.js';
 import { broadcastSessionUpdate } from './modules/providers/index.js';
 import { createCompleteMessage, createNormalizedMessage, flattenPromptForWindowsShell, getOpenCodeHelperWorkspace, isDatabaseLockedError, stripAnsi } from './shared/utils.js';
@@ -459,6 +460,36 @@ async function spawnOpenCode(command, options = {}, ws) {
             sessionId: finalSessionId,
             modelId: resolvedModel,
           });
+
+          // Task-ledger continuation: a turn that ended while the session's
+          // own todo list still has open items rolls straight into a
+          // continuation turn. The `complete` is withheld so the client keeps
+          // seeing one running turn; the nested run emits its own terminal
+          // messages (and queues the recap) when the chain actually ends.
+          // Bounds and bail-outs live in planTaskContinuation.
+          if (code === 0 && !completeSent && !opencodeProcess.aborted && !options.ephemeral) {
+            const continuation = planTaskContinuation({
+              provider: 'opencode',
+              sessionId: finalSessionId,
+              userId: ws?.userId || null,
+              sessionName: sessionSummary,
+            });
+            if (continuation) {
+              ws.send(createNormalizedMessage({
+                kind: 'status',
+                text: 'Resuming — open tasks remain',
+                sessionId: finalSessionId,
+                provider: 'opencode',
+              }));
+              spawnOpenCode(continuation, {
+                ...options,
+                sessionId: finalSessionId,
+                images: undefined,
+                rewind: undefined,
+              }, ws).then(resolve, reject);
+              return;
+            }
+          }
 
           // Terminal complete — skipped for aborted runs (abort-session
           // already sent the aborted complete on this run's behalf).
