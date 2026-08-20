@@ -157,6 +157,13 @@ export async function restoreInterruptedSessions(spawn, hooks = {}) {
       entries.delete(entry.sessionId);
       continue;
     }
+    if (!entry.cwd) {
+      // No working directory means this is not a real workspace session (a
+      // test harness, a half-written entry) — resuming it would spawn a CLI in
+      // whatever directory the server happens to be running from.
+      entries.delete(entry.sessionId);
+      continue;
+    }
     let openTasks = [];
     try {
       openTasks = await readOpenClaudeTasks(entry.sessionId);
