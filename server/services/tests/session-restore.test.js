@@ -7,6 +7,7 @@ import path from 'path';
 import {
   recordSessionActivity,
   recordSessionEnd,
+  recordPendingInteraction,
   restoreInterruptedSessions,
   __resetSessionRestoreState,
 } from '../session-restore.service.js';
@@ -93,4 +94,59 @@ test('the registry survives a process restart via the state file', async () => {
   __resetSessionRestoreState();
   const calls = [];
   assert.deepEqual(await restoreInterruptedSessions(spawnRecorder(calls)), ['s-persist']);
+});
+
+test('a startTurn hook that takes the turn suppresses the detached spawn', async () => {
+  await recordSessionActivity({ sessionId: 's-hooked', cwd: '/proj', turnActive: true });
+  const calls = [];
+  const hooked = [];
+  const resumed = await restoreInterruptedSessions(spawnRecorder(calls), {
+    startTurn: (entry, prompt) => { hooked.push({ entry, prompt }); return true; },
+  });
+  assert.deepEqual(resumed, ['s-hooked']);
+  assert.equal(hooked.length, 1);
+  assert.equal(hooked[0].entry.sessionId, 's-hooked');
+  assert.match(hooked[0].prompt, /\[session supervisor\]/);
+  assert.equal(calls.length, 0);
+});
+
+test('a startTurn hook that declines or throws falls back to the detached spawn', async () => {
+  await recordSessionActivity({ sessionId: 's-declined', cwd: '/proj', turnActive: true });
+  await recordSessionActivity({ sessionId: 's-threw', cwd: '/proj', turnActive: true });
+  const calls = [];
+  let first = true;
+  const resumed = await restoreInterruptedSessions(spawnRecorder(calls), {
+    startTurn: () => {
+      if (first) { first = false; return false; }
+      throw new Error('registry unavailable');
+    },
+  });
+  assert.equal(resumed.length, 2);
+  assert.equal(calls.length, 2);
+});
+
+test('a parked interactive prompt survives a hard kill and is re-asked on resume', async () => {
+  await recordSessionActivity({ sessionId: 's-question', cwd: '/proj', turnActive: true });
+  await recordPendingInteraction('s-question', {
+    toolName: 'AskUserQuestion',
+    input: { questions: [{ question: 'Restore the cron?' }] },
+  });
+  const calls = [];
+  await restoreInterruptedSessions(spawnRecorder(calls));
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].prompt, /AskUserQuestion/);
+  assert.match(calls[0].prompt, /Restore the cron\?/);
+  assert.match(calls[0].prompt, /NOT the user declining/);
+});
+
+test('an interactive prompt answered in-process leaves no re-ask rider', async () => {
+  await recordSessionActivity({ sessionId: 's-answered', cwd: '/proj', turnActive: true });
+  await recordPendingInteraction('s-answered', { toolName: 'AskUserQuestion', input: { q: 1 } });
+  await recordPendingInteraction('s-answered', null);
+  // Activity updates (turn start/settle) must not resurrect a cleared prompt.
+  await recordSessionActivity({ sessionId: 's-answered', turnActive: true });
+  const calls = [];
+  await restoreInterruptedSessions(spawnRecorder(calls));
+  assert.equal(calls.length, 1);
+  assert.doesNotMatch(calls[0].prompt, /AskUserQuestion/);
 });
