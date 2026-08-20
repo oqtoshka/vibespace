@@ -603,6 +603,22 @@ async function startServer() {
 
     // Import and run the server
     await import('./index.js');
+
+    // Resume Claude sessions a previous process left mid-work (deploy restart,
+    // crash). Delayed so the server finishes binding first; the pass is a no-op
+    // when the registry is empty. See session-restore.service.js.
+    const restoreTimer = setTimeout(async () => {
+        try {
+            const [{ restoreInterruptedSessions }, { queryClaudeSDK }] = await Promise.all([
+                import('./services/session-restore.service.js'),
+                import('./claude-sdk.js'),
+            ]);
+            await restoreInterruptedSessions(queryClaudeSDK);
+        } catch (error) {
+            console.error('[session restore] boot pass failed:', error?.message || error);
+        }
+    }, 8000);
+    restoreTimer.unref?.();
 }
 
 async function startBrowserUseMcp() {
