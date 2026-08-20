@@ -35,7 +35,7 @@ import { createCompleteMessage, createNormalizedMessage, resolveConfiguredContex
 import { rememberContextUsage } from './shared/context-usage-cache.js';
 import { readOpenClaudeTasks } from './shared/claude-task-ledger.js';
 import { scheduleSessionRecap } from './services/session-recap.service.js';
-import { recordSessionActivity, recordSessionEnd } from './services/session-restore.service.js';
+import { recordSessionActivity, recordSessionEnd, restoreInterruptedSessions } from './services/session-restore.service.js';
 import { broadcastSessionUpdate } from './modules/providers/index.js';
 
 const activeSessions = new Map();
@@ -2379,6 +2379,20 @@ function reconnectSessionWriter(sessionId, newRawWs) {
 }
 
 // Export public API
+// Arm the restore-on-boot pass from here as well: the local launchd deployment
+// starts dist-server/server/index.js directly, so the CLI wrapper's hook never
+// runs there. The service's boot-pass flag makes double-arming harmless when
+// both entrypoints fire. Skipped under the node:test runner, where importing
+// this module must never spawn real sessions.
+if (!process.env.NODE_TEST_CONTEXT) {
+  const bootRestoreTimer = setTimeout(() => {
+    restoreInterruptedSessions(queryClaudeSDK).catch((error) => {
+      console.error('[session restore] boot pass failed:', error?.message || error);
+    });
+  }, 8000);
+  bootRestoreTimer.unref?.();
+}
+
 export {
   queryClaudeSDK,
   injectClaudeMessage,

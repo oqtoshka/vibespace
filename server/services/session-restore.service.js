@@ -97,8 +97,14 @@ export async function recordSessionEnd(sessionId) {
  * queryClaudeSDK (injected to avoid a module cycle). Returns the session ids
  * it resumed, mostly for logging and tests.
  */
+let bootPassDone = false;
+
 export async function restoreInterruptedSessions(spawn) {
   await loadOnce();
+  // Both entrypoints arm the pass (the CLI wrapper and claude-sdk's module
+  // hook, for deployments that launch index.js directly) — run it once.
+  if (bootPassDone) return [];
+  bootPassDone = true;
   if (!RESTORE_ENABLED) return [];
   const candidates = [...entries.values()];
   const resumed = [];
@@ -150,5 +156,6 @@ function makeDetachedWriter(userId) {
 export function __resetSessionRestoreState() {
   entries.clear();
   loaded = false;
+  bootPassDone = false;
   if (writeTimer) { clearTimeout(writeTimer); writeTimer = null; }
 }
