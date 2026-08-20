@@ -121,7 +121,7 @@ const CLAUDE_MODEL_ID_ALIAS_PATTERNS: Array<[RegExp, string]> = [
   [/haiku/i, 'haiku'],
 ];
 
-const normalizeClaudeModelToCatalogValue = (model: string): string => {
+export const normalizeClaudeModelToCatalogValue = (model: string): string => {
   const trimmed = model.trim();
   if (!trimmed) {
     return trimmed;

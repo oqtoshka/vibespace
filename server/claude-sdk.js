@@ -17,7 +17,7 @@ import crypto from 'crypto';
 import { promises as fs } from 'fs';
 import path from 'path';
 import os from 'os';
-import { CLAUDE_FALLBACK_MODELS } from './modules/providers/list/claude/claude-models.provider.js';
+import { CLAUDE_FALLBACK_MODELS, normalizeClaudeModelToCatalogValue } from './modules/providers/list/claude/claude-models.provider.js';
 import { providerModelsService } from './modules/providers/services/provider-models.service.js';
 import { buildClaudeUserContent, getGlobalImageAssetsDir, normalizeImageDescriptors } from './shared/image-attachments.js';
 import { resolveClaudeCodeExecutablePath } from './shared/claude-cli-path.js';
@@ -255,6 +255,47 @@ function resolveClaudeEffort(model, effort, modelsDefinition = CLAUDE_FALLBACK_M
   return typeof effort === 'string' && effort !== 'default' && allowedEfforts.includes(effort)
     ? effort
     : undefined;
+}
+
+/**
+ * Applies a pending per-session model override to a LIVE session.
+ *
+ * The override is the user's explicit pick from the model picker; it is stored
+ * per session and stays in force until they pick something else. Enforcing it
+ * only where a *user-typed* message enters the runtime was not enough: a
+ * session also starts turns on its own (background-job auto-resume, the
+ * open-tasks nudge, a message folded into a running turn), and those turns kept
+ * running on whatever model the CLI already had. A session resumed on Fable
+ * therefore stayed on Fable no matter how many times the user picked Opus — the
+ * pick only "took" if the very next turn happened to be a hand-typed one.
+ *
+ * Safe to call before every turn: it is a no-op when the session already runs
+ * the wanted model, and `session.model` is kept honest from the runtime's own
+ * `init` (see the message loop), so a model the CLI reset behind our back —
+ * across a compaction, say — is simply re-applied on the next turn.
+ */
+async function applyPendingModelSwitch(session) {
+  if (!session?.sessionId || session.ended) return;
+  try {
+    const resolvedModel = await providerModelsService.resolveResumeModel(
+      'claude',
+      session.sessionId,
+      undefined,
+      { resuming: true },
+    );
+    if (!resolvedModel || resolvedModel === session.model || !session.instance?.setModel) return;
+    // "default" is the catalog's *absence* of a pick, and the SDK spells that
+    // `undefined` — passing the literal string would ask for a model that
+    // doesn't exist. It also never matches the concrete model `init` reports
+    // back, so it is applied once rather than on every turn.
+    if (resolvedModel === 'default' && session.appliedModelOverride === 'default') return;
+    await session.instance.setModel(resolvedModel === 'default' ? undefined : resolvedModel);
+    session.model = resolvedModel;
+    session.appliedModelOverride = resolvedModel;
+    console.log(`[claude] session ${session.sessionId}: switched model to ${resolvedModel}`);
+  } catch (err) {
+    console.warn(`setModel for ${session?.sessionId} failed:`, err?.message || err);
+  }
 }
 
 /**
@@ -1086,6 +1127,7 @@ async function maybeContinueOpenTasks(session) {
 
   ensureRunForServerStartedTurn(session, 'Resuming — open tasks remain');
   console.log(`[claude tasks] session ${session.sessionId}: idle with ${open.length} open task(s) — nudging (${nudges.count}/${TASK_NUDGE_MAX})`);
+  await applyPendingModelSwitch(session);
   session.input.push(makeUserMessage(buildOpenTasksNudge(open)));
   return true;
 }
@@ -1105,7 +1147,7 @@ function buildOpenTasksNudge(open) {
  * Handles the task-lifecycle system messages that drive background-job
  * persistence and auto-resume.
  */
-function handleTaskMessage(session, message) {
+async function handleTaskMessage(session, message) {
   if (!message || message.type !== 'system') return;
 
   if (message.subtype === 'task_started' && message.task_id) {
@@ -1139,6 +1181,7 @@ function handleTaskMessage(session, message) {
       // produces only a result, which the helper's `awaitingResult` covers.
       ensureRunForServerStartedTurn(session, 'Resuming — background task finished');
       console.log(`[claude bg] session ${session.sessionId}: background task ${message.task_id} ${message.status || 'completed'} — auto-resuming agent`);
+      await applyPendingModelSwitch(session);
       session.input.push(makeUserMessage(text));
     }
     return;
@@ -1225,6 +1268,9 @@ async function injectClaudeMessage(sessionId, command, options = {}) {
 
   const content = await buildTurnContent(command, options.images, options.cwd);
   const uuid = crypto.randomUUID();
+  // A message folded into a running turn is still a user turn: honour a model
+  // pick made while that turn was in flight.
+  await applyPendingModelSwitch(session);
   const pushed = session.input.push({ ...makeUserMessage(content), uuid });
   if (!pushed) {
     return null;
@@ -1662,7 +1708,7 @@ async function runSessionLoop(session) {
       }
 
       // Drive background-job tracking / auto-resume off the task system messages.
-      handleTaskMessage(session, message);
+      await handleTaskMessage(session, message);
 
       // Mid-turn user messages the runtime parked in its own command queue.
       // Not a provider message — it narrates delivery, so it never reaches the
@@ -1690,6 +1736,18 @@ async function runSessionLoop(session) {
       // runtime picks a message up.
       if (message.type === 'system' && message.subtype === 'init' && Array.isArray(message.capabilities)) {
         session.capabilities = message.capabilities;
+      }
+
+      // Keep `session.model` honest. It is seeded from the *requested* model,
+      // but a resume deliberately sends no `--model` so the conversation keeps
+      // the one it already ran on — which means the seed can name a model the
+      // CLI is not running. That lie made the mid-session switch skip itself
+      // ("already on Opus") while the runtime happily carried on with Fable,
+      // and the user's pick could never take. The runtime re-inits every turn
+      // and after every compaction, so this is also what re-asserts the pick
+      // if a compaction resets the model underneath us.
+      if (message.type === 'system' && message.subtype === 'init' && typeof message.model === 'string' && message.model.trim()) {
+        session.model = normalizeClaudeModelToCatalogValue(message.model);
       }
 
       if (message.type === 'system' && message.subtype === 'init' && !session.contextUsageSeeded) {
@@ -1876,21 +1934,9 @@ async function reuseSession(session, command, options, ws) {
   // Apply a mid-session model switch if the user changed it — and *only* then.
   // This session is warm, so it already has a model; `options.model` is just
   // the composer's per-provider default riding along on every message, and
-  // falling back to it here is what switched sessions the user never touched.
-  try {
-    const resolvedModel = await providerModelsService.resolveResumeModel(
-      'claude',
-      session.sessionId,
-      options.model,
-      { resuming: true },
-    );
-    if (resolvedModel && resolvedModel !== session.model && session.instance?.setModel) {
-      await session.instance.setModel(resolvedModel);
-      session.model = resolvedModel;
-    }
-  } catch (err) {
-    console.warn(`setModel during reuse for ${session.sessionId} failed:`, err?.message || err);
-  }
+  // honouring it here is what switched sessions the user never touched, so the
+  // helper deliberately ignores it and looks only at the stored pick.
+  await applyPendingModelSwitch(session);
 
   // Apply a mid-session reasoning-effort switch. Like the permission mode, the
   // effort rides on every user message but the live session keeps whatever it
@@ -2004,6 +2050,9 @@ async function startPersistentSession(command, options, ws) {
     // The selected catalog value, not sdkOptions.model — the latter is absent
     // for "default" (see mapCliOptionsToSDK), and effort validation plus the
     // mid-session switch in reuseSession both need something to compare against.
+    // Only a seed: a resume sends no `--model` at all, so what the conversation
+    // actually runs on is whatever its transcript says — the runtime's first
+    // `init` corrects this (see runSessionLoop).
     model: resolvedModel || options.model || CLAUDE_FALLBACK_MODELS.DEFAULT,
     // Kept on the session so reuseSession can apply mid-session permission mode
     // switches (canUseTool reads permissionMode from this same object).
