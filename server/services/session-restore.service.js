@@ -125,18 +125,21 @@ export async function restoreInterruptedSessions(spawn) {
       continue;
     }
     console.log(`[session restore] resuming ${entry.sessionId} (turnActive=${entry.turnActive}, openTasks=${openTasks.length})`);
-    try {
-      // The spawn re-registers the session, refreshing its entry.
-      await spawn(CONTINUATION_PROMPT, {
-        sessionId: entry.sessionId,
-        resume: true,
-        cwd: entry.cwd,
-        permissionMode: entry.permissionMode,
-      }, makeDetachedWriter(entry.userId));
-      resumed.push(entry.sessionId);
-    } catch (error) {
+    // Fire-and-forget: the spawn's promise resolves only when the whole first
+    // turn completes, and awaiting it here would queue every other session
+    // behind one long-running resume. The spawn re-registers the session,
+    // refreshing its registry entry.
+    spawn(CONTINUATION_PROMPT, {
+      sessionId: entry.sessionId,
+      resume: true,
+      cwd: entry.cwd,
+      permissionMode: entry.permissionMode,
+    }, makeDetachedWriter(entry.userId)).catch((error) => {
       console.error(`[session restore] resume of ${entry.sessionId} failed:`, error?.message || error);
-    }
+    });
+    resumed.push(entry.sessionId);
+    // Small stagger so a fleet of resumes doesn't spawn CLIs all at once.
+    await new Promise((r) => setTimeout(r, 2000));
   }
   scheduleWrite();
   if (resumed.length === 0) console.log('[session restore] nothing to resume');
