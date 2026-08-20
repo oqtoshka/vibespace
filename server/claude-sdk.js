@@ -71,9 +71,12 @@ function __setRewindHistoryImpl(fn) {
 // torn down after this idle window. While a background job is running the
 // session is kept alive regardless (the job's completion auto-resumes it).
 const SESSION_IDLE_TIMEOUT_MS = parseInt(process.env.CLAUDE_SESSION_IDLE_TIMEOUT_MS, 10) || 5 * 60 * 1000;
-// Hard cap so a wedged background job (or a never-completing monitor) can't leak
-// a Claude subprocess forever.
-const SESSION_MAX_LIFETIME_MS = parseInt(process.env.CLAUDE_SESSION_MAX_LIFETIME_MS, 10) || 2 * 60 * 60 * 1000;
+// There is deliberately NO wall-clock lifetime cap on sessions. One existed
+// (SESSION_MAX_LIFETIME_MS, 2h) and killed an actively working overnight
+// session mid-turn — its fire-time checks knew about background jobs, prompts,
+// and ledgers, but not about an in-flight turn. Long sessions are the product
+// here; the idle reaper above is the leak bound: a genuinely dead session goes
+// idle and gets torn down, an active one keeps earning its keep.
 
 // A session that goes idle while its own task ledger (~/.claude/tasks/<id>/)
 // still holds open items is nudged to continue instead of being reaped: the
@@ -925,10 +928,6 @@ function endSession(session, reason = 'ended') {
   session.ended = true;
   console.log(`[claude bg] ending session ${session.sessionId || '(pending)'} (${reason})`);
   clearIdleTimer(session);
-  if (session.maxLifetimeTimer) {
-    clearTimeout(session.maxLifetimeTimer);
-    session.maxLifetimeTimer = null;
-  }
   // Settle any outstanding prompt BEFORE closing the stream it arrived on.
   // Closing first strands the CLI's permission request mid-flight, and it
   // reports the opaque "Tool permission stream closed before response
@@ -947,59 +946,6 @@ function endSession(session, reason = 'ended') {
     });
   }
   completeTurn(session);
-}
-
-/**
- * Arms the hard-cap timer that bounds how long a live SDK subprocess may run.
- * When it fires with background jobs still pending we re-arm instead of tearing
- * the session down — the session is kept alive as long as its jobs run, since
- * killing the subprocess would kill their child bash processes mid-flight and
- * strand their output. Once the jobs finish and the turn settles, the ordinary
- * idle reaper takes over. A genuinely wedged job therefore extends the cap in
- * whole SESSION_MAX_LIFETIME_MS steps (each logged) rather than being silently
- * killed — the original "don't leak a subprocess forever" intent still bounds a
- * long-lived but job-free session.
- */
-function armMaxLifetimeTimer(session) {
-  if (session.maxLifetimeTimer) {
-    clearTimeout(session.maxLifetimeTimer);
-    session.maxLifetimeTimer = null;
-  }
-  session.maxLifetimeTimer = setTimeout(() => {
-    if (session.pendingTasks.size > 0) {
-      console.log(`[claude bg] session ${session.sessionId}: max-lifetime reached with ${session.pendingTasks.size} background task(s) still running — extending`);
-      armMaxLifetimeTimer(session);
-      return;
-    }
-    // Same reasoning as the background-job extension above: a question the user
-    // has not come back to yet is outstanding work, not a leak. Interactive
-    // prompts wait indefinitely by design, and a user who steps away for longer
-    // than the cap should still find their question answerable.
-    if (hasPendingApprovalsForSession(session.sessionId)) {
-      console.log(`[claude bg] session ${session.sessionId}: max-lifetime reached with an unanswered permission prompt — extending`);
-      armMaxLifetimeTimer(session);
-      return;
-    }
-    // An overnight session working through its declared task ledger is
-    // outstanding work too — extend while items are open and nudging still has
-    // budget, in the same logged whole-cap steps as the job extension above.
-    // A wedged session stops earning extensions once the stall detector or the
-    // nudge budget trips, so the original leak bound still holds.
-    readOpenClaudeTasks(session.sessionId)
-      .catch(() => [])
-      .then((open) => {
-        if (session.ended) return;
-        const nudges = session.taskNudges;
-        if (TASK_NUDGE_ENABLED && open.length > 0 && nudges.count < TASK_NUDGE_MAX && nudges.stalls < 2) {
-          console.log(`[claude bg] session ${session.sessionId}: max-lifetime reached with ${open.length} open ledger task(s) — extending`);
-          armMaxLifetimeTimer(session);
-          return;
-        }
-        endSession(session, 'max-lifetime');
-      });
-  }, SESSION_MAX_LIFETIME_MS);
-  // Don't let the cap timer keep the process alive / block shutdown.
-  session.maxLifetimeTimer.unref?.();
 }
 
 /**
@@ -1794,10 +1740,6 @@ function finalizeSession(session) {
   completeTurn(session);
   session.finalizeDeferred?.resolve();
   clearIdleTimer(session);
-  if (session.maxLifetimeTimer) {
-    clearTimeout(session.maxLifetimeTimer);
-    session.maxLifetimeTimer = null;
-  }
   if (session.sessionId && getSession(session.sessionId) === session) {
     removeSession(session.sessionId);
   }
@@ -2050,7 +1992,6 @@ async function startPersistentSession(command, options, ws) {
     // Protocol capabilities the runtime advertised on system/init.
     capabilities: null,
     idleTimer: null,
-    maxLifetimeTimer: null,
     ended: false,
     finalized: false,
     finalizeDeferred: createDeferred(),
@@ -2104,7 +2045,6 @@ async function startPersistentSession(command, options, ws) {
   if (sessionId) {
     registerSession(sessionId, session);
   }
-  armMaxLifetimeTimer(session);
 
   // Feed the first user turn, then run the loop for the session's whole life.
   // The returned promise resolves when this first turn completes; the loop keeps
