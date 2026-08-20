@@ -229,10 +229,14 @@ test('spawnOpenCode passes permission mode flags and env to the CLI', async () =
  * Fake `opencode` whose `run` fails with a locked database for the first
  * `lockedAttempts` invocations, counting them in `attemptsPath`.
  *
+ * `splitWrites` reports the failure the way the real binary does under load:
+ * the `Error:` header and the detail below it are separate writes, so the
+ * parent reads them as two chunks and neither one is the whole message.
+ *
  * `models --verbose` always answers so the catalog probe the run makes on its
  * way in does not become the thing under test.
  */
-async function createLockingOpenCodeExecutable(binDir, attemptsPath, lockedAttempts) {
+async function createLockingOpenCodeExecutable(binDir, attemptsPath, lockedAttempts, splitWrites) {
   const scriptPath = path.join(binDir, 'opencode.js');
   await writeFile(scriptPath, `
 const fs = require('node:fs');
@@ -247,8 +251,17 @@ fs.writeFileSync(${JSON.stringify(attemptsPath)}, String(attempt));
 if (attempt <= ${lockedAttempts}) {
   // Byte-for-byte what opencode writes when it loses the race for opencode.db,
   // colour codes included: it never checks isTTY.
-  process.stderr.write('\\u001b[91m\\u001b[1mError: \\u001b[0mUnexpected error\\n\\ndatabase is locked\\n');
-  process.exit(1);
+  const header = '\\u001b[91m\\u001b[1mError: \\u001b[0mUnexpected error\\n\\n';
+  const detail = 'database is locked\\n';
+  if (${splitWrites ? 'true' : 'false'}) {
+    process.stderr.write(header, () => {
+      setTimeout(() => process.stderr.write(detail, () => process.exit(1)), 25);
+    });
+  } else {
+    process.stderr.write(header + detail);
+    process.exit(1);
+  }
+  return;
 }
 
 console.log(JSON.stringify({ type: 'text', sessionID: 'open-lock-1', part: { type: 'text', text: 'ran on the retry' } }));
@@ -264,7 +277,7 @@ console.log(JSON.stringify({ type: 'text', sessionID: 'open-lock-1', part: { typ
   await chmod(commandPath, 0o755);
 }
 
-async function withLockingOpenCode(lockedAttempts, assertions) {
+async function withLockingOpenCode(lockedAttempts, assertions, { splitWrites = false } = {}) {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'opencode-cli-lock-'));
   const attemptsPath = path.join(tempRoot, 'attempts');
   const pathKey = findEnvKey('PATH');
@@ -285,7 +298,7 @@ async function withLockingOpenCode(lockedAttempts, assertions) {
 
   try {
     await writeFile(attemptsPath, '0', 'utf8');
-    await createLockingOpenCodeExecutable(tempRoot, attemptsPath, lockedAttempts);
+    await createLockingOpenCodeExecutable(tempRoot, attemptsPath, lockedAttempts, splitWrites);
     process.env[pathKey] = `${tempRoot}${path.delimiter}${previousPath || ''}`;
     if (process.platform === 'win32') {
       process.env[pathExtKey] = previousPathExt?.toUpperCase().includes('.CMD')
@@ -347,4 +360,31 @@ test('OpenCode run that keeps losing it reports the lock once, in plain text', a
     // The colour codes never reach the browser.
     assert.doesNotMatch(errors[0].content, /\u001B/);
   });
+});
+
+// The failure arrives in pieces: opencode writes the `Error:` header and the
+// detail under it separately, and a loaded server reads them as two chunks.
+// Judged a chunk at a time, the header is not the lock error it belongs to, so
+// it went out as a bare "Error: Unexpected error" bubble a second before the
+// retry succeeded — an error on screen for a turn that worked.
+test('OpenCode lock error split across stderr chunks is still recognised, not half-shown', async () => {
+  await withLockingOpenCode(1, ({ messages, runError, attempts }) => {
+    assert.equal(runError, null);
+    assert.equal(attempts, 2);
+    assert.deepEqual(messages.filter((message) => message.kind === 'error'), []);
+    assert.equal(messages.filter((message) => message.kind === 'complete').length, 1);
+  }, { splitWrites: true });
+});
+
+test('OpenCode lock error split across stderr chunks is reported whole once retries run out', async () => {
+  await withLockingOpenCode(5, ({ messages, runError }) => {
+    assert.notEqual(runError, null);
+
+    const errors = messages.filter((message) => message.kind === 'error');
+    assert.equal(errors.length, 1);
+    // Both halves, in one bubble — the header is meaningless without the detail.
+    assert.match(errors[0].content, /Unexpected error/);
+    assert.match(errors[0].content, /database is locked/);
+    assert.match(errors[0].content, /Nothing was lost and nothing is corrupt/);
+  }, { splitWrites: true });
 });
