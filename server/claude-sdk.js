@@ -35,6 +35,7 @@ import { createCompleteMessage, createNormalizedMessage, resolveConfiguredContex
 import { rememberContextUsage } from './shared/context-usage-cache.js';
 import { readOpenClaudeTasks } from './shared/claude-task-ledger.js';
 import { scheduleSessionRecap } from './services/session-recap.service.js';
+import { recordSessionActivity, recordSessionEnd } from './services/session-restore.service.js';
 import { broadcastSessionUpdate } from './modules/providers/index.js';
 
 const activeSessions = new Map();
@@ -444,6 +445,25 @@ function addSession(sessionId, queryInstance, writer = null) {
  */
 function removeSession(sessionId) {
   activeSessions.delete(sessionId);
+  // A removed session ended (or is about to be respawned, which re-records it)
+  // — either way it must not be a restore-on-boot candidate anymore.
+  recordSessionEnd(sessionId).catch(() => {});
+}
+
+/**
+ * Mirrors the session's liveness to the restore-on-boot registry (see
+ * session-restore.service). Ephemeral helpers never come back, so they are
+ * never recorded.
+ */
+function recordRestoreState(session, turnActive) {
+  if (!session.sessionId || session.ephemeral) return;
+  recordSessionActivity({
+    sessionId: session.sessionId,
+    cwd: session.options?.cwd,
+    permissionMode: session.options?.permissionMode,
+    userId: session.userId,
+    turnActive,
+  }).catch(() => {});
 }
 
 /**
@@ -917,6 +937,7 @@ function clearIdleTimer(session) {
 function registerSession(sessionId, session) {
   session.sessionId = sessionId;
   activeSessions.set(sessionId, session);
+  recordRestoreState(session, session.turnActive);
 }
 
 /**
@@ -1160,6 +1181,7 @@ function ensureRunForServerStartedTurn(session, statusText) {
     }
     session.turnActive = true;
     session.turnStartTime = Date.now();
+    recordRestoreState(session, true);
   }
 
   // Make sure the turn settles even if it produces only a result (the loop
@@ -1352,6 +1374,7 @@ function settleTurn(session, { aborted = false } = {}) {
   session.awaitingResult = false;
   session.turnActive = false;
   session.turnStartTime = null;
+  recordRestoreState(session, false);
 
   // Any task still pending after a turn boundary is genuinely backgrounded —
   // mark it so its completion later triggers an auto-resume.
@@ -1900,6 +1923,7 @@ async function reuseSession(session, command, options, ws) {
   clearIdleTimer(session);
   session.turnActive = true;
   session.turnStartTime = Date.now();
+  recordRestoreState(session, true);
   if (options.sessionSummary) session.sessionSummary = options.sessionSummary;
 
   const turnPromise = beginTurn(session);
