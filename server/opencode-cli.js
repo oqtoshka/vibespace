@@ -6,6 +6,7 @@ import crossSpawn from 'cross-spawn';
 
 import { appendImagesInputTag, normalizeImageDescriptors } from './shared/image-attachments.js';
 import { readOpenCodeTokenUsage } from './shared/opencode-token-usage.js';
+import { buildAgentEnv } from './shared/agent-env.js';
 import { sendOpenCodeContextUsage } from './shared/opencode-context.js';
 import { runOpenCodeHttpTurn } from './services/opencode-http-runner.js';
 import { sessionsService } from './modules/providers/services/sessions.service.js';
@@ -228,9 +229,16 @@ async function spawnOpenCode(command, options = {}, ws) {
     // this is a run that never reached the model, so re-running it repeats
     // nothing — no tool ran, no tokens were spent, no history was appended.
     let producedOutput = false;
-    // The lock error is withheld while a retry is still possible; showing it
-    // and then succeeding is worse than showing nothing.
-    let heldLockError = null;
+    // opencode reports a failure in several writes — the red `Error: ` header,
+    // then a blank line, then the detail — and a busy reader gets them as
+    // separate `data` events. Judged one at a time, the header alone does not
+    // look like the lock error it belongs to, so it reached the browser as a
+    // bare "Error: Unexpected error" while the detail was held and the retry
+    // quietly succeeded. The attempt's stderr is classified once, whole, when
+    // the process has finished writing it. The lock error is withheld while a
+    // retry is still possible; showing it and then succeeding is worse than
+    // showing nothing.
+    let stderrBuffer = '';
     let lockRetriesLeft = OPEN_CODE_DATABASE_LOCKED_RETRIES;
 
     const notifyTerminalState = ({ code = null, error = null } = {}) => {
@@ -380,7 +388,7 @@ async function spawnOpenCode(command, options = {}, ws) {
         opencodeProcess = spawnFunction('opencode', args, {
           cwd: workingDir,
           stdio: ['pipe', 'pipe', 'pipe'],
-          env: { ...process.env, ...permissionOptions.env },
+          env: buildAgentEnv(permissionOptions.env),
         });
 
         activeOpenCodeProcesses.set(processKey, opencodeProcess);
@@ -401,17 +409,7 @@ async function spawnOpenCode(command, options = {}, ws) {
         opencodeProcess.stderr.on('data', (data) => {
           // OpenCode colours stderr whether or not it is talking to a terminal,
           // so the raw bytes would otherwise reach the browser as escape codes.
-          const stderrText = stripAnsi(data.toString());
-          if (!stderrText.trim()) {
-            return;
-          }
-
-          if (!producedOutput && lockRetriesLeft > 0 && isDatabaseLockedError(stderrText)) {
-            heldLockError = stderrText;
-            return;
-          }
-
-          sendStderr(stderrText, capturedSessionId || sessionId || null);
+          stderrBuffer += stripAnsi(data.toString());
         });
 
         opencodeProcess.on('close', async (code) => {
@@ -419,21 +417,29 @@ async function spawnOpenCode(command, options = {}, ws) {
           activeOpenCodeProcesses.delete(finalSessionId);
           activeOpenCodeProcesses.delete(processKey);
 
+          const stderrText = stderrBuffer.trim();
+          stderrBuffer = '';
+
           // Lost the race for opencode.db before the run began. Retry it
           // rather than making the user re-send: the failure is another
           // process's write lock, not anything about this request.
-          if (heldLockError && code !== 0 && !producedOutput && !opencodeProcess.aborted) {
+          if (
+            stderrText
+            && lockRetriesLeft > 0
+            && isDatabaseLockedError(stderrText)
+            && code !== 0
+            && !producedOutput
+            && !opencodeProcess.aborted
+          ) {
             lockRetriesLeft -= 1;
-            heldLockError = null;
             stdoutLineBuffer = '';
             console.warn('[OpenCode] opencode.db was locked before the run started; retrying once.');
             setTimeout(startAttempt, OPEN_CODE_DATABASE_LOCKED_RETRY_DELAY_MS);
             return;
           }
 
-          if (heldLockError) {
-            sendStderr(heldLockError, finalSessionId);
-            heldLockError = null;
+          if (stderrText) {
+            sendStderr(stderrText, finalSessionId);
           }
 
           if (stdoutLineBuffer.trim()) {
