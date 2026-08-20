@@ -598,6 +598,7 @@ async function tryDeliverToRunningTurn(
   try {
     const injectedUuid = await injectFn(providerSessionId, item.content, {
       ...runtimeOptions,
+      clientUserMessageId: item.id,
       // Delivered: the runtime now owns the message and streams the bubble.
       onDelivered: () => chatRunRegistry.removeQueued(appSessionId, item.id),
       // Cancelled (Stop pressed): hand the text back to the composer.
@@ -916,4 +917,46 @@ export function handleChatConnection(
     connectedClients.delete(ws);
     unsubscribeAllProjectFiles(ws);
   });
+}
+
+/**
+ * Boot-time registration of the chat dependencies for server-initiated runs.
+ * Same object the websocket layer hands to each connection; registering at
+ * listen-time means a server-spawned session (anthill mac watcher) can drain
+ * its queue before any browser has ever connected — per-connection
+ * registration alone would leave a boot-spawned session enqueued forever on a
+ * headless server.
+ */
+export function registerChatDependenciesAtBoot(dependencies: ChatWebSocketDependencies): void {
+  ensureQueueDrainingRegistered(dependencies);
+}
+
+/**
+ * Server-initiated message send: enqueue + immediate drain, no client socket
+ * behind it. Mirrors `handleChatQueueAdd` minus the ws plumbing; the drained
+ * run broadcasts to every connected client, so a browser that opens the
+ * session later sees the live turn. Returns false when the session row does
+ * not exist (caller logs and moves on).
+ */
+export function serverEnqueueMessage(
+  sessionId: string,
+  content: string,
+  options: AnyRecord = {},
+): boolean {
+  const session = sessionsDb.getSessionById(sessionId);
+  if (!session) {
+    return false;
+  }
+  chatRunRegistry.enqueue(sessionId, {
+    id: `server_${Date.now()}_${Math.round(Math.random() * 1e9).toString(36)}`,
+    content,
+    imageCount: 0,
+    options,
+    userId: null,
+    createdAt: Date.now(),
+  });
+  if (!chatRunRegistry.isProcessing(sessionId)) {
+    void drainQueue(sessionId);
+  }
+  return true;
 }

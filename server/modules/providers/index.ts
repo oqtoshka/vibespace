@@ -7,3 +7,4 @@ export { providerMcpService } from './services/mcp.service.js';
 export { initializeSessionsWatcher } from './services/sessions-watcher.service.js';
 export { closeSessionsWatcher } from './services/sessions-watcher.service.js';
 export { broadcastSessionUpdate } from './services/sessions-watcher.service.js';
+export { sessionsService } from './services/sessions.service.js';
