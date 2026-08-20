@@ -417,6 +417,13 @@ function mapCliOptionsToSDK(options = {}) {
   // is cheaper than teaching the watcher to recognise and skip them.
   if (options.ephemeral) {
     sdkOptions.persistSession = false;
+    // Same reasoning, one layer out: an agent hook fires for a helper turn
+    // exactly as it does for a real one, so presence boards register each
+    // recap and commit message as a session that lives ~20s, holds no tasks,
+    // and cannot be opened here (nothing was persisted to open). mc-reporter
+    // documents MC_DISABLE for precisely this — a scripted one-shot nobody
+    // would ever intervene in. Harmless to anything that does not read it.
+    sdkOptions.env = { ...sdkOptions.env, MC_DISABLE: '1' };
   }
 
   // Map resume session
