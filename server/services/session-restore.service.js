@@ -80,8 +80,29 @@ export async function recordSessionActivity({ sessionId, cwd, permissionMode, us
     permissionMode: permissionMode ?? prev.permissionMode,
     userId: userId ?? prev.userId,
     turnActive: Boolean(turnActive),
+    // Owned by recordPendingInteraction — activity updates must not drop it.
+    pendingPrompt: prev.pendingPrompt ?? null,
     updatedAt: Date.now(),
   });
+  scheduleWrite();
+}
+
+/**
+ * Marks (or clears, with `prompt = null`) the interactive prompt a session's
+ * turn is currently parked on — AskUserQuestion, plan approval. Cleared
+ * whenever the wait settles in-process; a hard kill leaves it set, so the boot
+ * pass knows the user never saw the question and tells the resumed agent to
+ * re-ask it (the transcript alone records it as an ordinary interrupted tool
+ * call, which reads as the user declining — it wasn't).
+ */
+export async function recordPendingInteraction(sessionId, prompt) {
+  if (!sessionId) return;
+  await loadOnce();
+  const entry = entries.get(sessionId);
+  if (!entry) return;
+  entry.pendingPrompt = prompt
+    ? { toolName: prompt.toolName, input: prompt.input, askedAt: Date.now() }
+    : null;
   scheduleWrite();
 }
 
@@ -92,14 +113,36 @@ export async function recordSessionEnd(sessionId) {
   if (entries.delete(sessionId)) scheduleWrite();
 }
 
+/** The supervisor prompt for one entry, with the re-ask rider when a hard
+ * kill destroyed an interactive prompt the user never answered. */
+function buildContinuationPrompt(entry) {
+  const pending = entry.pendingPrompt;
+  if (!pending?.toolName) return CONTINUATION_PROMPT;
+  let inputJson = '';
+  try {
+    inputJson = JSON.stringify(pending.input) || '';
+  } catch { /* unserializable — reconstruct from transcript */ }
+  if (inputJson.length > 8000) inputJson = '';
+  return `${CONTINUATION_PROMPT} IMPORTANT: that turn was parked on an interactive ${pending.toolName} `
+    + 'prompt that the user never saw or answered — the restart destroyed it, and the transcript may '
+    + 'record it as skipped, denied, or interrupted (that was NOT the user declining). Before anything '
+    + `else, ask it again with a fresh ${pending.toolName} call`
+    + (inputJson ? `, preserving the original content: ${inputJson}` : ', reconstructed from the transcript.');
+}
+
 /**
  * Boot pass: resume every recorded session that still has work. `spawn` is
- * queryClaudeSDK (injected to avoid a module cycle). Returns the session ids
- * it resumed, mostly for logging and tests.
+ * queryClaudeSDK (injected to avoid a module cycle). `hooks.startTurn(entry,
+ * prompt)`, when provided, is tried first: it lets the entrypoint start the
+ * turn as a real chat-run (registered in the run registry, so a client that
+ * opens the session sees it processing and receives any interactive prompt it
+ * parks on); it must kick the turn off WITHOUT awaiting it and return true.
+ * Falsy/throw falls back to a detached spawn. Returns the session ids resumed,
+ * mostly for logging and tests.
  */
 let bootPassDone = false;
 
-export async function restoreInterruptedSessions(spawn) {
+export async function restoreInterruptedSessions(spawn, hooks = {}) {
   await loadOnce();
   // Both entrypoints arm the pass (the CLI wrapper and claude-sdk's module
   // hook, for deployments that launch index.js directly) — run it once.
@@ -124,19 +167,34 @@ export async function restoreInterruptedSessions(spawn) {
       entries.delete(entry.sessionId);
       continue;
     }
-    console.log(`[session restore] resuming ${entry.sessionId} (turnActive=${entry.turnActive}, openTasks=${openTasks.length})`);
+    const prompt = buildContinuationPrompt(entry);
+    const hadPendingPrompt = Boolean(entry.pendingPrompt);
+    // Consumed: the re-ask rider is in this resume's prompt now, and the fresh
+    // interactive call (if any) re-records itself.
+    entry.pendingPrompt = null;
+    console.log(`[session restore] resuming ${entry.sessionId} (turnActive=${entry.turnActive}, openTasks=${openTasks.length}, pendingPrompt=${hadPendingPrompt})`);
     // Fire-and-forget: the spawn's promise resolves only when the whole first
     // turn completes, and awaiting it here would queue every other session
     // behind one long-running resume. The spawn re-registers the session,
     // refreshing its registry entry.
-    spawn(CONTINUATION_PROMPT, {
-      sessionId: entry.sessionId,
-      resume: true,
-      cwd: entry.cwd,
-      permissionMode: entry.permissionMode,
-    }, makeDetachedWriter(entry.userId)).catch((error) => {
-      console.error(`[session restore] resume of ${entry.sessionId} failed:`, error?.message || error);
-    });
+    let started = false;
+    if (typeof hooks.startTurn === 'function') {
+      try {
+        started = Boolean(await hooks.startTurn(entry, prompt));
+      } catch (error) {
+        console.warn(`[session restore] run-based resume of ${entry.sessionId} failed, falling back to detached:`, error?.message || error);
+      }
+    }
+    if (!started) {
+      spawn(prompt, {
+        sessionId: entry.sessionId,
+        resume: true,
+        cwd: entry.cwd,
+        permissionMode: entry.permissionMode,
+      }, makeDetachedWriter(entry.userId)).catch((error) => {
+        console.error(`[session restore] resume of ${entry.sessionId} failed:`, error?.message || error);
+      });
+    }
     resumed.push(entry.sessionId);
     // Small stagger so a fleet of resumes doesn't spawn CLIs all at once.
     await new Promise((r) => setTimeout(r, 2000));

@@ -35,8 +35,10 @@ import { createCompleteMessage, createNormalizedMessage, resolveConfiguredContex
 import { rememberContextUsage } from './shared/context-usage-cache.js';
 import { readOpenClaudeTasks } from './shared/claude-task-ledger.js';
 import { scheduleSessionRecap } from './services/session-recap.service.js';
-import { recordSessionActivity, recordSessionEnd, restoreInterruptedSessions } from './services/session-restore.service.js';
+import { recordSessionActivity, recordSessionEnd, recordPendingInteraction, restoreInterruptedSessions } from './services/session-restore.service.js';
 import { broadcastSessionUpdate } from './modules/providers/index.js';
+import { chatRunRegistry } from './modules/websocket/services/chat-run-registry.service.js';
+import { sessionsDb } from './modules/database/index.js';
 
 const activeSessions = new Map();
 const pendingToolApprovals = new Map();
@@ -1522,6 +1524,14 @@ function makeCanUseTool(session, sdkOptions, emitNotification) {
       dedupeKey: `claude:permission:${sid() || 'none'}:${requestId}`
     }));
 
+    // Persist the parked interactive prompt so a hard kill (deploy restart,
+    // crash) doesn't silently destroy an unanswered question: the restore boot
+    // pass reads it and instructs the resumed agent to re-ask. Cleared below
+    // on every in-process settle (answer, deny, cancel, abort).
+    if (requiresInteraction && !session.ephemeral) {
+      recordPendingInteraction(sid(), { toolName, input }).catch(() => {});
+    }
+
     const decision = await waitForToolApproval(requestId, {
       // Interactive prompts wait indefinitely even if the env var reinstates a
       // bound for ordinary tools: there is no sane way to answer a question on
@@ -1538,6 +1548,9 @@ function makeCanUseTool(session, sdkOptions, emitNotification) {
         session.writer.send(createNormalizedMessage({ kind: 'permission_cancelled', requestId, reason, sessionId: sid(), provider: 'claude' }));
       }
     });
+    if (requiresInteraction && !session.ephemeral) {
+      recordPendingInteraction(sid(), null).catch(() => {});
+    }
     if (!decision) {
       return { behavior: 'deny', message: 'Permission request timed out' };
     }
@@ -2378,21 +2391,66 @@ function reconnectSessionWriter(sessionId, newRawWs) {
   return true;
 }
 
-// Export public API
-// Arm the restore-on-boot pass from here as well: the local launchd deployment
-// starts dist-server/server/index.js directly, so the CLI wrapper's hook never
-// runs there. The service's boot-pass flag makes double-arming harmless when
-// both entrypoints fire. Skipped under the node:test runner, where importing
-// this module must never spawn real sessions.
+/**
+ * Restore-on-boot startTurn hook: opens the resumed turn as a real chat-run
+ * (broadcast, registered in the run registry) instead of a detached spawn.
+ * That is what makes a restored session behave like any other for a client
+ * that opens it mid-turn: `chat.subscribe` sees it processing, replays its
+ * events, and — the reason this exists — delivers any interactive prompt the
+ * turn parks on via `pendingPermissions`. A detached resume swallowed those:
+ * an AskUserQuestion asked into the void, then rendered "Skipped" after the
+ * next restart, with the user never having seen it.
+ */
+function startRestoredTurnAsRun(entry, prompt) {
+  const row = sessionsDb.getSessionByProviderSessionId(entry.sessionId);
+  if (!row) return false;
+  const appSessionId = row.session_id;
+  const run = chatRunRegistry.startQueuedRun(appSessionId);
+  if (!run) return false;
+  // Notifications — including the action_required ping for the very prompts
+  // this run exists to surface — resolve their recipient from the writer.
+  run.writer.userId = entry.userId ?? null;
+  // Show the supervisor prompt as a live user message, like the queue drain
+  // does for server-sent turns; the transcript copy replaces it on the next
+  // history load, so there is no lasting duplicate.
+  run.writer.send(createNormalizedMessage({
+    kind: 'text',
+    role: 'user',
+    content: prompt,
+    provider: 'claude',
+    sessionId: appSessionId,
+  }));
+  queryClaudeSDK(prompt, {
+    sessionId: entry.sessionId,
+    resume: true,
+    cwd: entry.cwd ?? row.worktree_path ?? row.project_path ?? undefined,
+    permissionMode: entry.permissionMode,
+    acquireResumeRun: () => chatRunRegistry.startResumeRun(appSessionId),
+  }, run.writer)
+    .catch((error) => {
+      console.error(`[session restore] resume of ${entry.sessionId} failed:`, error?.message || error);
+    })
+    .finally(() => {
+      // Backstop only — a no-op when the turn emitted its own terminal complete.
+      chatRunRegistry.completeRun(appSessionId, { exitCode: 1 });
+    });
+  return true;
+}
+
+// Arm the restore-on-boot pass. This module is in the import graph of both
+// entrypoints (the launchd deployment runs index.js directly; the packaged CLI
+// imports it), so arming here covers both. Skipped under the node:test runner,
+// where importing this module must never spawn real sessions.
 if (!process.env.NODE_TEST_CONTEXT) {
   const bootRestoreTimer = setTimeout(() => {
-    restoreInterruptedSessions(queryClaudeSDK).catch((error) => {
+    restoreInterruptedSessions(queryClaudeSDK, { startTurn: startRestoredTurnAsRun }).catch((error) => {
       console.error('[session restore] boot pass failed:', error?.message || error);
     });
   }, 8000);
   bootRestoreTimer.unref?.();
 }
 
+// Export public API
 export {
   queryClaudeSDK,
   injectClaudeMessage,
