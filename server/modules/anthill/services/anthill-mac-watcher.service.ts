@@ -33,6 +33,9 @@ import { sessionsService } from '@/modules/providers/index.js';
 import { serverEnqueueMessage } from '@/modules/websocket/index.js';
 
 const API_URL = process.env.ANTHILL_API_URL ?? 'https://anthill.dudin.net/api/graphql';
+// The task DEFINITION lives in the web app, not at the GraphQL endpoint. Derived
+// from API_URL so a watcher pointed at another instance links to that one.
+const WEB_URL = process.env.ANTHILL_WEB_URL ?? API_URL.replace(/\/api\/graphql$/, '');
 const PROJECT_PATH = process.env.ANTHILL_MAC_PROJECT ?? '/Users/dudin/projects/anthill';
 const POLL_MS = Number(process.env.ANTHILL_MAC_POLL_MS) > 0 ? Number(process.env.ANTHILL_MAC_POLL_MS) : 120_000;
 const RESPAWN_AFTER_MS = 4 * 60 * 60 * 1000; // queue lease length
@@ -138,6 +141,13 @@ function buildPrompt(task: QueuedTask): string {
     `   Stuck on a question only Dmitri can answer: anthill block-task --id ${task.id} --reason "<the question>"`,
     '4. NEVER mark the task DONE — acceptance is Dmitri\'s alone, REVIEW is as far as you go.',
     '5. File discovered follow-up work with anthill create-task under the same desiredState.',
+    '',
+    'Mission Control (https://mc.dudin.net) is the board this run appears on. Two things make it legible there, both before you start work:',
+    'a. Register the task definition, so the card can jump to it:',
+    `   mc-reporter link --kind anthill-task --label ${JSON.stringify(`Task: ${task.title.slice(0, 100)}`)} --url ${WEB_URL}/tasks/${task.id}`,
+    '   (it reads CLAUDE_CODE_SESSION_ID from your environment — no session id to pass).',
+    'b. Keep a task ledger: write the plan down with the task tools BEFORE starting, one entry per step, and move each to in_progress/completed as it happens.',
+    '   The board reads that list. A runner with no ledger is a blank card for however long it runs, indistinguishable from one that has hung.',
   ].join('\n');
 }
 
