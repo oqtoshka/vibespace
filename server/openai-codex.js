@@ -26,6 +26,7 @@ import { sessionsService } from './modules/providers/services/sessions.service.j
 import { providerAuthService } from './modules/providers/services/provider-auth.service.js';
 import { providerModelsService } from './modules/providers/services/provider-models.service.js';
 import { buildCodexTokenBudget, readLatestCodexTokenBudget } from './shared/codex-token-usage.js';
+import { toCodexAppServerSandboxPolicy } from './shared/codex-sandbox-policy.js';
 import { createCompleteMessage, createNormalizedMessage } from './shared/utils.js';
 
 const activeCodexSessions = new Map();
@@ -536,6 +537,10 @@ export async function queryCodex(command, options = {}, ws) {
       model: resolvedModel,
       effort: resolvedEffort,
       approvalPolicy: appServerApprovalPolicy,
+      // turn/start is the authoritative per-turn override. thread/resume's
+      // legacy `sandbox` string does not carry through here, so omitting this
+      // silently turned Bypass Permissions into workspace-write after restart.
+      sandboxPolicy: toCodexAppServerSandboxPolicy(sandboxMode),
     });
     activeSession.turnId = turnResponse?.turn?.id || activeSession.turnId;
     activeSession.resolveTurnReady(activeSession.turnId);
