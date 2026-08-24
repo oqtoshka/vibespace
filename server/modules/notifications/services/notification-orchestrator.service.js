@@ -221,8 +221,28 @@ const notificationChannels = [
   }
 ];
 
+/**
+ * Whether the event belongs to a session the user started private.
+ *
+ * Private means unreported, and VibeSpace's own outbound channels — push,
+ * Telegram, desktop — are reporting too: a "Claude finished: <title>" in a
+ * Telegram chat is exactly the trace the flag exists to prevent. Resolved
+ * through either id the runtimes use, app or provider-native.
+ */
+function isPrivateSessionEvent(event) {
+  if (!event?.sessionId || !event.provider || event.provider === 'system') {
+    return false;
+  }
+  const row = resolveSessionRow(event.sessionId, event.provider);
+  return Boolean(row?.is_private);
+}
+
 function notifyUserIfEnabled({ userId, event }) {
   if (!userId || !event) {
+    return;
+  }
+
+  if (isPrivateSessionEvent(event)) {
     return;
   }
 

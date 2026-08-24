@@ -43,6 +43,11 @@ interface UseChatComposerStateArgs {
   provider: LLMProvider;
   permissionMode: PermissionMode | string;
   cyclePermissionMode: () => void;
+  /**
+   * Start the next brand-new session private. Read only at the moment the
+   * session is allocated; it has no effect on an existing session.
+   */
+  privateMode?: boolean;
   cursorModel: string;
   claudeModel: string;
   codexModel: string;
@@ -255,6 +260,7 @@ export function useChatComposerState({
   provider,
   permissionMode,
   cyclePermissionMode,
+  privateMode = false,
   cursorModel,
   claudeModel,
   codexModel,
@@ -859,6 +865,7 @@ export function useChatComposerState({
             body: JSON.stringify({
               provider,
               projectPath: resolvedProjectPath,
+              private: Boolean(privateMode),
             }),
           });
           if (!response.ok) {
@@ -984,6 +991,7 @@ export function useChatComposerState({
       onSessionProcessing,
       onSessionEstablished,
       permissionMode,
+      privateMode,
       effort,
       provider,
       scrollToBottom,

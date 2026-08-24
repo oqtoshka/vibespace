@@ -51,6 +51,8 @@ export type SessionDeleteConfirmation = {
   sessionTitle: string;
   provider: LLMProvider;
   isArchived: boolean;
+  /** Started private — shown in the deletion dialog. */
+  isPrivate: boolean;
 };
 
 export type SidebarProps = {

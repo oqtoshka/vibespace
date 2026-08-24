@@ -470,6 +470,24 @@ const addSessionIsSide = (db: Database): void => {
   addColumnToTableIfNotExists(db, 'sessions', columnNames, 'is_side', 'INTEGER DEFAULT 0');
 };
 
+/**
+ * Marks sessions the user started as private.
+ *
+ * Privacy is a launch-time property: the flag is read once per turn to put
+ * `MC_DISABLE=1` into the harness process, and by VibeSpace's own outbound
+ * paths (notifications, the recap generator) to stay silent. Existing rows
+ * default to 0 — every session that predates the flag has already been
+ * reported, so calling it private now would be a lie.
+ */
+const addSessionIsPrivate = (db: Database): void => {
+  if (!tableExists(db, 'sessions')) {
+    return;
+  }
+
+  const columnNames = getTableInfo(db, 'sessions').map((column) => column.name);
+  addColumnToTableIfNotExists(db, 'sessions', columnNames, 'is_private', 'INTEGER DEFAULT 0');
+};
+
 const ensureProjectsForSessionPaths = (db: Database): void => {
   if (!tableExists(db, 'sessions')) {
     return;
@@ -524,6 +542,7 @@ export const runMigrations = (db: Database) => {
     addSessionNameSource(db);
     addSessionRecap(db);
     addSessionIsSide(db);
+    addSessionIsPrivate(db);
     ensureProjectsForSessionPaths(db);
 
     db.exec('CREATE INDEX IF NOT EXISTS idx_session_ids_lookup ON sessions(session_id)');
