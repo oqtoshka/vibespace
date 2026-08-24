@@ -11,7 +11,7 @@ import type {
   RefObject,
   TouchEvent,
 } from 'react';
-import { MessageSquareIcon, XIcon, Clock3, Loader2, PaperclipIcon, ChevronDown, Check, ArrowUpIcon, ActivityIcon, MoreHorizontalIcon, CpuIcon } from 'lucide-react';
+import { MessageSquareIcon, XIcon, Clock3, Loader2, PaperclipIcon, ChevronDown, Check, ArrowUpIcon, ActivityIcon, MoreHorizontalIcon, CpuIcon, LockIcon, LockOpenIcon } from 'lucide-react';
 
 import type { QueuedMessage } from '../../hooks/useChatComposerState';
 
@@ -72,6 +72,15 @@ interface ChatComposerProps {
   onAbortSession: () => void;
   permissionMode: PermissionMode | string;
   onModeSwitch: () => void;
+  /**
+   * Private session: no presence reporting, no notifications, no recap.
+   * Before the first message this is the user's choice for the session about
+   * to be created; once the session exists it is a fixed fact about it.
+   */
+  isPrivate: boolean;
+  /** True once the session exists — the choice can no longer change. */
+  privateLocked: boolean;
+  onTogglePrivate: () => void;
   effort: string;
   availableEffortOptions: NonNullable<ProviderModelOption['effort']>['values'];
   onSelectEffort: (effort: string) => void;
@@ -140,6 +149,9 @@ export default function ChatComposer({
   onAbortSession,
   permissionMode,
   onModeSwitch,
+  isPrivate,
+  privateLocked,
+  onTogglePrivate,
   effort,
   availableEffortOptions,
   onSelectEffort,
@@ -280,6 +292,7 @@ export default function ChatComposer({
     hasInput ? 1 : 0,
     effortOptions.length,
     permissionMode,
+    isPrivate ? 1 : 0,
     selectedEffortLabel,
     activeModelLabel,
     // The token readout widens as the count grows ("1.2k" → "141.8k · 43%").
@@ -363,7 +376,10 @@ export default function ChatComposer({
   const hasActivityIndicator = Boolean(activity && !hasPendingPermissions);
 
   const hasQueuedDraft = (queuedMessages?.length ?? 0) > 0;
-  const canQueueDraft = isLoading && Boolean(input.trim());
+  // Recording owns the primary action even while an agent is running: the mic
+  // button stops without sending, while this button stops, transcribes, and
+  // sends (or queues) the take.
+  const canQueueDraft = !isRecording && isLoading && Boolean(input.trim());
   const submitHint = canQueueDraft
     ? hasQueuedDraft
       ? t('input.hintText.updateQueued', { defaultValue: 'Enter to update queued message' })
@@ -375,9 +391,11 @@ export default function ChatComposer({
     ? hasQueuedDraft
       ? t('input.queue.update', { defaultValue: 'Update queued message' })
       : t('input.queue.sendNext', { defaultValue: 'Queue next message' })
-    : isLoading
-      ? t('input.stop')
-      : t('input.send');
+    : isRecording
+      ? t('input.send')
+      : isLoading
+        ? t('input.stop')
+        : t('input.send');
 
   return (
     <div className="chat-composer-shell relative flex-shrink-0 px-2 pb-2 pt-0 sm:px-4 sm:pb-4 md:px-4 md:pb-6">
@@ -437,7 +455,7 @@ export default function ChatComposer({
 
         <PromptInput
           onSubmit={onSubmit as (event: FormEvent<HTMLFormElement>) => void}
-          status={isLoading ? 'streaming' : 'ready'}
+          status={isLoading && !isRecording ? 'streaming' : 'ready'}
           className={[
             isTextareaExpanded ? 'chat-input-expanded' : '',
             hasActivityIndicator ? 'rounded-t-none' : '',
@@ -601,6 +619,44 @@ export default function ChatComposer({
                 </span>
               </div>
             </button>
+
+            {/* Private is decided before the first message and then fixed:
+                the presence reporter reads its gate from the harness's
+                environment at spawn, so there is no flipping it later. The
+                state is never colour alone — glyph plus the word, always. */}
+            {privateLocked ? (
+              isPrivate && (
+                <span
+                  className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-violet-300/60 bg-violet-50 px-2 text-xs font-medium text-violet-700 dark:border-violet-600/40 dark:bg-violet-900/15 dark:text-violet-300 sm:px-2.5"
+                  title={t('input.privateLocked', { defaultValue: 'Private session: not reported to Mission Control, no notifications, no recap. Fixed for the life of the session.' })}
+                  aria-label={t('input.privateLocked', { defaultValue: 'Private session: not reported to Mission Control, no notifications, no recap. Fixed for the life of the session.' })}
+                >
+                  <LockIcon className="h-3 w-3 shrink-0" aria-hidden />
+                  <span className="whitespace-nowrap">{t('input.private', { defaultValue: 'private' })}</span>
+                </span>
+              )
+            ) : (
+              <button
+                type="button"
+                onClick={onTogglePrivate}
+                aria-pressed={isPrivate}
+                className={`inline-flex h-8 items-center gap-1.5 rounded-lg border px-2 text-xs font-medium transition-all duration-200 sm:px-2.5 ${
+                  isPrivate
+                    ? 'border-violet-300/60 bg-violet-50 text-violet-700 hover:bg-violet-100 dark:border-violet-600/40 dark:bg-violet-900/15 dark:text-violet-300 dark:hover:bg-violet-900/25'
+                    : 'border-border/60 bg-muted/50 text-muted-foreground hover:bg-muted'
+                }`}
+                title={t('input.privateToggle', { defaultValue: 'Start this session private: not reported to Mission Control, no notifications, no recap. Decided before the first message.' })}
+              >
+                {isPrivate
+                  ? <LockIcon className="h-3 w-3 shrink-0" aria-hidden />
+                  : <LockOpenIcon className="h-3 w-3 shrink-0" aria-hidden />}
+                <span className="hidden whitespace-nowrap sm:inline">
+                  {isPrivate
+                    ? t('input.private', { defaultValue: 'private' })
+                    : t('input.notPrivate', { defaultValue: 'not private' })}
+                </span>
+              </button>
+            )}
 
             {/* Which model the next turn runs on. Sits next to the mode pill
                 because both answer "what happens when I hit send?", and both
@@ -889,18 +945,18 @@ export default function ChatComposer({
             )}
             <PromptInputSubmit
               onClick={
-                canQueueDraft
+                isRecording
                   ? (e: MouseEvent<HTMLButtonElement>) => {
                       e.preventDefault();
-                      onSubmit(e);
+                      voiceStop({ send: true });
                     }
-                  : isLoading
-                    ? onAbortSession
-                    : isRecording
+                  : canQueueDraft
                       ? (e: MouseEvent<HTMLButtonElement>) => {
                           e.preventDefault();
-                          voiceStop({ send: true });
+                          onSubmit(e);
                         }
+                    : isLoading
+                      ? onAbortSession
                       : undefined
               }
               disabled={isLoading ? false : isRecording ? false : isTranscribing ? true : !input.trim()}

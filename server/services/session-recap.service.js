@@ -247,17 +247,36 @@ function parseRecapResponse(text) {
  *   Claude's cheap tier; other providers pass what they can actually run.
  * @param {Function} [params.onRecap] - Called with the stored result so the
  *   caller can push it to connected clients.
+ * @param {boolean} [params.useIndexedHistory] - Read the provider-normalized
+ *   history even when the session also has a transcript file. Codex and other
+ *   non-Claude JSONL formats need this path because readTranscriptTail parses
+ *   Claude's on-disk schema.
+ * @param {Function} [params.fetchHistory] - Test seam for indexed history.
  */
-async function generateRecap({ sessionId, cwd, runQuery, model, onRecap }) {
+async function generateRecap({
+  sessionId,
+  cwd,
+  runQuery,
+  model,
+  onRecap,
+  useIndexedHistory = false,
+  fetchHistory,
+}) {
   const session = sessionsDb.getSessionById(sessionId)
     ?? sessionsDb.getSessionByProviderSessionId(sessionId);
   if (!session) return;
 
+  // A private session keeps no recap: the summary would sit in the row as a
+  // second copy of what the conversation was about, which is one more thing
+  // to shred and one more thing a reader of the database learns. The title
+  // stays whatever it was; the lists show the mechanical fallback.
+  if (session.is_private) return;
+
   // A transcript file when the provider keeps one per session, the indexed
   // history when it keeps a shared store instead (OpenCode).
-  const { messages, total } = session.jsonl_path
-    ? await readTranscriptTail(session.jsonl_path)
-    : await readIndexedTranscriptTail(session.session_id);
+  const { messages, total } = useIndexedHistory || !session.jsonl_path
+    ? await readIndexedTranscriptTail(session.session_id, fetchHistory)
+    : await readTranscriptTail(session.jsonl_path);
   // One exchange is not yet a session worth describing.
   if (messages.length < 2) return;
 
@@ -330,7 +349,15 @@ async function generateRecap({ sessionId, cwd, runQuery, model, onRecap }) {
  *
  * @param {Object} params - See {@link generateRecap}.
  */
-export function scheduleSessionRecap({ sessionId, cwd, runQuery, model, onRecap }) {
+export function scheduleSessionRecap({
+  sessionId,
+  cwd,
+  runQuery,
+  model,
+  onRecap,
+  useIndexedHistory = false,
+  fetchHistory,
+}) {
   if (!sessionId || !cwd || typeof runQuery !== 'function') return;
 
   const existing = pendingRecaps.get(sessionId);
@@ -343,7 +370,15 @@ export function scheduleSessionRecap({ sessionId, cwd, runQuery, model, onRecap 
     if (inFlightRecaps.has(sessionId)) return;
 
     inFlightRecaps.add(sessionId);
-    generateRecap({ sessionId, cwd, runQuery, model, onRecap })
+    generateRecap({
+      sessionId,
+      cwd,
+      runQuery,
+      model,
+      onRecap,
+      useIndexedHistory,
+      fetchHistory,
+    })
       .catch((error) => {
         console.warn(`[recap] ${sessionId} failed:`, error?.message || error);
       })
@@ -373,4 +408,5 @@ export const __testing = {
   readIndexedTranscriptTail,
   parseRecapResponse,
   buildRecapPrompt,
+  generateRecap,
 };

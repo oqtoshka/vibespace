@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { Check, Edit2, Trash2, X } from 'lucide-react';
+import { Check, Edit2, Lock, Trash2, X } from 'lucide-react';
 import type { TFunction } from 'i18next';
 
 import { Badge, Button, Tooltip } from '../../../../shared/view/ui';
@@ -59,6 +59,22 @@ const formatCompactSessionAge = (dateString: string, currentTime: Date): string 
   return `${diffInDays}d`;
 };
 
+/**
+ * Private-session mark. Glyph plus the word, never colour alone: a reader
+ * who cannot tell the hue apart still reads the lock and the text.
+ */
+function PrivateMark({ label }: { label: string }) {
+  return (
+    <span
+      className="inline-flex items-center gap-0.5 text-[11px] font-medium text-violet-700 dark:text-violet-400"
+      title={label}
+    >
+      <Lock className="h-2.5 w-2.5" aria-hidden />
+      <span>{label}</span>
+    </span>
+  );
+}
+
 export default function SidebarSessionItem({
   project,
   session,
@@ -76,6 +92,7 @@ export default function SidebarSessionItem({
   t,
 }: SidebarSessionItemProps) {
   const sessionView = createSessionViewModel(session, currentTime, t);
+  const privateLabel = t('session.private', { defaultValue: 'private' });
   const isSelected = selectedSession?.id === session.id;
   const isEditing = editingSession === session.id;
   const compactSessionAge = formatCompactSessionAge(sessionView.sessionTime, currentTime);
@@ -197,12 +214,13 @@ export default function SidebarSessionItem({
                       <span className="ml-auto flex-shrink-0 text-[11px] text-muted-foreground">{compactSessionAge}</span>
                     )}
                   </div>
-                  <div className="mt-0.5 flex items-center">
+                  <div className="mt-0.5 flex items-center gap-1.5">
                     {sessionView.messageCount > 0 && (
                       <Badge variant="secondary" className="px-1 py-0 text-xs">
                         {sessionView.messageCount}
                       </Badge>
                     )}
+                    {session.isPrivate && <PrivateMark label={privateLabel} />}
                   </div>
                 </div>
 
@@ -258,8 +276,9 @@ export default function SidebarSessionItem({
                   </span>
                 )}
               </div>
-              <div className="mt-0.5 flex items-center">
+              <div className="mt-0.5 flex items-center gap-1.5">
                 {sessionView.messageCount > 0 && <Badge variant="secondary" className="px-1 py-0 text-xs">{sessionView.messageCount}</Badge>}
+                {session.isPrivate && <PrivateMark label={privateLabel} />}
               </div>
             </div>
           </div>

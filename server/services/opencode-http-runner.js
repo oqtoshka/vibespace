@@ -286,7 +286,8 @@ export async function runOpenCodeHttpTurn(command, options, ws, hooks = {}) {
   const workingDir = cwd || projectPath || process.cwd();
   const { registerHandle, releaseHandle, onCompleted } = hooks;
 
-  const server = await ensureOpenCodeServer();
+  // A private session runs against the server spawned with MC_DISABLE=1.
+  const server = await ensureOpenCodeServer({ private: Boolean(options.private) });
   const { files, passthrough } = await buildOpenCodePromptAttachments(images, workingDir);
 
   const resolvedModel = await providerModelsService.resolveResumeModel('opencode', sessionId, model);

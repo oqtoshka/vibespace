@@ -258,6 +258,10 @@ function buildRuntimeOptions(
     // server-drained queued message with no client behind it).
     cwd: clientOptions.cwd ?? session.worktree_path ?? session.project_path ?? undefined,
     projectPath: session.project_path ?? clientOptions.projectPath,
+    // Private is a property of the row, never of the client request: each
+    // runtime puts MC_DISABLE=1 into the harness process it spawns for this
+    // turn, so no presence reporter ever speaks for the session.
+    private: Boolean(session.is_private),
   };
 
   // Claude background-job auto-resume: when a `run_in_background` job finishes
@@ -310,6 +314,10 @@ async function drainQueue(appSessionId: string): Promise<void> {
   }
 
   const runtimeOptions = buildRuntimeOptions(session, item.options ?? {}, provider, appSessionId);
+  // Notifications for a server-drained turn route through the writer's user:
+  // the one who queued the message, or the supervisor that enqueued on their
+  // behalf (restore / usage-limit wake).
+  run.writer.userId = item.userId ?? null;
 
   // Emit the queued prompt as a live user message so its bubble shows for every
   // client (the normal send path adds this optimistically on the sending
@@ -942,6 +950,7 @@ export function serverEnqueueMessage(
   sessionId: string,
   content: string,
   options: AnyRecord = {},
+  { userId = null }: { userId?: string | number | null } = {},
 ): boolean {
   const session = sessionsDb.getSessionById(sessionId);
   if (!session) {
@@ -952,7 +961,7 @@ export function serverEnqueueMessage(
     content,
     imageCount: 0,
     options,
-    userId: null,
+    userId,
     createdAt: Date.now(),
   });
   if (!chatRunRegistry.isProcessing(sessionId)) {

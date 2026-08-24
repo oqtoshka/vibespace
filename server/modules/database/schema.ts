@@ -136,6 +136,12 @@ CREATE TABLE IF NOT EXISTS sessions (
     -- real and resumable but stays out of the session lists; "branching out"
     -- a btw clears the flag and the session becomes an ordinary one.
     is_side INTEGER DEFAULT 0,
+    -- 1 when the session was started private: every harness process that runs
+    -- it carries MC_DISABLE=1, so no Mission Control reporter ever speaks for
+    -- it, and VibeSpace's own notifications and recap generator skip it.
+    -- Decided at creation and never changed — a session that has reported
+    -- once cannot become private after the fact.
+    is_private INTEGER DEFAULT 0,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (session_id),

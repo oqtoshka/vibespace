@@ -19,6 +19,8 @@ import path from 'path';
 import { readOpenClaudeTasks } from '../shared/claude-task-ledger.js';
 import { getDataDir } from '../utils/worktrees.js';
 
+import { isRateLimitWakePending, loadRateLimitWakes } from './rate-limit-wake.service.js';
+
 const RESTORE_ENABLED = !['0', 'false', 'off'].includes((process.env.VIBESPACE_SESSION_RESTORE || '').trim().toLowerCase());
 // Entries older than this are stale leftovers (e.g. the file survived weeks of
 // the feature being disabled) — skip them rather than waking ancient sessions.
@@ -70,7 +72,7 @@ function scheduleWrite() {
 }
 
 /** Upsert a live session. Call on register and on turn start/end. */
-export async function recordSessionActivity({ sessionId, cwd, permissionMode, userId, turnActive }) {
+export async function recordSessionActivity({ sessionId, cwd, permissionMode, userId, turnActive, private: isPrivate }) {
   if (!sessionId) return;
   await loadOnce();
   const prev = entries.get(sessionId) || {};
@@ -79,6 +81,9 @@ export async function recordSessionActivity({ sessionId, cwd, permissionMode, us
     cwd: cwd ?? prev.cwd,
     permissionMode: permissionMode ?? prev.permissionMode,
     userId: userId ?? prev.userId,
+    // Sticky once set: a private session must come back private. Nothing can
+    // clear it short of the session ending.
+    private: Boolean(isPrivate ?? prev.private),
     turnActive: Boolean(turnActive),
     // Owned by recordPendingInteraction — activity updates must not drop it.
     pendingPrompt: prev.pendingPrompt ?? null,
@@ -111,6 +116,28 @@ export async function recordSessionEnd(sessionId) {
   if (!sessionId) return;
   await loadOnce();
   if (entries.delete(sessionId)) scheduleWrite();
+}
+
+/**
+ * Removes a session's registry entry for good — the shred path.
+ *
+ * Unlike `recordSessionEnd`, which only has to stop the next boot from
+ * resuming the session, this one has to make the entry disappear from the
+ * file on disk now, so it flushes the mirror instead of debouncing it.
+ * Returns whether an entry was there to remove.
+ */
+export async function forgetSession(sessionId) {
+  if (!sessionId) return false;
+  await loadOnce();
+  const had = entries.delete(sessionId);
+  if (!had) return false;
+  if (writeTimer) { clearTimeout(writeTimer); writeTimer = null; }
+  const file = stateFile();
+  const tmp = `${file}.tmp`;
+  await fs.mkdir(path.dirname(file), { recursive: true });
+  await fs.writeFile(tmp, JSON.stringify([...entries.values()], null, 2));
+  await fs.rename(tmp, file);
+  return true;
 }
 
 /** The supervisor prompt for one entry, with the re-ask rider when a hard
@@ -149,11 +176,19 @@ export async function restoreInterruptedSessions(spawn, hooks = {}) {
   if (bootPassDone) return [];
   bootPassDone = true;
   if (!RESTORE_ENABLED) return [];
+  await loadRateLimitWakes();
   const candidates = [...entries.values()];
   const resumed = [];
   for (const entry of candidates) {
     const age = Date.now() - (entry.updatedAt || 0);
     if (age > RESTORE_MAX_AGE_MS) {
+      entries.delete(entry.sessionId);
+      continue;
+    }
+    if (isRateLimitWakePending(entry.sessionId)) {
+      // Parked on a usage limit: resuming now would just hit it again. The
+      // wake service owns this session and resumes it after the reset.
+      console.log(`[session restore] ${entry.sessionId} is waiting for a usage-limit reset — leaving it to the wake scheduler`);
       entries.delete(entry.sessionId);
       continue;
     }
@@ -198,6 +233,7 @@ export async function restoreInterruptedSessions(spawn, hooks = {}) {
         resume: true,
         cwd: entry.cwd,
         permissionMode: entry.permissionMode,
+        private: Boolean(entry.private),
       }, makeDetachedWriter(entry.userId)).catch((error) => {
         console.error(`[session restore] resume of ${entry.sessionId} failed:`, error?.message || error);
       });
