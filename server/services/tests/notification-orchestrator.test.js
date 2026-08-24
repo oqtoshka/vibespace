@@ -78,3 +78,44 @@ test('push payload uses the app session id when notified with a provider session
     webPush.sendNotification = originalSendNotification;
   }
 });
+
+// A private session (FEAT-INGEST-006) leaves no trace outside the harness:
+// no push, no Telegram, no board. The orchestrator is the single funnel for
+// every channel, so one early return covers them all.
+test('a private session never reaches any notification channel', async () => {
+  const originalSendNotification = webPush.sendNotification;
+  const sentPayloads = [];
+
+  webPush.sendNotification = async (_subscription, payload) => {
+    sentPayloads.push(JSON.parse(payload));
+    return {};
+  };
+
+  try {
+    await withIsolatedDatabase(async () => {
+      const user = userDb.createUser('notify-user-private', 'hash');
+      const userId = Number(user.id);
+
+      notificationPreferencesDb.updatePreferences(userId, {
+        channels: { webPush: true },
+        events: { actionRequired: true, stop: true, error: true },
+      });
+      pushSubscriptionsDb.saveSubscription(userId, 'https://example.test/push', 'p256dh', 'auth');
+      sessionsDb.createAppSession('app-private-1', 'claude', '/workspace/demo', false, true);
+      sessionsDb.assignProviderSessionId('app-private-1', 'claude-native-private-1');
+      sessionsDb.createAppSession('app-public-1', 'claude', '/workspace/demo');
+      sessionsDb.assignProviderSessionId('app-public-1', 'claude-native-public-1');
+
+      notifyRunStopped({ userId, provider: 'claude', sessionId: 'claude-native-private-1', stopReason: 'completed' });
+      notifyRunStopped({ userId, provider: 'claude', sessionId: 'app-private-1', stopReason: 'completed' });
+      notifyRunStopped({ userId, provider: 'claude', sessionId: 'claude-native-public-1', stopReason: 'completed' });
+
+      await new Promise((resolve) => setImmediate(resolve));
+
+      assert.equal(sentPayloads.length, 1);
+      assert.equal(sentPayloads[0]?.data?.sessionId, 'app-public-1');
+    });
+  } finally {
+    webPush.sendNotification = originalSendNotification;
+  }
+});

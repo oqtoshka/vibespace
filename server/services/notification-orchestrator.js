@@ -2,7 +2,7 @@ import webPush from 'web-push';
 
 import { notificationPreferencesDb, pushSubscriptionsDb, sessionsDb } from '../modules/database/index.js';
 import { sendTelegramMessage, buildTelegramText } from './telegram-notifier.js';
-import { summarizeRecap, classifyAssistantState } from './notification-content.js';
+import { summarizeRecap, classifyAssistantState, formatResumeAt } from './notification-content.js';
 
 const KIND_TO_PREF_KEY = {
   action_required: 'actionRequired',
@@ -179,6 +179,10 @@ function buildPushMessage(event) {
     return meta.error ? `❌ Failed: ${meta.error}` : '❌ Failed';
   }
 
+  if (event.code === 'run.paused') {
+    return `⏳ Usage limit hit — auto-resume at ${formatResumeAt(meta.resumeAt)}`;
+  }
+
   const CODE_MAP = {
     'agent.notification': meta.message ? String(meta.message) : 'You have a new notification',
     'push.enabled': 'Push notifications are now enabled!'
@@ -249,8 +253,28 @@ async function sendWebPush(userId, event) {
   });
 }
 
+/**
+ * Whether the event belongs to a session the user started private.
+ *
+ * Private means unreported, and VibeSpace's own outbound channels — push,
+ * Telegram, desktop — are reporting too: a "Claude finished: <title>" in a
+ * Telegram chat is exactly the trace the flag exists to prevent. Resolved
+ * through either id the runtimes use, app or provider-native.
+ */
+function isPrivateSessionEvent(event) {
+  if (!event?.sessionId || !event.provider || event.provider === 'system') {
+    return false;
+  }
+  const row = resolveSessionRow(event.sessionId, event.provider);
+  return Boolean(row?.is_private);
+}
+
 function notifyUserIfEnabled({ userId, event }) {
   if (!userId || !event) {
+    return;
+  }
+
+  if (isPrivateSessionEvent(event)) {
     return;
   }
 
@@ -300,6 +324,26 @@ function notifyRunStopped({
   });
 }
 
+/**
+ * The turn died on the provider's usage limit and a wake is scheduled (see
+ * rate-limit-wake.service). Rides the `stop` preference: it is the turn's
+ * stop notification, replacing the ordinary run-stopped one.
+ */
+function notifyRunPaused({ userId, provider, sessionId = null, sessionName = null, resumeAt, limitType = null }) {
+  notifyUserIfEnabled({
+    userId,
+    event: createNotificationEvent({
+      provider,
+      sessionId,
+      kind: 'stop',
+      code: 'run.paused',
+      meta: { sessionName, resumeAt, limitType },
+      severity: 'warning',
+      dedupeKey: `${provider}:run:paused:${sessionId || 'none'}:${resumeAt}`
+    })
+  });
+}
+
 function notifyRunFailed({ userId, provider, sessionId = null, error, sessionName = null }) {
   const errorMessage = normalizeErrorMessage(error);
 
@@ -321,5 +365,6 @@ export {
   createNotificationEvent,
   notifyUserIfEnabled,
   notifyRunStopped,
+  notifyRunPaused,
   notifyRunFailed
 };

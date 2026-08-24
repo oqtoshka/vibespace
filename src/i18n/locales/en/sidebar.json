@@ -70,7 +70,8 @@
     "rename": "Rename",
     "joinCommunity": "Join Community",
     "reportIssue": "Report Issue",
-    "starOnGithub": "Star on GitHub"
+    "starOnGithub": "Star on GitHub",
+    "close": "Close"
   },
   "branding": {
     "openSource": "Open Source"
@@ -140,6 +141,14 @@
     "removeFromSidebar": "Remove from sidebar only",
     "deleteAllData": "Delete all data permanently",
     "allConversationsDeleted": "The project will be removed from the sidebar. Your files, memories, and session data will be preserved.",
-    "cannotUndo": "You can re-add the project later."
+    "cannotUndo": "You can re-add the project later.",
+    "privateSession": "private session",
+    "shred": "Shred everything",
+    "shredDetails": "What shredding removes",
+    "shredHint": "Removes VibeSpace's session data plus the harness transcript, task ledger, and matching database records when the provider exposes them.",
+    "deleteSessionAndShred": "Delete permanently and shred"
+  },
+  "session": {
+    "private": "private"
   }
 }

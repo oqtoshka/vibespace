@@ -388,7 +388,12 @@ async function spawnOpenCode(command, options = {}, ws) {
         opencodeProcess = spawnFunction('opencode', args, {
           cwd: workingDir,
           stdio: ['pipe', 'pipe', 'pipe'],
-          env: buildAgentEnv(permissionOptions.env),
+          // A private session's CLI runs carry the presence gate, so the
+          // reporter plugin exits before reading anything about them.
+          env: buildAgentEnv({
+            ...permissionOptions.env,
+            ...(options.private ? { MC_DISABLE: '1' } : {}),
+          }),
         });
 
         activeOpenCodeProcesses.set(processKey, opencodeProcess);

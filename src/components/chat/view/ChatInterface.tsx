@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ArrowDownIcon, TreePine } from 'lucide-react';
+import { ArrowDownIcon, LockIcon, TreePine } from 'lucide-react';
 
 import { useTasksSettings } from '../../../contexts/TasksSettingsContext';
 import { useActiveWorktree } from '../../../hooks/useActiveWorktree';
@@ -85,6 +85,8 @@ function ChatInterface({
     setOpenCodeModel,
     permissionMode,
     setPermissionMode,
+    privateMode,
+    togglePrivateMode,
     pendingPermissionRequests,
     setPendingPermissionRequests,
     cyclePermissionMode,
@@ -299,6 +301,7 @@ function ChatInterface({
     provider,
     permissionMode,
     cyclePermissionMode,
+    privateMode,
     cursorModel,
     claudeModel,
     codexModel,
@@ -457,10 +460,31 @@ function ChatInterface({
     ? sessionWorktreeBranch
     : activeWorktree?.branch ?? (activeWorktree ? activeWorktree.path.split('/').pop() ?? null : null);
 
+  // Private: an existing session reads the flag off its row; a session that
+  // was allocated a moment ago (id known, row not yet on any list) still shows
+  // the choice it was created with; a pending session shows the toggle.
+  const sessionExists = Boolean(selectedSession?.id || currentSessionId);
+  const effectivePrivateMode = typeof selectedSession?.isPrivate === 'boolean'
+    ? selectedSession.isPrivate
+    : privateMode;
+  const isPrivateSession = sessionExists && effectivePrivateMode;
+
   return (
     <PermissionContext.Provider value={permissionContextValue}>
       <BackgroundTasksProvider value={backgroundTasksContextValue}>
       <div className="flex h-full min-h-0 flex-col">
+        {isPrivateSession && (
+          <div
+            className="flex flex-shrink-0 items-center gap-1.5 border-b border-violet-500/20 bg-violet-500/5 px-3 py-1 text-xs text-violet-700 dark:text-violet-400"
+            role="status"
+          >
+            <LockIcon className="h-3 w-3 flex-shrink-0" aria-hidden />
+            <span className="font-medium">{t('chat.private', { defaultValue: 'private' })}</span>
+            <span className="truncate text-violet-700/70 dark:text-violet-400/70">
+              {t('chat.privateHint', { defaultValue: 'not reported to Mission Control, no notifications, no recap' })}
+            </span>
+          </div>
+        )}
         {worktreeLabel && (
           <div className="flex flex-shrink-0 items-center gap-1.5 border-b border-amber-500/20 bg-amber-500/5 px-3 py-1 text-xs text-amber-700 dark:text-amber-400">
             <TreePine className="h-3 w-3 flex-shrink-0" />
@@ -546,6 +570,9 @@ function ChatInterface({
           onAbortSession={handleAbortSession}
           permissionMode={permissionMode}
           onModeSwitch={cyclePermissionMode}
+          isPrivate={effectivePrivateMode}
+          privateLocked={sessionExists}
+          onTogglePrivate={togglePrivateMode}
           effort={currentProviderEffort}
           availableEffortOptions={currentProviderEffortOptions}
           onSelectEffort={(nextEffort) => setStoredProviderEffort(provider, nextEffort)}

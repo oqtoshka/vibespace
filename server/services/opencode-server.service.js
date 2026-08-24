@@ -40,9 +40,26 @@ function getServerWorkspace() {
   return path.join(os.homedir(), '.vibespace', 'opencode-server');
 }
 
-let bootPromise = null;
-let serverProcess = null;
+/**
+ * One server per variant.
+ *
+ * The OpenCode reporter plugin reads the presence gate (`MC_DISABLE`) from the
+ * server process's environment when it loads, so a session hosted by the
+ * ordinary server is reported whatever its row says. A private session is
+ * therefore routed to a second server spawned with the gate set; every
+ * private session shares that one, and the ordinary server is untouched.
+ *
+ * variant -> { bootPromise, serverProcess }
+ */
+const instances = {
+  shared: { bootPromise: null, serverProcess: null, extraEnv: {} },
+  private: { bootPromise: null, serverProcess: null, extraEnv: { MC_DISABLE: '1' } },
+};
 let exitHooksInstalled = false;
+
+function variantFor(options) {
+  return options?.private ? 'private' : 'shared';
+}
 
 /**
  * Reserves a free loopback port by binding one and letting go again.
@@ -111,7 +128,7 @@ function installExitHooks() {
   process.once('SIGTERM', stopOnExit);
 }
 
-function bootServer() {
+function bootServer(slot) {
   return new Promise((resolve, reject) => {
     void (async () => {
       let port;
@@ -134,7 +151,7 @@ function bootServer() {
       const child = crossSpawn('opencode', ['serve', '--port', String(port), '--hostname', '127.0.0.1'], {
         cwd: workspace,
         stdio: ['ignore', 'pipe', 'pipe'],
-        env: { ...process.env, OPENCODE_SERVER_PASSWORD: password },
+        env: { ...process.env, OPENCODE_SERVER_PASSWORD: password, ...slot.extraEnv },
       });
 
       let settled = false;
@@ -168,7 +185,7 @@ function bootServer() {
         }
 
         const baseUrl = match[1].replace(/\/$/, '');
-        serverProcess = child;
+        slot.serverProcess = child;
         installExitHooks();
         void waitForModelCatalog(baseUrl, authorization, Date.now() + BOOT_TIMEOUT_MS)
           .then(() => settle(resolve, { baseUrl, authorization }))
@@ -185,17 +202,17 @@ function bootServer() {
       });
 
       child.on('error', (error) => {
-        bootPromise = null;
+        slot.bootPromise = null;
         settle(reject, error);
       });
 
       child.on('exit', (code, signal) => {
-        if (serverProcess === child) {
-          serverProcess = null;
+        if (slot.serverProcess === child) {
+          slot.serverProcess = null;
         }
         // Force the next caller to boot a fresh one rather than hand out the
         // address of a process that is no longer listening.
-        bootPromise = null;
+        slot.bootPromise = null;
         settle(
           reject,
           new Error(
@@ -210,28 +227,34 @@ function bootServer() {
 /**
  * Returns `{ baseUrl, authorization }` for the shared server, booting it if it
  * is not already running.
+ *
+ * @param {{ private?: boolean }} [options] - `private` selects the server
+ *   spawned with `MC_DISABLE=1`.
  */
-export async function ensureOpenCodeServer() {
-  if (bootPromise && isAlive(serverProcess)) {
-    return bootPromise;
+export async function ensureOpenCodeServer(options = {}) {
+  const slot = instances[variantFor(options)];
+  if (slot.bootPromise && isAlive(slot.serverProcess)) {
+    return slot.bootPromise;
   }
 
-  if (bootPromise && !serverProcess) {
+  if (slot.bootPromise && !slot.serverProcess) {
     // A boot that is still in flight: nothing has been published yet, so there
     // is no liveness to check and starting a second one would waste the port.
-    return bootPromise;
+    return slot.bootPromise;
   }
 
-  bootPromise = bootServer();
-  return bootPromise;
+  slot.bootPromise = bootServer(slot);
+  return slot.bootPromise;
 }
 
-/** Stops the shared server. Safe to call when nothing is running. */
+/** Stops every shared server. Safe to call when nothing is running. */
 export function stopOpenCodeServer() {
-  const child = serverProcess;
-  serverProcess = null;
-  bootPromise = null;
-  if (isAlive(child)) {
-    child.kill('SIGTERM');
+  for (const slot of Object.values(instances)) {
+    const child = slot.serverProcess;
+    slot.serverProcess = null;
+    slot.bootPromise = null;
+    if (isAlive(child)) {
+      child.kill('SIGTERM');
+    }
   }
 }

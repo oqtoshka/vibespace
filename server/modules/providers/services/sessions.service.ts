@@ -6,6 +6,8 @@ import { projectsDb, sessionsDb } from '@/modules/database/index.js';
 import { chatRunRegistry } from '@/modules/websocket/index.js';
 import { providerRegistry } from '@/modules/providers/provider.registry.js';
 import { broadcastSessionUpdate } from '@/modules/providers/services/sessions-watcher.service.js';
+import { sessionShredService } from '@/modules/providers/services/session-shred.service.js';
+import type { ShredReport } from '@/modules/providers/services/session-shred.service.js';
 import type {
   FetchHistoryOptions,
   FetchHistoryResult,
@@ -27,6 +29,7 @@ type CreateAppSessionResult = {
   provider: LLMProvider;
   projectPath: string;
   isSide: boolean;
+  isPrivate: boolean;
 };
 
 type ArchivedSessionListItem = {
@@ -40,7 +43,19 @@ type ArchivedSessionListItem = {
   updatedAt: string | null;
   lastActivity: string | null;
   isProjectArchived: boolean;
+  isPrivate: boolean;
 };
+
+/**
+ * The same row, plus the two flags that say why a list may not contain it.
+ * A client resolving a deep link needs them to explain what it opened.
+ */
+type LocatedSession = ArchivedSessionListItem & {
+  isArchived: boolean;
+  isSide: boolean;
+};
+
+type PersistedSession = NonNullable<ReturnType<typeof sessionsDb.getSessionById>>;
 
 /**
  * Removes one file if it exists.
@@ -146,6 +161,48 @@ function resolveProjectDisplayName(
 }
 
 /**
+ * One session row as the client sees it: the session's own fields plus enough
+ * project context to select it without a follow-up query.
+ *
+ * `projectCache` exists for the list caller, which maps hundreds of rows and
+ * would otherwise re-read the same project row for each one.
+ */
+function toSessionListItem(
+  session: PersistedSession,
+  projectCache?: Map<string, ReturnType<typeof projectsDb.getProjectPath>>,
+): LocatedSession {
+  const projectPath = session.project_path?.trim() ? session.project_path : null;
+  let project = null;
+
+  if (projectPath) {
+    if (projectCache) {
+      if (!projectCache.has(projectPath)) {
+        projectCache.set(projectPath, projectsDb.getProjectPath(projectPath));
+      }
+      project = projectCache.get(projectPath) ?? null;
+    } else {
+      project = projectsDb.getProjectPath(projectPath);
+    }
+  }
+
+  return {
+    sessionId: session.session_id,
+    provider: session.provider as LLMProvider,
+    projectId: project?.project_id ?? null,
+    projectPath,
+    projectDisplayName: resolveProjectDisplayName(projectPath, project?.custom_project_name),
+    sessionTitle: session.custom_name?.trim() || session.session_id,
+    createdAt: session.created_at ?? null,
+    updatedAt: session.updated_at ?? null,
+    lastActivity: session.updated_at ?? session.created_at ?? null,
+    isProjectArchived: Boolean(project?.isArchived),
+    isPrivate: Boolean(session.is_private),
+    isArchived: Boolean(session.isArchived),
+    isSide: Boolean(session.is_side),
+  };
+}
+
+/**
  * Application service for provider-backed session message operations.
  *
  * Callers pass a provider id and this service resolves the concrete provider
@@ -197,11 +254,19 @@ export const sessionsService = {
    *
    * `isSide` allocates the session for a `/btw` question instead: identical in
    * every way, but kept out of the session lists until it is promoted.
+   *
+   * `isPrivate` starts the session private: every harness process that runs a
+   * turn for it is spawned with `MC_DISABLE=1`, so no Mission Control reporter
+   * ever speaks for it, and VibeSpace's own notifications and recap skip it.
+   * This is the only place the flag is ever set — it must precede the first
+   * turn, because the reporter's SessionStart hook fires before anything here
+   * could be looked up.
    */
   createAppSession(
     provider: LLMProvider,
     projectPath: string,
     isSide = false,
+    isPrivate = false,
   ): CreateAppSessionResult {
     const normalizedProjectPath = projectPath.trim();
     if (!normalizedProjectPath) {
@@ -212,7 +277,7 @@ export const sessionsService = {
     }
 
     const sessionId = randomUUID();
-    sessionsDb.createAppSession(sessionId, provider, normalizedProjectPath, isSide);
+    sessionsDb.createAppSession(sessionId, provider, normalizedProjectPath, isSide, isPrivate);
 
     // The sidebar is fed by the transcript watcher, which cannot see a session
     // the provider has not written anything for yet. Without this the new chat
@@ -229,6 +294,7 @@ export const sessionsService = {
       provider,
       projectPath: normalizedProjectPath,
       isSide,
+      isPrivate,
     };
   },
 
@@ -405,30 +471,35 @@ export const sessionsService = {
     const archivedSessions = sessionsDb.getArchivedSessions();
     const projectCache = new Map<string, ReturnType<typeof projectsDb.getProjectPath>>();
 
-    return archivedSessions.map((session) => {
-      const projectPath = session.project_path?.trim() ? session.project_path : null;
-      let project = null;
+    return archivedSessions.map((session) => toSessionListItem(session, projectCache));
+  },
 
-      if (projectPath) {
-        if (!projectCache.has(projectPath)) {
-          projectCache.set(projectPath, projectsDb.getProjectPath(projectPath));
-        }
-        project = projectCache.get(projectPath) ?? null;
-      }
+  /**
+   * Where one session lives, whatever list it is or is not in.
+   *
+   * The sidebar payload is deliberately narrow: `isArchived = 0`, `is_side = 0`,
+   * and the newest 20 rows per project. Anything outside that window still has a
+   * URL — Mission Control links to `/session/:id`, and so does a bookmark or a
+   * reload after archiving — and resolving such a link against the payload found
+   * nothing, which the app rendered as its blank new-session screen. This is the
+   * lookup that answers those URLs: one row by id, no list filters at all.
+   *
+   * Accepts a provider-native id as well, because the ids travel: an app-created
+   * row is keyed by its own `session_id` and carries the provider's id in a
+   * separate column, and callers outside this process hold whichever one they
+   * saw first. The answer always names the row's own `session_id`.
+   */
+  locateSessionById(sessionId: string): LocatedSession {
+    const session = sessionsDb.getSessionById(sessionId)
+      ?? sessionsDb.getSessionByProviderSessionId(sessionId);
+    if (!session) {
+      throw new AppError(`Session "${sessionId}" was not found.`, {
+        code: 'SESSION_NOT_FOUND',
+        statusCode: 404,
+      });
+    }
 
-      return {
-        sessionId: session.session_id,
-        provider: session.provider as LLMProvider,
-        projectId: project?.project_id ?? null,
-        projectPath,
-        projectDisplayName: resolveProjectDisplayName(projectPath, project?.custom_project_name),
-        sessionTitle: session.custom_name?.trim() || session.session_id,
-        createdAt: session.created_at ?? null,
-        updatedAt: session.updated_at ?? null,
-        lastActivity: session.updated_at ?? session.created_at ?? null,
-        isProjectArchived: Boolean(project?.isArchived),
-      };
-    });
+    return toSessionListItem(session);
   },
 
   /**
@@ -437,20 +508,43 @@ export const sessionsService = {
    * Soft-delete mirrors the project behavior by toggling `isArchived` so the
    * row disappears from active lists but remains restorable. Force-delete
    * optionally removes the transcript file before deleting the database row.
+   *
+   * `shred` goes further than force: it also removes the harness's own
+   * on-disk records for the session (Claude's transcript tree and task
+   * ledger, Codex's rollout and state rows, OpenCode's database rows and tool
+   * output) and VibeSpace's own restore registry entry, then the row — and
+   * returns a report of what went and what could not, with reasons. See
+   * `session-shred.service`.
    */
   async deleteOrArchiveSessionById(
     sessionId: string,
     options: {
       force?: boolean;
       deletedFromDisk?: boolean;
+      shred?: boolean;
     } = {},
-  ): Promise<{ sessionId: string; action: 'archived' | 'deleted'; deletedFromDisk: boolean }> {
+  ): Promise<{
+    sessionId: string;
+    action: 'archived' | 'deleted' | 'shredded';
+    deletedFromDisk: boolean;
+    shred?: ShredReport;
+  }> {
     const session = sessionsDb.getSessionById(sessionId);
     if (!session) {
       throw new AppError(`Session "${sessionId}" was not found.`, {
         code: 'SESSION_NOT_FOUND',
         statusCode: 404,
       });
+    }
+
+    if (options.shred) {
+      const report = await sessionShredService.execute(session);
+      return {
+        sessionId,
+        action: 'shredded',
+        deletedFromDisk: report.deleted.length > 0,
+        shred: report,
+      };
     }
 
     if (!options.force) {

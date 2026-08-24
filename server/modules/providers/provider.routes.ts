@@ -76,10 +76,10 @@ const parseOptionalBooleanQuery = (value: unknown, name: string): boolean | unde
     return undefined;
   }
 
-  if (normalized === 'true') {
+  if (normalized === 'true' || normalized === '1') {
     return true;
   }
-  if (normalized === 'false') {
+  if (normalized === 'false' || normalized === '0') {
     return false;
   }
 
@@ -554,7 +554,11 @@ router.post(
     // gateway, same lifecycle, just hidden from the session lists until the
     // user branches it out.
     const isSide = body.side === true;
-    const result = sessionsService.createAppSession(provider, projectPath, isSide);
+    // `private: true` starts the session unreported: the flag must be on the
+    // row before the first turn spawns anything, which is why it is accepted
+    // here and nowhere else.
+    const isPrivate = body.private === true;
+    const result = sessionsService.createAppSession(provider, projectPath, isSide, isPrivate);
     res.status(201).json(createApiSuccessResponse(result));
   }),
 );
@@ -590,15 +594,32 @@ router.get(
   }),
 );
 
+// Registered after the two fixed `/sessions/*` GETs above so it cannot shadow
+// them. Deliberately NOT `GET /sessions/:sessionId`: this answers "where does
+// this session live", not "give me the session", and the client uses it only
+// when the sidebar payload does not contain the id in the URL.
+router.get(
+  '/sessions/:sessionId/locate',
+  asyncHandler(async (req: Request, res: Response) => {
+    const sessionId = parseSessionId(req.params.sessionId);
+    const session = sessionsService.locateSessionById(sessionId);
+    res.json(createApiSuccessResponse({ session }));
+  }),
+);
+
 router.delete(
   '/sessions/:sessionId',
   asyncHandler(async (req: Request, res: Response) => {
     const sessionId = parseSessionId(req.params.sessionId);
     const force = parseOptionalBooleanQuery(req.query.force, 'force') ?? false;
     const deletedFromDisk = parseOptionalBooleanQuery(req.query.deletedFromDisk, 'deletedFromDisk') ?? force;
+    // `shred=1` also removes the harness's own records for the session and
+    // answers with a report of what was and was not removed.
+    const shred = parseOptionalBooleanQuery(req.query.shred, 'shred') ?? false;
     const result = await sessionsService.deleteOrArchiveSessionById(sessionId, {
-      force,
+      force: force || shred,
       deletedFromDisk,
+      shred,
     });
     res.json(createApiSuccessResponse(result));
   }),

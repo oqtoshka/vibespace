@@ -177,6 +177,7 @@ async function buildSessionUpsertedEvent(updatedProviderSessionId: string): Prom
       recap: row.recap || '',
       messageCount: 0,
       lastActivity: row.updated_at ?? row.created_at ?? new Date().toISOString(),
+      isPrivate: Boolean(row.is_private),
     },
     project: project
       ? {

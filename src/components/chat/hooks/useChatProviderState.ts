@@ -89,6 +89,13 @@ type ChangeActiveModelApiResponse = {
 
 export function useChatProviderState({ selectedSession, selectedProject: _selectedProject }: UseChatProviderStateArgs) {
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('default');
+  /**
+   * Whether the NEXT new session starts private (no presence reporting, no
+   * notifications, no recap). Decided before the first message and then fixed
+   * for the session's life; an existing session reads its flag off the row
+   * instead. This is an explicit one-session choice, never a saved default.
+   */
+  const [privateMode, setPrivateMode] = useState(false);
   const [pendingPermissionRequests, setPendingPermissionRequests] = useState<PendingPermissionRequest[]>([]);
   const [provider, setProvider] = useState<LLMProvider>(readStoredProvider);
   const [cursorModel, setCursorModel] = useState<string>(() => {
@@ -431,6 +438,25 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
   }, [providerEfforts, providerModels, reconcileStoredEffort]);
 
   useEffect(() => {
+    // A new chat and a provider switch both return to public. Private must be
+    // selected for this specific session.
+    if (!selectedSession?.id) {
+      setPrivateMode(false);
+    }
+  }, [selectedSession?.id, provider]);
+
+  const togglePrivateMode = useCallback(() => {
+    setPrivateMode((previous) => !previous);
+  }, []);
+
+  const selectProvider = useCallback((nextProvider: LLMProvider) => {
+    setProvider(nextProvider);
+    if (!selectedSession?.id) {
+      setPrivateMode(false);
+    }
+  }, [selectedSession?.id]);
+
+  useEffect(() => {
     const validModes = getPermissionModesForProvider(provider);
     const sessionSavedMode = selectedSession?.id
       ? (localStorage.getItem(`permissionMode-${selectedSession.id}`) as PermissionMode | null)
@@ -560,7 +586,7 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
 
   return {
     provider,
-    setProvider,
+    setProvider: selectProvider,
     cursorModel,
     setCursorModel,
     claudeModel,
@@ -573,6 +599,8 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     setOpenCodeModel,
     permissionMode,
     setPermissionMode,
+    privateMode,
+    togglePrivateMode,
     pendingPermissionRequests,
     setPendingPermissionRequests,
     cyclePermissionMode,

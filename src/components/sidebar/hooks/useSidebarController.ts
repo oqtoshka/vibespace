@@ -758,18 +758,24 @@ export function useSidebarController({
         isArchived?: boolean;
       } = {},
     ) => {
+      // Looked up here rather than threaded through every caller: the item
+      // components only hand over ids and a title.
+      const isPrivate = projects.some((project) =>
+        getAllSessions(project).some((session) => session.id === sessionId && Boolean(session.isPrivate)),
+      );
       setSessionDeleteConfirmation({
         projectId,
         sessionId,
         sessionTitle,
         provider,
         isArchived: Boolean(options.isArchived),
+        isPrivate,
       });
     },
-    [],
+    [projects],
   );
 
-  const confirmDeleteSession = useCallback(async (hardDelete = false) => {
+  const confirmDeleteSession = useCallback(async (hardDelete = false, shred = false) => {
     if (!sessionDeleteConfirmation) {
       return;
     }
@@ -778,13 +784,21 @@ export function useSidebarController({
     setSessionDeleteConfirmation(null);
 
     try {
-      const response = await api.deleteSession(sessionId, hardDelete);
+      const response = await api.deleteSession(sessionId, hardDelete, shred);
 
       if (response.ok || response.status === 404) {
         // 404 means the row is already gone server-side (deleted from another
         // tab/device or only surviving in stale client state) — removing it
         // from the local lists is exactly what the user asked for.
         onSessionDelete?.(sessionId);
+        if (shred) {
+          // The browser's own per-session leftovers are ours to clear too.
+          try {
+            localStorage.removeItem(`permissionMode-${sessionId}`);
+          } catch {
+            // Storage unavailable — nothing to clear.
+          }
+        }
         await fetchArchivedSessions();
       } else {
         const errorText = await response.text();
