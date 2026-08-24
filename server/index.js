@@ -17,11 +17,17 @@ import Database from 'better-sqlite3';
 
 import { AppError, WORKSPACES_ROOT, getOpenCodeDatabasePath, resolveConfiguredContextWindow, validateWorkspacePath } from '@/shared/utils.js';
 import { recallContextUsage } from '@/shared/context-usage-cache.js';
+import { buildCodexTokenBudget } from '@/shared/codex-token-usage.js';
 import { validateAccessiblePath, validatePathInProject } from './utils/allowedPaths.js';
-import { closeSessionsWatcher, initializeSessionsWatcher, registerPendingCliSession } from '@/modules/providers/index.js';
+import { closeSessionsWatcher, initializeSessionsWatcher, registerPendingCliSession, registerSessionShredDependencies } from '@/modules/providers/index.js';
 import { getSubagentConversation } from '@/modules/providers/list/claude/claude-sessions.provider.js';
 import { createWebSocketServer } from '@/modules/websocket/index.js';
 import { chatRunRegistry } from '@/modules/websocket/services/chat-run-registry.service.js';
+import { registerChatDependenciesAtBoot, serverEnqueueMessage } from '@/modules/websocket/index.js';
+import { forgetRateLimitWake, startRateLimitWakeLoop } from '@/services/rate-limit-wake.service.js';
+import { cancelSessionRecap } from '@/services/session-recap.service.js';
+import { forgetSession as forgetRestoreEntry } from '@/services/session-restore.service.js';
+import { initializeAnthillMacWatcher, closeAnthillMacWatcher } from '@/modules/anthill/index.js';
 
 import { getConnectableHost } from '../shared/networkHosts.js';
 
@@ -43,6 +49,7 @@ import {
 } from './cursor-cli.js';
 import {
     queryCodex,
+    injectCodexMessage,
     abortCodexSession,
 } from './openai-codex.js';
 import {
@@ -125,7 +132,7 @@ const app = express();
 const server = http.createServer(app);
 
 // Single WebSocket server that handles chat, shell, and plugin proxy paths.
-const wss = createWebSocketServer(server, {
+const webSocketDependencies = {
     verifyClient: {
         isPlatform: IS_PLATFORM,
         authenticateWebSocket,
@@ -154,11 +161,12 @@ const wss = createWebSocketServer(server, {
         stopTaskFns: {
             claude: stopClaudeSDKTask,
         },
-        // Mid-turn message delivery. Only Claude's runtime takes a user message
-        // while a turn is running and folds it in at the agent's next step; the
-        // other providers fall back to the server-drained queue.
+        // Mid-turn message delivery. Claude and Codex can fold a user message
+        // into the currently running turn; other providers fall back to the
+        // server-drained queue.
         injectFns: {
             claude: injectClaudeMessage,
+            codex: injectCodexMessage,
         },
         cancelInjectedFns: {
             claude: cancelInjectedClaudeMessage,
@@ -182,6 +190,30 @@ const wss = createWebSocketServer(server, {
         shouldAutoOpenUrlFromOutput,
     },
     getPluginPort,
+};
+
+const wss = createWebSocketServer(server, webSocketDependencies);
+
+// Server-initiated runs (the anthill mac-pool watcher) need the provider spawn
+// functions before any browser has connected: per-connection registration alone
+// would leave a boot-spawned session's first message enqueued forever.
+registerChatDependenciesAtBoot(webSocketDependencies.chat);
+// Shred reaches the legacy runtime registries through hooks, same reason as
+// the chat dependencies above: the module graph does not import server/services.
+registerSessionShredDependencies({ forgetRestoreEntry, forgetRateLimitWake, cancelSessionRecap });
+
+// Sessions parked on a provider usage limit resume through the same
+// server-owned queue once the limit resets (see rate-limit-wake.service): the
+// session row supplies provider/cwd/privacy, the entry supplies the rest.
+startRateLimitWakeLoop({
+    startTurn: (entry, prompt) => {
+        const row = sessionsDb.getSessionByProviderSessionId(entry.providerSessionId);
+        if (!row) return false;
+        const options = entry.permissionMode ? { permissionMode: entry.permissionMode } : {};
+        return serverEnqueueMessage(row.session_id, prompt, options, { userId: entry.userId ?? null });
+    },
+}).catch((error) => {
+    console.error('[rate-limit wake] failed to start scheduler:', error?.message || error);
 });
 
 // Make WebSocket server available to routes
@@ -2123,10 +2155,7 @@ app.get('/api/projects/:projectId/sessions/:sessionId/token-usage', authenticate
                 throw error;
             }
             const lines = fileContent.trim().split('\n');
-            let inputTokens = 0;
-            let outputTokens = 0;
-            let totalTokens = 0;
-            let contextWindow = 200000; // Default for Codex/OpenAI
+            let tokenBudget = null;
 
             // Find the latest token_count event with info (scan from end)
             for (let i = lines.length - 1; i >= 0; i--) {
@@ -2135,15 +2164,7 @@ app.get('/api/projects/:projectId/sessions/:sessionId/token-usage', authenticate
 
                     // Codex stores token info in event_msg with type: "token_count"
                     if (entry.type === 'event_msg' && entry.payload?.type === 'token_count' && entry.payload?.info) {
-                        const tokenInfo = entry.payload.info;
-                        if (tokenInfo.total_token_usage) {
-                            inputTokens = tokenInfo.total_token_usage.input_tokens || 0;
-                            outputTokens = tokenInfo.total_token_usage.output_tokens || 0;
-                            totalTokens = tokenInfo.total_token_usage.total_tokens || inputTokens + outputTokens;
-                        }
-                        if (tokenInfo.model_context_window) {
-                            contextWindow = tokenInfo.model_context_window;
-                        }
+                        tokenBudget = buildCodexTokenBudget(entry.payload.info);
                         break; // Stop after finding the latest token count
                     }
                 } catch (parseError) {
@@ -2152,15 +2173,13 @@ app.get('/api/projects/:projectId/sessions/:sessionId/token-usage', authenticate
                 }
             }
 
-            return res.json({
-                used: totalTokens,
-                total: contextWindow,
-                inputTokens,
-                outputTokens,
-                breakdown: {
-                    input: inputTokens,
-                    output: outputTokens
-                }
+            return res.json(tokenBudget || {
+                used: 0,
+                total: 0,
+                sessionTotalTokens: 0,
+                inputTokens: 0,
+                outputTokens: 0,
+                breakdown: { input: 0, output: 0 }
             });
         }
 
@@ -2550,6 +2569,10 @@ async function startServer() {
             // Start watching the projects folder for changes
             await initializeSessionsWatcher();
 
+            // Anthill agent-task queue: spawn a session per QUEUED task in pool `mac`.
+            // No-op unless ANTHILL_MAC_WATCHER=1 (this Mac only).
+            initializeAnthillMacWatcher();
+
             // Start server-side plugin processes for enabled plugins
             startEnabledPluginServers().catch(err => {
                 console.error('[Plugins] Error during startup:', err.message);
@@ -2559,6 +2582,7 @@ async function startServer() {
         await closeSessionsWatcher();
         // Clean up plugin processes on shutdown
         const shutdownRuntimeServices = async () => {
+            closeAnthillMacWatcher();
             try {
                 await browserUseService.stopAllSessions();
             } catch (err) {

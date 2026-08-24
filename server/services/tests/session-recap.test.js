@@ -1,12 +1,23 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
+import {
+  closeConnection,
+  initializeDatabase,
+  sessionsDb,
+} from '../../modules/database/index.js';
 import { __testing } from '../session-recap.service.js';
 
-const { readTranscriptTail, readIndexedTranscriptTail, parseRecapResponse, buildRecapPrompt } = __testing;
+const {
+  readTranscriptTail,
+  readIndexedTranscriptTail,
+  parseRecapResponse,
+  buildRecapPrompt,
+  generateRecap,
+} = __testing;
 
 const jsonl = (entries) => entries.map((entry) => JSON.stringify(entry)).join('\n');
 
@@ -202,4 +213,120 @@ test('readIndexedTranscriptTail skips host chatter and survives a failed read', 
     }),
     { messages: [], total: 0 },
   );
+});
+
+test('generateRecap can summarize normalized Codex history instead of Claude JSONL', async () => {
+  const previousDatabasePath = process.env.DATABASE_PATH;
+  const tempDirectory = await mkdtemp(path.join(tmpdir(), 'codex-recap-'));
+  const databasePath = path.join(tempDirectory, 'auth.db');
+
+  closeConnection();
+  process.env.DATABASE_PATH = databasePath;
+  await initializeDatabase();
+
+  try {
+    sessionsDb.createSession(
+      'codex-provider-1',
+      'codex',
+      tempDirectory,
+      undefined,
+      undefined,
+      undefined,
+      '/not-a-claude-transcript.jsonl',
+    );
+
+    let helperOptions = null;
+    let delivered = null;
+    await generateRecap({
+      sessionId: 'codex-provider-1',
+      cwd: tempDirectory,
+      useIndexedHistory: true,
+      fetchHistory: async () => ({
+        total: 2,
+        messages: [
+          { kind: 'text', role: 'user', content: 'add Codex recap support' },
+          { kind: 'text', role: 'assistant', content: 'Implemented and tested it.' },
+        ],
+      }),
+      runQuery: async (_prompt, options, writer) => {
+        helperOptions = options;
+        writer.send(JSON.stringify({
+          kind: 'text',
+          content: '{"title":"Codex Recaps","recap":"Implemented and tested Codex recap support."}',
+        }));
+      },
+      onRecap: (result) => { delivered = result; },
+    });
+
+    assert.equal(helperOptions?.ephemeral, true);
+    assert.deepEqual(delivered, {
+      sessionId: 'codex-provider-1',
+      title: 'Codex Recaps',
+      recap: 'Implemented and tested Codex recap support.',
+    });
+    const stored = sessionsDb.getSessionById('codex-provider-1');
+    assert.equal(stored?.custom_name, 'Codex Recaps');
+    assert.equal(stored?.recap, 'Implemented and tested Codex recap support.');
+    assert.equal(stored?.recap_message_count, 2);
+  } finally {
+    closeConnection();
+    if (previousDatabasePath === undefined) delete process.env.DATABASE_PATH;
+    else process.env.DATABASE_PATH = previousDatabasePath;
+    await rm(tempDirectory, { recursive: true, force: true });
+  }
+});
+
+// A private session's transcript must not be fed to a helper model for a
+// summary: the recap would write a second copy of the conversation into the
+// VibeSpace database and hand it to the sidebar, which is exactly the kind of
+// record a private session promises not to leave.
+test('generateRecap leaves a private session alone', async () => {
+  const previousDatabasePath = process.env.DATABASE_PATH;
+  const tempDirectory = await mkdtemp(path.join(tmpdir(), 'private-recap-'));
+  const databasePath = path.join(tempDirectory, 'auth.db');
+
+  closeConnection();
+  process.env.DATABASE_PATH = databasePath;
+  await initializeDatabase();
+
+  try {
+    sessionsDb.createAppSession('app-private-recap', 'claude', tempDirectory, false, true);
+    sessionsDb.assignProviderSessionId('app-private-recap', 'claude-private-recap');
+
+    let queried = false;
+    let fetched = false;
+    let delivered = null;
+    await generateRecap({
+      sessionId: 'claude-private-recap',
+      cwd: tempDirectory,
+      useIndexedHistory: true,
+      fetchHistory: async () => {
+        fetched = true;
+        return {
+          total: 2,
+          messages: [
+            { kind: 'text', role: 'user', content: 'something confidential' },
+            { kind: 'text', role: 'assistant', content: 'noted' },
+          ],
+        };
+      },
+      runQuery: async (_prompt, _options, writer) => {
+        queried = true;
+        writer.send(JSON.stringify({ kind: 'text', content: '{"title":"Leak","recap":"leaked"}' }));
+      },
+      onRecap: (result) => { delivered = result; },
+    });
+
+    assert.equal(fetched, false);
+    assert.equal(queried, false);
+    assert.equal(delivered, null);
+    const stored = sessionsDb.getSessionById('app-private-recap');
+    assert.equal(stored?.recap, null);
+    assert.equal(stored?.custom_name, null);
+  } finally {
+    closeConnection();
+    if (previousDatabasePath === undefined) delete process.env.DATABASE_PATH;
+    else process.env.DATABASE_PATH = previousDatabasePath;
+    await rm(tempDirectory, { recursive: true, force: true });
+  }
 });

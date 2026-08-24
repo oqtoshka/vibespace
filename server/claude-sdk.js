@@ -20,6 +20,7 @@ import os from 'os';
 import { CLAUDE_FALLBACK_MODELS, normalizeClaudeModelToCatalogValue } from './modules/providers/list/claude/claude-models.provider.js';
 import { providerModelsService } from './modules/providers/services/provider-models.service.js';
 import { buildClaudeUserContent, getGlobalImageAssetsDir, normalizeImageDescriptors } from './shared/image-attachments.js';
+import { buildAgentEnv } from './shared/agent-env.js';
 import { resolveClaudeCodeExecutablePath } from './shared/claude-cli-path.js';
 import {
   createNotificationEvent,
@@ -36,6 +37,7 @@ import { rememberContextUsage } from './shared/context-usage-cache.js';
 import { readOpenClaudeTasks } from './shared/claude-task-ledger.js';
 import { scheduleSessionRecap } from './services/session-recap.service.js';
 import { recordSessionActivity, recordSessionEnd, recordPendingInteraction, restoreInterruptedSessions } from './services/session-restore.service.js';
+import { scheduleRateLimitWake, cancelRateLimitWake, isRateLimitWakePending } from './services/rate-limit-wake.service.js';
 import { broadcastSessionUpdate } from './modules/providers/index.js';
 import { chatRunRegistry } from './modules/websocket/services/chat-run-registry.service.js';
 import { sessionsDb } from './modules/database/index.js';
@@ -350,9 +352,10 @@ function mapCliOptionsToSDK(options = {}) {
 
   const sdkOptions = {};
 
-  // Forward all host env vars (e.g. ANTHROPIC_BASE_URL) to the subprocess.
+  // Forward host env vars (e.g. ANTHROPIC_BASE_URL) to the subprocess, minus
+  // VibeSpace's own server configuration — see shared/agent-env.js.
   // Since SDK 0.2.113, options.env replaces process.env instead of overlaying it.
-  sdkOptions.env = { ...process.env };
+  sdkOptions.env = buildAgentEnv();
 
   // Resolve the executable eagerly on Windows because the SDK uses raw child_process.spawn,
   // which does not reliably follow npm's shell wrappers like cross-spawn does.
@@ -467,6 +470,15 @@ function mapCliOptionsToSDK(options = {}) {
     sdkOptions.env = { ...sdkOptions.env, MC_DISABLE: '1' };
   }
 
+  // A private session is the same gate for a different reason: the user asked
+  // for this conversation to stay off every presence board, and the reporter
+  // honours MC_DISABLE by exiting before it reads anything. Only the env
+  // changes — the transcript is still written, because the session has to be
+  // resumable; removing it afterwards is the shred's job, not this one's.
+  if (options.private) {
+    sdkOptions.env = { ...sdkOptions.env, MC_DISABLE: '1' };
+  }
+
   // Map resume session
   if (sessionId) {
     sdkOptions.resume = sessionId;
@@ -512,6 +524,9 @@ function recordRestoreState(session, turnActive) {
     cwd: session.options?.cwd,
     permissionMode: session.options?.permissionMode,
     userId: session.userId,
+    // Carried so a detached restore after a restart spawns the resumed turn
+    // with the same gate the session was started with.
+    private: Boolean(session.options?.private),
     turnActive,
   }).catch(() => {});
 }
@@ -1089,6 +1104,13 @@ function armIdleTimer(session) {
 async function maybeContinueOpenTasks(session) {
   if (!TASK_NUDGE_ENABLED || session.ephemeral || session.ended || !session.sessionId) return false;
   if (session.input.closed) return false;
+  // Waiting on a usage-limit reset: a nudge now would only hit the limit
+  // again and burn the nudge budget. The wake service owns this session —
+  // let the reaper tear the idle process down; the wake resumes it.
+  if (isRateLimitWakePending(session.sessionId)) {
+    console.log(`[claude tasks] session ${session.sessionId}: usage-limit wake pending — not nudging`);
+    return false;
+  }
 
   const open = await readOpenClaudeTasks(session.sessionId);
   if (open.length === 0) return false;
@@ -1129,6 +1151,66 @@ async function maybeContinueOpenTasks(session) {
   console.log(`[claude tasks] session ${session.sessionId}: idle with ${open.length} open task(s) — nudging (${nudges.count}/${TASK_NUDGE_MAX})`);
   await applyPendingModelSwitch(session);
   session.input.push(makeUserMessage(buildOpenTasksNudge(open)));
+  return true;
+}
+
+/**
+ * Records usage-limit signals from the message stream on the session.
+ *
+ * The trigger is the synthetic assistant message the runtime writes for a
+ * rejected request (`error: 'rate_limit'`, text like "You've hit your session
+ * limit · resets 7:30pm (Europe/Moscow)"); the transcript line carries the
+ * machine-readable `quotaLimits` alongside it, and the SDK's `rate_limit_event`
+ * reports the same `resetsAt` independently. A `rate_limit_event` alone is
+ * only data — its status can lag or lead the turn — so it never marks a hit.
+ */
+function trackRateLimit(session, message) {
+  if (!message) return;
+  if (message.type === 'rate_limit_event' && message.rate_limit_info && typeof message.rate_limit_info === 'object') {
+    session.lastRateLimitInfo = { ...message.rate_limit_info, seenAt: Date.now() };
+    return;
+  }
+  if (message.type === 'assistant' && message.error === 'rate_limit') {
+    const content = message.message?.content;
+    const text = Array.isArray(content)
+      ? content.filter((b) => b?.type === 'text').map((b) => b.text).join(' ').trim()
+      : (typeof content === 'string' ? content : '');
+    const quota = message.quotaLimits && typeof message.quotaLimits === 'object' ? message.quotaLimits : null;
+    session.rateLimitHit = {
+      text: text || 'usage limit reached',
+      resetsAt: quota?.resetsAt ?? null,
+      limitType: quota?.rateLimitType ?? null,
+      seenAt: Date.now(),
+    };
+  }
+}
+
+/**
+ * If the turn that just settled died on the usage limit, hands the session
+ * to the wake service and returns true. Consumes the hit either way.
+ */
+function scheduleWakeForRateLimitedTurn(session) {
+  const hit = session.rateLimitHit;
+  session.rateLimitHit = null;
+  // Ephemeral helpers (recaps, commit messages) are one-shot: nothing to
+  // resume, and no session row for a wake to land on.
+  if (!hit || !session.sessionId || session.ephemeral) return false;
+  // The event is account-wide and may have arrived before or after the
+  // assistant message; trust it only when it describes a rejection.
+  const info = session.lastRateLimitInfo;
+  const infoResetsAt = info && info.status === 'rejected' ? info.resetsAt ?? null : null;
+  scheduleRateLimitWake({
+    provider: 'claude',
+    providerSessionId: session.sessionId,
+    userId: session.userId,
+    sessionName: session.sessionSummary,
+    resetsAt: hit.resetsAt ?? infoResetsAt,
+    limitType: hit.limitType ?? (infoResetsAt !== null ? info.rateLimitType ?? null : null),
+    limitText: hit.text,
+    permissionMode: session.options?.permissionMode ?? null,
+  }).catch((error) => {
+    console.warn(`[claude] session ${session.sessionId}: scheduling the usage-limit wake failed:`, error?.message || error);
+  });
   return true;
 }
 
@@ -1460,6 +1542,17 @@ function settleTurn(session, { aborted = false } = {}) {
     return;
   }
 
+  // A turn the usage limit cut off is unfinished work waiting on the clock:
+  // schedule its wake (the service notifies the user in place of the ordinary
+  // stop ping) and leave the session to the idle reaper, which stands down
+  // from nudging while the wake is pending.
+  if (!aborted && scheduleWakeForRateLimitedTurn(session)) {
+    armIdleTimer(session);
+    completeTurn(session);
+    return;
+  }
+  session.rateLimitHit = null;
+
   // Truly idle now: notify (once per idle transition, matching the old
   // per-query behaviour), carrying the turn's recap + tools used.
   notifyRunStopped({
@@ -1686,6 +1779,7 @@ async function runSessionLoop(session) {
           session.lastAssistantText = '';
           session.turnToolNames = [];
           session.lastActivityText = undefined;
+          session.rateLimitHit = null;
         }
         session.awaitingResult = true;
         captureAssistantSummary(session, message);
@@ -1706,6 +1800,12 @@ async function runSessionLoop(session) {
           }));
         }
       }
+
+      // Usage limits: the runtime narrates a rejected request as a synthetic
+      // assistant message flagged `error: 'rate_limit'`, and separately emits
+      // `rate_limit_event`s carrying the reset time. Both feed settleTurn's
+      // wake scheduling (see noteRateLimitHit).
+      trackRateLimit(session, message);
 
       // Drive background-job tracking / auto-resume off the task system messages.
       await handleTaskMessage(session, message);
@@ -2072,6 +2172,10 @@ async function startPersistentSession(command, options, ws) {
     toolUseCount: 0,
     // Task-nudge bookkeeping (see maybeContinueOpenTasks).
     taskNudges: { count: 0, stalls: 0, fingerprint: null, toolCount: 0 },
+    // Usage-limit bookkeeping (see noteRateLimitHit / settleTurn): the hit
+    // recorded for the turn in flight, and the latest rate_limit_event.
+    rateLimitHit: null,
+    lastRateLimitInfo: null,
     // Last label pushed to the activity indicator, so repeat tool calls of the
     // same shape don't spam identical status messages down the socket.
     lastActivityText: undefined,
@@ -2196,6 +2300,13 @@ async function performClaudeRewind(sessionId, rewindUuid) {
  */
 async function queryClaudeSDK(command, options = {}, ws) {
   const { sessionId, rewind } = options;
+
+  // A new turn supersedes a pending usage-limit wake: whoever sent it (the
+  // user, or the wake itself, which consumes its entry before enqueueing) is
+  // driving now. If this turn hits the limit too, settleTurn re-records.
+  if (sessionId && !options.ephemeral) {
+    cancelRateLimitWake(sessionId).catch(() => {});
+  }
 
   try {
     // Fail fast on a missing working directory (e.g. a project on an unmounted
@@ -2467,9 +2578,13 @@ function startRestoredTurnAsRun(entry, prompt) {
   // this run exists to surface — resolve their recipient from the writer.
   run.writer.userId = entry.userId ?? null;
   // Show the supervisor prompt as a live user message, like the queue drain
-  // does for server-sent turns; the transcript copy replaces it on the next
-  // history load, so there is no lasting duplicate.
+  // does for server-sent turns. The `local_` id marks it optimistic: the
+  // transcript copy carries the runtime's own uuid, so the two can only be
+  // reconciled by content, and that is the prefix the session store's
+  // optimistic-user dedupe keys off. Without it the prompt rendered twice for
+  // the rest of the turn — once here, once from the transcript.
   run.writer.send(createNormalizedMessage({
+    id: `local_restore_${appSessionId}_${Date.now()}`,
     kind: 'text',
     role: 'user',
     content: prompt,
@@ -2481,6 +2596,8 @@ function startRestoredTurnAsRun(entry, prompt) {
     resume: true,
     cwd: entry.cwd ?? row.worktree_path ?? row.project_path ?? undefined,
     permissionMode: entry.permissionMode,
+    // The row is the source of truth for privacy, as in buildRuntimeOptions.
+    private: Boolean(row.is_private) || Boolean(entry.private),
     acquireResumeRun: () => chatRunRegistry.startResumeRun(appSessionId),
   }, run.writer)
     .catch((error) => {

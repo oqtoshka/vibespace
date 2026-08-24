@@ -18,6 +18,8 @@ type SessionSummary = {
   // Set when the session runs in a git worktree (not the project's main checkout).
   worktreePath?: string | null;
   worktreeBranch?: string | null;
+  /** Started private: unreported to Mission Control, no notifications, no recap. */
+  isPrivate: boolean;
 };
 
 type SessionRepositoryRow = {
@@ -28,6 +30,7 @@ type SessionRepositoryRow = {
   updated_at?: string | null;
   created_at?: string | null;
   worktree_path?: string | null;
+  is_private?: number | null;
 };
 
 export type ProjectListItem = {
@@ -136,6 +139,7 @@ function mapSessionRowToSummary(row: SessionRepositoryRow): SessionSummary {
     worktreePath,
     // The worktree dir is named after the branch slug; use it as the label.
     worktreeBranch: worktreePath ? path.basename(worktreePath) : null,
+    isPrivate: Boolean(row.is_private),
   };
 }
 

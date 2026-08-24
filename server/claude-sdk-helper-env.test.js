@@ -53,3 +53,21 @@ test('an ordinary turn is left visible to presence reporting', async () => {
   assert.equal(options.env.MC_DISABLE, undefined);
   assert.notEqual(options.persistSession, false);
 });
+
+// A private session is the user's own choice to stay off the presence board
+// (FEAT-INGEST-006): the reporter's gate is the same MC_DISABLE env, decided
+// before the first turn. Unlike a helper turn the session itself is real and
+// resumable, so persistence must stay on.
+test('a private session is opted out of presence reporting but still persisted', async () => {
+  const options = await optionsForTurn({ sessionId: 'helper-env-private', private: true });
+
+  assert.equal(options.env.MC_DISABLE, '1');
+  assert.equal(options.env.PATH, process.env.PATH);
+  assert.notEqual(options.persistSession, false);
+});
+
+test('a non-private, non-ephemeral turn carries no MC_DISABLE', async () => {
+  const options = await optionsForTurn({ sessionId: 'helper-env-plain', private: false, ephemeral: false });
+
+  assert.equal(options.env.MC_DISABLE, undefined);
+});

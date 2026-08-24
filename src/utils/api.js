@@ -153,10 +153,15 @@ export const api = {
   // Session deletion now mirrors project deletion:
   // - default: archive only (`isArchived = 1`)
   // - hardDelete: remove the row and, by default, its persisted transcript file
-  deleteSession: (sessionId, hardDelete = false) => {
+  // - shred: also remove the harness's own records for the session (transcript,
+  //   task ledger, sqlite rows, ...) and report what could not be removed
+  deleteSession: (sessionId, hardDelete = false, shred = false) => {
     const params = new URLSearchParams();
     if (hardDelete) {
       params.set('force', 'true');
+    }
+    if (shred) {
+      params.set('shred', '1');
     }
     const qs = params.toString();
     return authenticatedFetch(`/api/providers/sessions/${sessionId}${qs ? `?${qs}` : ''}`, {
@@ -165,6 +170,12 @@ export const api = {
   },
   getArchivedSessions: () =>
     authenticatedFetch('/api/providers/sessions/archived'),
+  // Where a session lives when no sidebar list contains it — archived, a side
+  // session, or simply past the newest-20-per-project window. Used to resolve a
+  // `/session/:id` URL that arrived from outside the app (Mission Control, a
+  // bookmark, a reload).
+  locateSession: (sessionId) =>
+    authenticatedFetch(`/api/providers/sessions/${encodeURIComponent(sessionId)}/locate`),
   runningSessions: () =>
     authenticatedFetch('/api/providers/sessions/running'),
   restoreSession: (sessionId) =>
