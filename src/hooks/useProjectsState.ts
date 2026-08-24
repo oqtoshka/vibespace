@@ -25,6 +25,17 @@ type FetchProjectsOptions = {
   showLoadingState?: boolean;
 };
 
+/**
+ * The `/locate` answer — where a session lives when no sidebar list contains it.
+ * Only the fields this hook needs to select it.
+ */
+type LocatedSession = {
+  sessionId: string;
+  provider: LLMProvider;
+  projectId: string | null;
+  sessionTitle: string | null;
+};
+
 const serialize = (value: unknown) => JSON.stringify(value ?? null);
 
 const projectsHaveChanges = (
@@ -395,6 +406,12 @@ export function useProjectsState({
   const [newSessionTrigger, setNewSessionTrigger] = useState(0);
 
   const loadingProgressTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /**
+   * Deep-link lookups already attempted, so a session the server does not know
+   * (or one that answers under a different id) cannot re-fire the request on
+   * every render of the effect below.
+   */
+  const locateAttemptedRef = useRef<Set<string>>(new Set());
 
   const fetchProjects = useCallback(async ({ showLoadingState = true }: FetchProjectsOptions = {}) => {
     try {
@@ -687,7 +704,65 @@ export function useProjectsState({
     }
 
     if (!selectedProject) {
-      return;
+      // A cold load of a deep link: no project is selected, so there is nothing
+      // to synthesize a selection from. Ask the server where the session lives.
+      //
+      // The sidebar payload is deliberately narrow — `isArchived = 0`,
+      // `is_side = 0`, newest 20 rows per project — so a perfectly valid URL can
+      // name a session it does not contain. Mission Control links straight to
+      // `/session/:id`, and so does a bookmark or a reload after archiving.
+      // Until this lookup existed, every one of those rendered the blank
+      // new-session screen, which reads as "the link is broken".
+      if (locateAttemptedRef.current.has(sessionId)) {
+        return;
+      }
+      locateAttemptedRef.current.add(sessionId);
+
+      let cancelled = false;
+      void (async () => {
+        try {
+          const response = await api.locateSession(sessionId);
+          if (cancelled || !response.ok) {
+            return;
+          }
+
+          const payload = (await response.json()) as { data?: { session?: LocatedSession } };
+          const located = payload.data?.session;
+          if (cancelled || !located) {
+            return;
+          }
+
+          // The owning project may itself be archived and therefore absent from
+          // `projects`. The session still opens: `__projectId` carries the
+          // context the chat pane needs, exactly as the archive list's own
+          // open action does.
+          const owner = located.projectId
+            ? projects.find((candidate) => candidate.projectId === located.projectId)
+            : undefined;
+          if (owner) {
+            setSelectedProject(owner);
+          }
+          setSelectedSession({
+            id: located.sessionId,
+            summary: located.sessionTitle ?? '',
+            __provider: located.provider,
+            __projectId: located.projectId ?? owner?.projectId ?? undefined,
+          });
+
+          // The lookup also accepts a provider-native id, and callers outside
+          // this app hold whichever id they saw first. Put the row's own id in
+          // the address bar so a reload resolves without the round trip.
+          if (located.sessionId !== sessionId) {
+            navigate(`/session/${located.sessionId}`, { replace: true });
+          }
+        } catch (error) {
+          console.error('[Projects] Failed to resolve the session named in the URL:', error);
+        }
+      })();
+
+      return () => {
+        cancelled = true;
+      };
     }
 
     let providerFromStorage: string | null = null;
@@ -712,7 +787,7 @@ export function useProjectsState({
       __projectId: selectedProject.projectId,
       summary: '',
     });
-  }, [sessionId, projects, selectedProject, selectedSession?.id, selectedSession?.__provider]);
+  }, [sessionId, projects, selectedProject, selectedSession?.id, selectedSession?.__provider, navigate]);
 
   const handleProjectSelect = useCallback(
     (project: Project) => {
