@@ -6,7 +6,7 @@
  * run failed) alongside web push. Uses the global `fetch` (Node 18+).
  */
 
-import { summarizeRecap, classifyAssistantState } from './notification-content.js';
+import { summarizeRecap, classifyAssistantState, formatResumeAt } from './notification-content.js';
 
 const TELEGRAM_API_BASE = 'https://api.telegram.org';
 const SEND_TIMEOUT_MS = 10000;
@@ -58,6 +58,11 @@ function buildTelegramText(event, { sessionName } = {}) {
   if (event.code === 'run.failed') {
     const detail = meta.error ? `: ${escapeHtml(meta.error)}` : '';
     return `❌ <b>${escapeHtml(providerLabel)}</b> — Failed${detail}${nameLine}`;
+  }
+
+  if (event.code === 'run.paused') {
+    const limit = meta.limitType ? ` (${escapeHtml(String(meta.limitType).replace(/_/g, ' '))})` : '';
+    return `⏳ <b>${escapeHtml(providerLabel)}</b> — Usage limit hit${limit}, auto-resume at ${escapeHtml(formatResumeAt(meta.resumeAt))}${nameLine}`;
   }
 
   const CODE_MAP = {

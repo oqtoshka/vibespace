@@ -709,7 +709,7 @@ export function useProjectsState({
       //
       // The sidebar payload is deliberately narrow — `isArchived = 0`,
       // `is_side = 0`, newest 20 rows per project — so a perfectly valid URL can
-      // name a session it does not contain. Mission Control links straight to
+      // name a session it does not contain. An external board links straight to
       // `/session/:id`, and so does a bookmark or a reload after archiving.
       // Until this lookup existed, every one of those rendered the blank
       // new-session screen, which reads as "the link is broken".

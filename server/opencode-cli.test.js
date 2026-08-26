@@ -5,6 +5,14 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { resolveOpenCodePermissionOptions, spawnOpenCode } from './opencode-cli.js';
+import { registerAgentEnvContributor } from './shared/agent-env.js';
+
+// Stands in for a host plugin (e.g. a presence reporter's opt-out): the runtime's
+// job is to tag the spawn correctly and merge what contributors return.
+const unregisterContributor = registerAgentEnvContributor((context) =>
+  context.ephemeral || context.private ? { VS_TEST_OPT_OUT: '1' } : null,
+);
+test.after(() => unregisterContributor());
 
 const findEnvKey = (name) =>
   Object.keys(process.env).find((key) => key.toLowerCase() === name.toLowerCase()) || name;
@@ -20,6 +28,7 @@ if (capturePath && process.argv[2] !== 'models') {
   require('node:fs').writeFileSync(capturePath, JSON.stringify({
     args: process.argv.slice(2),
     permissionEnv: process.env.OPENCODE_PERMISSION ?? null,
+    optOut: process.env.VS_TEST_OPT_OUT ?? null,
   }));
 }
 
@@ -221,6 +230,41 @@ test('spawnOpenCode passes permission mode flags and env to the CLI', async () =
       process.env.OPENCODE_ARGS_CAPTURE = previousArgsCapture;
     }
 
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('ephemeral OpenCode helpers are tagged for host plugin contributors', async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'opencode-cli-ephemeral-'));
+  const argsCapturePath = path.join(tempRoot, 'opencode-args-ephemeral.json');
+  const pathKey = findEnvKey('PATH');
+  const pathExtKey = findEnvKey('PATHEXT');
+  const previousPath = process.env[pathKey];
+  const previousPathExt = process.env[pathExtKey];
+  const previousArgsCapture = process.env.OPENCODE_ARGS_CAPTURE;
+  const writer = { userId: null, send() {}, setSessionId() {} };
+
+  try {
+    await createFakeOpenCodeExecutable(tempRoot);
+    process.env[pathKey] = `${tempRoot}${path.delimiter}${previousPath || ''}`;
+    process.env.OPENCODE_ARGS_CAPTURE = argsCapturePath;
+    if (process.platform === 'win32') {
+      process.env[pathExtKey] = previousPathExt?.toUpperCase().includes('.CMD')
+        ? previousPathExt
+        : `.COM;.EXE;.BAT;.CMD${previousPathExt ? `;${previousPathExt}` : ''}`;
+    }
+
+    await spawnOpenCode('summarise this', { cwd: tempRoot, ephemeral: true }, writer);
+
+    const capture = JSON.parse(await readFile(argsCapturePath, 'utf8'));
+    assert.equal(capture.optOut, '1');
+  } finally {
+    if (previousPath === undefined) delete process.env[pathKey];
+    else process.env[pathKey] = previousPath;
+    if (previousPathExt === undefined) delete process.env[pathExtKey];
+    else process.env[pathExtKey] = previousPathExt;
+    if (previousArgsCapture === undefined) delete process.env.OPENCODE_ARGS_CAPTURE;
+    else process.env.OPENCODE_ARGS_CAPTURE = previousArgsCapture;
     await rm(tempRoot, { recursive: true, force: true });
   }
 });

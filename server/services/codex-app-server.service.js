@@ -1,4 +1,5 @@
 import { createRequire } from 'node:module';
+import { collectAgentEnv } from '../shared/agent-env.js';
 import path from 'node:path';
 import readline from 'node:readline';
 
@@ -233,17 +234,24 @@ export class CodexAppServerClient {
  * One shared app-server per variant.
  *
  * A Codex session is hosted by whichever app-server started its thread, and
- * the presence reporter's gate (`MC_DISABLE`) is read from that server's own
- * environment — so a private session cannot share the ordinary server. It
- * gets a second one, spawned with the gate set, and every private session
- * shares that. The ordinary variant is exactly the single server that existed
- * before privacy did: same command, same `process.env`.
+ * anything reading that server's own environment (a presence reporter's gate,
+ * say) sees one value for every thread it hosts — so a private session cannot
+ * share the ordinary server. It gets a second one, spawned with whatever host
+ * plugins contribute for the private variant (see collectAgentEnv), and every
+ * private session shares that. The ordinary variant is exactly the single
+ * server that existed before privacy did: same command, same `process.env`.
  */
 const VARIANTS = {
   shared: { env: () => undefined },
   // Read at spawn time, not at load: the host env can change after import
-  // (tests set the capture path late), and `process.env` is copied anyway.
-  private: { env: () => ({ ...process.env, MC_DISABLE: '1' }) },
+  // (tests set the capture path late), contributors register during boot, and
+  // `process.env` is copied anyway.
+  private: {
+    env: () => ({
+      ...process.env,
+      ...collectAgentEnv({ provider: 'codex', scope: 'server', private: true }),
+    }),
+  },
 };
 
 /** variant -> { instance, promise } */
@@ -256,7 +264,7 @@ function variantFor(options) {
 
 /**
  * @param {{ private?: boolean }} [options] - `private` selects the app-server
- *   spawned with `MC_DISABLE=1`.
+ *   spawned with the private-variant env (see collectAgentEnv).
  */
 export async function getCodexAppServer(options = {}) {
   const variant = variantFor(options);

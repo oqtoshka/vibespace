@@ -98,4 +98,20 @@ function describeTool(name, input = {}) {
   }
 }
 
-export { summarizeRecap, classifyAssistantState, describeTool, BACKGROUND_TOOLS };
+/** "19:31 (23 Aug)" for a wake timestamp; tolerant of a missing value. */
+function formatResumeAt(resumeAt) {
+  const ms = Number(resumeAt);
+  if (!Number.isFinite(ms) || ms <= 0) {
+    return 'the next reset';
+  }
+  try {
+    const date = new Date(ms);
+    const time = new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit' }).format(date);
+    const sameDay = date.toDateString() === new Date().toDateString();
+    return sameDay ? time : `${time} (${new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short' }).format(date)})`;
+  } catch {
+    return new Date(ms).toISOString();
+  }
+}
+
+export { summarizeRecap, classifyAssistantState, describeTool, formatResumeAt, BACKGROUND_TOOLS };

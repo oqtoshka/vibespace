@@ -329,6 +329,12 @@ Custom commands can be created in:
       Number(
         tokenUsage.used ?? tokenUsage.totalUsed ?? tokenUsage.total_tokens ?? 0,
       ) || 0;
+    const reportedSessionTotal =
+      Number(
+        tokenUsage.sessionTotalTokens ??
+          tokenUsage.cumulativeUsed ??
+          0,
+      ) || 0;
     const total =
       Number(
         tokenUsage.total ??
@@ -376,7 +382,10 @@ Custom commands can be created in:
       ) || 0;
     const computedUsed = inputTokens + outputTokens;
     const hasTokenBreakdown = computedUsed > 0;
-    const used = Math.max(reportedUsed, computedUsed);
+    const used = reportedSessionTotal > 0
+      ? reportedUsed
+      : Math.max(reportedUsed, computedUsed);
+    const sessionTotalTokens = Math.max(reportedSessionTotal, computedUsed, used);
 
     // A live runtime reading, when the client has one, beats everything derived
     // above: it knows the model's real window and whether auto-compaction will
@@ -407,7 +416,7 @@ Custom commands can be created in:
         // so an OpenCode session against a 64k window had spent 200k — and
         // collapsing them into one "tokens used" row is what made the panel
         // look like it was reporting an impossible context.
-        ...(used > 0 ? { sessionTotalTokens: used } : {}),
+        ...(sessionTotalTokens > 0 ? { sessionTotalTokens } : {}),
         ...(contextUsage ? { contextUsage } : {}),
         ...(hasTokenBreakdown
           ? {

@@ -179,6 +179,7 @@ export default tseslint.config(
             "server/projects.js",
             "server/utils/runtime-paths.js",
             "server/utils/worktrees.js",
+            "server/utils/allowedPaths.js", // per-file watches (websocket module) share the file API's containment rules
           ], // provider history loading still resolves session data through these legacy runtime files
           mode: "file",
         },

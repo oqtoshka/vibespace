@@ -26,8 +26,7 @@ import { chatRunRegistry } from '@/modules/websocket/services/chat-run-registry.
 import { registerChatDependenciesAtBoot, serverEnqueueMessage } from '@/modules/websocket/index.js';
 import { forgetRateLimitWake, startRateLimitWakeLoop } from '@/services/rate-limit-wake.service.js';
 import { cancelSessionRecap } from '@/services/session-recap.service.js';
-import { forgetSession as forgetRestoreEntry } from '@/services/session-restore.service.js';
-import { initializeAnthillMacWatcher, closeAnthillMacWatcher } from '@/modules/anthill/index.js';
+import { forgetSession as forgetRestoreEntry, restoreInterruptedSessions } from '@/services/session-restore.service.js';
 
 import { getConnectableHost } from '../shared/networkHosts.js';
 
@@ -83,7 +82,14 @@ import { assetsRoutes } from './modules/assets/index.js';
 import browserUseMcpRoutes from './modules/browser-use/browser-use-mcp.routes.js';
 import { browserUseService } from './modules/browser-use/browser-use.service.js';
 import { startEnabledPluginServers, stopAllPlugins, getPluginPort } from './utils/plugin-process-manager.js';
-import { initializeDatabase, projectsDb, sessionsDb, fileSharesDb } from './modules/database/index.js';
+import { scanPlugins, getPluginsDir } from './utils/plugin-loader.js';
+import { initializeDatabase, projectsDb, sessionsDb, fileSharesDb, appConfigDb } from './modules/database/index.js';
+import { sessionsService } from '@/modules/providers/index.js';
+import {
+    activateHostExtensions,
+    deactivateHostExtensions,
+    getHostExtensionRouter,
+} from '@/modules/plugins/index.js';
 import crypto from 'crypto';
 import { configureWebPush } from './services/vapid-keys.js';
 import { validateApiKey, authenticateToken, authenticateWebSocket, readWorkerIdentity, JWT_SECRET } from './middleware/auth.js';
@@ -194,13 +200,37 @@ const webSocketDependencies = {
 
 const wss = createWebSocketServer(server, webSocketDependencies);
 
-// Server-initiated runs (the anthill mac-pool watcher) need the provider spawn
-// functions before any browser has connected: per-connection registration alone
-// would leave a boot-spawned session's first message enqueued forever.
+// Server-initiated runs (a plugin host module driving a queue, the boot
+// restore below) need the provider spawn functions before any browser has
+// connected: per-connection registration alone would leave a boot-spawned
+// session's first message enqueued forever.
 registerChatDependenciesAtBoot(webSocketDependencies.chat);
 // Shred reaches the legacy runtime registries through hooks, same reason as
 // the chat dependencies above: the module graph does not import server/services.
 registerSessionShredDependencies({ forgetRestoreEntry, forgetRateLimitWake, cancelSessionRecap });
+
+// Restore every provider through the ordinary server-owned queue. The session
+// row chooses Claude/Codex/OpenCode and supplies cwd/privacy exactly as a live
+// send does; keeping this at the entrypoint avoids the old Claude-only boot
+// hook and makes restored turns visible/replayable to clients from the start.
+if (!process.env.NODE_TEST_CONTEXT) {
+    const bootRestoreTimer = setTimeout(() => {
+        restoreInterruptedSessions(null, {
+            startTurn: (entry, prompt) => {
+                const row = sessionsDb.getSessionByProviderSessionId(entry.sessionId);
+                if (!row) return false;
+                const options = {
+                    ...(entry.permissionMode ? { permissionMode: entry.permissionMode } : {}),
+                    ...(entry.cwd ? { cwd: entry.cwd } : {}),
+                };
+                return serverEnqueueMessage(row.session_id, prompt, options, { userId: entry.userId ?? null });
+            },
+        }).catch((error) => {
+            console.error('[session restore] boot pass failed:', error?.message || error);
+        });
+    }, 8000);
+    bootRestoreTimer.unref?.();
+}
 
 // Sessions parked on a provider usage limit resume through the same
 // server-owned queue once the limit resets (see rate-limit-wake.service): the
@@ -209,7 +239,13 @@ startRateLimitWakeLoop({
     startTurn: (entry, prompt) => {
         const row = sessionsDb.getSessionByProviderSessionId(entry.providerSessionId);
         if (!row) return false;
-        const options = entry.permissionMode ? { permissionMode: entry.permissionMode } : {};
+        const options = {
+            ...(entry.permissionMode ? { permissionMode: entry.permissionMode } : {}),
+            // Carried through the provider turn so a recurring Claude 529 can
+            // re-arm the same durable incident and reuse one UI message.
+            rateLimitWakeMessageId: entry.messageId,
+            rateLimitWakeAttempts: entry.attempts,
+        };
         return serverEnqueueMessage(row.session_id, prompt, options, { userId: entry.userId ?? null });
     },
 }).catch((error) => {
@@ -448,6 +484,12 @@ app.use('/api/browser-use', authenticateToken, browserUseRoutes);
 
 // Unified provider MCP routes (protected)
 app.use('/api/providers', authenticateToken, providerRoutes);
+
+// Routes contributed by plugin host modules (manifest `hostModule`). Mounted
+// here, ahead of the SPA catch-all, so a plugin can own a path like
+// /api/<integration>/... exactly as a core route would; each plugin applies
+// its own authentication.
+app.use(getHostExtensionRouter());
 
 // Agent API Routes (uses API key authentication)
 app.use('/api/agent', agentRoutes);
@@ -1169,6 +1211,13 @@ app.post('/api/projects/:projectId/html-preview', authenticateToken, async (req,
         }
 
         const { webRoot, aliases, entryRel } = await resolvePreviewModel(validation.resolved, projectRoot);
+        // The directories the page's subresources come from, so the client can
+        // reload the iframe when one of them changes (the entry file alone is
+        // watched separately). Absolute, like the watcher's change paths.
+        const resourceRoots = [...new Set([
+            webRoot,
+            ...Object.values(aliases).map((target) => path.resolve(webRoot, target)),
+        ])];
 
         const previewToken = jwt.sign(
             { userId: req.user.id, projectId, webRoot, aliases },
@@ -1181,7 +1230,7 @@ app.post('/api/projects/:projectId/html-preview', authenticateToken, async (req,
             path: `/api/projects/${projectId}/preview-fs`,
             maxAge: 12 * 60 * 60 * 1000,
         });
-        res.json({ entryUrl: `/api/projects/${projectId}/preview-fs/${entryRel}` });
+        res.json({ entryUrl: `/api/projects/${projectId}/preview-fs/${entryRel}`, resourceRoots });
     } catch (error) {
         console.error('Error resolving HTML preview:', error);
         res.status(500).json({ error: error.message });
@@ -2569,9 +2618,24 @@ async function startServer() {
             // Start watching the projects folder for changes
             await initializeSessionsWatcher();
 
-            // Anthill agent-task queue: spawn a session per QUEUED task in pool `mac`.
-            // No-op unless ANTHILL_MAC_WATCHER=1 (this Mac only).
-            initializeAnthillMacWatcher();
+            // In-process plugin host modules. After the sessions watcher and the
+            // boot-time chat dependencies, because a host module may create and
+            // drive sessions from activate().
+            activateHostExtensions({
+                scanPlugins,
+                getPluginsDir,
+                authenticateToken,
+                getSigningSecret: () => appConfigDb.getOrCreateJwtSecret(),
+                sessions: {
+                    getById: (sessionId) => sessionsDb.getSessionById(sessionId),
+                    createAppSession: (provider, cwd) => sessionsService.createAppSession(provider, cwd),
+                    deleteOrArchiveById: (sessionId, options) =>
+                        sessionsService.deleteOrArchiveSessionById(sessionId, options),
+                },
+                enqueueMessage: (sessionId, prompt, options) => serverEnqueueMessage(sessionId, prompt, options),
+            }).catch((err) => {
+                console.error('[Plugins] host module activation failed:', err?.message || err);
+            });
 
             // Start server-side plugin processes for enabled plugins
             startEnabledPluginServers().catch(err => {
@@ -2582,7 +2646,11 @@ async function startServer() {
         await closeSessionsWatcher();
         // Clean up plugin processes on shutdown
         const shutdownRuntimeServices = async () => {
-            closeAnthillMacWatcher();
+            try {
+                await deactivateHostExtensions();
+            } catch (err) {
+                console.error('[Plugins] Error deactivating host modules during shutdown:', err?.message || err);
+            }
             try {
                 await browserUseService.stopAllSessions();
             } catch (err) {

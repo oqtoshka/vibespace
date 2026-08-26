@@ -172,7 +172,7 @@ export const api = {
     authenticatedFetch('/api/providers/sessions/archived'),
   // Where a session lives when no sidebar list contains it — archived, a side
   // session, or simply past the newest-20-per-project window. Used to resolve a
-  // `/session/:id` URL that arrived from outside the app (Mission Control, a
+  // `/session/:id` URL that arrived from outside the app (an external board, a
   // bookmark, a reload).
   locateSession: (sessionId) =>
     authenticatedFetch(`/api/providers/sessions/${encodeURIComponent(sessionId)}/locate`),

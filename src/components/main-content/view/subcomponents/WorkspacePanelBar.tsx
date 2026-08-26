@@ -44,7 +44,8 @@ export default function WorkspacePanelBar({
 
   const builtInPanels = shouldShowTasksTab ? [...BASE_PANELS, TASKS_PANEL] : BASE_PANELS;
   const pluginPanels: PanelDefinition[] = plugins
-    .filter((plugin) => plugin.enabled)
+    // Headless (hostModule-only) plugins have nothing to show.
+    .filter((plugin) => plugin.enabled && plugin.entry)
     .map((plugin) => ({
       kind: 'plugin',
       id: `plugin:${plugin.name}` as WorkspacePanel,

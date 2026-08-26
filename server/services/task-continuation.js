@@ -37,9 +37,11 @@ function buildOpenTasksNudge(open, { listName, closeHow }) {
     `[session supervisor] Automated check: this turn ended, but your ${listName} still has open items:`,
     ...open.map((t) => `- #${t.id} [${t.status}] ${t.subject}`),
     '',
-    'Continue working through them now. If an item is no longer relevant or cannot proceed, '
-      + `close it explicitly via ${closeHow} — mark it completed or replace it with a re-scoped item — `
-      + 'and say why. Do not stop while items remain open.',
+    'Continue working through them now. If an item is already done, mark it completed via '
+      + `${closeHow}. If it is no longer relevant, re-scope or remove it and say why. If an item `
+      + "cannot proceed because it needs the user's answer, decision, or review, it is NOT done — "
+      + 'never mark it completed to satisfy this check. Leave it open, state what you are waiting '
+      + 'for, and end the turn.',
   ].join('\n');
 }
 

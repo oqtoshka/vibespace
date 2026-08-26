@@ -18,7 +18,7 @@ type SessionSummary = {
   // Set when the session runs in a git worktree (not the project's main checkout).
   worktreePath?: string | null;
   worktreeBranch?: string | null;
-  /** Started private: unreported to Mission Control, no notifications, no recap. */
+  /** Started private: unreported to external boards, no notifications, no recap. */
   isPrivate: boolean;
 };
 
