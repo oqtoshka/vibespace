@@ -54,6 +54,8 @@ export interface CompactionInfo {
   preTokens?: number;
   postTokens?: number;
   durationMs?: number;
+  /** The summary the runtime kept; revealed only when the marker is expanded. */
+  summary?: string;
 }
 
 export interface NormalizedMessage {
@@ -570,6 +572,16 @@ export function useSessionStore() {
       slot.fetchedAt = Date.now();
       slot.transcriptMissing = Boolean(data.transcriptMissing);
       slot.status = 'idle';
+      // Same reconciliation `refreshFromServer` does: a first load can land
+      // while realtime rows for the same turn are already in the slot (a
+      // WebSocket reconnect re-fetches without clearing them), and without this
+      // every row the transcript now owns renders a second time. That is how a
+      // restored session showed its `[session supervisor]` prompt twice — once
+      // as the live row the resume broadcast, once from the transcript.
+      slot.realtimeMessages = pruneRealtimeSupersededByServer(
+        slot.serverMessages,
+        slot.realtimeMessages,
+      );
       recomputeMergedIfNeeded(slot);
       if (data.tokenUsage) {
         slot.tokenUsage = data.tokenUsage;
@@ -643,7 +655,13 @@ export function useSessionStore() {
   const appendRealtime = useCallback((sessionId: string, msg: NormalizedMessage) => {
     const slot = getSlot(sessionId);
     const normalizedMessage = normalizeRealtimeMessage(sessionId, msg);
-    let updated = [...slot.realtimeMessages, normalizedMessage];
+    // Stable ids are an upsert contract. Server-owned retries deliberately
+    // reuse one id so a long Claude 529 incident keeps one supervisor bubble
+    // instead of appending another every five minutes.
+    const existingIndex = slot.realtimeMessages.findIndex((entry) => entry.id === normalizedMessage.id);
+    let updated = existingIndex >= 0
+      ? slot.realtimeMessages.map((entry, index) => (index === existingIndex ? normalizedMessage : entry))
+      : [...slot.realtimeMessages, normalizedMessage];
     if (updated.length > MAX_REALTIME_MESSAGES) {
       updated = updated.slice(-MAX_REALTIME_MESSAGES);
     }
@@ -659,7 +677,15 @@ export function useSessionStore() {
     if (msgs.length === 0) return;
     const slot = getSlot(sessionId);
     const normalizedMessages = msgs.map((msg) => normalizeRealtimeMessage(sessionId, msg));
-    let updated = [...slot.realtimeMessages, ...normalizedMessages];
+    let updated = [...slot.realtimeMessages];
+    for (const normalizedMessage of normalizedMessages) {
+      const existingIndex = updated.findIndex((entry) => entry.id === normalizedMessage.id);
+      if (existingIndex >= 0) {
+        updated[existingIndex] = normalizedMessage;
+      } else {
+        updated.push(normalizedMessage);
+      }
+    }
     if (updated.length > MAX_REALTIME_MESSAGES) {
       updated = updated.slice(-MAX_REALTIME_MESSAGES);
     }

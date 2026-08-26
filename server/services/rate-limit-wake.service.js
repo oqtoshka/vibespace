@@ -1,5 +1,5 @@
 /**
- * Wake-after-rate-limit for agent sessions.
+ * Wake-after-retryable-provider-interruption for agent sessions.
  *
  * A turn that dies on the provider's usage limit (Claude's "You've hit your
  * session limit · resets 7:30pm", Codex's `usageLimitExceeded`) is not a turn
@@ -21,11 +21,15 @@
  * `quotaLimits.resetsAt`, Codex `account/rateLimits`), falling back to parsing
  * the human message, and finally to an escalating retry delay. Attempts are
  * bounded so a session whose limit never clears does not retry forever.
+ * Claude HTTP 529 is different: it is a transient overload with no reset
+ * timestamp, so it retries every five minutes without an attempt ceiling until
+ * a turn gets through (or the user sends a new turn and takes over).
  *
  * VIBESPACE_RATE_LIMIT_WAKE=0 disables scheduling (recording nothing).
  */
 import { promises as fs } from 'fs';
 import path from 'path';
+import { randomUUID } from 'crypto';
 
 import { getDataDir } from '../utils/worktrees.js';
 
@@ -39,6 +43,10 @@ const WAKE_GRACE_MS = parseInt(process.env.VIBESPACE_RATE_LIMIT_WAKE_GRACE_MS, 1
 // doubling per attempt up to WAKE_RETRY_MAX_MS.
 const WAKE_RETRY_MS = parseInt(process.env.VIBESPACE_RATE_LIMIT_WAKE_RETRY_MS, 10) || 30 * 60 * 1000;
 const WAKE_RETRY_MAX_MS = 4 * 60 * 60 * 1000;
+// Anthropic overloads are normally brief but can recur for hours. Retrying at
+// a fixed, deliberately quiet cadence avoids both a hot loop and a backoff that
+// eventually leaves unfinished work parked for half a day.
+const CLAUDE_529_RETRY_MS = parseInt(process.env.VIBESPACE_CLAUDE_529_RETRY_MS, 10) || 5 * 60 * 1000;
 // A wake that hits the limit again is re-scheduled; stop after this many.
 const WAKE_MAX_ATTEMPTS = parseInt(process.env.VIBESPACE_RATE_LIMIT_WAKE_MAX_ATTEMPTS, 10) || 12;
 // Sanity bound on how far out a reset may be (weekly limits are the longest
@@ -217,6 +225,15 @@ function formatWhen(ms) {
 /** The supervisor prompt for one wake. Exported for tests and providers. */
 export function buildRateLimitWakePrompt(entry, now = Date.now()) {
   const label = PROVIDER_LABELS[entry.provider] || 'provider';
+  if (entry.recoveryKind === 'claude-529') {
+    return [
+      '[session supervisor] Claude returned HTTP 529 (service overloaded) before completing the previous turn.',
+      'This is the automatic retry for that same unfinished work, not a new request from the user.',
+      'Review the tail of the transcript and the task ledger, then continue exactly where the interrupted turn stopped.',
+      'If Claude is still overloaded, VibeSpace will resend this same retry in five minutes; do not create a separate task or message for another retry.',
+      `<!-- vibespace-retry:${entry.messageId || entry.providerSessionId} -->`,
+    ].join(' ');
+  }
   const quoted = entry.limitText ? ` ("${String(entry.limitText).replace(/\s+/g, ' ').trim().slice(0, 200)}" at the end of this transcript)` : '';
   const attempt = entry.attempts > 1 ? ` This is automatic resume attempt ${entry.attempts}.` : '';
   return [
@@ -243,14 +260,18 @@ export async function scheduleRateLimitWake({
   limitType = null,
   limitText = null,
   permissionMode = null,
+  recoveryKind = 'usage-limit',
+  messageId = null,
+  priorAttempts = 0,
   now = Date.now(),
 }) {
   if (!WAKE_ENABLED || !provider || !providerSessionId) return null;
   await loadOnce();
 
   const prev = entries.get(providerSessionId);
-  const attempts = (prev?.attempts || 0) + 1;
-  if (attempts > WAKE_MAX_ATTEMPTS) {
+  const attempts = Math.max(prev?.attempts || 0, priorAttempts || 0) + 1;
+  const retryForever = recoveryKind === 'claude-529';
+  if (!retryForever && attempts > WAKE_MAX_ATTEMPTS) {
     console.log(`[rate-limit wake] ${provider} session ${providerSessionId}: giving up after ${prev.attempts} resume attempt(s)`);
     entries.delete(providerSessionId);
     scheduleWrite();
@@ -264,10 +285,13 @@ export async function scheduleRateLimitWake({
     return null;
   }
 
-  const known = resolveResetsAt({ resetsAt, text: limitText }, now);
+  const known = retryForever ? null : resolveResetsAt({ resetsAt, text: limitText }, now);
   let resumeAt;
   let source;
-  if (known !== null) {
+  if (retryForever) {
+    resumeAt = now + CLAUDE_529_RETRY_MS;
+    source = 'fixed-529-retry';
+  } else if (known !== null) {
     resumeAt = Math.max(known, now) + WAKE_GRACE_MS;
     source = 'provider';
   } else {
@@ -282,6 +306,11 @@ export async function scheduleRateLimitWake({
     userId: userId ?? prev?.userId ?? null,
     sessionName: sessionName ?? prev?.sessionName ?? null,
     permissionMode: permissionMode ?? prev?.permissionMode ?? null,
+    recoveryKind,
+    // Stable across every 529 attempt. The websocket/history layers use this
+    // identity to render one supervisor bubble even though the provider must
+    // receive the prompt again for every retry.
+    messageId: messageId ?? prev?.messageId ?? randomUUID(),
     resetsAt: known,
     resumeAt,
     limitType: limitType ?? null,
@@ -292,15 +321,20 @@ export async function scheduleRateLimitWake({
   };
   entries.set(providerSessionId, entry);
   scheduleWrite();
-  console.log(`[rate-limit wake] ${provider} session ${providerSessionId}: limit hit (${limitType || 'unknown type'}), resuming at ${new Date(resumeAt).toISOString()} (${source}, attempt ${attempts}/${WAKE_MAX_ATTEMPTS})`);
-  safeNotify(() => notifyRunPaused({
-    userId: entry.userId,
-    provider,
-    sessionId: providerSessionId,
-    sessionName: entry.sessionName,
-    resumeAt,
-    limitType,
-  }));
+  const attemptBudget = retryForever ? '∞' : WAKE_MAX_ATTEMPTS;
+  console.log(`[rate-limit wake] ${provider} session ${providerSessionId}: interrupted (${limitType || recoveryKind}), resuming at ${new Date(resumeAt).toISOString()} (${source}, attempt ${attempts}/${attemptBudget})`);
+  // A recurring 529 is one incident, not a fresh pause every five minutes.
+  // Notify once when it starts; subsequent attempts only move the durable wake.
+  if (!retryForever || attempts === 1) {
+    safeNotify(() => notifyRunPaused({
+      userId: entry.userId,
+      provider,
+      sessionId: providerSessionId,
+      sessionName: entry.sessionName,
+      resumeAt,
+      limitType,
+    }));
+  }
   return entry;
 }
 

@@ -3,6 +3,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { findAppRoot, getModuleDir } from './utils/runtime-paths.js';
+import { registerServerConfigKey } from './shared/agent-env.js';
 
 const __dirname = getModuleDir(import.meta.url);
 // Resolve the repo/app root via the nearest /server folder so this file keeps finding the
@@ -30,8 +31,15 @@ try {
     const trimmedLine = line.trim();
     if (trimmedLine && !trimmedLine.startsWith('#')) {
       const [key, ...valueParts] = trimmedLine.split('=');
-      if (key && valueParts.length > 0 && !process.env[key]) {
-        process.env[key] = valueParts.join('=').trim();
+      if (key && valueParts.length > 0) {
+        // Presence in .env marks a key as VibeSpace's own configuration, whether or
+        // not this file is the one that wins — so it is registered before the
+        // assignment check. That keeps agent-spawned processes free of new secrets
+        // added to .env later, with no second list to keep in sync.
+        registerServerConfigKey(key);
+        if (!process.env[key]) {
+          process.env[key] = valueParts.join('=').trim();
+        }
       }
     }
   });
@@ -64,3 +72,4 @@ if (!VIBESPACE_MODES.includes(rawMode)) {
 }
 
 process.env.VIBESPACE_MODE = VIBESPACE_MODES.includes(rawMode) ? rawMode : 'local';
+registerServerConfigKey('VIBESPACE_MODE');

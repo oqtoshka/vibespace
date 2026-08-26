@@ -146,8 +146,8 @@
     },
     "private": "private",
     "notPrivate": "not private",
-    "privateToggle": "Start this session private: not reported to Mission Control, no notifications, no recap. Decided before the first message.",
-    "privateLocked": "Private session: not reported to Mission Control, no notifications, no recap. Fixed for the life of the session."
+    "privateToggle": "Start this session private: not reported to external boards, no notifications, no recap. Decided before the first message.",
+    "privateLocked": "Private session: not reported to external boards, no notifications, no recap. Fixed for the life of the session."
   },
   "providerSelection": {
     "title": "Choose Your AI Assistant",
@@ -260,6 +260,6 @@
   },
   "chat": {
     "private": "private",
-    "privateHint": "not reported to Mission Control, no notifications, no recap"
+    "privateHint": "not reported to external boards, no notifications, no recap"
   }
 }

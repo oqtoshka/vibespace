@@ -20,6 +20,7 @@ import { getCodexAppServer } from './services/codex-app-server.service.js';
 import { notifyRunFailed, notifyRunStopped } from './services/notification-orchestrator.js';
 import { cancelRateLimitWake, scheduleRateLimitWake } from './services/rate-limit-wake.service.js';
 import { scheduleSessionRecap } from './services/session-recap.service.js';
+import { recordSessionActivity, recordSessionEnd } from './services/session-restore.service.js';
 import { planTaskContinuation } from './services/task-continuation.js';
 import { broadcastSessionUpdate } from './modules/providers/index.js';
 import { sessionsService } from './modules/providers/services/sessions.service.js';
@@ -411,9 +412,12 @@ export async function queryCodex(command, options = {}, ws) {
   }
 
   try {
-    // A private session is hosted by the app-server spawned with MC_DISABLE=1,
+    // A private session is hosted by the app-server spawned with the private-variant env (see collectAgentEnv),
     // so the presence reporter's hooks exit before reading anything about it.
-    const appServer = await getCodexAppServer({ private: isPrivate });
+    // Ephemeral title/recap helpers have no user, rollout, or viewer and must
+    // never appear as empty presence-board sessions. Host them on the same
+    // private-variant app-server variant private sessions use.
+    const appServer = await getCodexAppServer({ private: isPrivate || ephemeral });
     const threadOptions = {
       cwd: workingDirectory,
       model: resolvedModel,
@@ -477,6 +481,17 @@ export async function queryCodex(command, options = {}, ws) {
       startedAt: new Date().toISOString(),
     };
     activeCodexSessions.set(capturedSessionId, activeSession);
+    if (!ephemeral) {
+      recordSessionActivity({
+        provider: 'codex',
+        sessionId: capturedSessionId,
+        cwd: workingDirectory,
+        permissionMode,
+        userId: ws?.userId || null,
+        private: Boolean(isPrivate),
+        turnActive: true,
+      }).catch(() => {});
+    }
 
     unsubscribe = appServer.subscribe((method, params) => {
       if (method === 'transport/closed') {
@@ -685,6 +700,22 @@ export async function queryCodex(command, options = {}, ws) {
         session.status = session.status === 'aborted' ? 'aborted' : 'completed';
       }
     }
+    if (capturedSessionId && !ephemeral) {
+      const session = activeCodexSessions.get(capturedSessionId);
+      if (session?.status === 'aborted') {
+        recordSessionEnd(capturedSessionId).catch(() => {});
+      } else {
+        recordSessionActivity({
+          provider: 'codex',
+          sessionId: capturedSessionId,
+          cwd: workingDirectory,
+          permissionMode,
+          userId: ws?.userId || null,
+          private: Boolean(isPrivate),
+          turnActive: false,
+        }).catch(() => {});
+      }
+    }
   }
 }
 
@@ -745,6 +776,7 @@ export async function abortCodexSession(sessionId) {
   }
 
   session.status = 'aborted';
+  recordSessionEnd(sessionId).catch(() => {});
   try {
     await session.appServer.request('turn/interrupt', {
       threadId: sessionId,

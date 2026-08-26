@@ -6,7 +6,7 @@ import crossSpawn from 'cross-spawn';
 
 import { appendImagesInputTag, normalizeImageDescriptors } from './shared/image-attachments.js';
 import { readOpenCodeTokenUsage } from './shared/opencode-token-usage.js';
-import { buildAgentEnv } from './shared/agent-env.js';
+import { buildAgentEnv, collectAgentEnv } from './shared/agent-env.js';
 import { sendOpenCodeContextUsage } from './shared/opencode-context.js';
 import { runOpenCodeHttpTurn } from './services/opencode-http-runner.js';
 import { sessionsService } from './modules/providers/services/sessions.service.js';
@@ -388,11 +388,20 @@ async function spawnOpenCode(command, options = {}, ws) {
         opencodeProcess = spawnFunction('opencode', args, {
           cwd: workingDir,
           stdio: ['pipe', 'pipe', 'pipe'],
-          // A private session's CLI runs carry the presence gate, so the
-          // reporter plugin exits before reading anything about them.
+          // Private conversations and internal one-shot helpers are tagged for
+          // host plugins (a presence reporter's opt-out, say). The former is
+          // the user's privacy choice; the latter is not an operator session
+          // at all (recap/title generation), even though OpenCode mechanically
+          // runs it through the same CLI.
           env: buildAgentEnv({
             ...permissionOptions.env,
-            ...(options.private ? { MC_DISABLE: '1' } : {}),
+            ...collectAgentEnv({
+              provider: 'opencode',
+              scope: 'session',
+              private: Boolean(options.private),
+              ephemeral: Boolean(options.ephemeral),
+              sessionId: options.sessionId ?? null,
+            }),
           }),
         });
 
