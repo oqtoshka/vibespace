@@ -345,6 +345,11 @@ function queueCodexRecap({ sessionId, cwd, model, ws }) {
     sessionId,
     cwd,
     model,
+    // A turn that resolved no model leaves the choice to Codex. The recap
+    // service's own default is a Claude alias, which the Codex app-server
+    // cannot serve: the helper turn then fails with no output at all and the
+    // recap silently never appears.
+    fallbackModel: null,
     useIndexedHistory: true,
     runQuery: (prompt, helperOptions, writer) => queryCodex(prompt, {
       ...helperOptions,
