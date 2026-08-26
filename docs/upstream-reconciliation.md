@@ -214,3 +214,64 @@ own rules to `.agents/skills/backend-module-standards`; adopt
   branch) is the closest thing they have; reconcile rather than keep both.
 - Per-file `files.watch` (this change) next to the project watcher — upstream
   has neither.
+
+## Post-merge audit (2026-08-26): fork features across every provider CLI
+
+Every fork-specific feature was exercised against the **live daemon** (not just
+tests) on each provider that has it. Probes live in `scratchpad/audit/` — they
+mint a JWT from `app_config.jwt_secret`, create a session over
+`POST /api/providers/sessions`, and drive `ws://…/ws` exactly like the browser.
+
+### Found and fixed
+
+**Recap/AI title dead on Codex (and latent on OpenCode)** — a turn that resolved
+no model left `generateRecap` substituting its own default (`haiku`, Claude's
+cheap tier). The Codex app-server cannot serve that model, so the helper turn
+failed with *no output at all*, which the service then logged as an
+"unparseable reply" — no error, no recap, no AI name, and nothing in the log
+that named a model. Every codex session since the merge had `recap = null`
+while pre-merge ones did not. Fixed in `session-recap.service.js` by making the
+default a caller-supplied `fallbackModel` (null = "let the provider choose"),
+with codex and opencode passing null; an empty helper reply now logs as empty
+and names the model it used. Regression test in
+`server/services/tests/session-recap.test.js`.
+
+### Verified working (live)
+
+| Feature | claude | codex | opencode | cursor |
+| --- | --- | --- | --- | --- |
+| Run a turn, stream, complete | ✅ | ✅ | ✅ (`stream_delta`) | ⛔ not authenticated on this host |
+| Provider-session-id capture | ✅ | ✅ | ✅ | — |
+| Recap + AI title | ✅ | ✅ (after fix) | ✅ (after fix) | never had it (pre-merge too) |
+| Mid-turn injection | ✅ | ✅ (steer) | n/a — queue drains as its own turn ✅ | n/a |
+| Abort | ✅ | ✅ | ✅ | — |
+| Model switch (`active-model` → next turn) | ✅ | ✅ | ✅ | — |
+| Token/context usage frames | ✅ (`context_usage`) | ✅ (`token_budget`) | ✅ (`token_budget`) | never had it |
+| Private session + shred | ✅ | ✅ | ✅ | — |
+| Slash commands `/models /status /cost /compact /memory /config` | ✅ | ✅ | ✅ | ✅ |
+
+Provider-agnostic surface: file share + `/render` + HTML preview ✅, per-file
+`files.watch` push (preview auto-refresh, ~1 s) ✅, both worktree listings ✅,
+plugin host loads `dudin-integrations` ✅, boot session-restore resumed three
+sessions after the restart ✅, activity sort / running-sessions ✅.
+
+### Not exercised, and why
+
+- **cursor turns** — `cursor-agent` is not logged in on this host, so every run
+  ends in the auth error path (which itself behaves correctly). Needs
+  `cursor-agent login` or `CURSOR_API_KEY` before it can be audited.
+- **notification delivery** — every channel is disabled for the only user of
+  this install (`user_notification_preferences`: inApp/webPush/desktop off,
+  telegram disabled), so nothing was sent. The wiring and the id-resolution
+  (`resolveSessionRow` accepts an app or provider id) are covered by tests.
+- **rate-limit wake** — cannot be triggered on demand; wiring reviewed
+  (`startTurn` maps provider id → row → `serverEnqueueMessage`) and unit-tested.
+
+### Observations, not regressions
+
+- Upstream dropped `routes/cursor.js` (`/api/cursor/config`) and
+  `routes/mcp-utils.js` (`/api/mcp-utils/taskmaster-server`); no client calls
+  either, so nothing user-visible was lost. No websocket message type was lost.
+- An aborted turn can leave a tool grandchild behind (an orphaned `sleep`
+  reparented to init): abort kills the CLI process, not its whole process
+  group. Same before the merge.
