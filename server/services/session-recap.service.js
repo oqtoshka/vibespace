@@ -245,6 +245,9 @@ function parseRecapResponse(text) {
  *   injected to keep this module free of a cycle back into the runtime layer.
  * @param {string} [params.model] - Model for the summarising call. Defaults to
  *   Claude's cheap tier; other providers pass what they can actually run.
+ * @param {string|null} [params.fallbackModel] - What to use when `model` is
+ *   empty. Claude's cheap tier by default; a provider that cannot run it passes
+ *   null, which sends no model at all and lets the provider pick its own.
  * @param {Function} [params.onRecap] - Called with the stored result so the
  *   caller can push it to connected clients.
  * @param {boolean} [params.useIndexedHistory] - Read the provider-normalized
@@ -258,6 +261,7 @@ async function generateRecap({
   cwd,
   runQuery,
   model,
+  fallbackModel = DEFAULT_RECAP_MODEL,
   onRecap,
   useIndexedHistory = false,
   fetchHistory,
@@ -305,9 +309,15 @@ async function generateRecap({
     setSessionId: () => {},
   };
 
+  // A model name is provider-specific: handing Claude's `haiku` to a Codex or
+  // OpenCode helper starts a turn their app-server cannot serve, which fails
+  // with no output and reads here as an unparseable reply. Callers that cannot
+  // run the default pass fallbackModel: null and get the provider's own.
+  const helperModel = model || fallbackModel || undefined;
+
   await runQuery(buildRecapPrompt(messages), {
     cwd,
-    model: model || DEFAULT_RECAP_MODEL,
+    model: helperModel,
     permissionMode: 'bypassPermissions',
     // Nothing to do but read the text it was handed.
     toolsSettings: { disallowedTools: ['Bash', 'Edit', 'Write', 'Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch', 'Task'] },
@@ -316,7 +326,13 @@ async function generateRecap({
 
   const result = parseRecapResponse(responseText);
   if (!result) {
-    console.warn(`[recap] ${sessionId}: unparseable reply, keeping previous recap`);
+    // An empty reply is a helper turn that never produced text — a different
+    // failure from a model that answered in prose, and the one a wrong model
+    // name causes, so say which happened.
+    const reason = responseText.trim()
+      ? 'unparseable reply'
+      : `empty reply (model: ${helperModel || 'provider default'})`;
+    console.warn(`[recap] ${sessionId}: ${reason}, keeping previous recap`);
     return;
   }
 
@@ -354,6 +370,7 @@ export function scheduleSessionRecap({
   cwd,
   runQuery,
   model,
+  fallbackModel = DEFAULT_RECAP_MODEL,
   onRecap,
   useIndexedHistory = false,
   fetchHistory,
@@ -375,6 +392,7 @@ export function scheduleSessionRecap({
       cwd,
       runQuery,
       model,
+      fallbackModel,
       onRecap,
       useIndexedHistory,
       fetchHistory,

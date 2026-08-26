@@ -159,6 +159,9 @@ async function queueOpenCodeRecap({ sessionId, cwd, ws }) {
     sessionId,
     cwd,
     model,
+    // OpenCode has no cheap tier, and the service's own default is a Claude
+    // alias it cannot run — without a model of our own, let OpenCode choose.
+    fallbackModel: null,
     runQuery: runOpenCodeRecapQuery,
     onRecap: (result) => {
       // The turn is long over by now, so this rides the run's writer only if it
