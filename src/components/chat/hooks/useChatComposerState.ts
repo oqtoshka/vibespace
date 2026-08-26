@@ -29,7 +29,7 @@ import type {
   PermissionMode,
   SessionEstablishedContext,
 } from '../types/types';
-import type { Project, ProjectSession, LLMProvider, ProviderModelsCacheInfo } from '../../../types/app';
+import type { Project, ProjectSession, LLMProvider, ProviderModelOption } from '../../../types/app';
 import type { ContextUsage } from '../../../stores/useSessionStore';
 import { escapeRegExp } from '../utils/chatFormatting';
 
@@ -167,13 +167,13 @@ export type ModelCommandData = {
   };
   available?: Partial<Record<LLMProvider, string[]>>;
   availableModels?: string[];
-  availableOptions?: Array<{
-    value: string;
-    label?: string;
-    description?: string;
-  }>;
+  availableOptions?: ProviderModelOption[];
   defaultModel?: string;
-  cache?: ProviderModelsCacheInfo;
+  cache?: {
+    updatedAt: string;
+    expiresAt: string;
+    source: 'memory' | 'disk' | 'fresh';
+  };
 };
 
 export type CostCommandData = {

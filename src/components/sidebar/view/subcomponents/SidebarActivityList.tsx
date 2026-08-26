@@ -5,7 +5,7 @@ import { cn } from '../../../../lib/utils';
 import type { ProjectSession, LLMProvider } from '../../../../types/app';
 import type { ActivitySessionItem } from '../../types/types';
 import { getSessionName, getSessionTime } from '../../utils/utils';
-import SessionProviderLogo from '../../../llm-logo-provider/SessionProviderLogo';
+import LLMProviderLogo from '../../../llm-provider-logo/LLMProviderLogo';
 
 export type SidebarActivityListProps = {
   items: ActivitySessionItem[];
@@ -94,7 +94,7 @@ export default function SidebarActivityList({
               key={`${project.projectId}-${session.__provider}-${session.id}`}
               className="flex items-center gap-2 rounded-md px-2 py-2"
             >
-              <SessionProviderLogo provider={session.__provider} className="h-3.5 w-3.5 flex-shrink-0" />
+              <LLMProviderLogo provider={session.__provider} className="h-3.5 w-3.5 flex-shrink-0" />
               <input
                 type="text"
                 value={editingSessionName}
@@ -150,7 +150,7 @@ export default function SidebarActivityList({
               )}
             </span>
 
-            <SessionProviderLogo provider={session.__provider} className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" />
+            <LLMProviderLogo provider={session.__provider} className="mt-0.5 h-3.5 w-3.5 flex-shrink-0" />
 
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2">

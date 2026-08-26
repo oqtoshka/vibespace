@@ -39,10 +39,34 @@ export default function MainContentHeader({
     const el = scrollRef.current;
     if (!el) return;
     updateScrollState();
+
     const observer = new ResizeObserver(updateScrollState);
     observer.observe(el);
+    if (el.firstElementChild) observer.observe(el.firstElementChild);
+
     return () => observer.disconnect();
   }, [updateScrollState]);
+
+  // Vertical wheel over the tab strip scrolls it horizontally (upstream).
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+
+    const handleWheel = (event: WheelEvent) => {
+      if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
+
+      const maxScrollLeft = el.scrollWidth - el.clientWidth;
+      const canMove = event.deltaY < 0 ? el.scrollLeft > 0 : el.scrollLeft < maxScrollLeft;
+      if (!canMove) return;
+
+      event.preventDefault();
+      const lineMultiplier = event.deltaMode === WheelEvent.DOM_DELTA_LINE ? 20 : 1;
+      el.scrollBy({ left: event.deltaY * lineMultiplier, behavior: 'auto' });
+    };
+
+    el.addEventListener('wheel', handleWheel, { passive: false });
+    return () => el.removeEventListener('wheel', handleWheel);
+  }, []);
 
   // VSCode-style: tabs flow left-to-right from the leading edge; fixed
   // actions (panel toggles, new shell, terminal) sit at the trailing edge.
@@ -81,9 +105,6 @@ export default function MainContentHeader({
               onCloseTab={onCloseTab}
             />
           </div>
-          {canScrollRight && (
-            <div className="pointer-events-none absolute inset-y-0 right-0 z-10 w-6 bg-gradient-to-l from-background to-transparent" />
-          )}
         </div>
 
         <div className="flex flex-shrink-0 items-center gap-2">

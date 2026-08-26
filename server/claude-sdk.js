@@ -19,7 +19,7 @@ import path from 'path';
 import os from 'os';
 import { CLAUDE_FALLBACK_MODELS, normalizeClaudeModelToCatalogValue } from './modules/providers/list/claude/claude-models.provider.js';
 import { providerModelsService } from './modules/providers/services/provider-models.service.js';
-import { buildClaudeUserContent, getGlobalImageAssetsDir, normalizeImageDescriptors } from './shared/image-attachments.js';
+import { appendFilesInputTag, buildClaudeUserContent, getGlobalImageAssetsDir, normalizeImageDescriptors } from './shared/image-attachments.js';
 import { buildAgentEnv, collectAgentEnv } from './shared/agent-env.js';
 import { resolveClaudeCodeExecutablePath } from './shared/claude-cli-path.js';
 import {
@@ -27,7 +27,7 @@ import {
   notifyRunFailed,
   notifyRunStopped,
   notifyUserIfEnabled
-} from './services/notification-orchestrator.js';
+} from './modules/notifications/index.js';
 import { describeTool } from './services/notification-content.js';
 import { describeAssistantActivity } from './services/activity-status.js';
 import { sessionsService } from './modules/providers/services/sessions.service.js';
@@ -43,6 +43,12 @@ import { chatRunRegistry } from './modules/websocket/services/chat-run-registry.
 import { sessionsDb } from './modules/database/index.js';
 
 const activeSessions = new Map();
+// App-facing session id -> the same session object. The gateway addresses a
+// conversation by the stable app id it allocated before the first turn, while
+// everything in here (transcripts, the task ledger, the restore registry, the
+// usage-limit wake) is keyed by the provider-native id the SDK reports. Both
+// ids resolve to the one live session; see getSession.
+const appSessionAliases = new Map();
 const pendingToolApprovals = new Map();
 // Sessions cancelled via abort-session. The abort handler already sent the
 // terminal `complete` (aborted: true) to the client, so the run loop must not
@@ -191,10 +197,15 @@ function resolveToolApproval(requestId, decision) {
  * @param {string} sessionId
  * @returns {number} count of approvals cancelled
  */
+/** Whether a parked approval belongs to a session, by either of its ids. */
+function approvalBelongsTo(resolver, sessionId) {
+  return Boolean(sessionId) && (resolver._sessionId === sessionId || resolver._appSessionId === sessionId);
+}
+
 function cancelPendingApprovalsForSession(sessionId) {
   let cancelled = 0;
   for (const [, resolver] of pendingToolApprovals.entries()) {
-    if (resolver._sessionId === sessionId) {
+    if (approvalBelongsTo(resolver, sessionId)) {
       resolver({ cancelled: true });
       cancelled += 1;
     }
@@ -212,7 +223,7 @@ function cancelPendingApprovalsForSession(sessionId) {
  */
 function hasPendingApprovalsForSession(sessionId) {
   for (const [, resolver] of pendingToolApprovals.entries()) {
-    if (resolver._sessionId === sessionId) return true;
+    if (approvalBelongsTo(resolver, sessionId)) return true;
   }
   return false;
 }
@@ -285,9 +296,9 @@ function resolveClaudeEffort(model, effort, modelsDefinition = CLAUDE_FALLBACK_M
 async function applyPendingModelSwitch(session) {
   if (!session?.sessionId || session.ended) return;
   try {
-    const resolvedModel = await providerModelsService.resolveResumeModel(
-      'claude',
-      session.sessionId,
+    const runtime = session.runtime || resolveRuntimeContext(session.options?.runtimeContext);
+    const resolvedModel = await runtime.resolveResumeModel(
+      session.appSessionId || session.sessionId,
       undefined,
       { resuming: true },
     );
@@ -510,7 +521,14 @@ function addSession(sessionId, queryInstance, writer = null) {
  * @param {string} sessionId - Session identifier
  */
 function removeSession(sessionId) {
+  const session = activeSessions.get(sessionId) ?? appSessionAliases.get(sessionId);
   activeSessions.delete(sessionId);
+  if (session?.appSessionId && appSessionAliases.get(session.appSessionId) === session) {
+    appSessionAliases.delete(session.appSessionId);
+  }
+  if (session?.sessionId && activeSessions.get(session.sessionId) === session) {
+    activeSessions.delete(session.sessionId);
+  }
   // A removed session ended (or is about to be respawned, which re-records it)
   // — either way it must not be a restore-on-boot candidate anymore.
   recordSessionEnd(sessionId).catch(() => {});
@@ -541,7 +559,8 @@ function recordRestoreState(session, turnActive) {
  * @returns {Object|undefined} Session data or undefined
  */
 function getSession(sessionId) {
-  return activeSessions.get(sessionId);
+  if (!sessionId) return undefined;
+  return activeSessions.get(sessionId) ?? appSessionAliases.get(sessionId);
 }
 
 /**
@@ -777,11 +796,14 @@ function handleCompactionStatus(session, message) {
  * the global `~/.vibespace/assets` store; paths outside the allowed roots are
  * refused inside buildClaudeUserContent.
  */
-async function buildTurnContent(command, images, cwd) {
+async function buildTurnContent(command, images, files, cwd) {
+  // Non-image attachments ride along as a <files_input> path list the agent
+  // reads back through the Read tool (see additionalDirectories).
+  const prompt = appendFilesInputTag(command, files);
   if (normalizeImageDescriptors(images).length === 0) {
-    return command;
+    return prompt;
   }
-  return await buildClaudeUserContent(command, images, cwd);
+  return await buildClaudeUserContent(prompt, images, cwd);
 }
 
 /**
@@ -1006,7 +1028,18 @@ function clearIdleTimer(session) {
 function registerSession(sessionId, session) {
   session.sessionId = sessionId;
   activeSessions.set(sessionId, session);
+  registerAppSessionAlias(session);
   recordRestoreState(session, session.turnActive);
+}
+
+/**
+ * Makes the session reachable by its app id (abort/attach/inject from the
+ * gateway) even before the SDK has announced the provider-native id.
+ */
+function registerAppSessionAlias(session) {
+  if (session.appSessionId) {
+    appSessionAliases.set(session.appSessionId, session);
+  }
 }
 
 /**
@@ -1754,6 +1787,7 @@ function makeCanUseTool(session, sdkOptions, emitNotification) {
       signal: context?.signal,
       metadata: {
         _sessionId: sid(),
+        _appSessionId: session.appSessionId || null,
         _toolName: toolName,
         _input: input,
         _receivedAt: new Date(),
@@ -1925,7 +1959,7 @@ async function runSessionLoop(session) {
 
       // Transform and normalize the message, then fan out to the current writer.
       const transformedMessage = transformMessage(message);
-      const normalized = sessionsService.normalizeMessage('claude', transformedMessage, sid);
+      const normalized = session.runtime.normalizeMessage(transformedMessage, sid);
       for (const msg of normalized) {
         if (transformedMessage.parentToolUseId && !msg.parentToolUseId) {
           msg.parentToolUseId = transformedMessage.parentToolUseId;
@@ -2071,11 +2105,16 @@ async function handleSessionError(session, error) {
       provider: 'claude'
     }));
     // finalizeSession (the loop's finally) will untrack this dead session.
-    await queryClaudeSDK(session.command, { ...session.options, sessionId: undefined, resume: false, _resumeFallback: true }, session.writer);
+    await queryClaudeSDK(
+      session.command,
+      { ...session.options, sessionId: undefined, providerSessionId: undefined, resume: false, _resumeFallback: true },
+      session.writer,
+      session.options.runtimeContext,
+    );
     return;
   }
 
-  const installed = await providerAuthService.isProviderInstalled('claude');
+  const installed = await session.runtime.isProviderInstalled();
   let errorContent;
   if (!installed) {
     errorContent = 'Claude Code is not installed. Please install it first: https://docs.anthropic.com/en/docs/claude-code';
@@ -2146,7 +2185,7 @@ async function reuseSession(session, command, options, ws) {
   try {
     let effortModels = CLAUDE_FALLBACK_MODELS;
     try {
-      effortModels = (await providerModelsService.getProviderModels('claude')).models;
+      effortModels = await session.runtime.getProviderModels();
     } catch {
       // Static catalog is a fine fallback for validation.
     }
@@ -2184,7 +2223,7 @@ async function reuseSession(session, command, options, ws) {
   }
 
   // Attachments ride along as content blocks read from the assets store.
-  const turnContent = await buildTurnContent(command, options.images, options.cwd);
+  const turnContent = await buildTurnContent(command, options.images, options.files, options.cwd);
 
   clearIdleTimer(session);
   session.turnActive = true;
@@ -2216,9 +2255,11 @@ async function startPersistentSession(command, options, ws) {
   // override says otherwise; only a genuinely new one starts on the composer's
   // per-provider default. `undefined` means "send no --model", which is what
   // makes the resume inherit the transcript's own model.
-  const resolvedModel = await providerModelsService.resolveResumeModel(
-    'claude',
-    sessionId,
+  const runtime = resolveRuntimeContext(options.runtimeContext);
+  const resolvedModel = await runtime.resolveResumeModel(
+    // Overrides are recorded under whichever id the client used; the lookup
+    // expands to every alias of the row either way.
+    options.appSessionId || sessionId,
     options.model,
     { resuming: options.resume === true },
   );
@@ -2226,7 +2267,7 @@ async function startPersistentSession(command, options, ws) {
   // (falls back to the static definition when the catalog can't be loaded).
   let effortModels = CLAUDE_FALLBACK_MODELS;
   try {
-    effortModels = (await providerModelsService.getProviderModels('claude')).models;
+    effortModels = await runtime.getProviderModels();
   } catch (error) {
     console.warn('[Claude SDK] Unable to load provider models for effort validation:', error?.message || error);
   }
@@ -2237,11 +2278,16 @@ async function startPersistentSession(command, options, ws) {
     sdkOptions.mcpServers = mcpServers;
   }
 
-  const firstTurnContent = await buildTurnContent(command, options.images, options.cwd);
+  const firstTurnContent = await buildTurnContent(command, options.images, options.files, options.cwd);
 
   const input = createInputController();
   const session = {
     sessionId: sessionId || null,
+    // The gateway's stable id for this conversation (null for legacy callers
+    // that address sessions by the provider id directly).
+    appSessionId: options.appSessionId || null,
+    // Provider-scoped lookups the gateway handed us (or the direct defaults).
+    runtime,
     instance: null,
     input,
     writer: ws,
@@ -2350,6 +2396,9 @@ async function startPersistentSession(command, options, ws) {
 
   if (sessionId) {
     registerSession(sessionId, session);
+  } else {
+    // Reachable by app id until the SDK announces the provider-native one.
+    registerAppSessionAlias(session);
   }
 
   // Feed the first user turn, then run the loop for the session's whole life.
@@ -2399,15 +2448,94 @@ async function performClaudeRewind(sessionId, rewindUuid) {
 }
 
 /**
+ * Provider-scoped lookups. The gateway passes a `ProviderRuntimeContext`
+ * (session-id mapping, model resolution, normalization, install probe); direct
+ * callers and tests pass nothing and get the same services resolved here.
+ */
+function resolveRuntimeContext(context) {
+  return {
+    resolveProviderSessionId: (sessionId) => (
+      typeof context?.resolveProviderSessionId === 'function'
+        ? context.resolveProviderSessionId(sessionId)
+        : (sessionId || null)
+    ),
+    resolveResumeModel: (sessionId, requestedModel, resumeOptions) => (
+      typeof context?.resolveResumeModel === 'function'
+        ? context.resolveResumeModel(sessionId, requestedModel, resumeOptions)
+        : providerModelsService.resolveResumeModel('claude', sessionId, requestedModel, resumeOptions)
+    ),
+    getProviderModels: async () => (
+      typeof context?.getProviderModels === 'function'
+        ? context.getProviderModels()
+        : (await providerModelsService.getProviderModels('claude')).models
+    ),
+    normalizeMessage: (raw, sessionId) => (
+      typeof context?.normalizeMessage === 'function'
+        ? context.normalizeMessage(raw, sessionId)
+        : sessionsService.normalizeMessage('claude', raw, sessionId)
+    ),
+    isProviderInstalled: () => (
+      typeof context?.isProviderInstalled === 'function'
+        ? context.isProviderInstalled()
+        : providerAuthService.isProviderInstalled('claude')
+    ),
+  };
+}
+
+/**
+ * Brings the two calling conventions onto one shape.
+ *
+ * The gateway (chat websocket, server-initiated runs) passes the stable APP
+ * session id as `options.sessionId` together with a runtime context — and may
+ * add `providerSessionId` as an already-resolved hint. Direct callers (agent
+ * REST routes, the git helper, tests, the resume-fallback below) pass the
+ * provider-native id as `options.sessionId` and no context. Everything past
+ * this point works with the provider-native id in `sessionId` and keeps the
+ * app id in `appSessionId`.
+ */
+function normalizeQueryOptions(options, context) {
+  if (options.__normalized) {
+    return options;
+  }
+  const runtime = resolveRuntimeContext(context);
+  const requestedId = options.sessionId || null;
+  let providerSessionId = options.providerSessionId || null;
+  let appSessionId = options.appSessionId || null;
+  if (!providerSessionId && requestedId) {
+    // Without a context this is the identity mapping (legacy callers).
+    providerSessionId = runtime.resolveProviderSessionId(requestedId) || null;
+  }
+  if (!appSessionId && requestedId && context && requestedId !== providerSessionId) {
+    appSessionId = requestedId;
+  }
+  if (!appSessionId && requestedId && context && providerSessionId === requestedId) {
+    // An app row whose provider id equals its own id (sessions discovered on
+    // disk store the provider id in both columns) — one id, both roles.
+    appSessionId = requestedId;
+  }
+  return {
+    ...options,
+    __normalized: true,
+    sessionId: providerSessionId || undefined,
+    providerSessionId: providerSessionId || undefined,
+    appSessionId: appSessionId || undefined,
+    runtimeContext: context || options.runtimeContext,
+  };
+}
+
+/**
  * Executes (or continues) a Claude query using the SDK. A brand-new session
  * spins up a persistent streaming query; a message for an already-running
  * session is fed into it so background jobs from earlier turns stay alive.
  * @param {string} command - User prompt/command
  * @param {Object} options - Query options
  * @param {Object} ws - WebSocket connection/writer
+ * @param {import('./shared/types.js').ProviderRuntimeContext} [context] - Gateway-supplied
+ *   lookups; absent for direct (provider-id) callers
  * @returns {Promise<void>}
  */
-async function queryClaudeSDK(command, options = {}, ws) {
+async function queryClaudeSDK(command, rawOptions = {}, ws, context = undefined) {
+  const options = normalizeQueryOptions(rawOptions, context);
   const { sessionId, rewind } = options;
 
   // A new turn supersedes a pending usage-limit wake: whoever sent it (the
@@ -2456,15 +2584,18 @@ async function queryClaudeSDK(command, options = {}, ws) {
       return await startPersistentSession(command, { ...baseOptions, resume: true }, ws);
     }
 
-    // Continue a live persistent session by feeding the new turn into it.
-    if (sessionId) {
-      const existing = getSession(sessionId);
+    // Continue a live persistent session by feeding the new turn into it. A
+    // brand-new app session whose provider id has not been announced yet is
+    // still reachable through its app id.
+    const liveKey = sessionId || options.appSessionId;
+    if (liveKey) {
+      const existing = getSession(liveKey);
       if (existing && !existing.ended && existing.input && !existing.input.closed) {
         return await reuseSession(existing, command, options, ws);
       }
       if (existing) {
         // A dead/closing session still lingering in the map — drop it.
-        removeSession(sessionId);
+        removeSession(liveKey);
       }
     }
 
@@ -2638,7 +2769,7 @@ function getActiveClaudeSDKSessions() {
 function getPendingApprovalsForSession(sessionId) {
   const pending = [];
   for (const [requestId, resolver] of pendingToolApprovals.entries()) {
-    if (resolver._sessionId === sessionId) {
+    if (approvalBelongsTo(resolver, sessionId)) {
       pending.push({
         requestId,
         toolName: resolver._toolName || 'UnknownTool',

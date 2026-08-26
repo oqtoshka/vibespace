@@ -10,6 +10,7 @@ import {
   parseOpenCodeModelsStdout,
   parseOpenCodeVerboseModelsStdout,
   OpenCodeProviderModels,
+  OPENCODE_PREDEFINED_MODELS,
   __testing,
   readOpenCodeConfiguredModel,
   stripJsonComments,
@@ -58,7 +59,8 @@ test('OpenCode models provider formats frontend labels from provider-prefixed id
   assert.deepEqual(definition.OPTIONS, [
     {
       value: 'opencode/deepseek-v4-flash-free',
-      label: 'Deepseek V4 Flash Free',
+      // Listed in the predefined catalog: its label wins over slug formatting.
+      label: 'DeepSeek V4 Flash Free',
       description: 'opencode - opencode/deepseek-v4-flash-free',
     },
     {
@@ -78,7 +80,8 @@ test('OpenCode models provider formats frontend labels from provider-prefixed id
     },
     {
       value: 'openai/gpt-5.4-mini-fast',
-      label: 'GPT-5.4 Mini Fast',
+      // Listed in the predefined catalog (upstream's own casing).
+      label: 'GPT-5.4 mini Fast',
       description: 'openai - openai/gpt-5.4-mini-fast',
     },
     {
@@ -334,4 +337,33 @@ test('OpenCode session model values keep their provider half', () => {
   assert.equal(parse('{"id":"anthropic/claude-sonnet-4-5"}'), 'anthropic/claude-sonnet-4-5');
   assert.equal(parse('anthropic/claude-sonnet-4-5'), 'anthropic/claude-sonnet-4-5');
   assert.equal(parse(''), null);
+});
+
+test('the predefined OpenCode catalog is provider-qualified and unique', () => {
+  // OpenCode routes by `<providerID>/<modelID>`, so every option has to carry a
+  // provider prefix that `opencode models --verbose` reports. (The live
+  // catalog is read from the CLI; this is the fallback it degrades to.)
+  const providerIds = new Set(
+    OPENCODE_PREDEFINED_MODELS.OPTIONS.map((option) => option.value.split('/')[0]),
+  );
+  assert.deepEqual([...providerIds].sort(), ['anthropic', 'opencode', 'openai'].sort());
+  assert.equal(
+    OPENCODE_PREDEFINED_MODELS.OPTIONS.every((option) => /^[a-z0-9-]+\/.+/.test(option.value)),
+    true,
+  );
+  assert.equal(
+    new Set(OPENCODE_PREDEFINED_MODELS.OPTIONS.map((option) => option.value)).size,
+    OPENCODE_PREDEFINED_MODELS.OPTIONS.length,
+  );
+  assert.equal(OPENCODE_PREDEFINED_MODELS.DEFAULT, 'opencode/gpt-5.6-terra');
+  assert.equal(OPENCODE_PREDEFINED_MODELS.PROVISIONAL, true);
+  assert.ok(
+    OPENCODE_PREDEFINED_MODELS.OPTIONS.some((option) => option.value === 'opencode/claude-opus-5'),
+  );
+  assert.ok(
+    OPENCODE_PREDEFINED_MODELS.OPTIONS.some((option) => option.value === 'anthropic/claude-opus-5'),
+  );
+  assert.ok(
+    OPENCODE_PREDEFINED_MODELS.OPTIONS.some((option) => option.value === 'openai/gpt-5.6'),
+  );
 });

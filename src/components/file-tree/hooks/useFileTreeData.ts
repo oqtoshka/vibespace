@@ -6,6 +6,7 @@ import type { FileTreeNode } from '../types/types';
 type UseFileTreeDataResult = {
   files: FileTreeNode[];
   loading: boolean;
+  error: string | null;
   refreshFiles: () => void;
   /** Fetches children for a directory whose subtree hasn't been loaded yet
    * (`children === undefined`). No-ops while a fetch is already in flight. */
@@ -42,6 +43,23 @@ function withChildrenAt(
   });
 }
 
+const DEFAULT_LOAD_ERROR = 'Unable to load the file tree for this project.';
+
+// The API reports refusals such as FILE_TREE_TOO_LARGE as { error: message }.
+// Surfacing that message tells the user why the tree is missing and what to do
+// about it, instead of leaving them with an unexplained empty tree.
+function readResponseErrorMessage(responseBody: string): string | null {
+  try {
+    const parsedBody = JSON.parse(responseBody) as unknown;
+    const message = typeof parsedBody === 'object' && parsedBody !== null && 'error' in parsedBody
+      ? (parsedBody as { error: unknown }).error
+      : null;
+    return typeof message === 'string' && message.trim() ? message : null;
+  } catch {
+    return null;
+  }
+}
+
 function isAbortError(error: unknown): boolean {
   return (error as { name?: string })?.name === 'AbortError';
 }
@@ -56,6 +74,7 @@ export function useFileTreeData(
 ): UseFileTreeDataResult {
   const [files, setFiles] = useState<FileTreeNode[]>([]);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const [isFullTreeLoading, setIsFullTreeLoading] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -86,6 +105,7 @@ export function useFileTreeData(
     if (!projectId) {
       setFiles([]);
       setLoading(false);
+      setError(null);
       return;
     }
 
@@ -101,7 +121,9 @@ export function useFileTreeData(
       dir?: string;
       depth?: number;
     }): Promise<FileTreeNode[] | null> => {
-      const response = await api.getFiles(projectId, { ...options, signal: controller.signal });
+      // The tree hides what .gitignore hides; search/mentions (ensureFullTree)
+      // still see everything so an ignored file stays reachable by name.
+      const response = await api.getFiles(projectId, { ...options, respectGitignore: true, signal: controller.signal });
       if (!response.ok) {
         // A 404 for a subtree means the persisted expanded directory was
         // deleted on disk — report it for pruning instead of erroring on
@@ -110,7 +132,13 @@ export function useFileTreeData(
           onDirectoryMissingRef.current?.(options.dir);
           return null;
         }
-        console.error('File fetch failed:', response.status, await response.text());
+        const errorText = await response.text();
+        console.error('File fetch failed:', response.status, errorText);
+        // Only the root listing decides whether the tree is usable; a failed
+        // subtree refresh just leaves that folder as it was.
+        if (!options.dir && isActive) {
+          setError(readResponseErrorMessage(errorText) ?? DEFAULT_LOAD_ERROR);
+        }
         return null;
       }
       return (await response.json()) as FileTreeNode[];
@@ -118,6 +146,7 @@ export function useFileTreeData(
 
     const fetchTree = async () => {
       setLoading(true);
+      setError(null);
       try {
         // Refetch the root plus every expanded directory so a refresh doesn't
         // collapse what the user already drilled into. Shallow-first ordering
@@ -158,6 +187,7 @@ export function useFileTreeData(
         console.error('Error fetching files:', error);
         if (isActive) {
           setFiles([]);
+          setError(DEFAULT_LOAD_ERROR);
         }
       } finally {
         if (isActive) {
@@ -187,6 +217,7 @@ export function useFileTreeData(
           const response = await api.getFiles(projectId, {
             dir: dirPath,
             depth: LAZY_FETCH_DEPTH,
+            respectGitignore: true,
             signal,
           });
           if (signal?.aborted) {
@@ -247,6 +278,7 @@ export function useFileTreeData(
   return {
     files,
     loading,
+    error,
     refreshFiles,
     loadDirectory,
     ensureFullTree,

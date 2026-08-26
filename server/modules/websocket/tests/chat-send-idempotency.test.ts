@@ -33,10 +33,13 @@ function buildDependencies(spawnCalls: SpawnCall[]) {
   };
 
   return {
-    spawnFns: { claude: spawn, codex: spawn, cursor: spawn },
-    abortFns: { claude: () => true, codex: () => true, cursor: () => true },
-    resolveToolApproval: () => {},
-    getPendingApprovalsForSession: () => [],
+    runtime: {
+      hasRuntime: () => true,
+      run: async (_provider: string, content: string) => spawn(content),
+      abort: async () => true,
+      resolveToolApproval: () => {},
+      getPendingApprovalsForSession: () => [],
+    },
   } as unknown as Parameters<typeof handleChatConnection>[2];
 }
 

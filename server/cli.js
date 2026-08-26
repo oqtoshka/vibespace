@@ -608,7 +608,8 @@ async function startServer() {
 }
 
 async function startBrowserUseMcp() {
-    await import('./browser-use-mcp.js');
+    const { startBrowserUseMcp: start } = await import('@/modules/browser-use/index.js');
+    await start();
 }
 
 // Start the multi-user manager, which authenticates users and proxies each of

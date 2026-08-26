@@ -10,6 +10,9 @@ export {
   notificationPreferencesDb,
   toClientNotificationPreferences,
 } from '@/modules/database/repositories/notification-preferences.js';
+// providerModelsDb: used by Providers to persist user-managed custom model rows.
+export { providerModelsDb } from '@/modules/database/repositories/provider-models.js';
+// projectsDb: used by Projects, Worktrees, Git, WebSocket, and notification modules to persist and resolve project records.
 export { projectsDb } from '@/modules/database/repositories/projects.db.js';
 export { pushSubscriptionsDb } from '@/modules/database/repositories/push-subscriptions.js';
 export { scanStateDb } from '@/modules/database/repositories/scan-state.db.js';

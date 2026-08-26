@@ -8,24 +8,25 @@
  *
  * ## Usage
  *
- * - queryCodex(command, options, ws) - Execute a prompt with streaming via WebSocket
+ * - queryCodex(command, options, ws, context) - Execute a prompt with streaming via WebSocket
+ *   (`options.sessionId` is the app session id when a ProviderRuntimeContext is
+ *   supplied, the provider-native thread id otherwise — see
+ *   shared/provider-runtime-context.js)
  * - injectCodexMessage(sessionId, command, options) - Steer the active turn
  * - abortCodexSession(sessionId) - Cancel an active session
  * - isCodexSessionActive(sessionId) - Check if a session is running
  * - getActiveCodexSessions() - List all active sessions
  */
 
-import { buildCodexInputItems, normalizeImageDescriptors } from './shared/image-attachments.js';
+import { appendFilesInputTag, buildCodexInputItems, normalizeImageDescriptors } from './shared/image-attachments.js';
+import { createProviderRuntimeContext, normalizeRuntimeOptions } from './shared/provider-runtime-context.js';
 import { getCodexAppServer } from './services/codex-app-server.service.js';
-import { notifyRunFailed, notifyRunStopped } from './services/notification-orchestrator.js';
+import { notifyRunFailed, notifyRunStopped } from './modules/notifications/index.js';
 import { cancelRateLimitWake, scheduleRateLimitWake } from './services/rate-limit-wake.service.js';
 import { scheduleSessionRecap } from './services/session-recap.service.js';
 import { recordSessionActivity, recordSessionEnd } from './services/session-restore.service.js';
 import { planTaskContinuation } from './services/task-continuation.js';
 import { broadcastSessionUpdate } from './modules/providers/index.js';
-import { sessionsService } from './modules/providers/services/sessions.service.js';
-import { providerAuthService } from './modules/providers/services/provider-auth.service.js';
-import { providerModelsService } from './modules/providers/services/provider-models.service.js';
 import { buildCodexTokenBudget, readLatestCodexTokenBudget } from './shared/codex-token-usage.js';
 import { toCodexAppServerSandboxPolicy } from './shared/codex-sandbox-policy.js';
 import { createCompleteMessage, createNormalizedMessage } from './shared/utils.js';
@@ -368,25 +369,31 @@ function queueCodexRecap({ sessionId, cwd, model, ws }) {
  * @param {string} command - The prompt to send
  * @param {object} options - Options including cwd, sessionId, model, permissionMode
  * @param {WebSocket|object} ws - WebSocket connection or response writer
+ * @param {import('./shared/types.js').ProviderRuntimeContext} [context] - Gateway-supplied
+ *   lookups; absent for direct (provider-id) callers
  */
-export async function queryCodex(command, options = {}, ws) {
+export async function queryCodex(command, options = {}, ws, context = undefined) {
+  const runtime = createProviderRuntimeContext('codex', context ?? options.runtimeContext);
+  options = normalizeRuntimeOptions(options, runtime, context);
   const {
     sessionId,
+    appSessionId,
     sessionSummary,
     cwd,
     projectPath,
     model,
     effort,
     images,
+    files,
     permissionMode = 'default',
     ephemeral = false,
     private: isPrivate = false,
   } = options;
 
-  const resolvedModel = await providerModelsService.resolveResumeModel(
-    'codex',
-    sessionId,
+  const resolvedModel = await runtime.resolveResumeModel(
+    appSessionId || sessionId,
     model,
+    { resuming: options.resume === true },
   );
 
   const workingDirectory = cwd || projectPath || process.cwd();
@@ -394,7 +401,7 @@ export async function queryCodex(command, options = {}, ws) {
   // app-server removed the legacy `on-failure` spelling from its wire schema;
   // `on-request` is the closest supported interactive policy.
   const appServerApprovalPolicy = approvalPolicy === 'on-failure' ? 'on-request' : approvalPolicy;
-  const catalog = (await providerModelsService.getProviderModels('codex')).models;
+  const catalog = await runtime.getProviderModels();
   const selectedModel = catalog.OPTIONS.find((option) => option.value === resolvedModel) || null;
   const allowedEfforts = selectedModel?.effort?.values?.map((value) => value.value) || [];
   const resolvedEffort = typeof effort === 'string' && effort !== 'default' && allowedEfforts.includes(effort)
@@ -452,6 +459,9 @@ export async function queryCodex(command, options = {}, ws) {
     });
     const activeSession = {
       appServer,
+      // Provider-native thread id — the map is also keyed by the app id, so
+      // abort/steer look this up rather than trusting the key they came in by.
+      threadId: capturedSessionId,
       writer: ws,
       status: 'running',
       turnId: null,
@@ -481,6 +491,9 @@ export async function queryCodex(command, options = {}, ws) {
       startedAt: new Date().toISOString(),
     };
     activeCodexSessions.set(capturedSessionId, activeSession);
+    if (appSessionId && appSessionId !== capturedSessionId) {
+      activeCodexSessions.set(appSessionId, activeSession);
+    }
     if (!ephemeral) {
       recordSessionActivity({
         provider: 'codex',
@@ -528,7 +541,7 @@ export async function queryCodex(command, options = {}, ws) {
         if (!transformed) {
           return;
         }
-        const normalized = sessionsService.normalizeMessage('codex', transformed, capturedSessionId);
+        const normalized = runtime.normalizeMessage(transformed, capturedSessionId);
         for (const message of normalized) {
           sendMessage(ws, message);
         }
@@ -547,7 +560,7 @@ export async function queryCodex(command, options = {}, ws) {
 
     const turnResponse = await appServer.request('turn/start', {
       threadId: capturedSessionId,
-      input: toAppServerInput(command, images, workingDirectory),
+      input: toAppServerInput(appendFilesInputTag(command, files), images, workingDirectory),
       cwd: workingDirectory,
       model: resolvedModel,
       effort: resolvedEffort,
@@ -629,6 +642,7 @@ export async function queryCodex(command, options = {}, ws) {
           ...options,
           sessionId: capturedSessionId,
           images: undefined,
+          files: undefined,
         }, ws);
         return;
       }
@@ -669,7 +683,7 @@ export async function queryCodex(command, options = {}, ws) {
       console.error('[Codex] Error:', error);
 
       // Check if Codex SDK is available for a clearer error message
-      const installed = await providerAuthService.isProviderInstalled('codex');
+      const installed = await runtime.isProviderInstalled();
       const errorContent = !installed
         ? 'Codex CLI is not configured. Please set up authentication first.'
         : error.message;
@@ -745,12 +759,13 @@ export async function injectCodexMessage(sessionId, command, options = {}) {
     images: options.images,
     onDelivered: options.onDelivered,
   });
+  const steerPrompt = appendFilesInputTag(command, options.files);
   try {
     await session.appServer.request('turn/steer', {
-      threadId: sessionId,
+      threadId: session.threadId || sessionId,
       expectedTurnId: turnId,
       clientUserMessageId: messageId,
-      input: toAppServerInput(command, options.images, workingDirectory),
+      input: toAppServerInput(steerPrompt, options.images, workingDirectory),
     });
     // Current app-server emits a userMessage item before subsequent agent
     // output. Keep this fallback for older compatible runtimes that accept the
@@ -776,10 +791,11 @@ export async function abortCodexSession(sessionId) {
   }
 
   session.status = 'aborted';
-  recordSessionEnd(sessionId).catch(() => {});
+  const threadId = session.threadId || sessionId;
+  recordSessionEnd(threadId).catch(() => {});
   try {
     await session.appServer.request('turn/interrupt', {
-      threadId: sessionId,
+      threadId,
       turnId: session.turnId,
     });
   } catch (error) {
@@ -807,7 +823,8 @@ export function getActiveCodexSessions() {
   const sessions = [];
 
   for (const [id, session] of activeCodexSessions.entries()) {
-    if (session.status === 'running') {
+    // The same session sits under its app id too — report it once.
+    if (session.status === 'running' && (session.threadId || id) === id) {
       sessions.push({
         id,
         status: session.status,

@@ -5,16 +5,17 @@ import type { TFunction } from 'i18next';
 import { ScrollArea } from '../../../../shared/view/ui';
 import { cn } from '../../../../lib/utils';
 import type { Project } from '../../../../types/app';
-import type { ReleaseInfo } from '../../../../types/sharedTypes';
+import type { ReleaseInfo } from '../../../../shared/types';
 import type { ConversationSearchResults, SearchProgress } from '../../hooks/useSidebarController';
-import type { ArchivedProjectListItem, ArchivedSessionListItem, ProjectViewMode, SidebarSearchMode, SidebarView } from '../../types/types';
-import SessionProviderLogo from '../../../llm-logo-provider/SessionProviderLogo';
-import { getAllSessions } from '../../utils/utils';
+import type { ArchivedProjectListItem, ArchivedSessionListItem, ProjectViewMode, RecentConversationListItem, SidebarSearchMode, SidebarView } from '../../types/types';
+import LLMProviderLogo from '../../../llm-provider-logo/LLMProviderLogo';
+import { formatCompactAge, getAllSessions } from '../../utils/utils';
 
 import SidebarActivityList, { type SidebarActivityListProps } from './SidebarActivityList';
 import SidebarFooter from './SidebarFooter';
 import SidebarHeader from './SidebarHeader';
 import SidebarProjectList, { type SidebarProjectListProps } from './SidebarProjectList';
+import SidebarRecentConversations from './SidebarRecentConversations';
 
 function HighlightedSnippet({ snippet, highlights }: { snippet: string; highlights: { start: number; end: number }[] }) {
   const parts: ReactNode[] = [];
@@ -87,32 +88,6 @@ function groupArchivedSessionsByProject(sessions: ArchivedSessionListItem[]): Ar
   });
 }
 
-function formatCompactArchivedAge(dateString: string | null): string {
-  if (!dateString) {
-    return '';
-  }
-
-  const date = new Date(dateString);
-  if (Number.isNaN(date.getTime())) {
-    return '';
-  }
-
-  const diffInMinutes = Math.floor(Math.max(0, Date.now() - date.getTime()) / (1000 * 60));
-  if (diffInMinutes < 1) {
-    return '<1m';
-  }
-  if (diffInMinutes < 60) {
-    return `${diffInMinutes}m`;
-  }
-
-  const diffInHours = Math.floor(diffInMinutes / 60);
-  if (diffInHours < 24) {
-    return `${diffInHours}hr`;
-  }
-
-  return `${Math.floor(diffInHours / 24)}d`;
-}
-
 type SidebarContentProps = {
   isPWA: boolean;
   isMobile: boolean;
@@ -122,6 +97,12 @@ type SidebarContentProps = {
   archivedSessions: ArchivedSessionListItem[];
   archivedSessionsCount: number;
   isArchivedSessionsLoading: boolean;
+  recentConversations: RecentConversationListItem[];
+  recentConversationsTotal: number;
+  recentConversationsHasMore: boolean;
+  isRecentConversationsLoading: boolean;
+  isLoadingMoreRecentConversations: boolean;
+  recentConversationsError: boolean;
   searchFilter: string;
   onSearchFilterChange: (value: string) => void;
   onClearSearchFilter: () => void;
@@ -135,6 +116,8 @@ type SidebarContentProps = {
   isSearching: boolean;
   searchProgress: SearchProgress | null;
   onRestoreArchivedProject: (projectId: string) => void;
+  onLoadMoreRecentConversations: () => void;
+  onRetryRecentConversations: () => void;
   onArchivedSessionClick: (session: ArchivedSessionListItem) => void;
   onRestoreArchivedSession: (sessionId: string) => void;
   onDeleteArchivedSession: (session: ArchivedSessionListItem) => void;
@@ -167,6 +150,12 @@ export default function SidebarContent({
   archivedSessions,
   archivedSessionsCount,
   isArchivedSessionsLoading,
+  recentConversations,
+  recentConversationsTotal,
+  recentConversationsHasMore,
+  isRecentConversationsLoading,
+  isLoadingMoreRecentConversations,
+  recentConversationsError,
   searchFilter,
   onSearchFilterChange,
   onClearSearchFilter,
@@ -179,6 +168,8 @@ export default function SidebarContent({
   isSearching,
   searchProgress,
   onRestoreArchivedProject,
+  onLoadMoreRecentConversations,
+  onRetryRecentConversations,
   onArchivedSessionClick,
   onRestoreArchivedSession,
   onDeleteArchivedSession,
@@ -201,9 +192,21 @@ export default function SidebarContent({
 }: SidebarContentProps) {
   // Unified search: conversation-content matches stream in below the
   // name-filtered sessions list whenever the query is long enough.
-  const showConversationSection = searchMode === 'projects' && searchFilter.trim().length >= 2;
-  const hasPartialResults = conversationResults && conversationResults.results.length > 0;
+  // The "Recent" tab (upstream's conversation feed) reuses the same
+  // streaming search once the query is long enough; with a short query it
+  // shows the recent-conversations feed instead.
+  const hasSearchQuery = searchFilter.trim().length >= 2;
+  const showConversationSection = (searchMode === 'projects' || searchMode === 'conversations') && hasSearchQuery;
+  const hasTitleResults = Boolean(
+    searchMode === 'conversations' && conversationResults && conversationResults.titleResults.length > 0,
+  );
+  const hasPartialResults = Boolean(
+    conversationResults && (conversationResults.results.length > 0 || hasTitleResults),
+  );
   const groupedArchivedSessions = groupArchivedSessionsByProject(archivedSessions);
+  const isRenamingOnMobile = isMobile && Boolean(
+    projectListProps.editingProject || projectListProps.editingSession,
+  );
 
   return (
     <div
@@ -260,7 +263,7 @@ export default function SidebarContent({
                 </p>
               )}
             </div>
-          ) : !isSearching && conversationResults && conversationResults.results.length === 0 ? (
+          ) : !isSearching && conversationResults && !hasPartialResults ? (
             <div className="px-4 py-12 text-center md:py-8">
               <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-lg bg-muted md:mb-3">
                 <Search className="h-6 w-6 text-muted-foreground" />
@@ -268,8 +271,54 @@ export default function SidebarContent({
               <h3 className="mb-2 text-base font-medium text-foreground md:mb-1">{t('search.noResults')}</h3>
               <p className="text-sm text-muted-foreground">{t('search.tryDifferentQuery')}</p>
             </div>
-          ) : hasPartialResults ? (
-            <div className="space-y-3 px-2">
+          ) : hasPartialResults && conversationResults ? (
+            <div className="space-y-3 px-2" aria-live="polite">
+              {hasTitleResults && (
+                <section className="space-y-1" aria-labelledby="session-title-results-heading">
+                  <div className="flex items-center justify-between px-1 py-0.5">
+                    <h3
+                      id="session-title-results-heading"
+                      className="text-[11px] font-medium text-muted-foreground"
+                    >
+                      {t('search.sessionTitles', 'Session')}
+                    </h3>
+                    <span className="text-[10px] tabular-nums text-muted-foreground/70">
+                      {conversationResults.titleResults.length}
+                    </span>
+                  </div>
+                  {conversationResults.titleResults.map((session) => {
+                    const age = formatCompactAge(session.lastActivity, projectListProps.currentTime);
+
+                    return (
+                      <button
+                        key={`${session.provider}-${session.sessionId}`}
+                        type="button"
+                        className="group flex w-full min-w-0 items-center gap-2 rounded-lg px-2 py-2 text-left transition-colors hover:bg-accent/60"
+                        onClick={() => onConversationResultClick(
+                          session.projectId,
+                          session.sessionId,
+                          session.provider,
+                        )}
+                      >
+                        <span className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md bg-muted/60">
+                          <LLMProviderLogo provider={session.provider} className="h-3.5 w-3.5" />
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="flex items-center gap-2">
+                            <span className="truncate text-xs font-normal text-foreground">{session.sessionTitle}</span>
+                            {age && (
+                              <span className="ml-auto flex-shrink-0 text-[11px] text-muted-foreground">{age}</span>
+                            )}
+                          </span>
+                          <span className="mt-0.5 block truncate text-[11px] text-muted-foreground/70">
+                            {session.projectDisplayName}
+                          </span>
+                        </span>
+                      </button>
+                    );
+                  })}
+                </section>
+              )}
               <div className="flex items-center justify-between px-1">
                 <p className="text-xs text-muted-foreground">
                   {t('search.matches', { count: conversationResults.totalMatches })}
@@ -345,7 +394,26 @@ export default function SidebarContent({
           ) : null
           ) : null;
 
-          return searchMode === 'archived' ? (
+          return searchMode === 'conversations' ? (
+            hasSearchQuery ? (
+              conversationSection
+            ) : (
+              <SidebarRecentConversations
+                conversations={recentConversations}
+                total={recentConversationsTotal}
+                hasMore={recentConversationsHasMore}
+                isLoading={isRecentConversationsLoading}
+                isLoadingMore={isLoadingMoreRecentConversations}
+                hasError={recentConversationsError}
+                selectedSession={projectListProps.selectedSession}
+                currentTime={projectListProps.currentTime}
+                onConversationSelect={onConversationResultClick}
+                onLoadMore={onLoadMoreRecentConversations}
+                onRetry={onRetryRecentConversations}
+                t={t}
+              />
+            )
+          ) : searchMode === 'archived' ? (
           isArchivedSessionsLoading ? (
             <div className="px-4 py-12 text-center md:py-8">
               <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-lg bg-muted md:mb-3">
@@ -443,7 +511,7 @@ export default function SidebarContent({
                               isProjectArchived: true,
                             })}
                           >
-                            <SessionProviderLogo provider={session.__provider} className="h-3.5 w-3.5 flex-shrink-0" />
+                            <LLMProviderLogo provider={session.__provider} className="h-3.5 w-3.5 flex-shrink-0" />
                             <div className="min-w-0 flex-1">
                               <div className="flex items-center gap-2">
                                 <span className="truncate text-xs font-normal text-foreground">
@@ -454,7 +522,7 @@ export default function SidebarContent({
                                       : String(session.id))}
                                 </span>
                                 <span className="ml-auto flex-shrink-0 text-[11px] text-muted-foreground">
-                                  {formatCompactArchivedAge(
+                                  {formatCompactAge(
                                     typeof session.lastActivity === 'string'
                                       ? session.lastActivity
                                       : typeof session.updated_at === 'string'
@@ -462,6 +530,7 @@ export default function SidebarContent({
                                         : typeof session.created_at === 'string'
                                           ? session.created_at
                                           : null,
+                                    projectListProps.currentTime,
                                   )}
                                 </span>
                               </div>
@@ -508,7 +577,7 @@ export default function SidebarContent({
                           className="flex min-w-0 flex-1 items-center gap-2 text-left transition-colors hover:text-foreground"
                           onClick={() => onArchivedSessionClick(session)}
                         >
-                          <SessionProviderLogo provider={session.provider} className="h-3.5 w-3.5 flex-shrink-0" />
+                          <LLMProviderLogo provider={session.provider} className="h-3.5 w-3.5 flex-shrink-0" />
                           <div className="min-w-0 flex-1">
                             <div className="flex items-center gap-2">
                               <span className="truncate text-xs font-normal text-foreground">
@@ -516,7 +585,7 @@ export default function SidebarContent({
                               </span>
                               {session.lastActivity && (
                                 <span className="ml-auto flex-shrink-0 text-[11px] text-muted-foreground">
-                                  {formatCompactArchivedAge(session.lastActivity)}
+                                  {formatCompactAge(session.lastActivity, projectListProps.currentTime)}
                                 </span>
                               )}
                             </div>
@@ -600,15 +669,17 @@ export default function SidebarContent({
       </ScrollArea>
       )}
 
-      <SidebarFooter
-        updateAvailable={updateAvailable}
-        restartRequired={restartRequired}
-        releaseInfo={releaseInfo}
-        latestVersion={latestVersion}
-        onShowVersionModal={onShowVersionModal}
-        onShowSettings={onShowSettings}
-        t={t}
-      />
+      {!isRenamingOnMobile && (
+        <SidebarFooter
+          updateAvailable={updateAvailable}
+          restartRequired={restartRequired}
+          releaseInfo={releaseInfo}
+          latestVersion={latestVersion}
+          onShowVersionModal={onShowVersionModal}
+          onShowSettings={onShowSettings}
+          t={t}
+        />
+      )}
     </div>
   );
 }

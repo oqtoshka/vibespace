@@ -15,6 +15,10 @@ type SessionRow = {
   name_source: string | null;
   recap: string | null;
   recap_message_count: number | null;
+  /** Model this session runs with; NULL until the app records one for it. */
+  model: string | null;
+  /** Reasoning effort this session runs with; NULL until the app records one. */
+  effort: string | null;
   isArchived: number;
   is_side: number;
   is_private: number;
@@ -22,8 +26,30 @@ type SessionRow = {
   updated_at: string;
 };
 
+type RecentSessionsPage = {
+  sessions: SessionRow[];
+  total: number;
+};
+
 const SESSION_ROW_COLUMNS =
-  'session_id, provider, provider_session_id, project_path, jsonl_path, worktree_path, custom_name, name_source, recap, recap_message_count, isArchived, is_side, is_private, created_at, updated_at';
+  'session_id, provider, provider_session_id, project_path, jsonl_path, worktree_path, custom_name, name_source, recap, recap_message_count, model, effort, isArchived, is_side, is_private, created_at, updated_at';
+
+/**
+ * SQL predicate: a transcript sync must not rename an app-created session.
+ *
+ * An app session (`session_id` differs from the provider id) is named from its
+ * first message the moment it is created, and a later sync of the same
+ * transcript would derive the same placeholder — or a worse one — from the
+ * file. The one incoming name allowed to replace it is a provider-generated
+ * title (`name_source = 'provider'`), which is exactly what `name_source`
+ * exists to let through. `nameArg`/`sourceArg` are the incoming values as SQL
+ * expressions (a `?` placeholder or `excluded.<column>`); `prefix` qualifies
+ * the existing row's columns in an upsert.
+ */
+const KEEP_APP_SESSION_NAME_SQL = (nameArg: string, sourceArg: string = nameArg, prefix = ''): string =>
+  `${nameArg} IS NOT NULL AND ${prefix}custom_name IS NOT NULL
+   AND ${prefix}provider_session_id IS NOT NULL AND ${prefix}session_id <> ${prefix}provider_session_id
+   AND COALESCE(${sourceArg}, 'derived') <> 'provider'`;
 
 const SQLITE_UTC_TIMESTAMP_REGEX = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
 
@@ -73,7 +99,9 @@ export const sessionsDb = {
    * The given id is the provider-native session id. Rows are keyed by
    * `provider_session_id` so a session that was first created by the app
    * (with an app-allocated `session_id`) is updated in place once its
-   * transcript shows up on disk, instead of producing a duplicate row.
+   * transcript shows up on disk, instead of producing a duplicate row. An
+   * app-created row keeps its existing name; synchronizer names only update
+   * rows that were themselves created by indexing provider storage.
    */
   createSession(
     providerSessionId: string,
@@ -93,6 +121,8 @@ export const sessionsDb = {
     const archivedAssignment = options.preserveArchived ? '' : 'isArchived = 0,';
     const createdAtValue = normalizeTimestamp(createdAt);
     const updatedAtValue = normalizeTimestamp(updatedAt);
+    const incomingName = customName ?? null;
+    const incomingNameSource = customName ? nameSource ?? null : null;
 
     // Worktree reverse-map: a session whose cwd is a vibespace-managed worktree
     // (~/.vibespace/worktrees/<projectId>/<slug>) belongs to its PARENT project,
@@ -132,8 +162,8 @@ export const sessionsDb = {
            jsonl_path = ?,
            worktree_path = ?,
            ${archivedAssignment}
-           custom_name = COALESCE(?, custom_name),
-           name_source = COALESCE(?, name_source)
+           custom_name = CASE WHEN ${KEEP_APP_SESSION_NAME_SQL('?')} THEN custom_name ELSE COALESCE(?, custom_name) END,
+           name_source = CASE WHEN ${KEEP_APP_SESSION_NAME_SQL('?')} THEN name_source ELSE COALESCE(?, name_source) END
          WHERE session_id = ?`
       ).run(
         provider,
@@ -141,8 +171,12 @@ export const sessionsDb = {
         normalizedProjectPath,
         jsonlPath ?? null,
         worktreePath,
-        customName ?? null,
-        customName ? nameSource ?? null : null,
+        incomingName,
+        incomingNameSource,
+        incomingName,
+        incomingName,
+        incomingNameSource,
+        incomingNameSource,
         existing.session_id
       );
 
@@ -163,14 +197,16 @@ export const sessionsDb = {
          jsonl_path = excluded.jsonl_path,
          worktree_path = excluded.worktree_path,
          ${archivedAssignment}
-         custom_name = COALESCE(excluded.custom_name, sessions.custom_name),
-         name_source = COALESCE(excluded.name_source, sessions.name_source)`
+         custom_name = CASE WHEN ${KEEP_APP_SESSION_NAME_SQL('excluded.custom_name', 'excluded.name_source', 'sessions.')}
+           THEN sessions.custom_name ELSE COALESCE(excluded.custom_name, sessions.custom_name) END,
+         name_source = CASE WHEN ${KEEP_APP_SESSION_NAME_SQL('excluded.custom_name', 'excluded.name_source', 'sessions.')}
+           THEN sessions.name_source ELSE COALESCE(excluded.name_source, sessions.name_source) END`
     ).run(
       providerSessionId,
       provider,
       providerSessionId,
-      customName ?? null,
-      customName ? nameSource ?? null : null,
+      incomingName,
+      incomingNameSource,
       normalizedProjectPath,
       jsonlPath ?? null,
       worktreePath,
@@ -187,7 +223,9 @@ export const sessionsDb = {
    * The session gateway uses this when the frontend starts a brand-new chat:
    * `session_id` is the stable app-facing id, while `provider_session_id`
    * stays NULL until the provider runtime announces its own id and
-   * `assignProviderSessionId` records the mapping.
+   * `assignProviderSessionId` records the mapping. `customName` is derived
+   * from the first visible message by the sessions service; it is stored as a
+   * `derived` name so a provider-generated title can still replace it.
    *
    * `isPrivate` is the only moment the flag can be set: it has to be in place
    * before the first turn spawns the harness, and nothing updates it later.
@@ -196,18 +234,26 @@ export const sessionsDb = {
     sessionId: string,
     provider: string,
     projectPath: string,
-    isSide = false,
+    isSide: boolean | string = false,
     isPrivate = false,
+    customName?: string | null,
   ): string {
     const db = getConnection();
     const normalizedProjectPath = normalizeProjectPathForProvider(provider, projectPath);
 
     projectsDb.createProjectPath(normalizedProjectPath);
 
+    // Upstream callers pass the derived name as the fourth argument; ours pass
+    // the side flag there. A string can only ever be a name, so accept both.
+    if (typeof isSide === 'string') {
+      customName = isSide;
+      isSide = false;
+    }
+    const derivedName = typeof customName === 'string' && customName.trim() ? customName.trim() : null;
     db.prepare(
       `INSERT INTO sessions (session_id, provider, provider_session_id, custom_name, name_source, project_path, jsonl_path, isArchived, is_side, is_private, created_at, updated_at)
-       VALUES (?, ?, NULL, NULL, NULL, ?, NULL, 0, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
-    ).run(sessionId, provider, normalizedProjectPath, isSide ? 1 : 0, isPrivate ? 1 : 0);
+       VALUES (?, ?, NULL, ?, ?, ?, NULL, 0, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
+    ).run(sessionId, provider, derivedName, derivedName ? 'derived' : null, normalizedProjectPath, isSide ? 1 : 0, isPrivate ? 1 : 0);
 
     return sessionId;
   },
@@ -290,6 +336,37 @@ export const sessionsDb = {
     });
 
     merge();
+  },
+
+  /**
+   * Records the model one session runs with.
+   *
+   * Called both when the user picks a model for the session and on every send,
+   * so the row always reflects what the session last ran with and reopening it
+   * restores that model instead of a catalog default.
+   */
+  setSessionModel(sessionId: string, model: string): void {
+    const db = getConnection();
+    db.prepare(
+      `UPDATE sessions
+       SET model = ?
+       WHERE session_id = ?`
+    ).run(model, sessionId);
+  },
+
+  /**
+   * Records the reasoning effort one session runs with.
+   *
+   * `default` is stored as an explicit choice rather than NULL so reopening
+   * the session does not inherit a later per-provider effort preference.
+   */
+  setSessionEffort(sessionId: string, effort: string): void {
+    const db = getConnection();
+    db.prepare(
+      `UPDATE sessions
+       SET effort = ?
+       WHERE session_id = ?`
+    ).run(effort, sessionId);
   },
 
   updateSessionCustomName(
@@ -407,6 +484,46 @@ export const sessionsDb = {
       .all() as SessionRow[];
 
     return normalizeSessionRows(rows);
+  },
+
+  /**
+   * Returns one globally ordered page of visible conversations.
+   *
+   * Pagination happens after archived sessions and sessions belonging to an
+   * archived project have been excluded. This keeps the sidebar feed complete
+   * and correctly ordered across projects instead of flattening only the
+   * per-project slices already loaded by the client.
+   */
+  getRecentSessionsPage(limit: number, offset: number): RecentSessionsPage {
+    const db = getConnection();
+    const visibilityClause = `
+      sessions.isArchived = 0
+      AND (projects.isArchived IS NULL OR projects.isArchived = 0)
+    `;
+    const rows = db
+      .prepare(
+        `SELECT sessions.*
+         FROM sessions
+         LEFT JOIN projects ON projects.project_path = sessions.project_path
+         WHERE ${visibilityClause}
+         ORDER BY julianday(COALESCE(sessions.updated_at, sessions.created_at)) DESC,
+                  sessions.session_id DESC
+         LIMIT ? OFFSET ?`
+      )
+      .all(limit, offset) as SessionRow[];
+    const countRow = db
+      .prepare(
+        `SELECT COUNT(*) AS count
+         FROM sessions
+         LEFT JOIN projects ON projects.project_path = sessions.project_path
+         WHERE ${visibilityClause}`
+      )
+      .get() as { count: number } | undefined;
+
+    return {
+      sessions: normalizeSessionRows(rows),
+      total: Number(countRow?.count ?? 0),
+    };
   },
 
   /**

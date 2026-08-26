@@ -180,6 +180,8 @@ function MainContent({
   sessionPaneWidth,
   onSessionPaneWidthChange,
   onMobilePaneChange,
+  onProjectSelect,
+  onProjectsRefresh,
 }: MainContentProps) {
   const { t } = useTranslation();
   const { preferences } = useUiPreferences();
@@ -289,12 +291,17 @@ function MainContent({
       externalMessageUpdate,
       newSessionTrigger,
       onShowAllTasks: tasksEnabled ? () => workspace.activateTab('tasks') : null,
+      // Upstream gates history refreshes on visibility: a hidden pane keeps
+      // its realtime stream but skips full-history refetches until shown.
+      // SessionPane narrows this further when a terminal tab is in front.
+      isActive: isMobile ? mobileView === 'session' : sessionPaneOpen,
     };
   }, [
     selectedProject, selectedSession, ws, sendMessage, handleFileOpen, onInputFocusChange,
     onSessionProcessing, onSessionIdle, processingSessions, onNavigateToSession, onShowSettings,
     showRawParameters, showThinking, sendByCtrlEnter,
     externalMessageUpdate, newSessionTrigger, tasksEnabled, workspace,
+    isMobile, mobileView, sessionPaneOpen,
   ]);
 
   if (isLoading) {
@@ -403,7 +410,13 @@ function MainContent({
 
           {activePanel === 'git' && (
             <div className="h-full overflow-hidden">
-              <GitPanel selectedProject={selectedProject} isMobile={isMobile} onFileOpen={handleFileOpen} />
+              <GitPanel
+                selectedProject={selectedProject}
+                isMobile={isMobile}
+                onFileOpen={handleFileOpen}
+                onProjectSelect={onProjectSelect}
+                onProjectsRefresh={onProjectsRefresh}
+              />
             </div>
           )}
 

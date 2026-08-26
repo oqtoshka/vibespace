@@ -87,6 +87,14 @@ function Sidebar({
     archivedSessions,
     archivedSessionsCount,
     isArchivedSessionsLoading,
+    recentConversations,
+    recentConversationsTotal,
+    recentConversationsHasMore,
+    isRecentConversationsLoading,
+    isLoadingMoreRecentConversations,
+    recentConversationsError,
+    reloadRecentConversations,
+    loadMoreRecentConversations,
     toggleProject,
     handleSessionClick,
     toggleStarProject,
@@ -269,6 +277,12 @@ function Sidebar({
             archivedSessions={archivedSessions}
             archivedSessionsCount={archivedSessionsCount}
             isArchivedSessionsLoading={isArchivedSessionsLoading}
+            recentConversations={recentConversations}
+            recentConversationsTotal={recentConversationsTotal}
+            recentConversationsHasMore={recentConversationsHasMore}
+            isRecentConversationsLoading={isRecentConversationsLoading}
+            isLoadingMoreRecentConversations={isLoadingMoreRecentConversations}
+            recentConversationsError={recentConversationsError}
             searchFilter={searchFilter}
             onSearchFilterChange={setSearchFilter}
             onClearSearchFilter={() => setSearchFilter('')}
@@ -293,6 +307,8 @@ function Sidebar({
             isSearching={isSearching}
             searchProgress={searchProgress}
             onRestoreArchivedProject={restoreArchivedProject}
+            onLoadMoreRecentConversations={loadMoreRecentConversations}
+            onRetryRecentConversations={reloadRecentConversations}
             onArchivedSessionClick={openArchivedSession}
             onRestoreArchivedSession={restoreArchivedSession}
             onDeleteArchivedSession={(session) => {
