@@ -29,6 +29,40 @@ if (mode !== 'promote') {
   process.exit(64);
 }
 
+/**
+ * A `foo.ts` sitting next to a `foo.js` is not a build error: TypeScript treats
+ * them as one module, silently emits the `.ts` and drops the `.js`. The v1.37.2
+ * upstream merge left upstream's `server/index.ts` next to ours, so the shipped
+ * entrypoint was upstream's — with none of our routes and no mid-turn message
+ * injection — while every check (tsc, lint, tests, the tarball listing) stayed
+ * green. Fail the build instead of shipping the wrong file.
+ */
+function findTypeScriptTwins(directory) {
+  const twins = [];
+  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+    const full = `${directory}/${entry.name}`;
+    if (entry.isDirectory()) {
+      if (entry.name === 'node_modules') continue;
+      twins.push(...findTypeScriptTwins(full));
+      continue;
+    }
+    if (!entry.name.endsWith('.ts') || entry.name.endsWith('.d.ts')) continue;
+    if (fs.existsSync(`${full.slice(0, -3)}.js`)) twins.push(full.slice(0, -3));
+  }
+  return twins;
+}
+
+const twins = findTypeScriptTwins('server');
+if (twins.length > 0) {
+  console.error(
+    `promote-dist-server: ${twins.length} source file(s) exist as BOTH .ts and .js — ` +
+      'TypeScript emits only the .ts and the .js is silently dropped:\n  ' +
+      twins.map((name) => `${name}.ts / ${name}.js`).join('\n  ') +
+      '\nDelete whichever one is not the real implementation, then rebuild.',
+  );
+  process.exit(1);
+}
+
 if (!fs.existsSync(`${NEXT}/${ENTRY}`)) {
   console.error(`promote-dist-server: ${NEXT}/${ENTRY} is missing; leaving the current ${LIVE} untouched.`);
   process.exit(1);
