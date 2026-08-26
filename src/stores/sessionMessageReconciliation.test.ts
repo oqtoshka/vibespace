@@ -68,3 +68,55 @@ test('keeps the existing optimistic text reconciliation behavior', () => {
 
   assert.deepEqual(removeOptimisticUserEchoes([persisted], [local]), []);
 });
+
+test('drops a codex mid-turn steer echo once the rollout copy is fetched', () => {
+  // The live bubble is keyed by the client's queue id; Codex history rows get a
+  // fresh `codex_<uuid>` on every read, so nothing matches by id and the two
+  // stacked as a duplicate bubble.
+  const steerEcho = createUserMessage('queued_1787767948502_vrtwos', '2026-08-26T18:12:28.502Z', {
+    provider: 'codex',
+    content: 'Pmef надо погасить, он не нужен',
+  });
+  const persisted = createUserMessage('codex_0c5c638f-d9f8-48b3-9199-b2668fadae61', '2026-08-26T18:12:38.526Z', {
+    provider: 'codex',
+    content: 'Pmef надо погасить, он не нужен',
+  });
+
+  assert.deepEqual(removeOptimisticUserEchoes([persisted], [steerEcho]), []);
+});
+
+test('drops a server-drained queue echo once the provider persists the turn', () => {
+  const drainedEcho = createUserMessage('text_5a1c0f7e-2c1a-4a2f-9f3a-0b1d2e3f4a5b', '2026-08-26T18:12:28.000Z', {
+    provider: 'opencode',
+    content: 'next task please',
+  });
+  const persisted = createUserMessage('opencode_bd0a1f2c', '2026-08-26T18:12:31.000Z', {
+    provider: 'opencode',
+    content: 'next task please',
+  });
+
+  assert.deepEqual(removeOptimisticUserEchoes([persisted], [drainedEcho]), []);
+});
+
+test('keeps a live user row the persisted page does not have yet', () => {
+  const live = createUserMessage('queued_1787767948502_vrtwos', '2026-08-26T18:12:28.502Z', {
+    provider: 'codex',
+    content: 'still indexing',
+  });
+  const unrelated = createUserMessage('codex_other', '2026-08-26T18:12:30.000Z', {
+    provider: 'codex',
+    content: 'a different turn',
+  });
+
+  assert.deepEqual(removeOptimisticUserEchoes([unrelated], [live]), [live]);
+});
+
+test('leaves non-user realtime rows alone', () => {
+  const toolUse = {
+    ...createUserMessage('codex_tool', '2026-08-26T18:12:28.000Z'),
+    kind: 'tool_use',
+    role: undefined,
+  } as unknown as NormalizedMessage;
+
+  assert.deepEqual(removeOptimisticUserEchoes([], [toolUse]), [toolUse]);
+});
