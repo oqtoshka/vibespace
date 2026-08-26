@@ -303,6 +303,8 @@ export default function CodeEditor({
               showingChanges: t('header.showingChanges'),
               edit: t('actions.edit', 'Edit'),
               preview: t('actions.preview', 'Preview'),
+              copyPath: t('actions.copyPath', 'Copy file path'),
+              pathCopied: t('actions.pathCopied', 'File path copied'),
               settings: t('toolbar.settings'),
               download: t('actions.download'),
               save: t('actions.save'),

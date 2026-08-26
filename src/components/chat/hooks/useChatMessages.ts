@@ -5,7 +5,7 @@
 
 import type { NormalizedMessage } from '../../../stores/useSessionStore';
 import type { ChatMessage, SubagentChildTool } from '../types/types';
-import { decodeHtmlEntities, unescapeWithMathProtection, formatUsageLimitText } from '../utils/chatFormatting';
+import { formatUsageLimitText } from '../utils/chatFormatting';
 
 function formatToolResultContent(content: unknown): string {
   const text = typeof content === 'string' ? content : JSON.stringify(content);
@@ -115,7 +115,8 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
       case 'text': {
         const content = msg.content || '';
         const images = Array.isArray(msg.images) && msg.images.length > 0 ? msg.images : undefined;
-        if (!content.trim() && !images) continue;
+        const files = Array.isArray(msg.files) && msg.files.length > 0 ? msg.files : undefined;
+        if (!content.trim() && !images && !files) continue;
 
         if (msg.role === 'user') {
           // Parse background-task completion notifications. Extract fields
@@ -155,7 +156,7 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
               if (notif.result) {
                 converted.push({
                   type: 'assistant',
-                  content: formatUsageLimitText(unescapeWithMathProtection(decodeHtmlEntities(notif.result))),
+                  content: formatUsageLimitText(notif.result),
                   timestamp: msg.timestamp,
                   ...sharedMetadata,
                 });
@@ -164,16 +165,15 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
           } else {
             converted.push({
               type: 'user',
-              content: unescapeWithMathProtection(decodeHtmlEntities(content)),
+              content,
               timestamp: msg.timestamp,
               images,
+              files,
               ...sharedMetadata,
             });
           }
         } else {
-          let text = decodeHtmlEntities(content);
-          text = unescapeWithMathProtection(text);
-          text = formatUsageLimitText(text);
+          const text = formatUsageLimitText(content);
           converted.push({
             type: 'assistant',
             content: text,
@@ -241,7 +241,7 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
         if (msg.content?.trim()) {
           converted.push({
             type: 'assistant',
-            content: unescapeWithMathProtection(msg.content),
+            content: msg.content,
             timestamp: msg.timestamp,
             isThinking: true,
             ...sharedMetadata,

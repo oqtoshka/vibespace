@@ -6,6 +6,7 @@ import readline from 'node:readline';
 import { createCompactBoundaryMessage, looksLikeCompactSummary } from '@/shared/compaction.js';
 import type { IProviderSessions } from '@/shared/interfaces.js';
 import type { AnyRecord, FetchHistoryOptions, FetchHistoryResult, NormalizedMessage, RewindResult } from '@/shared/types.js';
+import { parseFilesInputTag } from '@/shared/image-attachments.js';
 import { createNormalizedMessage, generateMessageId, readFiniteNumber, readObjectRecord, sliceTailPage } from '@/shared/utils.js';
 import { sessionsDb } from '@/modules/database/index.js';
 
@@ -388,11 +389,19 @@ async function getSessionMessages(
  * - local command payloads (`<command-name>...`) and stdout wrappers
  *   (`<local-command-stdout>...`) should be remapped into normal chat messages
  *   instead of being discarded as internal content
+ *
+ * Skill bodies belong in the first group. When a skill is invoked, Claude
+ * injects the entire SKILL.md as a synthetic user turn. Persisted transcripts
+ * tag it `isMeta: true`, but the live SDK stream does not, so without a
+ * content-level check the same payload renders as a huge user bubble during the
+ * run and then vanishes on reload. The skill is already represented by the
+ * `Skill` tool call, so it is never user-visible content.
  */
 const INTERNAL_CONTENT_PREFIXES = [
   '<system-reminder>',
   'Caveat:',
   '[Request interrupted',
+  'Base directory for this skill:',
 ] as const;
 
 function isInternalContent(content: string): boolean {
@@ -654,6 +663,7 @@ export class ClaudeSessionsProvider implements IProviderSessions {
           }
         }
         let imagesAttached = false;
+        let filesAttached = false;
 
         for (let partIndex = 0; partIndex < raw.message.content.length; partIndex++) {
           const part = raw.message.content[partIndex];
@@ -681,7 +691,11 @@ export class ClaudeSessionsProvider implements IProviderSessions {
             }));
           } else if (part.type === 'text') {
             const text = stripVibespaceRetryMarker(part.text || '');
-            if (text && !isInternalContent(text)) {
+            const parsedFiles = parseFilesInputTag(text);
+            if (
+              (parsedFiles.text || parsedFiles.attachments.length > 0)
+              && !isInternalContent(parsedFiles.text)
+            ) {
               messages.push(createNormalizedMessage({
                 id: retryMessageId ? baseId : `${baseId}_text_${partIndex}`,
                 uuid: raw.uuid,
@@ -690,10 +704,14 @@ export class ClaudeSessionsProvider implements IProviderSessions {
                 provider: PROVIDER,
                 kind: 'text',
                 role: 'user',
-                content: text,
+                content: parsedFiles.text,
                 images: !imagesAttached && imageAttachments.length > 0 ? imageAttachments : undefined,
+                files: !filesAttached && parsedFiles.attachments.length > 0
+                  ? parsedFiles.attachments
+                  : undefined,
               }));
               imagesAttached = true;
+              filesAttached = filesAttached || parsedFiles.attachments.length > 0;
             }
           }
         }
@@ -787,7 +805,11 @@ export class ClaudeSessionsProvider implements IProviderSessions {
           return messages;
         }
 
-        if (text && !isInternalContent(text)) {
+        const parsedFiles = parseFilesInputTag(text);
+        if (
+          (parsedFiles.text || parsedFiles.attachments.length > 0)
+          && !isInternalContent(parsedFiles.text)
+        ) {
           messages.push(createNormalizedMessage({
             id: baseId,
             uuid: raw.uuid,
@@ -796,7 +818,8 @@ export class ClaudeSessionsProvider implements IProviderSessions {
             provider: PROVIDER,
             kind: 'text',
             role: 'user',
-            content: text,
+            content: parsedFiles.text,
+            files: parsedFiles.attachments.length > 0 ? parsedFiles.attachments : undefined,
           }));
         }
       }

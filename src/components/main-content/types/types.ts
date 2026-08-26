@@ -81,6 +81,10 @@ export type MainContentProps = {
    * which pane is showing, so the drawer can follow it to the matching list.
    */
   onMobilePaneChange?: (pane: 'session' | 'files') => void;
+  /** Switches the app to another project — used by the git panel's Worktrees view. */
+  onProjectSelect?: (project: Project) => void;
+  /** Silently re-syncs the sidebar project list after worktree projects change. */
+  onProjectsRefresh?: () => void;
 };
 
 export type MainContentHeaderProps = {

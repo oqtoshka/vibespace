@@ -1,5 +1,6 @@
 import { useMemo } from 'react';
 import type { Components } from 'react-markdown';
+import type { PluggableList } from 'unified';
 import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
 import rehypeKatex from 'rehype-katex';
 import remarkGfm from 'remark-gfm';
@@ -72,7 +73,12 @@ export default function MarkdownPreview({
   projectId,
   resolveImageUrl = null,
 }: MarkdownPreviewProps) {
-  const remarkPlugins = useMemo(() => [remarkGfm, remarkMath], []);
+  // Single-dollar math is off (upstream): a stray "$" in prose must not
+  // swallow the rest of the paragraph into KaTeX.
+  const remarkPlugins = useMemo(
+    () => [remarkGfm, [remarkMath, { singleDollarTextMath: false }]] as PluggableList,
+    [],
+  );
   const rehypePlugins = useMemo(() => [rehypeKatex], []);
   const { frontmatter, body } = useMemo(() => splitMarkdownFrontmatter(content), [content]);
 

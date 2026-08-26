@@ -1,4 +1,4 @@
-import { Archive, Folder, FolderPlus, MessageSquare, Plus, RefreshCw, Search, X, PanelLeftClose } from 'lucide-react';
+import { Archive, Folder, FolderPlus, History, MessageSquare, Plus, RefreshCw, Search, X, PanelLeftClose } from 'lucide-react';
 import type { TFunction } from 'i18next';
 import { Button, Input, Tooltip } from '../../../../shared/view/ui';
 import { IS_PLATFORM, APP_TITLE } from '../../../../constants/config';
@@ -52,7 +52,9 @@ export default function SidebarHeader({
   const showSearchTools = (projectsCount > 0 || archivedSessionsCount > 0 || isArchivedSessionsLoading) && !isLoading;
   const searchPlaceholder = searchMode === 'archived'
     ? t('search.archivedPlaceholder', 'Search archived sessions...')
-    : t('search.unifiedPlaceholder', 'Search sessions & conversations...');
+    : searchMode === 'conversations'
+      ? t('search.conversationsPlaceholder', 'Search conversations...')
+      : t('search.unifiedPlaceholder', 'Search sessions & conversations...');
 
   // One switcher drives both states: the sessions list (with normal or
   // archive search mode) and the project file tree.
@@ -73,6 +75,22 @@ export default function SidebarHeader({
       >
         <MessageSquare className="h-3 w-3" />
         {t('search.modeSessions', 'Sessions')}
+      </button>
+      <button
+        onClick={() => {
+          onViewChange('sessions');
+          onSearchModeChange('conversations');
+        }}
+        aria-pressed={view === 'sessions' && searchMode === 'conversations'}
+        className={cn(
+          "flex-1 flex items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium transition-all",
+          view === 'sessions' && searchMode === 'conversations'
+            ? "bg-background shadow-sm text-foreground"
+            : "text-muted-foreground hover:text-foreground"
+        )}
+      >
+        <History className="h-3 w-3" />
+        {t('search.modeRecent', 'Recent')}
       </button>
       <button
         onClick={() => onViewChange('files')}

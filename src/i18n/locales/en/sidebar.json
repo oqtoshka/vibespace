@@ -125,12 +125,28 @@
     "modeConversations": "Conversations",
     "conversationsPlaceholder": "Search in conversations...",
     "searching": "Searching...",
+    "sessionTitles": "Session",
+    "conversationContents": "Conversation contents",
     "noResults": "No results found",
     "tryDifferentQuery": "Try a different search query",
     "matches_one": "{{count}} match",
     "matches_other": "{{count}} matches",
     "projectsScanned_one": "{{count}} project scanned",
-    "projectsScanned_other": "{{count}} projects scanned"
+    "projectsScanned_other": "{{count}} projects scanned",
+    "modeSessions": "Sessions",
+    "modeRecent": "Recent",
+    "modeFiles": "Files",
+    "unifiedPlaceholder": "Search sessions & conversations...",
+    "inConversations": "In conversations",
+    "archiveOnlyTooltip": "Archive only"
+  },
+  "recent": {
+    "title": "Recent conversations",
+    "emptyTitle": "No conversations yet",
+    "emptyDescription": "Your most recently updated conversations will appear here.",
+    "loadFailed": "Could not load recent conversations",
+    "loadMore": "Load older conversations",
+    "loadingMore": "Loading more..."
   },
   "deleteConfirmation": {
     "deleteProject": "Remove Project",

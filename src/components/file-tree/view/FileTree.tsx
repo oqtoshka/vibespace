@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useState, useEffect, useRef } from 'react';
-import type { DragEvent } from 'react';
+import type { ChangeEvent, DragEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import { AlertTriangle, Check, X, Loader2, Folder, Trash2, Upload } from 'lucide-react';
 
@@ -62,7 +62,7 @@ export default function FileTree({ selectedProject, isActive = true, onFileOpen 
     (dirPath: string) => pruneDirectories([dirPath]),
     [pruneDirectories],
   );
-  const { files, loading, refreshFiles, loadDirectory, ensureFullTree, isFullTreeLoading } =
+  const { files, loading, error, refreshFiles, loadDirectory, ensureFullTree, isFullTreeLoading } =
     useFileTreeData(selectedProject, expandedDirs, onDirectoryMissing);
 
   // The tree stays mounted while other tabs are active; refresh silently when
@@ -255,6 +255,28 @@ export default function FileTree({ selectedProject, isActive = true, onFileOpen 
     );
   }, [refreshFiles, selectedPaths, selectedProject, showToast, t]);
 
+  // Folder-targeted uploads (context menu / hover button) share one hidden
+  // input; the target path is remembered until the user picks the files.
+  const folderUploadInputRef = useRef<HTMLInputElement>(null);
+  const folderUploadTargetRef = useRef('');
+  const { uploadFiles } = upload;
+
+  const handleUploadToFolder = useCallback((targetPath: string) => {
+    folderUploadTargetRef.current = targetPath;
+    folderUploadInputRef.current?.click();
+  }, []);
+
+  const handleFolderUploadInputChange = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => {
+      const { files: pickedFiles } = event.target;
+      if (pickedFiles && pickedFiles.length > 0) {
+        uploadFiles(Array.from(pickedFiles), folderUploadTargetRef.current);
+      }
+      event.target.value = '';
+    },
+    [uploadFiles],
+  );
+
   // Focus input when creating new item
   useEffect(() => {
     if (operations.isCreating && newItemInputRef.current) {
@@ -314,6 +336,17 @@ export default function FileTree({ selectedProject, isActive = true, onFileOpen 
       onDragLeave={upload.handleDragLeave}
       onDrop={upload.handleDrop}
     >
+      {/* Hidden input for folder-targeted uploads (context menu / hover button) */}
+      <input
+        ref={folderUploadInputRef}
+        type="file"
+        multiple
+        className="hidden"
+        onChange={handleFolderUploadInputChange}
+        tabIndex={-1}
+        aria-hidden="true"
+      />
+
       {/* Drag overlay — pointer-events-none so folder rows still receive
           dragover and can claim the drop target; hidden for internal moves
           where the row highlight is the only cue needed. */}
@@ -417,6 +450,7 @@ export default function FileTree({ selectedProject, isActive = true, onFileOpen 
         <FileTreeBody
           files={files}
           filteredFiles={filteredFiles}
+          error={error}
           searchQuery={searchQuery}
           viewMode={viewMode}
           expandedDirs={expandedDirs}
@@ -430,6 +464,7 @@ export default function FileTree({ selectedProject, isActive = true, onFileOpen 
           onNewFolder={(path) => operations.handleStartCreate(path, 'directory')}
           onCopyPath={operations.handleCopyPath}
           onDownload={operations.handleDownload}
+          onUpload={handleUploadToFolder}
           onRefresh={refreshFiles}
           // Pass rename state and handlers for inline editing
           renamingItem={operations.renamingItem}

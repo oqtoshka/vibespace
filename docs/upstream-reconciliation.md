@@ -3,6 +3,49 @@
 Written 2026-08-26 against `origin/main` = `677b7ba4` (v1.37.2) and our `main`
 = `828b702a` (1.38.43). Merge-base `75ff8a5d` (v1.36.3).
 
+## Status (2026-08-26): Phase 1 landed
+
+`origin/main` (v1.37.2) is merged on `main`. What the merge decided, so the
+next person does not re-litigate it:
+
+- **Entry point stays `server/index.js`** (not upstream's `index.ts`). It still
+  hosts our inline preview/share/file routes; upstream's modules are mounted
+  from it (`git`, `worktrees`, `taskmaster`, `commands`, `plugins`,
+  `notifications`, `browser-use`). `server/routes/{agent,auth,auth-oidc,
+  settings,user}.js` survive for the same reason; `routes/{commands,cursor,git,
+  mcp-utils,plugins,taskmaster}.js` are gone — the module versions replace them.
+- **Provider runtimes stay at the root** (`server/claude-sdk.js`,
+  `openai-codex.js`, `opencode-cli.js`, `cursor-cli.js`) with our 39 commits of
+  nudge/reaper/rate-limit/compaction logic intact. Upstream's
+  `modules/providers/list/<p>/<p>-runtime.provider.js` files are thin adapters
+  over ours, and every run/abort/approval goes through upstream's
+  `providerRuntimeService` gateway (app-session-id ↔ provider-session-id
+  aliasing lives in `server/shared/provider-runtime-context.js`). ESLint relaxes
+  `boundaries/no-unknown` for exactly those four adapters and nothing else.
+- **Upstream's background keepalive (`BG_WAIT_CEILING`, holding CLI input open
+  after a turn) is deliberately not ported.** It contradicts our idle reaper,
+  task-ledger nudge and rate-limit wake, which all reason about "the turn is
+  over". Our behaviour wins.
+- **Notifications are still keyed on provider session ids**, not app session
+  ids. Works, but it is the seam to revisit when notifications move to app ids.
+- **Two worktree UIs coexist**: our `WorktreePicker` and upstream's
+  `WorktreesView` tab (backed by `/api/worktrees`). Dmitri decides which one
+  stays. Upstream's sidebar `isProcessing`/`needsAttention` indicators are wired
+  but dormant.
+- Adopted as-is: gitignore-aware file tree (`respectGitignore`), visibility-gated
+  history refresh (`isActive`), recent-conversation feed, mermaid,
+  `remark-breaks`, Codex SDK 0.146, es/ko/zh i18n, `promote-dist-server`
+  (`dist-server.next` → promote; `preserver` recovers). `bin` stays
+  `dist-server/server/cli.js`, so the launchd wrapper and the oqto Dockerfile
+  need no path change.
+- Shims kept so old imports resolve: `server/middleware/auth.js` →
+  `modules/auth`, `server/services/vapid-keys.js` → `modules/notifications`,
+  `server/services/notification-orchestrator.js` is the implementation and the
+  module copy re-exports it.
+
+Phase 2 (below) is next: move `server/services/*` and `server/utils/*` into
+modules, then retire `index.js` for `index.ts`.
+
 ## What upstream did
 
 19 commits, but two of them (#1037, #1153) are squashed mega-PRs: **394 files,

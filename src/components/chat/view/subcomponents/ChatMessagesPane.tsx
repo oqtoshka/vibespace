@@ -7,6 +7,7 @@ import type {
   Project,
   ProjectSession,
   LLMProvider,
+  ProviderModelActions,
   ProviderModelsDefinition,
 } from '../../../../types/app';
 import { getIntrinsicMessageKey } from '../../utils/messageKeys';
@@ -16,6 +17,7 @@ import MessageComponent from './MessageComponent';
 import ProviderSelectionEmptyState from './ProviderSelectionEmptyState';
 import ToolGroupContainer from './ToolGroupContainer';
 import LoadAllMessagesOverlay from './LoadAllMessagesOverlay';
+import ChatExportMenu from './ChatExportMenu';
 
 interface ChatMessagesPaneProps {
   scrollContainerRef: RefObject<HTMLDivElement>;
@@ -48,6 +50,7 @@ interface ChatMessagesPaneProps {
   opencodeModel: string;
   setOpenCodeModel: (model: string) => void;
   providerModelCatalog: Partial<Record<LLMProvider, ProviderModelsDefinition>>;
+  providerModelActions: ProviderModelActions;
   providerModelsLoading: boolean;
   tasksEnabled: boolean;
   isTaskMasterInstalled: boolean | null;
@@ -102,6 +105,7 @@ function ChatMessagesPane({
   opencodeModel,
   setOpenCodeModel,
   providerModelCatalog,
+  providerModelActions,
   providerModelsLoading,
   tasksEnabled,
   isTaskMasterInstalled,
@@ -187,6 +191,13 @@ function ChatMessagesPane({
         hasActivityIndicator ? 'pb-12 sm:pb-14' : 'pb-3 sm:pb-4'
       }`}
     >
+      {chatMessages.length > 0 && (
+        <div className="pointer-events-none sticky right-4 top-3 z-10 mb-2 flex justify-end sm:px-4">
+          <div className="pointer-events-auto">
+            <ChatExportMenu messages={chatMessages} sessionTitle={selectedSession?.title} />
+          </div>
+        </div>
+      )}
       {/* The scroll anchor measures against the children of this element, and
           watches it for the height changes that late-rendering markdown, code
           highlighting and images cause after a commit. */}
@@ -243,6 +254,7 @@ function ChatMessagesPane({
           opencodeModel={opencodeModel}
           setOpenCodeModel={setOpenCodeModel}
           providerModelCatalog={providerModelCatalog}
+          providerModelActions={providerModelActions}
           providerModelsLoading={providerModelsLoading}
           tasksEnabled={tasksEnabled}
           isTaskMasterInstalled={isTaskMasterInstalled}

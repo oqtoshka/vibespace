@@ -18,6 +18,7 @@ const hasActionablePermissionRequests = (requests: Array<{ toolName?: unknown }>
 };
 
 interface UseChatRealtimeHandlersArgs {
+  isActive: boolean;
   subscribe: (listener: (event: ServerEvent) => void) => () => void;
   provider: LLMProvider;
   selectedSession: ProjectSession | null;
@@ -49,6 +50,7 @@ interface UseChatRealtimeHandlersArgs {
   onSessionProcessing?: MarkSessionProcessing;
   onSessionIdle?: MarkSessionIdle;
   onWebSocketReconnect?: () => void;
+  requestLatestMessages: (sessionId: string, allowNetwork?: boolean) => Promise<void>;
   sessionStore: SessionStore;
 }
 
@@ -66,6 +68,7 @@ interface UseChatRealtimeHandlersArgs {
  * `useProjectsState`, not in this hook.
  */
 export function useChatRealtimeHandlers({
+  isActive,
   subscribe,
   provider,
   selectedSession,
@@ -81,6 +84,7 @@ export function useChatRealtimeHandlers({
   onSessionProcessing,
   onSessionIdle,
   onWebSocketReconnect,
+  requestLatestMessages,
   sessionStore,
 }: UseChatRealtimeHandlersArgs) {
   // Session switches can send `chat.subscribe` before this effect has a chance
@@ -89,6 +93,8 @@ export function useChatRealtimeHandlers({
   // the previous render's closed-over selection.
   const activeViewSessionIdRef = useRef<string | null>(selectedSession?.id || currentSessionId || null);
   activeViewSessionIdRef.current = selectedSession?.id || currentSessionId || null;
+  const isActiveRef = useRef(isActive);
+  isActiveRef.current = isActive;
 
   // Keep the latest pending-permission snapshot available to the websocket
   // listener so back-to-back permission events can dedupe and re-arm the
@@ -332,7 +338,7 @@ export function useChatRealtimeHandlers({
           // before the first send), so the only follow-up is syncing the
           // viewed conversation with the now-persisted transcript.
           if (sid && sid === activeViewSessionId) {
-            void sessionStore.refreshFromServer(sid);
+            void requestLatestMessages(sid, isActiveRef.current);
           }
 
           break;
@@ -440,6 +446,7 @@ export function useChatRealtimeHandlers({
     onSessionProcessing,
     onSessionIdle,
     onWebSocketReconnect,
+    requestLatestMessages,
     sessionStore,
   ]);
 }

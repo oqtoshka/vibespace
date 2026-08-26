@@ -1,7 +1,9 @@
 import { IS_PLATFORM } from "../constants/config";
-
-import { persistAuthToken } from "./authToken";
+import { clearAuthToken, persistAuthToken, readAuthToken } from "./authToken";
 import { AUTH_TOKEN_REFRESHED_EVENT, AUTH_SESSION_EXPIRED_EVENT } from "./authEvents";
+
+// Re-exported for consumers that only know the fetch layer (upstream shape).
+export { AUTH_TOKEN_REFRESHED_EVENT, AUTH_SESSION_EXPIRED_EVENT };
 
 /**
  * Decide whether a failed response means the JWT session itself is dead (vs a
@@ -50,16 +52,102 @@ const TOKEN_ROTATION_COLLAPSE_MS = 10000;
 
 const shouldApplyRefreshedToken = (refreshedToken) => {
   if (!isValidRefreshedToken(refreshedToken)) return false;
-  if (refreshedToken === localStorage.getItem('auth-token')) return false;
+  if (refreshedToken === readAuthToken()) return false;
   const now = Date.now();
   if (now - lastAcceptedRotationAt < TOKEN_ROTATION_COLLAPSE_MS) return false;
   lastAcceptedRotationAt = now;
   return true;
 };
 
+const readTokenClaims = (token) => {
+  if (!isValidRefreshedToken(token)) {
+    return null;
+  }
+
+  try {
+    const encodedPayload = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+    const paddedPayload = encodedPayload.padEnd(
+      encodedPayload.length + ((4 - (encodedPayload.length % 4)) % 4),
+      '=',
+    );
+    const payload = JSON.parse(atob(paddedPayload));
+
+    if (
+      typeof payload.iat !== 'number' ||
+      !Number.isFinite(payload.iat) ||
+      typeof payload.exp !== 'number' ||
+      !Number.isFinite(payload.exp)
+    ) {
+      return null;
+    }
+
+    return { issuedAt: payload.iat * 1000, expiresAt: payload.exp * 1000 };
+  } catch {
+    return null;
+  }
+};
+
+// Tolerance for client/server clock skew. The server's own jwt.verify is the
+// real authority; this check only decides whether the client should discard a
+// token locally. Without an allowance, a browser clock running slightly ahead
+// reads a still-server-valid token as expired and drops the session.
+export const TOKEN_EXPIRY_SKEW_MS = 60_000;
+
+export const isAuthTokenExpired = (token) => {
+  const claims = readTokenClaims(token);
+  return claims ? Date.now() >= claims.expiresAt + TOKEN_EXPIRY_SKEW_MS : false;
+};
+
+export const getAuthTokenRefreshDelay = (token) => {
+  const claims = readTokenClaims(token);
+  if (!claims) {
+    return null;
+  }
+
+  const refreshAt = claims.issuedAt + ((claims.expiresAt - claims.issuedAt) / 2);
+  return Math.max(0, refreshAt - Date.now());
+};
+
+/**
+ * The stored JWT is dead — drop it and tell AuthContext, so the login screen
+ * renders instead of a hollow app where every fetch 401s.
+ */
+export const expireAuthSession = () => {
+  clearAuthToken();
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent(AUTH_SESSION_EXPIRED_EVENT));
+  }
+};
+
+export const getStoredAuthToken = () => {
+  const token = readAuthToken();
+  if (token && isAuthTokenExpired(token)) {
+    expireAuthSession();
+    return null;
+  }
+  return token;
+};
+
+/**
+ * Persist a token and let AuthContext pick it up, so consumers holding the
+ * React copy (e.g. the WebSocket URL) don't keep using the stale one until it
+ * expires and every reconnect starts failing.
+ */
+export const storeAuthToken = (token) => {
+  if (!isValidRefreshedToken(token)) {
+    return false;
+  }
+
+  persistAuthToken(token);
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent(AUTH_TOKEN_REFRESHED_EVENT, { detail: token }));
+  }
+  return true;
+};
+
 // Utility function for authenticated API calls
 export const authenticatedFetch = (url, options = {}) => {
-  const token = localStorage.getItem('auth-token');
+  const token = getStoredAuthToken();
 
   const defaultHeaders = {};
 
@@ -81,17 +169,16 @@ export const authenticatedFetch = (url, options = {}) => {
   }).then(async (response) => {
     const refreshedToken = response.headers.get('X-Refreshed-Token');
     if (shouldApplyRefreshedToken(refreshedToken)) {
-      persistAuthToken(refreshedToken);
-      // Let AuthContext pick up the rotated token so consumers holding the
-      // React copy (e.g. the WebSocket URL) don't keep using the stale one
-      // until it expires and every reconnect starts failing.
-      window.dispatchEvent(new CustomEvent(AUTH_TOKEN_REFRESHED_EVENT, { detail: refreshedToken }));
+      storeAuthToken(refreshedToken);
     }
-    if (!IS_PLATFORM && !response.ok && await detectExpiredSession(response)) {
+    if (
+      !IS_PLATFORM &&
+      (response.headers.get('X-Auth-Error') || (!response.ok && await detectExpiredSession(response)))
+    ) {
       // The stored token is dead — every subsequent call would fail the same
       // way, leaving hollow UI (empty chat history, dead websocket). Surface
       // it once so AuthContext can clear the session and show the login form.
-      window.dispatchEvent(new CustomEvent(AUTH_SESSION_EXPIRED_EVENT));
+      expireAuthSession();
     }
     return response;
   });
@@ -112,6 +199,7 @@ export const api = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username, password }),
     }),
+    refresh: () => authenticatedFetch('/api/auth/refresh', { method: 'POST' }),
     user: () => authenticatedFetch('/api/auth/user'),
     logout: () => authenticatedFetch('/api/auth/logout', { method: 'POST' }),
   },
@@ -176,8 +264,21 @@ export const api = {
   // bookmark, a reload).
   locateSession: (sessionId) =>
     authenticatedFetch(`/api/providers/sessions/${encodeURIComponent(sessionId)}/locate`),
+  // Resolves one session (by app id or provider-native id) to its metadata and
+  // owning project — used when a /session/<id> URL isn't in loaded payloads.
+  sessionDetails: (sessionId) =>
+    authenticatedFetch(`/api/providers/sessions/${encodeURIComponent(sessionId)}`),
   runningSessions: () =>
     authenticatedFetch('/api/providers/sessions/running'),
+  recentConversations: ({ limit = 40, offset = 0 } = {}) => {
+    const params = new URLSearchParams({
+      limit: String(limit),
+      offset: String(offset),
+    });
+    return authenticatedFetch(`/api/providers/sessions/recent?${params.toString()}`);
+  },
+  providerSessionId: (sessionId) =>
+    authenticatedFetch(`/api/providers/sessions/${encodeURIComponent(sessionId)}/provider-id`),
   restoreSession: (sessionId) =>
     authenticatedFetch(`/api/providers/sessions/${sessionId}/restore`, {
       method: 'POST',
@@ -217,7 +318,7 @@ export const api = {
       body: JSON.stringify({ model, inputTokens }),
     }),
   searchConversationsUrl: (query, limit = 50) => {
-    const token = localStorage.getItem('auth-token');
+    const token = getStoredAuthToken();
     const params = new URLSearchParams({ q: query, limit: String(limit) });
     if (token) params.set('token', token);
     return `/api/providers/search/sessions?${params.toString()}`;
@@ -301,14 +402,19 @@ export const api = {
   // bounds the walk (omit for the full deep tree), `meta: 0` skips per-entry
   // stat metadata for path-only consumers.
   getFiles: (projectId, options = {}) => {
-    const { dir, depth, meta, ...fetchOptions } = options;
+    const { dir, depth, meta, respectGitignore, ...fetchOptions } = options;
     const params = new URLSearchParams();
     if (dir !== undefined) params.set('dir', dir);
     if (depth !== undefined) params.set('depth', String(depth));
     if (meta !== undefined) params.set('meta', String(meta));
+    // Hide what the project's root .gitignore hides (build output, deps).
+    if (respectGitignore) params.set('respectGitignore', '1');
     const query = params.toString();
     return authenticatedFetch(`/api/projects/${projectId}/files${query ? `?${query}` : ''}`, fetchOptions);
   },
+  // Mentions only need paths/names — skip stat metadata for a faster walk.
+  getMentionableFiles: (projectId, options = {}) =>
+    api.getFiles(projectId, { ...options, meta: 0 }),
 
   // File share links (authenticated management).
   createShare: (projectId, { path, expiresIn } = {}) =>

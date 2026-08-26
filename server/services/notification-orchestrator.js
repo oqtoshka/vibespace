@@ -1,6 +1,8 @@
 import webPush from 'web-push';
 
 import { notificationPreferencesDb, pushSubscriptionsDb, sessionsDb } from '../modules/database/index.js';
+import { sendDesktopNotification as sendDesktopNotificationToClients } from '../modules/notifications/services/desktop-notification-clients.service.js';
+
 import { sendTelegramMessage, buildTelegramText } from './telegram-notifier.js';
 import { summarizeRecap, classifyAssistantState, formatResumeAt } from './notification-content.js';
 
@@ -37,6 +39,10 @@ function isEventEnabled(preferences, event) {
 
 function shouldSendPush(preferences, event) {
   return Boolean(preferences?.channels?.webPush) && isEventEnabled(preferences, event);
+}
+
+function shouldSendDesktop(preferences, event) {
+  return Boolean(preferences?.channels?.desktop) && isEventEnabled(preferences, event);
 }
 
 function shouldSendTelegram(preferences, event) {
@@ -183,6 +189,10 @@ function buildPushMessage(event) {
     return `⏳ Usage limit hit — auto-resume at ${formatResumeAt(meta.resumeAt)}`;
   }
 
+  if (event.code === 'run.background_completed') {
+    return '✅ Background work finished';
+  }
+
   const CODE_MAP = {
     'agent.notification': meta.message ? String(meta.message) : 'You have a new notification',
     'push.enabled': 'Push notifications are now enabled!'
@@ -282,7 +292,8 @@ function notifyUserIfEnabled({ userId, event }) {
   const preferences = notificationPreferencesDb.getPreferences(userId);
   const wantPush = shouldSendPush(preferences, normalizedEvent);
   const wantTelegram = shouldSendTelegram(preferences, normalizedEvent);
-  if (!wantPush && !wantTelegram) {
+  const wantDesktop = shouldSendDesktop(preferences, normalizedEvent);
+  if (!wantPush && !wantTelegram && !wantDesktop) {
     return;
   }
   if (isDuplicate(normalizedEvent)) {
@@ -297,6 +308,13 @@ function notifyUserIfEnabled({ userId, event }) {
   if (wantTelegram) {
     sendTelegram(preferences.telegram, normalizedEvent).catch((err) => {
       console.error('Telegram send error:', err);
+    });
+  }
+  if (wantDesktop) {
+    // Desktop clients (Electron shell / websocket listeners) get the same
+    // payload as web push and render it natively.
+    Promise.resolve(sendDesktopNotificationToClients(userId, buildPushBody(normalizedEvent))).catch((err) => {
+      console.error('Desktop notification send error:', err);
     });
   }
 }
@@ -344,6 +362,27 @@ function notifyRunPaused({ userId, provider, sessionId = null, sessionName = nul
   });
 }
 
+/**
+ * Reports background work that finished after its turn had already completed.
+ *
+ * Uses the `stop` kind so it rides the existing "run stopped" preference rather
+ * than needing a new opt-in that would default to off. No explicit dedupeKey, so
+ * the default composite key collapses repeats inside the dedupe window.
+ */
+function notifyBackgroundWorkCompleted({ userId, provider, sessionId = null, sessionName = null }) {
+  notifyUserIfEnabled({
+    userId,
+    event: createNotificationEvent({
+      provider,
+      sessionId,
+      kind: 'stop',
+      code: 'run.background_completed',
+      meta: { sessionName },
+      severity: 'info'
+    })
+  });
+}
+
 function notifyRunFailed({ userId, provider, sessionId = null, error, sessionName = null }) {
   const errorMessage = normalizeErrorMessage(error);
 
@@ -362,9 +401,13 @@ function notifyRunFailed({ userId, provider, sessionId = null, error, sessionNam
 }
 
 export {
+  // Upstream name for the push/desktop payload builder; kept so the
+  // notifications module barrel and its tests keep resolving.
+  buildPushBody as buildNotificationPayload,
   createNotificationEvent,
   notifyUserIfEnabled,
   notifyRunStopped,
   notifyRunPaused,
-  notifyRunFailed
+  notifyRunFailed,
+  notifyBackgroundWorkCompleted
 };

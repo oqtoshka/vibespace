@@ -30,6 +30,7 @@ type CreateAppSessionResult = {
   projectPath: string;
   isSide: boolean;
   isPrivate: boolean;
+  sessionName: string;
 };
 
 type ArchivedSessionListItem = {
@@ -45,6 +46,43 @@ type ArchivedSessionListItem = {
   isProjectArchived: boolean;
   isPrivate: boolean;
 };
+
+type RecentSessionListItem = Pick<
+  ArchivedSessionListItem,
+  'sessionId' | 'provider' | 'projectId' | 'projectDisplayName' | 'sessionTitle' | 'lastActivity'
+>;
+
+type RecentSessionsPage = {
+  conversations: RecentSessionListItem[];
+  total: number;
+  hasMore: boolean;
+};
+
+type SessionDetails = {
+  /** Canonical app-facing session id (may differ from the looked-up id when a provider-native id was given). */
+  sessionId: string;
+  provider: LLMProvider;
+  summary: string;
+  createdAt: string | null;
+  updatedAt: string | null;
+  lastActivity: string | null;
+  isArchived: boolean;
+  project: {
+    projectId: string;
+    path: string;
+    fullPath: string;
+    displayName: string;
+    isStarred: boolean;
+    isArchived: boolean;
+  } | null;
+};
+
+const MAX_CLOUDCLI_SESSION_NAME_WORDS = 4;
+
+function buildCloudCliSessionName(initialMessage: string): string {
+  const words = initialMessage.trim().split(/\s+/).filter(Boolean);
+  return words.slice(0, MAX_CLOUDCLI_SESSION_NAME_WORDS).join(' ') || 'Untitled Session';
+}
 
 /**
  * The same row, plus the two flags that say why a list may not contain it.
@@ -233,6 +271,57 @@ export const sessionsService = {
   },
 
   /**
+   * Returns the active conversation feed in true global activity order.
+   */
+  listRecentSessions(limit: number, offset: number): RecentSessionsPage {
+    const page = sessionsDb.getRecentSessionsPage(limit, offset);
+    const projectCache = new Map<string, ReturnType<typeof projectsDb.getProjectPath>>();
+    const conversations = page.sessions.map((session) => {
+      const projectPath = session.project_path?.trim() ? session.project_path : null;
+      let project = null;
+
+      if (projectPath) {
+        if (!projectCache.has(projectPath)) {
+          projectCache.set(projectPath, projectsDb.getProjectPath(projectPath));
+        }
+        project = projectCache.get(projectPath) ?? null;
+      }
+
+      return {
+        sessionId: session.session_id,
+        provider: session.provider as LLMProvider,
+        projectId: project?.project_id ?? null,
+        projectDisplayName: resolveProjectDisplayName(projectPath, project?.custom_project_name),
+        sessionTitle: session.custom_name?.trim() || session.session_id,
+        lastActivity: session.updated_at ?? session.created_at ?? null,
+      };
+    });
+
+    return {
+      conversations,
+      total: page.total,
+      hasMore: offset + conversations.length < page.total,
+    };
+  },
+
+  /**
+   * Resolves the provider-native session id a runtime needs for resume.
+   *
+   * Callers hand provider runtimes the stable app session id; the provider
+   * CLIs/SDKs only understand their own native id, which lives on the session
+   * row. Ids without a row are assumed to be provider-native already (direct
+   * API callers that reference sessions the watcher has not indexed yet).
+   */
+  resolveProviderSessionId(sessionId: string | null | undefined): string | null {
+    if (!sessionId) {
+      return null;
+    }
+
+    const session = sessionsDb.getSessionById(sessionId);
+    return session ? session.provider_session_id : sessionId;
+  },
+
+  /**
    * Normalizes one provider-native event into frontend session message events.
    */
   normalizeMessage(
@@ -250,7 +339,9 @@ export const sessionsService = {
    * (via `POST /api/providers/sessions`) when the user starts a brand-new
    * chat, navigates to the returned id immediately, and the id never changes
    * for the lifetime of the conversation. The provider-native id is mapped to
-   * this row later, when the provider runtime announces it mid-run.
+   * this row later, when the provider runtime announces it mid-run. Its title
+   * comes directly from the first visible message (`initialMessage`) and is
+   * limited to four whole words before any provider-owned storage exists.
    *
    * `isSide` allocates the session for a `/btw` question instead: identical in
    * every way, but kept out of the session lists until it is promoted.
@@ -261,13 +352,21 @@ export const sessionsService = {
    * This is the only place the flag is ever set — it must precede the first
    * turn, because the reporter's SessionStart hook fires before anything here
    * could be looked up.
+   *
+   * Upstream callers pass the initial message as the third argument; a string
+   * there is taken as the message (a side flag is always a boolean).
    */
   createAppSession(
     provider: LLMProvider,
     projectPath: string,
-    isSide = false,
+    isSide: boolean | string = false,
     isPrivate = false,
+    initialMessage?: string,
   ): CreateAppSessionResult {
+    if (typeof isSide === 'string') {
+      initialMessage = isSide;
+      isSide = false;
+    }
     const normalizedProjectPath = projectPath.trim();
     if (!normalizedProjectPath) {
       throw new AppError('projectPath is required.', {
@@ -277,7 +376,12 @@ export const sessionsService = {
     }
 
     const sessionId = randomUUID();
-    sessionsDb.createAppSession(sessionId, provider, normalizedProjectPath, isSide, isPrivate);
+    // Only a caller that sends the first message (upstream's client flow)
+    // names the row up front — an empty message still gets the stable
+    // fallback. Ours pass nothing and leave the title to the provider or the
+    // recap, so the sidebar never shows a placeholder.
+    const sessionName = typeof initialMessage === 'string' ? buildCloudCliSessionName(initialMessage) : '';
+    sessionsDb.createAppSession(sessionId, provider, normalizedProjectPath, isSide, isPrivate, sessionName || null);
 
     // The sidebar is fed by the transcript watcher, which cannot see a session
     // the provider has not written anything for yet. Without this the new chat
@@ -295,6 +399,7 @@ export const sessionsService = {
       projectPath: normalizedProjectPath,
       isSide,
       isPrivate,
+      sessionName,
     };
   },
 
@@ -380,6 +485,29 @@ export const sessionsService = {
   },
 
   /**
+   * Resolves the provider-native id only for an explicit user copy action.
+   * Normal session payloads continue to expose only the stable app id.
+   */
+  getProviderSessionId(sessionId: string): string {
+    const session = sessionsDb.getSessionById(sessionId);
+    if (!session) {
+      throw new AppError(`Session "${sessionId}" was not found.`, {
+        code: 'SESSION_NOT_FOUND',
+        statusCode: 404,
+      });
+    }
+
+    if (!session.provider_session_id) {
+      throw new AppError('This session ID is not available yet.', {
+        code: 'PROVIDER_SESSION_ID_NOT_AVAILABLE',
+        statusCode: 409,
+      });
+    }
+
+    return session.provider_session_id;
+  },
+
+  /**
    * Fetches persisted history by app session id.
    *
    * Provider and provider-specific lookup hints are resolved from the indexed
@@ -461,6 +589,49 @@ export const sessionsService = {
     }
 
     return sessions.rewindHistory(sessionId, messageUuid);
+  },
+
+  /**
+   * Resolves one session (by app id, falling back to the provider-native id)
+   * to its metadata plus the owning project.
+   *
+   * This backs deep links like `/session/:sessionId`: the frontend's paginated
+   * project payloads only carry each project's first session page, so a
+   * session opened directly by URL may not be present client-side at all —
+   * this lookup is the authoritative way to learn which project owns it.
+   */
+  getSessionDetailsById(sessionId: string): SessionDetails {
+    const session =
+      sessionsDb.getSessionById(sessionId) ?? sessionsDb.getSessionByProviderSessionId(sessionId);
+    if (!session) {
+      throw new AppError(`Session "${sessionId}" was not found.`, {
+        code: 'SESSION_NOT_FOUND',
+        statusCode: 404,
+      });
+    }
+
+    const projectPath = session.project_path?.trim() ? session.project_path : null;
+    const project = projectPath ? projectsDb.getProjectPath(projectPath) : null;
+
+    return {
+      sessionId: session.session_id,
+      provider: session.provider as LLMProvider,
+      summary: session.custom_name?.trim() || '',
+      createdAt: session.created_at ?? null,
+      updatedAt: session.updated_at ?? null,
+      lastActivity: session.updated_at ?? session.created_at ?? null,
+      isArchived: Boolean(session.isArchived),
+      project: project && projectPath
+        ? {
+            projectId: project.project_id,
+            path: projectPath,
+            fullPath: projectPath,
+            displayName: resolveProjectDisplayName(projectPath, project.custom_project_name),
+            isStarred: Boolean(project.isStarred),
+            isArchived: Boolean(project.isArchived),
+          }
+        : null,
+    };
   },
 
   /**

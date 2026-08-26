@@ -4,15 +4,15 @@ import path from 'node:path';
 
 import crossSpawn from 'cross-spawn';
 
-import { appendImagesInputTag, normalizeImageDescriptors } from './shared/image-attachments.js';
+import { appendFilesInputTag, appendImagesInputTag, normalizeAttachmentDescriptors, normalizeImageDescriptors } from './shared/image-attachments.js';
+import { createProviderRuntimeContext, normalizeRuntimeOptions } from './shared/provider-runtime-context.js';
 import { readOpenCodeTokenUsage } from './shared/opencode-token-usage.js';
 import { buildAgentEnv, collectAgentEnv } from './shared/agent-env.js';
 import { sendOpenCodeContextUsage } from './shared/opencode-context.js';
 import { runOpenCodeHttpTurn } from './services/opencode-http-runner.js';
 import { sessionsService } from './modules/providers/services/sessions.service.js';
-import { providerAuthService } from './modules/providers/services/provider-auth.service.js';
 import { providerModelsService } from './modules/providers/services/provider-models.service.js';
-import { notifyRunFailed, notifyRunStopped } from './services/notification-orchestrator.js';
+import { notifyRunFailed, notifyRunStopped } from './modules/notifications/index.js';
 import { planTaskContinuation } from './services/task-continuation.js';
 import { scheduleSessionRecap } from './services/session-recap.service.js';
 import { broadcastSessionUpdate } from './modules/providers/index.js';
@@ -182,7 +182,34 @@ async function queueOpenCodeRecap({ sessionId, cwd, ws }) {
   });
 }
 
-async function spawnOpenCode(command, options = {}, ws) {
+/**
+ * Runs one OpenCode turn.
+ *
+ * `options.sessionId` is the app session id when `context` (a
+ * ProviderRuntimeContext from the gateway) is supplied, and the provider-native
+ * id otherwise; see shared/provider-runtime-context.js. Internally `sessionId`
+ * is always the provider-native id; the process is reachable under both.
+ *
+ * @param {string} command
+ * @param {Record<string, any>} [options]
+ * @param {any} ws
+ * @param {import('./shared/types.js').ProviderRuntimeContext} [context]
+ */
+async function spawnOpenCode(command, options = {}, ws, context = undefined) {
+  const runtime = createProviderRuntimeContext('opencode', context ?? options.runtimeContext);
+  options = normalizeRuntimeOptions(options, runtime, context);
+  const { appSessionId } = options;
+  // Every key a live process is registered under, so abort-by-app-id works
+  // before the CLI has announced its own session id.
+  const registerHandle = (sessionId, handle) => {
+    if (sessionId) activeOpenCodeProcesses.set(sessionId, handle);
+    if (appSessionId) activeOpenCodeProcesses.set(appSessionId, handle);
+  };
+  const releaseHandle = (sessionId) => {
+    if (sessionId) activeOpenCodeProcesses.delete(sessionId);
+    if (appSessionId) activeOpenCodeProcesses.delete(appSessionId);
+  };
+
   // Rewind / edit-and-resend: truncate this session's history at the edited
   // message before resuming, so `opencode run --session <id>` continues in-place
   // from that point. If nothing resumable precedes the edit, run as a new session.
@@ -207,14 +234,14 @@ async function spawnOpenCode(command, options = {}, ws) {
   // with an image goes that way and every other turn stays on the CLI.
   if (normalizeImageDescriptors(options.images).length > 0) {
     return runOpenCodeHttpTurn(command, options, ws, {
-      registerHandle: (sessionId, handle) => activeOpenCodeProcesses.set(sessionId, handle),
-      releaseHandle: (sessionId) => activeOpenCodeProcesses.delete(sessionId),
+      registerHandle,
+      releaseHandle,
       onCompleted: ({ sessionId, cwd }) => queueOpenCodeRecap({ sessionId, cwd, ws }),
     });
   }
 
   return new Promise((resolve, reject) => {
-    const { sessionId, projectPath, cwd, model, effort, sessionSummary, images, permissionMode } = options;
+    const { sessionId, projectPath, cwd, model, effort, sessionSummary, images, files, permissionMode } = options;
     const workingDir = cwd || projectPath || process.cwd();
     const processKey = sessionId || Date.now().toString();
     let capturedSessionId = sessionId || null;
@@ -290,7 +317,7 @@ async function spawnOpenCode(command, options = {}, ws) {
       capturedSessionId = nextSessionId;
       if (processKey !== capturedSessionId && opencodeProcess) {
         activeOpenCodeProcesses.delete(processKey);
-        activeOpenCodeProcesses.set(capturedSessionId, opencodeProcess);
+        registerHandle(capturedSessionId, opencodeProcess);
       }
       if (opencodeProcess) {
         opencodeProcess.sessionId = capturedSessionId;
@@ -331,11 +358,7 @@ async function spawnOpenCode(command, options = {}, ws) {
 
       try {
         registerSession(readOpenCodeSessionId(response));
-        const normalized = sessionsService.normalizeMessage(
-          'opencode',
-          response,
-          capturedSessionId || sessionId || null,
-        );
+        const normalized = runtime.normalizeMessage(response, capturedSessionId || sessionId || null);
         for (const msg of normalized) {
           ws.send(msg);
         }
@@ -351,10 +374,10 @@ async function spawnOpenCode(command, options = {}, ws) {
       }
     };
 
-    void providerModelsService.resolveResumeModel('opencode', sessionId, model).then(async (resolvedModel) => {
+    void runtime.resolveResumeModel(appSessionId || sessionId, model, { resuming: options.resume === true }).then(async (resolvedModel) => {
       let effortModels = null;
       try {
-        effortModels = (await providerModelsService.getProviderModels('opencode')).models;
+        effortModels = await runtime.getProviderModels();
       } catch (error) {
         console.warn('[OpenCode] Unable to load provider models for effort validation:', error);
       }
@@ -376,12 +399,20 @@ async function spawnOpenCode(command, options = {}, ws) {
       }
       const permissionOptions = resolveOpenCodePermissionOptions(permissionMode);
       args.push(...permissionOptions.args);
-      if (command && command.trim()) {
-        // Image attachments ride along as an <images_input> path list appended
-        // to the prompt; the session history reader strips the tag back out.
-        // opencode is a .cmd shim on Windows, so the whole argument must be
-        // newline-free or cmd.exe silently truncates it at the first newline.
-        args.push(flattenPromptForWindowsShell(appendImagesInputTag(command.trim(), images)));
+      const hasAttachments =
+        normalizeAttachmentDescriptors(images).length > 0
+        || normalizeAttachmentDescriptors(files).length > 0;
+      if ((command && command.trim()) || hasAttachments) {
+        // Attachments ride along as <images_input>/<files_input> path lists
+        // appended to the prompt; the session history reader strips the tags
+        // back out. opencode is a .cmd shim on Windows, so the whole argument
+        // must be newline-free or cmd.exe silently truncates it at the first
+        // newline.
+        const promptWithAttachments = appendFilesInputTag(
+          appendImagesInputTag(command?.trim() || '', images),
+          files,
+        );
+        args.push(flattenPromptForWindowsShell(promptWithAttachments));
       }
 
       const startAttempt = () => {
@@ -405,7 +436,7 @@ async function spawnOpenCode(command, options = {}, ws) {
           }),
         });
 
-        activeOpenCodeProcesses.set(processKey, opencodeProcess);
+        registerHandle(processKey, opencodeProcess);
         opencodeProcess.sessionId = processKey;
         opencodeProcess.stdin.end();
 
@@ -428,7 +459,7 @@ async function spawnOpenCode(command, options = {}, ws) {
 
         opencodeProcess.on('close', async (code) => {
           const finalSessionId = capturedSessionId || sessionId || processKey;
-          activeOpenCodeProcesses.delete(finalSessionId);
+          releaseHandle(finalSessionId);
           activeOpenCodeProcesses.delete(processKey);
 
           const stderrText = stderrBuffer.trim();
@@ -505,6 +536,7 @@ async function spawnOpenCode(command, options = {}, ws) {
                 ...options,
                 sessionId: finalSessionId,
                 images: undefined,
+                files: undefined,
                 rewind: undefined,
               }, ws).then(resolve, reject);
               return;
@@ -530,7 +562,7 @@ async function spawnOpenCode(command, options = {}, ws) {
           }
 
           if (code === 127 || code === null) {
-            const installed = await providerAuthService.isProviderInstalled('opencode');
+            const installed = await runtime.isProviderInstalled();
             if (!installed) {
               ws.send(createNormalizedMessage({
                 kind: 'error',
@@ -547,10 +579,10 @@ async function spawnOpenCode(command, options = {}, ws) {
 
         opencodeProcess.on('error', async (error) => {
           const finalSessionId = capturedSessionId || sessionId || processKey;
-          activeOpenCodeProcesses.delete(finalSessionId);
+          releaseHandle(finalSessionId);
           activeOpenCodeProcesses.delete(processKey);
 
-          const installed = await providerAuthService.isProviderInstalled('opencode');
+          const installed = await runtime.isProviderInstalled();
           const errorContent = !installed
             ? 'OpenCode CLI is not installed. Install it from https://opencode.ai/docs/'
             : error.message;
@@ -585,7 +617,10 @@ function abortOpenCodeSession(sessionId) {
   // process so its close handler does not emit a second one.
   process.aborted = true;
   process.kill('SIGTERM');
-  activeOpenCodeProcesses.delete(sessionId);
+  // Registered under the provider id and the app id alike — drop every alias.
+  for (const [key, handle] of activeOpenCodeProcesses.entries()) {
+    if (handle === process) activeOpenCodeProcesses.delete(key);
+  }
   return true;
 }
 
