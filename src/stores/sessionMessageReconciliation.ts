@@ -84,8 +84,15 @@ function findServerEchoForLocalUser(
 }
 
 /**
- * Removes local optimistic user rows once a corresponding persisted turn is
- * available. Matches are one-to-one so repeated sends cannot claim one row.
+ * Removes live user rows once a corresponding persisted turn is available.
+ * Matches are one-to-one so repeated sends cannot claim one row.
+ *
+ * Every live user bubble is an echo of a turn the provider also persists, and
+ * an id match is not enough to find the persisted copy: only Claude carries our
+ * uuid into its transcript. Codex and OpenCode history rows are minted fresh on
+ * every read, so a mid-turn steer echo (keyed by the client's queue id) and a
+ * server-drained queue echo (keyed by a server-minted id) both survive the id
+ * dedupe and stack on top of the persisted copy as a duplicate bubble.
  */
 export function removeOptimisticUserEchoes(
   serverMessages: NormalizedMessage[],
@@ -94,7 +101,7 @@ export function removeOptimisticUserEchoes(
   const claimedServerIds = new Set<string>();
 
   return realtimeMessages.filter((message) => {
-    if (!message.id.startsWith('local_')) {
+    if (message.kind !== 'text' || message.role !== 'user') {
       return true;
     }
 
