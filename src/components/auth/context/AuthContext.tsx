@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 
 import { IS_PLATFORM } from '../../../constants/config';
-import { api } from '../../../utils/api';
+import { api, getAuthTokenRefreshDelay, isValidRefreshedToken } from '../../../utils/api';
 import { clearAuthToken, persistAuthToken, readAuthToken } from '../../../utils/authToken';
 import { AUTH_SESSION_EXPIRED_EVENT, AUTH_TOKEN_REFRESHED_EVENT } from '../../../utils/authEvents';
 import { AUTH_ERROR_MESSAGES } from '../constants';
@@ -67,8 +67,8 @@ export function AuthProvider({ children }: AuthProviderProps) {
   // "jwt expired" while REST silently keeps working on the rotated token.
   useEffect(() => {
     const onRefreshed = (event: Event) => {
-      const nextToken = (event as CustomEvent<string>).detail;
-      if (nextToken) {
+      const nextToken = (event as CustomEvent<unknown>).detail;
+      if (isValidRefreshedToken(nextToken)) {
         setToken(nextToken);
       }
     };
@@ -88,6 +88,8 @@ export function AuthProvider({ children }: AuthProviderProps) {
   useEffect(() => {
     const onExpired = () => {
       clearSession();
+      // Surfaced by LoginForm so the user learns why they are back at the form.
+      setError(AUTH_ERROR_MESSAGES.sessionExpired);
     };
     window.addEventListener(AUTH_SESSION_EXPIRED_EVENT, onExpired);
     return () => window.removeEventListener(AUTH_SESSION_EXPIRED_EVENT, onExpired);
@@ -112,6 +114,29 @@ export function AuthProvider({ children }: AuthProviderProps) {
   const refreshOnboardingStatus = useCallback(async () => {
     await checkOnboardingStatus();
   }, [checkOnboardingStatus]);
+
+  const refreshSession = useCallback(async () => {
+    if (IS_PLATFORM || !token || !user) {
+      return;
+    }
+
+    try {
+      const response = await api.auth.refresh();
+      if (!response.ok) {
+        return;
+      }
+
+      const payload = await parseJsonSafely<AuthSessionPayload>(response);
+      if (isValidRefreshedToken(payload?.token)) {
+        setToken(payload.token);
+        persistAuthToken(payload.token);
+      }
+    } catch (caughtError) {
+      // A transient network failure must not sign the user out. Focus/visibility
+      // and the next scheduled refresh will retry while the token remains valid.
+      console.warn('[Auth] Session refresh failed:', caughtError);
+    }
+  }, [token, user]);
 
   const checkAuthStatus = useCallback(async () => {
     try {
@@ -179,6 +204,40 @@ export function AuthProvider({ children }: AuthProviderProps) {
     // `hasToken`, not `token`: signing in or out re-validates, a rotation does
     // not — the latter used to blank the app behind the loading screen.
   }, [checkAuthStatus, checkOnboardingStatus, hasToken]);
+
+  useEffect(() => {
+    if (IS_PLATFORM || !token || !user) {
+      return undefined;
+    }
+
+    const refreshIfNeeded = () => {
+      const refreshDelay = getAuthTokenRefreshDelay(token);
+      if (refreshDelay !== null && refreshDelay <= 0) {
+        void refreshSession();
+      }
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        refreshIfNeeded();
+      }
+    };
+
+    const refreshDelay = getAuthTokenRefreshDelay(token);
+    const refreshTimer = refreshDelay === null
+      ? null
+      : window.setTimeout(() => void refreshSession(), refreshDelay);
+
+    window.addEventListener('focus', refreshIfNeeded);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      if (refreshTimer !== null) {
+        window.clearTimeout(refreshTimer);
+      }
+      window.removeEventListener('focus', refreshIfNeeded);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, [refreshSession, token, user]);
 
   const login = useCallback<AuthContextValue['login']>(
     async (username, password) => {

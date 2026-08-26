@@ -1,11 +1,13 @@
 import crossSpawn from 'cross-spawn';
 
 import { buildAgentEnv } from './shared/agent-env.js';
-import { appendImagesInputTag } from './shared/image-attachments.js';
-import { notifyRunFailed, notifyRunStopped } from './services/notification-orchestrator.js';
-import { sessionsService } from './modules/providers/services/sessions.service.js';
-import { providerAuthService } from './modules/providers/services/provider-auth.service.js';
-import { providerModelsService } from './modules/providers/services/provider-models.service.js';
+import {
+  appendFilesInputTag,
+  appendImagesInputTag,
+  normalizeAttachmentDescriptors
+} from './shared/image-attachments.js';
+import { createProviderRuntimeContext, normalizeRuntimeOptions } from './shared/provider-runtime-context.js';
+import { notifyRunFailed, notifyRunStopped } from './modules/notifications/index.js';
 import { createCompleteMessage, createNormalizedMessage, flattenPromptForWindowsShell } from './shared/utils.js';
 
 // cross-spawn resolves .cmd shims/PATHEXT on Windows and delegates to
@@ -29,11 +31,46 @@ function isWorkspaceTrustPrompt(text = '') {
   return WORKSPACE_TRUST_PATTERNS.some((pattern) => pattern.test(text));
 }
 
-async function spawnCursor(command, options = {}, ws) {
+/**
+ * Runs one cursor-agent turn.
+ *
+ * `options.sessionId` is the app session id when `context` (a
+ * ProviderRuntimeContext from the gateway) is supplied, and the provider-native
+ * id otherwise; see shared/provider-runtime-context.js. The process is
+ * registered under both ids so abort works with either.
+ *
+ * @param {string} command
+ * @param {Record<string, any>} [options]
+ * @param {any} ws
+ * @param {import('./shared/types.js').ProviderRuntimeContext} [context]
+ */
+async function spawnCursor(command, options = {}, ws, context = undefined) {
+  const runtime = createProviderRuntimeContext('cursor', context ?? options.runtimeContext);
+  options = normalizeRuntimeOptions(options, runtime, context);
   return new Promise(async (resolve, reject) => {
-    const { sessionId, projectPath, cwd, toolsSettings, skipPermissions, model, sessionSummary, images } = options;
-    const resolvedModel = await providerModelsService.resolveResumeModel('cursor', sessionId, model);
-    let capturedSessionId = sessionId; // Track session ID throughout the process
+    const {
+      sessionId: providerSessionId,
+      appSessionId,
+      projectPath,
+      cwd,
+      toolsSettings,
+      skipPermissions,
+      model,
+      sessionSummary,
+      images,
+      files
+    } = options;
+    // Callers pass the stable app session id; the CLI resumes with the
+    // provider-native id recorded on the session row.
+    // Process-map key: the app session id when the gateway supplied one, else
+    // the provider-native id (legacy/direct callers).
+    const sessionId = appSessionId || providerSessionId || null;
+    const resolvedModel = await runtime.resolveResumeModel(
+      sessionId,
+      model,
+      { resuming: options.resume === true },
+    );
+    let capturedSessionId = providerSessionId || null; // Track the provider-native session id throughout the process
     let sessionCreatedSent = false; // Track if we've already sent session-created event
     let hasRetriedWithTrust = false;
     let settled = false;
@@ -52,18 +89,25 @@ async function spawnCursor(command, options = {}, ws) {
     const baseArgs = [];
 
     // Build flags allowing both resume and prompt together (reply in existing session)
-    // Treat presence of sessionId as intention to resume, regardless of resume flag
-    if (sessionId) {
-      baseArgs.push('--resume=' + sessionId);
+    // Treat a known provider-native id as intention to resume
+    if (providerSessionId) {
+      baseArgs.push('--resume=' + providerSessionId);
     }
 
-    if (command && command.trim()) {
+    const hasAttachments =
+      normalizeAttachmentDescriptors(images).length > 0
+      || normalizeAttachmentDescriptors(files).length > 0;
+    if ((command && command.trim()) || hasAttachments) {
       // Provide a prompt (works for both new and resumed sessions). Image
       // attachments ride along as an <images_input> path list appended to the
       // prompt; the session history reader strips the tag back out for display.
       // cursor-agent is a .cmd shim on Windows, so the whole argument must be
       // newline-free or cmd.exe silently truncates it at the first newline.
-      baseArgs.push('-p', flattenPromptForWindowsShell(appendImagesInputTag(command, images)));
+      const promptWithAttachments = appendFilesInputTag(
+        appendImagesInputTag(command || '', images),
+        files
+      );
+      baseArgs.push('-p', flattenPromptForWindowsShell(promptWithAttachments));
 
       // Model overrides are applied to both new and resumed sessions so a
       // session-scoped change request can take effect on the next turn.
@@ -83,8 +127,9 @@ async function spawnCursor(command, options = {}, ws) {
     // Use cwd (actual project directory) instead of projectPath
     const workingDir = cwd || projectPath || process.cwd();
 
-    // Store process reference for potential abort
-    const processKey = capturedSessionId || Date.now().toString();
+    // Store process reference for potential abort — keyed by the app session
+    // id when the caller supplied one, so abort-by-app-id always works.
+    const processKey = sessionId || Date.now().toString();
 
     const settleOnce = (callback) => {
       if (settled) {
@@ -107,7 +152,8 @@ async function spawnCursor(command, options = {}, ws) {
 
         terminalNotificationSent = true;
 
-        const finalSessionId = capturedSessionId || sessionId || processKey;
+        // Notifications are app-facing, so they carry the app session id.
+        const finalSessionId = sessionId || capturedSessionId || processKey;
         if (code === 0 && !error) {
           notifyRunStopped({
             userId: ws?.userId || null,
@@ -168,9 +214,12 @@ async function spawnCursor(command, options = {}, ws) {
                 if (response.session_id && !capturedSessionId) {
                   capturedSessionId = response.session_id;
 
-                  // Update process key with captured session ID
+                  // Legacy/direct callers without an app session id re-key the
+                  // process under the provider-native id once it is known.
+                  // Reachable under the provider-native id too; legacy callers
+                  // without an app session id are re-keyed outright.
                   if (processKey !== capturedSessionId) {
-                    activeCursorProcesses.delete(processKey);
+                    if (!appSessionId) activeCursorProcesses.delete(processKey);
                     activeCursorProcesses.set(capturedSessionId, cursorProcess);
                   }
 
@@ -179,8 +228,8 @@ async function spawnCursor(command, options = {}, ws) {
                     ws.setSessionId(capturedSessionId);
                   }
 
-                  // Send session-created event only once for new sessions
-                  if (!sessionId && !sessionCreatedSent) {
+                  // Send session-created event only once for sessions with nothing to resume
+                  if (!providerSessionId && !sessionCreatedSent) {
                     sessionCreatedSent = true;
                     ws.send(createNormalizedMessage({ kind: 'session_created', newSessionId: capturedSessionId, model: response.model, cwd: response.cwd, sessionId: capturedSessionId, provider: 'cursor' }));
                   }
@@ -197,7 +246,7 @@ async function spawnCursor(command, options = {}, ws) {
             case 'assistant':
               // Accumulate assistant message chunks
               if (response.message && response.message.content && response.message.content.length > 0) {
-                const normalized = sessionsService.normalizeMessage('cursor', response, capturedSessionId || sessionId || null);
+                const normalized = runtime.normalizeMessage(response, capturedSessionId || sessionId || null);
                 for (const msg of normalized) ws.send(msg);
               }
               break;
@@ -224,7 +273,7 @@ async function spawnCursor(command, options = {}, ws) {
           }
 
           // If not JSON, send as stream delta via adapter
-          const normalized = sessionsService.normalizeMessage('cursor', line, capturedSessionId || sessionId || null);
+          const normalized = runtime.normalizeMessage(line, capturedSessionId || sessionId || null);
           for (const msg of normalized) ws.send(msg);
         }
       };
@@ -257,8 +306,11 @@ async function spawnCursor(command, options = {}, ws) {
 
       // Handle process completion
       cursorProcess.on('close', async (code) => {
-        const finalSessionId = capturedSessionId || sessionId || processKey;
+        // The process map is keyed by the app session id when one was given,
+        // otherwise by the captured provider id (or the timestamp fallback).
+        const finalSessionId = sessionId || capturedSessionId || processKey;
         activeCursorProcesses.delete(finalSessionId);
+        if (capturedSessionId) activeCursorProcesses.delete(capturedSessionId);
 
         // Flush any final unterminated stdout line before completion handling.
         if (stdoutLineBuffer.trim()) {
@@ -298,11 +350,12 @@ async function spawnCursor(command, options = {}, ws) {
         console.error('Cursor CLI process error:', error);
 
         // Clean up process reference on error
-        const finalSessionId = capturedSessionId || sessionId || processKey;
+        const finalSessionId = sessionId || capturedSessionId || processKey;
         activeCursorProcesses.delete(finalSessionId);
+        if (capturedSessionId) activeCursorProcesses.delete(capturedSessionId);
 
         // Check if Cursor CLI is installed for a clearer error message
-        const installed = await providerAuthService.isProviderInstalled('cursor');
+        const installed = await runtime.isProviderInstalled();
         const errorContent = !installed
           ? 'Cursor CLI is not installed. Please install it from https://cursor.com'
           : error.message;
@@ -346,6 +399,11 @@ function isCursorSessionActive(sessionId) {
 function getActiveCursorSessions() {
   return Array.from(activeCursorProcesses.keys());
 }
+
+export const cursorRuntime = {
+  run: spawnCursor,
+  abort: abortCursorSession,
+};
 
 export {
   spawnCursor,

@@ -159,7 +159,7 @@ export default function SessionPane({
       <div className="relative min-h-0 flex-1">
         <div className={`absolute inset-0 ${isChat ? 'block' : 'hidden'}`}>
           <ErrorBoundary showDetails>
-            <ChatInterface {...chatProps} />
+            <ChatInterface {...chatProps} isActive={chatProps.isActive && isChat} />
           </ErrorBoundary>
         </div>
 

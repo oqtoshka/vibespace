@@ -149,6 +149,14 @@
     "privateToggle": "Start this session private: not reported to external boards, no notifications, no recap. Decided before the first message.",
     "privateLocked": "Private session: not reported to external boards, no notifications, no recap. Fixed for the life of the session."
   },
+  "composer": {
+    "reasoning": "Reasoning",
+    "model": "Model",
+    "effortDefault": "Default",
+    "loadingModels": "Loading models…",
+    "modelMenu": "Select model and reasoning effort",
+    "permissionHeading": "How should {{provider}} actions be approved?"
+  },
   "providerSelection": {
     "title": "Choose Your AI Assistant",
     "description": "Select a provider to start a new conversation",

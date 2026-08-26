@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useLayoutEffect, use
 import { useAuth } from '../components/auth/context/AuthContext';
 import { IS_PLATFORM } from '../constants/config';
 import { AUTH_SESSION_EXPIRED_EVENT, WS_CLOSE_CODE_AUTH_FAILED } from '../utils/authEvents';
+import { expireAuthSession, isAuthTokenExpired } from '../utils/api';
 
 /**
  * One frame received from the chat websocket. The server guarantees every
@@ -71,6 +72,10 @@ const buildWebSocketUrl = (token: string | null) => {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   if (IS_PLATFORM) return `${protocol}//${window.location.host}/ws`; // Platform mode: Use same domain as the page (goes through proxy)
   if (!token) return null;
+  if (isAuthTokenExpired(token)) {
+    expireAuthSession();
+    return null;
+  }
   return `${protocol}//${window.location.host}/ws?token=${encodeURIComponent(token)}`; // OSS mode: Use same host:port that served the page
 };
 
@@ -150,8 +155,16 @@ const useWebSocketProviderState = (): WebSocketContextType => {
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
       }
-      if (wsRef.current) {
-        wsRef.current.close();
+      const activeSocket = wsRef.current;
+      if (activeSocket) {
+        // Prevent the intentionally closed, old-token socket from scheduling
+        // a reconnect after the refreshed-token effect has already started.
+        activeSocket.onopen = null;
+        activeSocket.onmessage = null;
+        activeSocket.onclose = null;
+        activeSocket.onerror = null;
+        activeSocket.close();
+        wsRef.current = null;
       }
     };
   }, [isAuthenticated]); // log in / log out — a rotated token reuses the live socket
@@ -165,6 +178,9 @@ const useWebSocketProviderState = (): WebSocketContextType => {
       if (!wsUrl) return console.warn('No authentication token found for WebSocket connection');
 
       const websocket = new WebSocket(wsUrl);
+      // Store connecting sockets too, so a token refresh can close them before
+      // their handshake completes with stale credentials.
+      wsRef.current = websocket;
 
       websocket.onopen = () => {
         setIsConnected(true);
@@ -197,6 +213,9 @@ const useWebSocketProviderState = (): WebSocketContextType => {
       };
 
       websocket.onclose = (event) => {
+        if (wsRef.current !== websocket) {
+          return;
+        }
         setIsConnected(false);
         wsRef.current = null;
 

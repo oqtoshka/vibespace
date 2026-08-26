@@ -26,6 +26,7 @@ import CommandResultModal from './subcomponents/CommandResultModal';
 import BtwPanel from './subcomponents/BtwPanel';
 
 function ChatInterface({
+  isActive,
   selectedProject,
   selectedSession,
   ws,
@@ -81,6 +82,7 @@ function ChatInterface({
     setCodexModel,
     currentProviderEffort,
     currentProviderEffortOptions,
+    currentProviderModel,
     opencodeModel,
     setOpenCodeModel,
     permissionMode,
@@ -91,13 +93,10 @@ function ChatInterface({
     setPendingPermissionRequests,
     cyclePermissionMode,
     providerModelCatalog,
-    providerModelCacheCatalog,
     providerModelsLoading,
-    providerModelsRefreshing,
-    hardRefreshProviderModels,
+    providerModelActions,
     selectProviderModel,
-    setStoredProviderEffort,
-    resolvePermissionModeForProvider,
+    selectProviderEffort,
   } = useChatProviderState({
     selectedSession,
     selectedProject,
@@ -139,7 +138,9 @@ function ChatInterface({
     scrollToBottom,
     scrollToBottomAndReset,
     handleScroll,
+    requestLatestMessages,
   } = useChatSessionState({
+    isActive,
     selectedProject,
     selectedSession,
     ws,
@@ -326,13 +327,13 @@ function ChatInterface({
     onRewindTruncate: handleRewindTruncate,
   });
 
-  // On WebSocket reconnect, re-fetch the current session's messages from the
-  // server so missed streaming events are shown, then re-subscribe — the
+  // On WebSocket reconnect, request a bounded persisted-tail sync (deferred
+  // while Chat is hidden), then re-subscribe — the
   // `chat_subscribed` ack restores or clears the activity indicator, replays
   // missed live events, and re-attaches a still-running stream to this socket.
   const handleWebSocketReconnect = useCallback(async () => {
     if (!selectedProject || !selectedSession) return;
-    await sessionStore.refreshFromServer(selectedSession.id);
+    await requestLatestMessages(selectedSession.id, isActive);
     statusCheckSentAtRef.current.set(selectedSession.id, Date.now());
     sendMessage({
       type: 'chat.subscribe',
@@ -341,9 +342,10 @@ function ChatInterface({
         lastSeq: lastSeqRef.current.get(selectedSession.id) ?? 0,
       }],
     });
-  }, [selectedProject, selectedSession, sendMessage, sessionStore]);
+  }, [isActive, requestLatestMessages, selectedProject, selectedSession, sendMessage]);
 
   useChatRealtimeHandlers({
+    isActive,
     subscribe,
     provider,
     selectedSession,
@@ -359,6 +361,7 @@ function ChatInterface({
     onSessionProcessing,
     onSessionIdle,
     onWebSocketReconnect: handleWebSocketReconnect,
+    requestLatestMessages,
     sessionStore,
   });
 
@@ -424,21 +427,29 @@ function ChatInterface({
     [backgroundTasks, cancelBackgroundTask, provider],
   );
 
+  const handleSelectComposerEffort = useCallback(async (effort: string) => {
+    try {
+      await selectProviderEffort(provider, effort, currentSessionId || selectedSession?.id || null);
+    } catch (error) {
+      console.error('Error changing the active session reasoning effort:', error);
+    }
+  }, [currentSessionId, provider, selectProviderEffort, selectedSession?.id]);
+
   // Mirrors ChatComposer's own visibility check so the message pane can
   // reserve enough bottom space to keep the floating status tab from
   // overlapping the last message.
   const hasActivityIndicator = Boolean(sessionActivity && pendingPermissionRequests.length === 0);
 
-  if (!selectedProject) {
-    const selectedProviderLabel =
-      provider === 'cursor'
-        ? t('messageTypes.cursor')
-        : provider === 'codex'
-          ? t('messageTypes.codex')
-          : provider === 'opencode'
-              ? t('messageTypes.opencode', { defaultValue: 'OpenCode' })
-            : t('messageTypes.claude');
+  const selectedProviderLabel =
+    provider === 'cursor'
+      ? t('messageTypes.cursor')
+      : provider === 'codex'
+        ? t('messageTypes.codex')
+        : provider === 'opencode'
+            ? t('messageTypes.opencode', { defaultValue: 'OpenCode' })
+          : t('messageTypes.claude');
 
+  if (!selectedProject) {
     return (
       <div className="flex h-full items-center justify-center">
         <div className="text-center text-muted-foreground">
@@ -518,6 +529,7 @@ function ChatInterface({
           opencodeModel={opencodeModel}
           setOpenCodeModel={setOpenCodeModel}
           providerModelCatalog={providerModelCatalog}
+          providerModelActions={providerModelActions}
           providerModelsLoading={providerModelsLoading}
           tasksEnabled={tasksEnabled}
           isTaskMasterInstalled={isTaskMasterInstalled}
@@ -575,7 +587,7 @@ function ChatInterface({
           onTogglePrivate={togglePrivateMode}
           effort={currentProviderEffort}
           availableEffortOptions={currentProviderEffortOptions}
-          onSelectEffort={(nextEffort) => setStoredProviderEffort(provider, nextEffort)}
+          onSelectEffort={handleSelectComposerEffort}
           tokenBudget={tokenBudget}
           contextUsage={contextUsage}
           onShowTokenUsage={showCostModal}
@@ -627,16 +639,7 @@ function ChatInterface({
           onTextareaInput={handleTextareaInput}
           isInputFocused={isInputFocused}
           onInputFocusChange={handleInputFocusChange}
-          placeholder={t('input.placeholder', {
-            provider:
-              provider === 'cursor'
-                ? t('messageTypes.cursor')
-                : provider === 'codex'
-                  ? t('messageTypes.codex')
-                  : provider === 'opencode'
-                      ? t('messageTypes.opencode', { defaultValue: 'OpenCode' })
-                    : t('messageTypes.claude'),
-          })}
+          placeholder={t('input.placeholder', { provider: selectedProviderLabel })}
           isTextareaExpanded={isTextareaExpanded}
           sendByCtrlEnter={sendByCtrlEnter}
           queuedMessages={queuedMessages}
@@ -645,15 +648,13 @@ function ChatInterface({
         </div>
       </div>
 
-      <QuickSettingsPanel />
-
       <CommandResultModal
         payload={commandModalPayload}
         onClose={closeCommandModal}
         providerModelCatalog={providerModelCatalog}
-        providerModelCacheCatalog={providerModelCacheCatalog}
-        providerModelsRefreshing={providerModelsRefreshing}
-        onHardRefreshProviderModels={hardRefreshProviderModels}
+        providerModelActions={providerModelActions}
+        activeProvider={provider}
+        activeProviderModel={currentProviderModel}
         currentSessionId={currentSessionId || selectedSession?.id || null}
         onSelectProviderModel={handleSelectProviderModel}
       />
