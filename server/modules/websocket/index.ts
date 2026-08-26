@@ -3,5 +3,6 @@ export { createWebSocketServer } from './services/websocket-server.service.js';
 export { chatRunRegistry } from './services/chat-run-registry.service.js';
 export {
   registerChatDependenciesAtBoot,
+  serverAbortRun,
   serverEnqueueMessage,
 } from './services/chat-websocket.service.js';

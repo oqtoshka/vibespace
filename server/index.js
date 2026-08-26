@@ -24,7 +24,7 @@ import { closeSessionsWatcher, initializeSessionsWatcher, providerRuntimeService
 import { getSubagentConversation } from '@/modules/providers/list/claude/claude-sessions.provider.js';
 import { createWebSocketServer } from '@/modules/websocket/index.js';
 import { chatRunRegistry } from '@/modules/websocket/services/chat-run-registry.service.js';
-import { registerChatDependenciesAtBoot, serverEnqueueMessage } from '@/modules/websocket/index.js';
+import { registerChatDependenciesAtBoot, serverAbortRun, serverEnqueueMessage } from '@/modules/websocket/index.js';
 import { forgetRateLimitWake, startRateLimitWakeLoop } from '@/services/rate-limit-wake.service.js';
 import { cancelSessionRecap } from '@/services/session-recap.service.js';
 import { forgetSession as forgetRestoreEntry, restoreInterruptedSessions } from '@/services/session-restore.service.js';
@@ -2633,6 +2633,25 @@ async function startServer() {
                     createAppSession: (provider, cwd) => sessionsService.createAppSession(provider, cwd),
                     deleteOrArchiveById: (sessionId, options) =>
                         sessionsService.deleteOrArchiveSessionById(sessionId, options),
+                    rename: (sessionId, title) => {
+                        sessionsService.renameSessionById(sessionId, title);
+                    },
+                },
+                runs: {
+                    get: (sessionId) => {
+                        const run = chatRunRegistry.getRun(sessionId);
+                        if (!run) return null;
+                        let lastAssistantText = '';
+                        for (let i = run.events.length - 1; i >= 0; i -= 1) {
+                            const event = run.events[i];
+                            if (event?.role === 'assistant' && typeof event.content === 'string' && event.content.trim()) {
+                                lastAssistantText = event.content.trim();
+                                break;
+                            }
+                        }
+                        return { status: run.status, providerSessionId: run.providerSessionId, lastAssistantText };
+                    },
+                    abort: (sessionId) => serverAbortRun(sessionId),
                 },
                 enqueueMessage: (sessionId, prompt, options) => serverEnqueueMessage(sessionId, prompt, options),
             }).catch((err) => {

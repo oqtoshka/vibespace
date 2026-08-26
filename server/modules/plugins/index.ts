@@ -7,7 +7,7 @@ export {
   getHostExtensionRouter,
   activeHostExtensionNames,
 } from './services/plugin-host-extensions.service.js';
-export type { PluginHost, PluginHostModule } from './services/plugin-host-extensions.service.js';
+export type { HostRunView, PluginHost, PluginHostModule } from './services/plugin-host-extensions.service.js';
 // pluginsRoutes: used by the server entrypoint to mount protected plugin-management endpoints.
 export { pluginsRoutes } from './plugins.module.js';
 

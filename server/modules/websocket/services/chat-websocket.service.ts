@@ -1001,6 +1001,23 @@ export function registerChatDependenciesAtBoot(dependencies: ChatWebSocketDepend
  * session later sees the live turn. Returns false when the session row does
  * not exist (caller logs and moves on).
  */
+/**
+ * Server-initiated abort: the `chat.abort` path without a socket behind it,
+ * for a plugin host module enforcing a deadline on a session it drives.
+ * Returns false when there is no running turn or the boot dependencies were
+ * never registered (a headless server that has not listened yet).
+ */
+export async function serverAbortRun(sessionId: string): Promise<boolean> {
+  const run = chatRunRegistry.getRun(sessionId);
+  if (!drainDependencies || !run || run.status !== 'running') {
+    return false;
+  }
+  const success = await drainDependencies.runtime.abort(run.provider, sessionId);
+  chatRunRegistry.clearQueue(sessionId, 'aborted');
+  chatRunRegistry.completeRun(sessionId, { exitCode: success ? 0 : 1, aborted: true });
+  return success;
+}
+
 export function serverEnqueueMessage(
   sessionId: string,
   content: string,
