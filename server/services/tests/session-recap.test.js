@@ -276,6 +276,76 @@ test('generateRecap can summarize normalized Codex history instead of Claude JSO
   }
 });
 
+// A model name means nothing outside its own provider: handing Claude's cheap
+// tier to a Codex or OpenCode helper starts a turn their runtime cannot serve,
+// which fails with no output at all and reads back as an unparseable reply —
+// the session then silently never gets a recap or an AI title.
+test('generateRecap sends no model at all when the provider cannot run the default', async () => {
+  const previousDatabasePath = process.env.DATABASE_PATH;
+  const tempDirectory = await mkdtemp(path.join(tmpdir(), 'fallback-recap-'));
+  const databasePath = path.join(tempDirectory, 'auth.db');
+
+  closeConnection();
+  process.env.DATABASE_PATH = databasePath;
+  await initializeDatabase();
+
+  const history = async () => ({
+    total: 2,
+    messages: [
+      { kind: 'text', role: 'user', content: 'ship the fallback fix' },
+      { kind: 'text', role: 'assistant', content: 'Shipped it.' },
+    ],
+  });
+  const reply = (_prompt, options, writer) => {
+    writer.send(JSON.stringify({ kind: 'text', content: '{"title":"Fallback","recap":"Shipped it."}' }));
+    return options;
+  };
+
+  try {
+    sessionsDb.createSession('codex-no-model', 'codex', tempDirectory);
+    sessionsDb.createSession('codex-own-model', 'codex', tempDirectory);
+    sessionsDb.createSession('claude-no-model', 'claude', tempDirectory);
+
+    let helperOptions = null;
+    await generateRecap({
+      sessionId: 'codex-no-model',
+      cwd: tempDirectory,
+      useIndexedHistory: true,
+      fetchHistory: history,
+      fallbackModel: null,
+      runQuery: async (prompt, options, writer) => { helperOptions = reply(prompt, options, writer); },
+    });
+    assert.equal(helperOptions?.model, undefined);
+
+    // A model the caller did name is still what the helper runs on.
+    await generateRecap({
+      sessionId: 'codex-own-model',
+      cwd: tempDirectory,
+      model: 'gpt-5.1-codex',
+      useIndexedHistory: true,
+      fetchHistory: history,
+      fallbackModel: null,
+      runQuery: async (prompt, options, writer) => { helperOptions = reply(prompt, options, writer); },
+    });
+    assert.equal(helperOptions?.model, 'gpt-5.1-codex');
+
+    // Claude, which can run the cheap tier, still gets it by default.
+    await generateRecap({
+      sessionId: 'claude-no-model',
+      cwd: tempDirectory,
+      useIndexedHistory: true,
+      fetchHistory: history,
+      runQuery: async (prompt, options, writer) => { helperOptions = reply(prompt, options, writer); },
+    });
+    assert.equal(helperOptions?.model, 'haiku');
+  } finally {
+    closeConnection();
+    if (previousDatabasePath === undefined) delete process.env.DATABASE_PATH;
+    else process.env.DATABASE_PATH = previousDatabasePath;
+    await rm(tempDirectory, { recursive: true, force: true });
+  }
+});
+
 // A private session's transcript must not be fed to a helper model for a
 // summary: the recap would write a second copy of the conversation into the
 // VibeSpace database and hand it to the sidebar, which is exactly the kind of
