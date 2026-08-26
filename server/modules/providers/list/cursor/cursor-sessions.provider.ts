@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 
+import { createCompactBoundaryMessage, looksLikeCompactSummary } from '@/shared/compaction.js';
 import { parseImagesInputTag } from '@/shared/image-attachments.js';
 import type { IProviderSessions } from '@/shared/interfaces.js';
 import type { AnyRecord, FetchHistoryOptions, FetchHistoryResult, NormalizedMessage } from '@/shared/types.js';
@@ -39,6 +40,20 @@ function isInternalCursorText(value: unknown): boolean {
 
   const normalized = value.trim();
   return normalized.startsWith('<user_info>') || normalized.startsWith('<system_reminder>');
+}
+
+/** Flattens a Cursor message body (string or text parts) into plain text. */
+function readCursorPlainText(content: unknown): string {
+  if (typeof content === 'string') {
+    return content;
+  }
+  if (!Array.isArray(content)) {
+    return '';
+  }
+  return content
+    .map((part: AnyRecord) => (part?.type === 'text' && typeof part.text === 'string' ? part.text : ''))
+    .filter(Boolean)
+    .join('\n');
 }
 
 function isInternalCursorPart(part: unknown): boolean {
@@ -532,6 +547,22 @@ export class CursorSessionsProvider implements IProviderSessions {
         }
 
         const role = content.role === 'user' ? 'user' : 'assistant';
+
+        // Cursor summarizes server-side and rewrites its stored blobs in place,
+        // so a compaction normally leaves no trace here at all. When it does
+        // replay the summary as a prompt, the preamble is the only handle we
+        // get — fold it into a boundary marker rather than let the transcript
+        // show a summary the user appears to have typed.
+        if (role === 'user' && looksLikeCompactSummary(readCursorPlainText(content.content))) {
+          messages.push(createCompactBoundaryMessage({
+            id: baseId,
+            sessionId,
+            timestamp: ts,
+            provider: PROVIDER,
+            summary: readCursorPlainText(content.content),
+          }));
+          continue;
+        }
 
         if (Array.isArray(content.content)) {
           for (let partIdx = 0; partIdx < content.content.length; partIdx++) {

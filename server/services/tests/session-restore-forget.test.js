@@ -27,7 +27,7 @@ test('forgetSession drops one entry and flushes the registry immediately', async
     assert.equal(await forgetSession('mine'), true);
     assert.equal(await forgetSession('mine'), false);
 
-    const registry = JSON.parse(await readFile(path.join(dataDir, 'active-claude-sessions.json'), 'utf8'));
+    const registry = JSON.parse(await readFile(path.join(dataDir, 'active-agent-sessions.json'), 'utf8'));
     assert.deepEqual(registry.map((entry) => entry.sessionId), ['theirs']);
     // The private flag rides along in the entry so a restored turn keeps the gate.
     assert.equal(registry[0].private, true);

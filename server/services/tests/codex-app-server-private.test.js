@@ -5,14 +5,20 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { getCodexAppServer, stopCodexAppServer } from '../codex-app-server.service.js';
+import { registerAgentEnvContributor } from '../../shared/agent-env.js';
 
 /**
  * A Codex session is hosted by whichever app-server started its thread, and
- * the presence reporter reads its MC_DISABLE gate from that server's own
- * environment. So a private session (FEAT-INGEST-006) needs an app-server of
- * its own, spawned with the gate set — and the ordinary one must stay exactly
- * what it was, with no gate at all.
+ * anything reading that server's own environment (a presence reporter's gate)
+ * sees one value for every thread. So a private session (FEAT-INGEST-006)
+ * needs an app-server of its own, spawned with whatever host plugins
+ * contribute for the private variant — and the ordinary one must stay exactly
+ * what it was, with nothing contributed at all.
  */
+const unregisterContributor = registerAgentEnvContributor((context) =>
+  context.scope === 'server' && context.private ? { VS_TEST_OPT_OUT: '1' } : null,
+);
+test.after(() => unregisterContributor());
 
 /** A fake `codex app-server` that answers `initialize` and records its env. */
 async function createFakeCodex(scriptPath) {
@@ -21,7 +27,7 @@ const fs = require('node:fs');
 const readline = require('node:readline');
 fs.appendFileSync(process.env.VIBESPACE_CODEX_CAPTURE, JSON.stringify({
   pid: process.pid,
-  mcDisable: process.env.MC_DISABLE ?? null,
+  optOut: process.env.VS_TEST_OPT_OUT ?? null,
   path: process.env.PATH,
 }) + '\\n');
 const rl = readline.createInterface({ input: process.stdin });
@@ -35,19 +41,19 @@ rl.on('line', (line) => {
   await chmod(scriptPath, 0o755);
 }
 
-test('a private session gets its own app-server with MC_DISABLE set; the shared one has none', async () => {
+test('a private session gets its own app-server carrying the private-variant env; the shared one has none', async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'codex-private-'));
   const executable = path.join(tempRoot, 'fake-codex');
   const capturePath = path.join(tempRoot, 'spawns.jsonl');
   const previousPath = process.env.VIBESPACE_CODEX_PATH;
   const previousCapture = process.env.VIBESPACE_CODEX_CAPTURE;
-  const previousDisable = process.env.MC_DISABLE;
+  const previousOptOut = process.env.VS_TEST_OPT_OUT;
 
   try {
     await createFakeCodex(executable);
     process.env.VIBESPACE_CODEX_PATH = executable;
     process.env.VIBESPACE_CODEX_CAPTURE = capturePath;
-    delete process.env.MC_DISABLE;
+    delete process.env.VS_TEST_OPT_OUT;
 
     const shared = await getCodexAppServer();
     const privateServer = await getCodexAppServer({ private: true });
@@ -61,7 +67,7 @@ test('a private session gets its own app-server with MC_DISABLE set; the shared 
 
     const spawns = (await readFile(capturePath, 'utf8')).trim().split('\n').map((line) => JSON.parse(line));
     assert.equal(spawns.length, 2);
-    assert.deepEqual(spawns.map((spawn) => spawn.mcDisable), [null, '1']);
+    assert.deepEqual(spawns.map((spawn) => spawn.optOut), [null, '1']);
     // The gate rides on the host env rather than replacing it.
     assert.equal(spawns[1].path, process.env.PATH);
   } finally {
@@ -70,7 +76,7 @@ test('a private session gets its own app-server with MC_DISABLE set; the shared 
     else process.env.VIBESPACE_CODEX_PATH = previousPath;
     if (previousCapture === undefined) delete process.env.VIBESPACE_CODEX_CAPTURE;
     else process.env.VIBESPACE_CODEX_CAPTURE = previousCapture;
-    if (previousDisable !== undefined) process.env.MC_DISABLE = previousDisable;
+    if (previousOptOut !== undefined) process.env.VS_TEST_OPT_OUT = previousOptOut;
     await rm(tempRoot, { recursive: true, force: true });
   }
 });

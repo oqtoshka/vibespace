@@ -7,7 +7,9 @@ import { spawn } from 'cross-spawn';
 const PLUGINS_DIR = path.join(os.homedir(), '.claude-code-ui', 'plugins');
 const PLUGINS_CONFIG_PATH = path.join(os.homedir(), '.claude-code-ui', 'plugins.json');
 
-const REQUIRED_MANIFEST_FIELDS = ['name', 'displayName', 'entry'];
+// `entry` (a client bundle) is required unless the plugin is headless — a
+// `hostModule`-only plugin extends the server and shows no tab.
+const REQUIRED_MANIFEST_FIELDS = ['name', 'displayName'];
 
 /** Strip embedded credentials from a repo URL before exposing it to the client. */
 function sanitizeRepoUrl(raw) {
@@ -74,9 +76,24 @@ export function validateManifest(manifest) {
     return { valid: false, error: `Invalid plugin slot: ${manifest.slot}. Must be one of: ${ALLOWED_SLOTS.join(', ')}` };
   }
 
+  if (!manifest.entry && !manifest.hostModule) {
+    return { valid: false, error: 'Manifest needs an "entry" (client bundle) or a "hostModule" (server extension)' };
+  }
+
   // Validate entry is a relative path without traversal
-  if (manifest.entry.includes('..') || path.isAbsolute(manifest.entry)) {
-    return { valid: false, error: 'Entry must be a relative path without ".."' };
+  if (manifest.entry !== undefined && manifest.entry !== null) {
+    if (typeof manifest.entry !== 'string' || manifest.entry.includes('..') || path.isAbsolute(manifest.entry)) {
+      return { valid: false, error: 'Entry must be a relative path without ".."' };
+    }
+  }
+
+  // A host module is loaded *in-process* at boot (see modules/plugins). Same
+  // path rules as the server entry; the trust model is unchanged — a plugin
+  // server subprocess already runs arbitrary code as this user.
+  if (manifest.hostModule !== undefined && manifest.hostModule !== null) {
+    if (typeof manifest.hostModule !== 'string' || manifest.hostModule.includes('..') || path.isAbsolute(manifest.hostModule)) {
+      return { valid: false, error: 'hostModule must be a relative path string without ".."' };
+    }
   }
 
   if (manifest.server !== undefined && manifest.server !== null) {
@@ -158,7 +175,16 @@ export function scanPlugins() {
   const seenNames = new Set();
 
   for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
+    // A symlink to a directory counts: a plugin developed in its own checkout
+    // is linked into this folder rather than cloned twice.
+    if (!entry.isDirectory()) {
+      if (!entry.isSymbolicLink()) continue;
+      try {
+        if (!fs.statSync(path.join(pluginsDir, entry.name)).isDirectory()) continue;
+      } catch {
+        continue;
+      }
+    }
     // Skip transient temp directories from in-progress installs
     if (entry.name.startsWith('.tmp-')) continue;
 
@@ -208,8 +234,9 @@ export function scanPlugins() {
         icon: manifest.icon || 'Puzzle',
         type: manifest.type || 'module',
         slot: manifest.slot || 'tab',
-        entry: manifest.entry,
+        entry: manifest.entry || null,
         server: manifest.server || null,
+        hostModule: manifest.hostModule || null,
         permissions: manifest.permissions || [],
         enabled: config[manifest.name]?.enabled !== false, // enabled by default
         dirName: entry.name,

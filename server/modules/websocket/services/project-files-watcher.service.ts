@@ -1,9 +1,11 @@
+import fs from 'node:fs';
 import path from 'node:path';
 
 import chokidar, { type FSWatcher } from 'chokidar';
 import type { WebSocket } from 'ws';
 
 import { projectsDb } from '@/modules/database/index.js';
+import { validateAccessiblePath } from '@/utils/allowedPaths.js';
 import { WS_OPEN_STATE } from '@/modules/websocket/services/websocket-state.service.js';
 
 /**
@@ -269,4 +271,157 @@ export function unsubscribeAllProjectFiles(ws: WebSocket): void {
     }
   }
   subscriptionsByClient.delete(ws);
+}
+
+// ----------------- SINGLE-FILE WATCHES ------------
+
+/**
+ * Per-file watches, alongside the per-project watcher above.
+ *
+ * The project watcher is what keeps the file tree honest, but an open viewer
+ * cares about exactly one file, and the project watcher can miss it: the file
+ * may sit under an ignored directory (`dist/`, `build/` — where generated
+ * reports and rendered HTML tend to land), deeper than WATCH_DEPTH, or outside
+ * the project root altogether (an additional file root). So a viewer also asks
+ * for its own file by path, and we stat-poll just that path with
+ * `fs.watchFile` — no descriptor is held, so this scales to every open tab
+ * without touching the FD limit the polling project watcher exists to respect.
+ *
+ * Broadcast as `file_changed` frames carrying the client's own `path` string,
+ * so matching on the client is a string compare.
+ */
+
+type FileWatch = {
+  /** The path exactly as the client sent it (echoed back in frames). */
+  clientPath: string;
+  resolved: string;
+  subscribers: Map<WebSocket, number>;
+};
+
+const FILE_POLL_INTERVAL_MS = 1_000;
+
+/** Active single-file watches keyed by `${projectId}\0${clientPath}`. */
+const fileWatches = new Map<string, FileWatch>();
+/** Reverse index (socket → watch key → ref count) for disconnect cleanup. */
+const fileWatchesByClient = new Map<WebSocket, Map<string, number>>();
+
+const fileWatchKey = (projectId: string, clientPath: string) => `${projectId}\0${clientPath}`;
+
+function broadcastFileChange(projectId: string, watch: FileWatch, type: ChangeType, mtimeMs: number): void {
+  const frame = JSON.stringify({
+    kind: 'file_changed',
+    projectId,
+    path: watch.clientPath,
+    type,
+    mtimeMs,
+    timestamp: new Date().toISOString(),
+  });
+  for (const ws of watch.subscribers.keys()) {
+    if (ws.readyState === WS_OPEN_STATE) {
+      ws.send(frame);
+    }
+  }
+}
+
+/**
+ * Starts stat-polling one file for a socket. The path must be readable through
+ * the file API's own containment rules (project root or an additional root);
+ * anything else is silently ignored, exactly like a read of it would 403.
+ */
+export async function subscribeFilePath(ws: WebSocket, projectId: string, clientPath: string): Promise<void> {
+  if (!projectId || !clientPath) {
+    return;
+  }
+  const key = fileWatchKey(projectId, clientPath);
+  let watch = fileWatches.get(key);
+  if (!watch) {
+    const rootPath = await projectsDb.getProjectPathById(projectId);
+    if (!rootPath) {
+      return;
+    }
+    const validation = await validateAccessiblePath(rootPath, clientPath);
+    if (!validation.valid || !validation.resolved) {
+      return;
+    }
+    // A concurrent subscribe may have created the watch while we awaited.
+    watch = fileWatches.get(key);
+    if (!watch) {
+      const created: FileWatch = { clientPath, resolved: validation.resolved, subscribers: new Map() };
+      fs.watchFile(created.resolved, { interval: FILE_POLL_INTERVAL_MS, persistent: false }, (curr, prev) => {
+        // nlink 0 is fs.watchFile's "does not exist" marker.
+        if (curr.nlink === 0 && prev.nlink === 0) return;
+        const type: ChangeType = curr.nlink === 0 ? 'unlink' : prev.nlink === 0 ? 'add' : 'change';
+        if (type === 'change' && curr.mtimeMs === prev.mtimeMs && curr.size === prev.size) return;
+        broadcastFileChange(projectId, created, type, curr.mtimeMs);
+      });
+      fileWatches.set(key, created);
+      watch = created;
+    }
+  }
+
+  watch.subscribers.set(ws, (watch.subscribers.get(ws) ?? 0) + 1);
+  let clientKeys = fileWatchesByClient.get(ws);
+  if (!clientKeys) {
+    clientKeys = new Map<string, number>();
+    fileWatchesByClient.set(ws, clientKeys);
+  }
+  clientKeys.set(key, (clientKeys.get(key) ?? 0) + 1);
+}
+
+function dropFileSubscriber(ws: WebSocket, key: string): void {
+  const watch = fileWatches.get(key);
+  if (!watch) {
+    return;
+  }
+  const count = watch.subscribers.get(ws) ?? 0;
+  if (count <= 1) {
+    watch.subscribers.delete(ws);
+  } else {
+    watch.subscribers.set(ws, count - 1);
+  }
+  if (watch.subscribers.size === 0) {
+    fs.unwatchFile(watch.resolved);
+    fileWatches.delete(key);
+  }
+}
+
+/** Drops one file subscription; the poll stops with the last subscriber. */
+export function unsubscribeFilePath(ws: WebSocket, projectId: string, clientPath: string): void {
+  const key = fileWatchKey(projectId, clientPath);
+  dropFileSubscriber(ws, key);
+  const clientKeys = fileWatchesByClient.get(ws);
+  if (clientKeys) {
+    const count = clientKeys.get(key) ?? 0;
+    if (count <= 1) {
+      clientKeys.delete(key);
+    } else {
+      clientKeys.set(key, count - 1);
+    }
+    if (clientKeys.size === 0) {
+      fileWatchesByClient.delete(ws);
+    }
+  }
+}
+
+/** Drops every file subscription held by a socket (call on disconnect). */
+export function unsubscribeAllFilePaths(ws: WebSocket): void {
+  const clientKeys = fileWatchesByClient.get(ws);
+  if (!clientKeys) {
+    return;
+  }
+  for (const key of clientKeys.keys()) {
+    const watch = fileWatches.get(key);
+    if (!watch) continue;
+    watch.subscribers.delete(ws);
+    if (watch.subscribers.size === 0) {
+      fs.unwatchFile(watch.resolved);
+      fileWatches.delete(key);
+    }
+  }
+  fileWatchesByClient.delete(ws);
+}
+
+// activeFileWatchCount: used by tests to prove polls stop with their last subscriber.
+export function activeFileWatchCount(): number {
+  return fileWatches.size;
 }

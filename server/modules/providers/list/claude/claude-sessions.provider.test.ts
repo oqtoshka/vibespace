@@ -334,3 +334,90 @@ test('normalizeMessage defaults an unknown compaction trigger to manual', () => 
 
   assert.deepEqual(message.compaction, { trigger: 'manual' });
 });
+
+/**
+ * Compaction summaries must never reach the transcript as a bubble.
+ *
+ * Claude replays the summary as a synthetic *user* turn so the next turn starts
+ * with it in context. Rendered literally that is a wall of text the reader never
+ * typed, sitting right under the divider that already says the same thing — the
+ * exact duplication this normalization exists to prevent. The row arrives as a
+ * plain string from the JSONL transcript and as a text-block array from the live
+ * SDK stream, and old transcripts carry no flag at all, so all three shapes are
+ * covered here.
+ */
+const COMPACT_SUMMARY_TEXT = 'This session is being continued from a previous conversation that ran out of context.\n\nSummary:\n1. Did a thing.';
+
+test('normalizeMessage folds a flagged string compact summary into a boundary', () => {
+  const provider = new ClaudeSessionsProvider();
+  const messages = provider.normalizeMessage({
+    type: 'user',
+    uuid: 'cs1',
+    isCompactSummary: true,
+    message: { role: 'user', content: COMPACT_SUMMARY_TEXT },
+  }, SESSION);
+
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].kind, 'compact_boundary');
+  assert.equal(messages[0].role, undefined);
+  assert.equal(messages[0].compaction?.summary, COMPACT_SUMMARY_TEXT);
+});
+
+test('normalizeMessage folds a live array-shaped compact summary into a boundary', () => {
+  const provider = new ClaudeSessionsProvider();
+  const messages = provider.normalizeMessage({
+    type: 'user',
+    uuid: 'cs2',
+    isCompactSummary: true,
+    message: { role: 'user', content: [{ type: 'text', text: COMPACT_SUMMARY_TEXT }] },
+  }, SESSION);
+
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].kind, 'compact_boundary');
+  assert.equal(messages[0].compaction?.summary, COMPACT_SUMMARY_TEXT);
+});
+
+test('normalizeMessage recognizes an unflagged compact summary by its preamble', () => {
+  const provider = new ClaudeSessionsProvider();
+  const [message] = provider.normalizeMessage({
+    type: 'user',
+    uuid: 'cs3',
+    message: { role: 'user', content: COMPACT_SUMMARY_TEXT },
+  }, SESSION);
+
+  assert.equal(message.kind, 'compact_boundary');
+});
+
+test('normalizeMessage leaves an ordinary user turn alone', () => {
+  const provider = new ClaudeSessionsProvider();
+  const [message] = provider.normalizeMessage({
+    type: 'user',
+    uuid: 'u1',
+    message: { role: 'user', content: 'continue where we left off' },
+  }, SESSION);
+
+  assert.equal(message.kind, 'text');
+  assert.equal(message.role, 'user');
+  assert.equal(message.content, 'continue where we left off');
+});
+
+test('fetchHistory collapses repeated 529 supervisor retries into one clean bubble', async () => {
+  await withIsolatedDatabase(async (tempDir) => {
+    const retrySession = '99999999-9999-4999-8999-999999999999';
+    const projectDir = path.join(tempDir, 'projects', '-retry-demo');
+    await mkdir(projectDir, { recursive: true });
+    const mainFile = path.join(projectDir, `${retrySession}.jsonl`);
+    const prompt = '[session supervisor] Claude returned HTTP 529. Continue the unfinished work. <!-- vibespace-retry:incident_529 -->';
+    await writeFile(mainFile, jsonl(
+      { type: 'user', sessionId: retrySession, uuid: 'retry-raw-1', timestamp: '2026-01-01T00:00:00.000Z', message: { role: 'user', content: prompt } },
+      { type: 'user', sessionId: retrySession, uuid: 'retry-raw-2', timestamp: '2026-01-01T00:05:00.000Z', message: { role: 'user', content: prompt } },
+    ));
+    sessionsDb.createSession(retrySession, 'claude', '/retry-demo', 'Retry demo', undefined, undefined, mainFile);
+
+    const result = await new ClaudeSessionsProvider().fetchHistory(retrySession, { limit: null });
+    assert.equal(result.messages.length, 1);
+    assert.equal(result.total, 1);
+    assert.equal(result.messages[0].id, 'vibespace_retry_incident_529');
+    assert.equal(result.messages[0].content, '[session supervisor] Claude returned HTTP 529. Continue the unfinished work.');
+  });
+});

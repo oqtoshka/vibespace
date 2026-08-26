@@ -985,7 +985,13 @@ router.post('/', validateExternalApiKey, async (req, res) => {
         sessionId: sessionId || null,
         model: model || codexModels.DEFAULT,
         effort,
-        permissionMode: 'bypassPermissions'
+        permissionMode: 'bypassPermissions',
+        // This endpoint is a one-shot automation call, not a conversation a
+        // human can reopen. Keep it on the private-variant Codex app-server
+        // variant, just like the Claude branch above. Without this flag the
+        // global Codex hooks publish a short-lived 0/0 session to Mission
+        // Control even though VibeSpace persists nothing for the operator.
+        ephemeral: true
       }, writer);
     } else if (provider === 'opencode') {
       console.log('Starting OpenCode CLI session');

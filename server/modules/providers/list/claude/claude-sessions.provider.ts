@@ -3,8 +3,9 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import readline from 'node:readline';
 
+import { createCompactBoundaryMessage, looksLikeCompactSummary } from '@/shared/compaction.js';
 import type { IProviderSessions } from '@/shared/interfaces.js';
-import type { AnyRecord, CompactionInfo, FetchHistoryOptions, FetchHistoryResult, NormalizedMessage, RewindResult } from '@/shared/types.js';
+import type { AnyRecord, FetchHistoryOptions, FetchHistoryResult, NormalizedMessage, RewindResult } from '@/shared/types.js';
 import { createNormalizedMessage, generateMessageId, readFiniteNumber, readObjectRecord, sliceTailPage } from '@/shared/utils.js';
 import { sessionsDb } from '@/modules/database/index.js';
 
@@ -398,6 +399,56 @@ function isInternalContent(content: string): boolean {
   return INTERNAL_CONTENT_PREFIXES.some((prefix) => content.startsWith(prefix));
 }
 
+const VIBESPACE_RETRY_MARKER = /\s*<!--\s*vibespace-retry:([a-zA-Z0-9_-]+)\s*-->\s*/g;
+
+/**
+ * Server-owned provider retries are real turns in Claude's transcript, but a
+ * recurring 529 retry is one UI event. The hidden marker gives every resend a
+ * stable normalized id while the raw provider rows keep their own UUIDs.
+ */
+function readVibespaceRetryId(content: unknown): string | null {
+  const text = typeof content === 'string'
+    ? content
+    : Array.isArray(content)
+      ? content.filter((part: AnyRecord) => part?.type === 'text').map((part: AnyRecord) => part.text || '').join('\n')
+      : '';
+  VIBESPACE_RETRY_MARKER.lastIndex = 0;
+  return VIBESPACE_RETRY_MARKER.exec(text)?.[1] || null;
+}
+
+function stripVibespaceRetryMarker(content: string): string {
+  VIBESPACE_RETRY_MARKER.lastIndex = 0;
+  return content.replace(VIBESPACE_RETRY_MARKER, ' ').replace(/\s+$/, '');
+}
+
+/**
+ * The summary text when this row is a compaction summary, otherwise `null`.
+ *
+ * Claude replays the summary as a synthetic *user* turn so the next turn starts
+ * with it in context, and flags the row `isCompactSummary`. The content is a
+ * plain string in the JSONL transcript but a text-block array over the live SDK
+ * stream, and older CLI versions wrote the row with no flag at all — hence the
+ * three shapes here. Miss any of them and the summary lands in the transcript
+ * as a blue user bubble the reader never typed, right next to the compaction
+ * divider that already says the same thing.
+ */
+function readCompactSummaryText(raw: AnyRecord): string | null {
+  const content = raw.message?.content;
+  const text = typeof content === 'string'
+    ? content
+    : Array.isArray(content)
+      ? content
+          .filter((part: AnyRecord) => part?.type === 'text')
+          .map((part: AnyRecord) => (typeof part.text === 'string' ? part.text : ''))
+          .join('\n')
+      : '';
+
+  if (!text.trim()) {
+    return null;
+  }
+  return raw.isCompactSummary === true || looksLikeCompactSummary(text) ? text : null;
+}
+
 /**
  * Claude wraps local slash-command metadata in lightweight XML-like tags inside
  * a plain string payload. We intentionally parse only the small tag surface we
@@ -520,22 +571,15 @@ export class ClaudeSessionsProvider implements IProviderSessions {
     // reload, instead of looking like an unexplained gap in the transcript.
     if (raw.type === 'system' && raw.subtype === 'compact_boundary') {
       const meta = readObjectRecord(raw.compact_metadata ?? raw.compactMetadata) || {};
-      const trigger = meta.trigger === 'auto' ? 'auto' : 'manual';
-      const compaction: CompactionInfo = { trigger };
-      const preTokens = readFiniteNumber(meta.pre_tokens ?? meta.preTokens);
-      const postTokens = readFiniteNumber(meta.post_tokens ?? meta.postTokens);
-      const durationMs = readFiniteNumber(meta.duration_ms ?? meta.durationMs);
-      if (preTokens !== null) compaction.preTokens = preTokens;
-      if (postTokens !== null) compaction.postTokens = postTokens;
-      if (durationMs !== null) compaction.durationMs = durationMs;
-
-      return [createNormalizedMessage({
+      return [createCompactBoundaryMessage({
         id: raw.uuid || generateMessageId('claude'),
         sessionId,
-        timestamp: raw.timestamp || new Date().toISOString(),
+        timestamp: raw.timestamp,
         provider: PROVIDER,
-        kind: 'compact_boundary',
-        compaction,
+        trigger: meta.trigger === 'auto' ? 'auto' : 'manual',
+        preTokens: readFiniteNumber(meta.pre_tokens ?? meta.preTokens) ?? undefined,
+        postTokens: readFiniteNumber(meta.post_tokens ?? meta.postTokens) ?? undefined,
+        durationMs: readFiniteNumber(meta.duration_ms ?? meta.durationMs) ?? undefined,
       })];
     }
 
@@ -575,9 +619,29 @@ export class ClaudeSessionsProvider implements IProviderSessions {
 
     const messages: NormalizedMessage[] = [];
     const ts = raw.timestamp || new Date().toISOString();
-    const baseId = raw.uuid || generateMessageId('claude');
+    const retryMessageId = raw.message?.role === 'user'
+      ? readVibespaceRetryId(raw.message?.content)
+      : null;
+    const baseId = retryMessageId
+      ? `vibespace_retry_${retryMessageId}`
+      : (raw.uuid || generateMessageId('claude'));
 
     if (raw.message?.role === 'user' && raw.message?.content && raw.isMeta !== true) {
+      // A replayed compaction summary, not something the user said. It folds
+      // into the `compact_boundary` row the CLI wrote just before it (see the
+      // merge in normalizedToChatMessages), so the reader gets one marker they
+      // can expand rather than a wall of summary text plus a divider.
+      const compactSummary = readCompactSummaryText(raw);
+      if (compactSummary) {
+        return [createCompactBoundaryMessage({
+          id: baseId,
+          sessionId,
+          timestamp: ts,
+          provider: PROVIDER,
+          summary: compactSummary,
+        })];
+      }
+
       if (Array.isArray(raw.message.content)) {
         // Image attachments sent through the SDK are persisted as base64
         // `image` blocks next to the prompt text. Collect them so the UI can
@@ -616,10 +680,10 @@ export class ClaudeSessionsProvider implements IProviderSessions {
               interruptedByShutdown: Boolean(raw.interruptedByShutdown),
             }));
           } else if (part.type === 'text') {
-            const text = part.text || '';
+            const text = stripVibespaceRetryMarker(part.text || '');
             if (text && !isInternalContent(text)) {
               messages.push(createNormalizedMessage({
-                id: `${baseId}_text_${partIndex}`,
+                id: retryMessageId ? baseId : `${baseId}_text_${partIndex}`,
                 uuid: raw.uuid,
                 sessionId,
                 timestamp: ts,
@@ -635,14 +699,14 @@ export class ClaudeSessionsProvider implements IProviderSessions {
         }
 
         if (messages.length === 0) {
-          const textParts = raw.message.content
+          const textParts = stripVibespaceRetryMarker(raw.message.content
             .filter((part: AnyRecord) => part.type === 'text')
             .map((part: AnyRecord) => part.text)
             .filter(Boolean)
-            .join('\n');
+            .join('\n'));
           if (textParts && !isInternalContent(textParts)) {
             messages.push(createNormalizedMessage({
-              id: `${baseId}_text`,
+              id: retryMessageId ? baseId : `${baseId}_text`,
               uuid: raw.uuid,
               sessionId,
               timestamp: ts,
@@ -670,29 +734,7 @@ export class ClaudeSessionsProvider implements IProviderSessions {
           }));
         }
       } else if (typeof raw.message.content === 'string') {
-        const text = raw.message.content;
-
-        /**
-         * Claude stores compact summaries as synthetic "user" rows so the CLI
-         * can resume the next session turn with the summary in-context.
-         *
-         * For the web UI this is much more useful as assistant-authored summary
-         * text; otherwise it is both filtered by the generic internal-prefix
-         * check and visually mislabeled as a user message.
-         */
-        if (raw.isCompactSummary === true && text.trim()) {
-          messages.push(createNormalizedMessage({
-            id: baseId,
-            sessionId,
-            timestamp: ts,
-            provider: PROVIDER,
-            kind: 'text',
-            role: 'assistant',
-            content: text,
-            isCompactSummary: true,
-          }));
-          return messages;
-        }
+        const text = stripVibespaceRetryMarker(raw.message.content);
 
         /**
          * Local slash commands are serialized as tagged text even though they
@@ -913,8 +955,16 @@ export class ClaudeSessionsProvider implements IProviderSessions {
     }
 
     const normalized: NormalizedMessage[] = [];
+    const seenMessageIds = new Set<string>();
     for (const raw of rawMessages) {
-      normalized.push(...this.normalizeMessage(raw, sessionId));
+      for (const message of this.normalizeMessage(raw, sessionId)) {
+        // Repeated Claude 529 retries normalize to the same marker-derived id.
+        // Keep the first bubble; the later provider attempts and their errors
+        // remain in the raw transcript but do not spam the chat history.
+        if (seenMessageIds.has(message.id)) continue;
+        seenMessageIds.add(message.id);
+        normalized.push(message);
+      }
     }
 
     for (const msg of normalized) {

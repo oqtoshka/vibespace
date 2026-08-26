@@ -20,7 +20,7 @@ import os from 'os';
 import { CLAUDE_FALLBACK_MODELS, normalizeClaudeModelToCatalogValue } from './modules/providers/list/claude/claude-models.provider.js';
 import { providerModelsService } from './modules/providers/services/provider-models.service.js';
 import { buildClaudeUserContent, getGlobalImageAssetsDir, normalizeImageDescriptors } from './shared/image-attachments.js';
-import { buildAgentEnv } from './shared/agent-env.js';
+import { buildAgentEnv, collectAgentEnv } from './shared/agent-env.js';
 import { resolveClaudeCodeExecutablePath } from './shared/claude-cli-path.js';
 import {
   createNotificationEvent,
@@ -36,7 +36,7 @@ import { createCompleteMessage, createNormalizedMessage, resolveConfiguredContex
 import { rememberContextUsage } from './shared/context-usage-cache.js';
 import { readOpenClaudeTasks } from './shared/claude-task-ledger.js';
 import { scheduleSessionRecap } from './services/session-recap.service.js';
-import { recordSessionActivity, recordSessionEnd, recordPendingInteraction, restoreInterruptedSessions } from './services/session-restore.service.js';
+import { recordSessionActivity, recordSessionEnd, recordPendingInteraction } from './services/session-restore.service.js';
 import { scheduleRateLimitWake, cancelRateLimitWake, isRateLimitWakePending } from './services/rate-limit-wake.service.js';
 import { broadcastSessionUpdate } from './modules/providers/index.js';
 import { chatRunRegistry } from './modules/websocket/services/chat-run-registry.service.js';
@@ -90,7 +90,13 @@ const SESSION_IDLE_TIMEOUT_MS = parseInt(process.env.CLAUDE_SESSION_IDLE_TIMEOUT
 // at most TASK_NUDGE_MAX nudges per session, and two consecutive nudges that
 // produce no tool calls and no ledger change give up early with a notification.
 // The model exits the loop by editing the ledger — completing, deleting, or
-// re-scoping its tasks. VIBESPACE_TASK_NUDGE=0 disables the mechanism.
+// re-scoping its tasks — or, when a task is genuinely parked on the user (an
+// unanswered question, a decision, a review), by marking it with TaskUpdate
+// metadata `{ waitingOnUser: true }`: the supervisor then stands down and the
+// task stays open, so a supervisor board keeps showing the outstanding work
+// instead of a falsely "complete" session. The marker is trusted only while
+// no newer user turn exists — a reply after the mark makes the task
+// actionable again. VIBESPACE_TASK_NUDGE=0 disables the mechanism.
 const TASK_NUDGE_MAX = parseInt(process.env.VIBESPACE_TASK_NUDGE_MAX, 10) || 5;
 const TASK_NUDGE_ENABLED = !['0', 'false', 'off'].includes((process.env.VIBESPACE_TASK_NUDGE || '').trim().toLowerCase());
 
@@ -461,23 +467,21 @@ function mapCliOptionsToSDK(options = {}) {
   // is cheaper than teaching the watcher to recognise and skip them.
   if (options.ephemeral) {
     sdkOptions.persistSession = false;
-    // Same reasoning, one layer out: an agent hook fires for a helper turn
-    // exactly as it does for a real one, so presence boards register each
-    // recap and commit message as a session that lives ~20s, holds no tasks,
-    // and cannot be opened here (nothing was persisted to open). mc-reporter
-    // documents MC_DISABLE for precisely this — a scripted one-shot nobody
-    // would ever intervene in. Harmless to anything that does not read it.
-    sdkOptions.env = { ...sdkOptions.env, MC_DISABLE: '1' };
   }
 
-  // A private session is the same gate for a different reason: the user asked
-  // for this conversation to stay off every presence board, and the reporter
-  // honours MC_DISABLE by exiting before it reads anything. Only the env
-  // changes — the transcript is still written, because the session has to be
-  // resumable; removing it afterwards is the shred's job, not this one's.
-  if (options.private) {
-    sdkOptions.env = { ...sdkOptions.env, MC_DISABLE: '1' };
-  }
+  // Let host plugins tag the subprocess for what it is. An ephemeral helper
+  // turn fires the same agent hooks a real one does, and a private session is
+  // the user's choice to stay off external channels; which variables express
+  // that (e.g. a presence reporter's opt-out) is the plugin's business, not
+  // the runtime's. Merged over the filtered host env: contributors add, never
+  // remove — dropping the rest would strip ANTHROPIC_BASE_URL and friends.
+  Object.assign(sdkOptions.env, collectAgentEnv({
+    provider: 'claude',
+    scope: 'session',
+    private: Boolean(options.private),
+    ephemeral: Boolean(options.ephemeral),
+    sessionId: options.sessionId ?? null,
+  }));
 
   // Map resume session
   if (sessionId) {
@@ -1115,6 +1119,20 @@ async function maybeContinueOpenTasks(session) {
   const open = await readOpenClaudeTasks(session.sessionId);
   if (open.length === 0) return false;
 
+  // A task marked waitingOnUser is parked on input only the user can give —
+  // nudging cannot advance it, and pressing the model to "close" it is how
+  // sessions used to fake-complete work the user never signed off on. The
+  // marker is honored only if set at or after the last real user turn; a
+  // reply that arrived later makes the task actionable again. An unreadable
+  // mtime honors the marker (standing down is the safe direction).
+  const actionable = open.filter(
+    (t) => !t.waitingOnUser || (t.updatedAt !== null && t.updatedAt < session.lastUserTurnAt),
+  );
+  if (actionable.length === 0) {
+    console.log(`[claude tasks] session ${session.sessionId}: all ${open.length} open task(s) are waiting on the user — standing down, ledger stays open`);
+    return false;
+  }
+
   // State may have moved while we were on disk; a live turn owns the session.
   if (session.ended || session.input.closed) return false;
   if (session.turnActive || session.awaitingResult || session.pendingTasks.size > 0) return true;
@@ -1122,7 +1140,7 @@ async function maybeContinueOpenTasks(session) {
   // Stall detection: a nudge that produced no tool calls AND left the ledger
   // untouched did nothing. Two of those in a row mean nudging isn't helping.
   const nudges = session.taskNudges;
-  const fingerprint = open.map((t) => `${t.id}:${t.status}`).join(',');
+  const fingerprint = actionable.map((t) => `${t.id}:${t.status}`).join(',');
   if (nudges.count > 0 && fingerprint === nudges.fingerprint && session.toolUseCount === nudges.toolCount) {
     nudges.stalls += 1;
   } else {
@@ -1130,15 +1148,15 @@ async function maybeContinueOpenTasks(session) {
   }
 
   if (nudges.count >= TASK_NUDGE_MAX || nudges.stalls >= 2) {
-    const subjects = open.map((t) => t.subject).join('; ');
+    const subjects = actionable.map((t) => t.subject).join('; ');
     const why = nudges.stalls >= 2 ? 'no progress across two nudges' : `nudge budget (${TASK_NUDGE_MAX}) exhausted`;
-    console.log(`[claude tasks] session ${session.sessionId}: giving up (${why}) with ${open.length} open task(s): ${subjects}`);
+    console.log(`[claude tasks] session ${session.sessionId}: giving up (${why}) with ${actionable.length} open task(s): ${subjects}`);
     notifyRunFailed({
       userId: session.userId,
       provider: 'claude',
       sessionId: session.sessionId,
       sessionName: session.sessionSummary,
-      error: `Went idle with ${open.length} open task(s) — ${why}: ${subjects}`,
+      error: `Went idle with ${actionable.length} open task(s) — ${why}: ${subjects}`,
     });
     return false;
   }
@@ -1148,9 +1166,9 @@ async function maybeContinueOpenTasks(session) {
   nudges.toolCount = session.toolUseCount;
 
   ensureRunForServerStartedTurn(session, 'Resuming — open tasks remain');
-  console.log(`[claude tasks] session ${session.sessionId}: idle with ${open.length} open task(s) — nudging (${nudges.count}/${TASK_NUDGE_MAX})`);
+  console.log(`[claude tasks] session ${session.sessionId}: idle with ${actionable.length} open task(s) — nudging (${nudges.count}/${TASK_NUDGE_MAX})`);
   await applyPendingModelSwitch(session);
-  session.input.push(makeUserMessage(buildOpenTasksNudge(open)));
+  session.input.push(makeUserMessage(buildOpenTasksNudge(actionable)));
   return true;
 }
 
@@ -1164,6 +1182,35 @@ async function maybeContinueOpenTasks(session) {
  * reports the same `resetsAt` independently. A `rate_limit_event` alone is
  * only data — its status can lag or lead the turn — so it never marks a hit.
  */
+function readClaudeApiErrorText(message) {
+  const content = message?.message?.content;
+  if (Array.isArray(content)) {
+    return content.filter((b) => b?.type === 'text').map((b) => b.text).join(' ').trim();
+  }
+  if (typeof content === 'string') return content.trim();
+  if (Array.isArray(message?.errors)) return message.errors.filter(Boolean).join(' ').trim();
+  return typeof message?.result === 'string' ? message.result.trim() : '';
+}
+
+function readClaudeApiStatus(message) {
+  const value = message?.apiErrorStatus
+    ?? message?.api_error_status
+    ?? message?.status
+    ?? message?.statusCode
+    ?? message?.status_code
+    ?? message?.response?.status;
+  const parsed = typeof value === 'string' ? Number(value) : value;
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function isClaude529Error(value) {
+  if (readClaudeApiStatus(value) === 529) return true;
+  const text = value instanceof Error
+    ? value.message
+    : (readClaudeApiErrorText(value) || value?.message || '');
+  return /(?:\b529\b.*(?:overload|service)|(?:overload|service overloaded).*\b529\b)/i.test(String(text));
+}
+
 function trackRateLimit(session, message) {
   if (!message) return;
   if (message.type === 'rate_limit_event' && message.rate_limit_info && typeof message.rate_limit_info === 'object') {
@@ -1171,15 +1218,25 @@ function trackRateLimit(session, message) {
     return;
   }
   if (message.type === 'assistant' && message.error === 'rate_limit') {
-    const content = message.message?.content;
-    const text = Array.isArray(content)
-      ? content.filter((b) => b?.type === 'text').map((b) => b.text).join(' ').trim()
-      : (typeof content === 'string' ? content : '');
+    const text = readClaudeApiErrorText(message);
     const quota = message.quotaLimits && typeof message.quotaLimits === 'object' ? message.quotaLimits : null;
     session.rateLimitHit = {
       text: text || 'usage limit reached',
       resetsAt: quota?.resetsAt ?? null,
       limitType: quota?.rateLimitType ?? null,
+      recoveryKind: 'usage-limit',
+      seenAt: Date.now(),
+    };
+    return;
+  }
+  // Claude Code may surface an exhausted overload retry either as the
+  // synthetic assistant API-error row or only on the terminal result.
+  if (isClaude529Error(message)) {
+    session.rateLimitHit = {
+      text: readClaudeApiErrorText(message) || 'Claude API returned HTTP 529 (service overloaded)',
+      resetsAt: null,
+      limitType: 'http_529',
+      recoveryKind: 'claude-529',
       seenAt: Date.now(),
     };
   }
@@ -1208,8 +1265,11 @@ function scheduleWakeForRateLimitedTurn(session) {
     limitType: hit.limitType ?? (infoResetsAt !== null ? info.rateLimitType ?? null : null),
     limitText: hit.text,
     permissionMode: session.options?.permissionMode ?? null,
+    recoveryKind: hit.recoveryKind || 'usage-limit',
+    messageId: session.currentRateLimitWakeMessageId ?? null,
+    priorAttempts: session.currentRateLimitWakeAttempts ?? 0,
   }).catch((error) => {
-    console.warn(`[claude] session ${session.sessionId}: scheduling the usage-limit wake failed:`, error?.message || error);
+    console.warn(`[claude] session ${session.sessionId}: scheduling the retry wake failed:`, error?.message || error);
   });
   return true;
 }
@@ -1219,9 +1279,16 @@ function buildOpenTasksNudge(open) {
     '[session supervisor] Automated check: this session went idle, but its task list still has open items:',
     ...open.map((t) => `- #${t.id} [${t.status}] ${t.subject}`),
     '',
-    'Continue working through them now. If an item is no longer relevant or cannot proceed, '
-      + 'close it explicitly — mark it completed, delete it, or replace it with a re-scoped task — '
-      + 'and say why. Do not stop while tasks remain open.',
+    'Continue working through them now. If an item is finished, mark it completed. '
+      + 'If it is no longer relevant, delete it or replace it with a re-scoped task, and say why.',
+    '',
+    'If an item cannot proceed because it needs the user\'s answer, decision, or review, it is NOT '
+      + 'finished — never mark it completed to satisfy this check. Instead keep its status open and '
+      + 'flag it via TaskUpdate metadata: {"waitingOnUser": true}, then end the turn. The '
+      + 'supervisor stops nudging tasks flagged this way, and each stays visible as outstanding '
+      + 'work until the user responds. (Set the metadata now even if you believe it is already '
+      + 'set — the flag must postdate this message. It expires automatically when the user '
+      + 'replies.)',
   ].join('\n');
 }
 
@@ -1353,6 +1420,7 @@ async function injectClaudeMessage(sessionId, command, options = {}) {
   // A message folded into a running turn is still a user turn: honour a model
   // pick made while that turn was in flight.
   await applyPendingModelSwitch(session);
+  session.lastUserTurnAt = Date.now();
   const pushed = session.input.push({ ...makeUserMessage(content), uuid });
   if (!pushed) {
     return null;
@@ -1955,6 +2023,36 @@ async function handleSessionError(session, error) {
   const sessionId = session.options.sessionId;
   const sid = session.sessionId || sessionId || null;
 
+  // Some SDK/CLI versions throw after exhausting their short internal 529
+  // retry instead of emitting a synthetic assistant row + result. Hand that
+  // shape to the same durable five-minute loop and suppress the ordinary
+  // terminal failure notification; this is a pause, not a final failure.
+  if (isClaude529Error(error) && sid && !session.ephemeral) {
+    try {
+      await scheduleRateLimitWake({
+        provider: 'claude',
+        providerSessionId: sid,
+        userId: session.userId,
+        sessionName: session.sessionSummary,
+        limitType: 'http_529',
+        limitText: error?.message || String(error),
+        permissionMode: session.options?.permissionMode ?? null,
+        recoveryKind: 'claude-529',
+        messageId: session.currentRateLimitWakeMessageId ?? null,
+        priorAttempts: session.currentRateLimitWakeAttempts ?? 0,
+      });
+      session.writer.send(createNormalizedMessage({
+        kind: 'error',
+        content: 'Claude is temporarily overloaded (HTTP 529). VibeSpace will retry this session in five minutes and keep retrying until it succeeds.',
+        sessionId: sid,
+        provider: 'claude',
+      }));
+      return;
+    } catch (scheduleError) {
+      console.warn(`[claude] session ${sid}: scheduling the HTTP 529 retry failed:`, scheduleError?.message || scheduleError);
+    }
+  }
+
   // A session jsonl that holds only bridge/system metadata has no conversation
   // Claude can resume — the SDK fails with "No conversation found". Retry once
   // as a brand-new session in the same cwd so the message isn't silently dropped.
@@ -2018,6 +2116,8 @@ async function reuseSession(session, command, options, ws) {
   if (options.acquireResumeRun) {
     session.acquireResumeRun = options.acquireResumeRun;
   }
+  session.currentRateLimitWakeMessageId = options.rateLimitWakeMessageId ?? null;
+  session.currentRateLimitWakeAttempts = options.rateLimitWakeAttempts ?? 0;
 
   // If a turn is mid-flight, interrupt it so the new message starts promptly
   // (the streaming query stays alive for the next turn).
@@ -2089,6 +2189,7 @@ async function reuseSession(session, command, options, ws) {
   clearIdleTimer(session);
   session.turnActive = true;
   session.turnStartTime = Date.now();
+  session.lastUserTurnAt = Date.now();
   recordRestoreState(session, true);
   if (options.sessionSummary) session.sessionSummary = options.sessionSummary;
 
@@ -2167,6 +2268,10 @@ async function startPersistentSession(command, options, ws) {
     turnActive: true,
     turnStartTime: Date.now(),
     awaitingResult: true,
+    // When the user last spoke (first turn, reuse, mid-turn injection — not
+    // supervisor nudges or background-task resumes). A waitingOnUser task
+    // marker older than this is stale: the user has since replied.
+    lastUserTurnAt: Date.now(),
     lastAssistantText: '',
     turnToolNames: [],
     toolUseCount: 0,
@@ -2176,6 +2281,10 @@ async function startPersistentSession(command, options, ws) {
     // recorded for the turn in flight, and the latest rate_limit_event.
     rateLimitHit: null,
     lastRateLimitInfo: null,
+    // Identifies a server-owned retry incident for the current turn. A manual
+    // user turn clears both values in reuseSession.
+    currentRateLimitWakeMessageId: options.rateLimitWakeMessageId ?? null,
+    currentRateLimitWakeAttempts: options.rateLimitWakeAttempts ?? 0,
     // Last label pushed to the activity indicator, so repeat tool calls of the
     // same shape don't spam identical status messages down the socket.
     lastActivityText: undefined,
@@ -2556,71 +2665,6 @@ function reconnectSessionWriter(sessionId, newRawWs) {
   session.writer.updateWebSocket(newRawWs);
   console.log(`[RECONNECT] Writer swapped for session ${sessionId}`);
   return true;
-}
-
-/**
- * Restore-on-boot startTurn hook: opens the resumed turn as a real chat-run
- * (broadcast, registered in the run registry) instead of a detached spawn.
- * That is what makes a restored session behave like any other for a client
- * that opens it mid-turn: `chat.subscribe` sees it processing, replays its
- * events, and — the reason this exists — delivers any interactive prompt the
- * turn parks on via `pendingPermissions`. A detached resume swallowed those:
- * an AskUserQuestion asked into the void, then rendered "Skipped" after the
- * next restart, with the user never having seen it.
- */
-function startRestoredTurnAsRun(entry, prompt) {
-  const row = sessionsDb.getSessionByProviderSessionId(entry.sessionId);
-  if (!row) return false;
-  const appSessionId = row.session_id;
-  const run = chatRunRegistry.startQueuedRun(appSessionId);
-  if (!run) return false;
-  // Notifications — including the action_required ping for the very prompts
-  // this run exists to surface — resolve their recipient from the writer.
-  run.writer.userId = entry.userId ?? null;
-  // Show the supervisor prompt as a live user message, like the queue drain
-  // does for server-sent turns. The `local_` id marks it optimistic: the
-  // transcript copy carries the runtime's own uuid, so the two can only be
-  // reconciled by content, and that is the prefix the session store's
-  // optimistic-user dedupe keys off. Without it the prompt rendered twice for
-  // the rest of the turn — once here, once from the transcript.
-  run.writer.send(createNormalizedMessage({
-    id: `local_restore_${appSessionId}_${Date.now()}`,
-    kind: 'text',
-    role: 'user',
-    content: prompt,
-    provider: 'claude',
-    sessionId: appSessionId,
-  }));
-  queryClaudeSDK(prompt, {
-    sessionId: entry.sessionId,
-    resume: true,
-    cwd: entry.cwd ?? row.worktree_path ?? row.project_path ?? undefined,
-    permissionMode: entry.permissionMode,
-    // The row is the source of truth for privacy, as in buildRuntimeOptions.
-    private: Boolean(row.is_private) || Boolean(entry.private),
-    acquireResumeRun: () => chatRunRegistry.startResumeRun(appSessionId),
-  }, run.writer)
-    .catch((error) => {
-      console.error(`[session restore] resume of ${entry.sessionId} failed:`, error?.message || error);
-    })
-    .finally(() => {
-      // Backstop only — a no-op when the turn emitted its own terminal complete.
-      chatRunRegistry.completeRun(appSessionId, { exitCode: 1 });
-    });
-  return true;
-}
-
-// Arm the restore-on-boot pass. This module is in the import graph of both
-// entrypoints (the launchd deployment runs index.js directly; the packaged CLI
-// imports it), so arming here covers both. Skipped under the node:test runner,
-// where importing this module must never spawn real sessions.
-if (!process.env.NODE_TEST_CONTEXT) {
-  const bootRestoreTimer = setTimeout(() => {
-    restoreInterruptedSessions(queryClaudeSDK, { startTurn: startRestoredTurnAsRun }).catch((error) => {
-      console.error('[session restore] boot pass failed:', error?.message || error);
-    });
-  }, 8000);
-  bootRestoreTimer.unref?.();
 }
 
 // Export public API

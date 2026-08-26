@@ -1,8 +1,8 @@
 /**
- * Restore-on-boot for Claude sessions.
+ * Restore-on-boot for agent sessions.
  *
- * The claude-sdk session loop registers every live (non-ephemeral) session
- * here; the registry is mirrored to <dataDir>/active-claude-sessions.json so
+ * Provider runtimes register every live (non-ephemeral) session here; the
+ * registry is mirrored to <dataDir>/active-agent-sessions.json so
  * it survives the process. A clean teardown (idle reap, user abort, ephemeral
  * completion) removes its entry, so whatever is still in the file when the
  * server boots is work a restart or crash orphaned — each such session gets a
@@ -17,6 +17,7 @@ import { promises as fs } from 'fs';
 import path from 'path';
 
 import { readOpenClaudeTasks } from '../shared/claude-task-ledger.js';
+import { readCodexPlanState } from '../shared/codex-plan-ledger.js';
 import { getDataDir } from '../utils/worktrees.js';
 
 import { isRateLimitWakePending, loadRateLimitWakes } from './rate-limit-wake.service.js';
@@ -35,7 +36,10 @@ const CONTINUATION_PROMPT = [
   'open task.',
 ].join(' ');
 
-const stateFile = () => path.join(getDataDir(), 'active-claude-sessions.json');
+const stateFile = () => path.join(getDataDir(), 'active-agent-sessions.json');
+// Read-only migration source. Deployments that already have Claude restore
+// state must not lose it when the registry becomes provider-neutral.
+const legacyStateFile = () => path.join(getDataDir(), 'active-claude-sessions.json');
 
 // In-memory mirror of the file; sessionId -> entry.
 const entries = new Map();
@@ -45,12 +49,19 @@ let writeTimer = null;
 async function loadOnce() {
   if (loaded) return;
   loaded = true;
+  let raw = null;
   try {
-    const raw = JSON.parse(await fs.readFile(stateFile(), 'utf8'));
-    for (const e of Array.isArray(raw) ? raw : []) {
-      if (e && typeof e.sessionId === 'string') entries.set(e.sessionId, e);
+    raw = JSON.parse(await fs.readFile(stateFile(), 'utf8'));
+  } catch {
+    try {
+      raw = JSON.parse(await fs.readFile(legacyStateFile(), 'utf8'));
+    } catch { /* first run or unreadable — start empty */ }
+  }
+  for (const e of Array.isArray(raw) ? raw : []) {
+    if (e && typeof e.sessionId === 'string') {
+      entries.set(e.sessionId, { ...e, provider: e.provider || 'claude' });
     }
-  } catch { /* first run or unreadable — start empty */ }
+  }
 }
 
 /** Debounced atomic mirror of the registry to disk. */
@@ -72,11 +83,12 @@ function scheduleWrite() {
 }
 
 /** Upsert a live session. Call on register and on turn start/end. */
-export async function recordSessionActivity({ sessionId, cwd, permissionMode, userId, turnActive, private: isPrivate }) {
+export async function recordSessionActivity({ provider, sessionId, cwd, permissionMode, userId, turnActive, private: isPrivate }) {
   if (!sessionId) return;
   await loadOnce();
   const prev = entries.get(sessionId) || {};
   entries.set(sessionId, {
+    provider: provider ?? prev.provider ?? 'claude',
     sessionId,
     cwd: cwd ?? prev.cwd,
     permissionMode: permissionMode ?? prev.permissionMode,
@@ -201,11 +213,23 @@ export async function restoreInterruptedSessions(spawn, hooks = {}) {
     }
     let openTasks = [];
     try {
-      openTasks = await readOpenClaudeTasks(entry.sessionId);
+      openTasks = entry.provider === 'codex'
+        ? readCodexPlanState(entry.sessionId).open
+        : await readOpenClaudeTasks(entry.sessionId);
     } catch { /* unreadable ledger counts as empty */ }
     if (!entry.turnActive && openTasks.length === 0) {
       // It was idling with nothing declared — the reaper would have ended it
       // anyway; don't wake it just to say "continue".
+      entries.delete(entry.sessionId);
+      continue;
+    }
+    if (!entry.turnActive && openTasks.every((t) => t.waitingOnUser)) {
+      // Every open task is parked on the user (marked waitingOnUser by the
+      // model). Waking the session to "continue" would only pressure it into
+      // closing work the user never signed off on; the tasks stay open on
+      // disk, so a supervisor board keeps showing them, and the user's next
+      // message resumes the session the ordinary way.
+      console.log(`[session restore] ${entry.sessionId} is waiting on the user (${openTasks.length} parked task(s)) — not resuming`);
       entries.delete(entry.sessionId);
       continue;
     }
@@ -228,7 +252,12 @@ export async function restoreInterruptedSessions(spawn, hooks = {}) {
       }
     }
     if (!started) {
-      spawn(prompt, {
+      const detachedSpawn = typeof spawn === 'function' ? spawn : spawn?.[entry.provider || 'claude'];
+      if (typeof detachedSpawn !== 'function') {
+        console.warn(`[session restore] no ${entry.provider || 'claude'} starter for ${entry.sessionId}; leaving it for the next boot`);
+        continue;
+      }
+      detachedSpawn(prompt, {
         sessionId: entry.sessionId,
         resume: true,
         cwd: entry.cwd,
@@ -237,7 +266,9 @@ export async function restoreInterruptedSessions(spawn, hooks = {}) {
       }, makeDetachedWriter(entry.userId)).catch((error) => {
         console.error(`[session restore] resume of ${entry.sessionId} failed:`, error?.message || error);
       });
+      started = true;
     }
+    if (!started) continue;
     resumed.push(entry.sessionId);
     // Small stagger so a fleet of resumes doesn't spawn CLIs all at once.
     await new Promise((r) => setTimeout(r, 2000));

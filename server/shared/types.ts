@@ -245,6 +245,13 @@ export type CompactionInfo = {
   preTokens?: number;
   postTokens?: number;
   durationMs?: number;
+  /**
+   * The summary the runtime replaced the transcript with. Kept on the boundary
+   * rather than emitted as its own message so the UI has one thing to render:
+   * a marker that expands on demand. Absent when the runtime does not expose
+   * the text (Codex encrypts it).
+   */
+  summary?: string;
 };
 
 /**

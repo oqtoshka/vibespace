@@ -6,7 +6,7 @@ import path from 'node:path';
  * Reader for Codex's plan ledger. Codex has no per-task store on disk: the
  * plan lives in the session's rollout transcript as `update_plan` tool calls,
  * and every call carries the WHOLE plan — so the newest call is the current
- * state and no history needs replaying. Same read Mission Control's
+ * state and no history needs replaying. Same read a supervisor board's
  * codex-plan adapter performs.
  *
  *   ~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<session-id>.jsonl
@@ -15,14 +15,133 @@ import path from 'node:path';
  *   { "type": "response_item",
  *     "payload": { "type": "function_call", "name": "update_plan",
  *                  "arguments": "{\"plan\":[{\"step\":\"…\",\"status\":\"pending\"}]}" } }
- * `arguments` is a JSON *string*. Code-mode encodes the same call as
- * `custom_tool_call` with the payload under `input`; both are accepted.
+ * `arguments` is a JSON *string*. Older code-mode builds encoded the same call
+ * as a `custom_tool_call` named `update_plan`. Current code mode wraps tools in
+ * an `exec` call whose input contains `tools.update_plan({...})`; all three
+ * forms are accepted.
  */
 
 // A plan set at the start of a long session can sit megabytes behind the end
 // of the rollout; read a generous tail first and fall back to the whole file
 // only when the tail shows no plan at all.
 const TAIL_BYTES = 512 * 1024;
+
+/**
+ * Extract the object literal passed to `tools.update_plan(...)` without
+ * evaluating transcript contents. Code mode emits JSON-compatible strings but
+ * leaves JavaScript object keys unquoted, so quote only bare keys while outside
+ * strings and then hand the result to JSON.parse.
+ */
+function extractWrappedPlanArguments(source) {
+  const marker = 'tools.update_plan';
+  const markerIndex = source.lastIndexOf(marker);
+  if (markerIndex < 0) return null;
+
+  const callStart = source.indexOf('(', markerIndex + marker.length);
+  if (callStart < 0) return null;
+
+  let objectStart = callStart + 1;
+  while (/\s/.test(source[objectStart] || '')) objectStart += 1;
+  if (source[objectStart] !== '{') return null;
+
+  let depth = 0;
+  let quote = null;
+  let escaped = false;
+  for (let i = objectStart; i < source.length; i += 1) {
+    const char = source[i];
+    if (quote) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === '\\') {
+        escaped = true;
+      } else if (char === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (char === '"' || char === "'" || char === '`') {
+      quote = char;
+      continue;
+    }
+    if (char === '{' || char === '[') depth += 1;
+    if (char === '}' || char === ']') depth -= 1;
+    if (depth === 0) {
+      return source.slice(objectStart, i + 1);
+    }
+  }
+  return null;
+}
+
+function jsonFromCodeModeObject(source) {
+  let result = '';
+  let quote = null;
+  let escaped = false;
+
+  for (let i = 0; i < source.length;) {
+    const char = source[i];
+    if (quote) {
+      result += char;
+      i += 1;
+      if (escaped) {
+        escaped = false;
+      } else if (char === '\\') {
+        escaped = true;
+      } else if (char === quote) {
+        quote = null;
+      }
+      continue;
+    }
+
+    if (char === '"') {
+      quote = char;
+      result += char;
+      i += 1;
+      continue;
+    }
+
+    if (/[A-Za-z_$]/.test(char)) {
+      let end = i + 1;
+      while (/[A-Za-z0-9_$]/.test(source[end] || '')) end += 1;
+      const identifier = source.slice(i, end);
+      const previous = result.trimEnd().at(-1);
+      let next = end;
+      while (/\s/.test(source[next] || '')) next += 1;
+      result += (previous === '{' || previous === ',') && source[next] === ':'
+        ? JSON.stringify(identifier)
+        : identifier;
+      i = end;
+      continue;
+    }
+
+    // Trailing commas are valid in the generated JavaScript but not JSON.
+    if (char === ',') {
+      let next = i + 1;
+      while (/\s/.test(source[next] || '')) next += 1;
+      if (source[next] === '}' || source[next] === ']') {
+        i += 1;
+        continue;
+      }
+    }
+
+    result += char;
+    i += 1;
+  }
+
+  return result;
+}
+
+function planFromPayload(payload) {
+  let raw = null;
+  if (payload?.name === 'update_plan') {
+    raw = payload.arguments ?? payload.input;
+  } else if (payload?.type === 'custom_tool_call' && payload.name === 'exec') {
+    raw = extractWrappedPlanArguments(payload.input || '');
+    if (raw) raw = jsonFromCodeModeObject(raw);
+  }
+  if (typeof raw !== 'string') return null;
+  const plan = JSON.parse(raw)?.plan;
+  return Array.isArray(plan) ? plan : null;
+}
 
 function codexSessionsRoot() {
   const home = process.env.CODEX_HOME?.trim();
@@ -61,13 +180,8 @@ function findLatestPlan(text) {
     // Cheap reject before the expensive parse: most lines are not plan calls.
     if (!line.includes('update_plan')) continue;
     try {
-      const payload = JSON.parse(line)?.payload;
-      if (!payload || payload.name !== 'update_plan') continue;
-      // `arguments` on a function_call, `input` on a code-mode custom_tool_call.
-      const raw = payload.arguments ?? payload.input;
-      if (typeof raw !== 'string') continue;
-      const plan = JSON.parse(raw)?.plan;
-      if (Array.isArray(plan)) return plan;
+      const plan = planFromPayload(JSON.parse(line)?.payload);
+      if (plan) return plan;
     } catch {
       // A truncated or unexpected line. Keep looking further back — one bad
       // record must not hide an older good plan.

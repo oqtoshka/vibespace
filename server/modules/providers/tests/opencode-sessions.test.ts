@@ -777,3 +777,72 @@ test('OpenCode synchronizer keeps the stored title for indexed sessions', { conc
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
+
+/**
+ * OpenCode marks the assistant message that *is* a compaction summary with
+ * `summary: true`. Rendered as an ordinary answer it is a wall of text with no
+ * hint that the context was just reset underneath it, so the whole message —
+ * however many parts it was split across — collapses into a single boundary
+ * marker whose body the reader can open on demand.
+ */
+test('OpenCode history: a summary-flagged message becomes one expandable compaction marker', { concurrency: false }, async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'opencode-compaction-'));
+  const workspacePath = path.join(tempRoot, 'workspace');
+  await mkdir(workspacePath, { recursive: true });
+  const restoreHomeDir = patchHomeDir(tempRoot);
+
+  try {
+    await createOpenCodeDatabase(tempRoot, workspacePath);
+
+    const db = new Database(path.join(tempRoot, '.local', 'share', 'opencode', 'opencode.db'));
+    try {
+      db.prepare(
+        'INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?)',
+      ).run(
+        'message-compact',
+        'open-session-1',
+        1_700_000_004_000,
+        1_700_000_004_000,
+        JSON.stringify({ role: 'assistant', summary: true, time: { created: 1_700_000_004_000 } }),
+      );
+      const insertPart = db.prepare(`
+        INSERT INTO part (id, message_id, session_id, time_created, time_updated, data)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `);
+      insertPart.run(
+        'part-compact-1',
+        'message-compact',
+        'open-session-1',
+        1_700_000_004_000,
+        1_700_000_004_000,
+        JSON.stringify({ type: 'text', text: 'What we did so far.' }),
+      );
+      insertPart.run(
+        'part-compact-2',
+        'message-compact',
+        'open-session-1',
+        1_700_000_004_100,
+        1_700_000_004_100,
+        JSON.stringify({ type: 'text', text: 'What is left to do.' }),
+      );
+    } finally {
+      db.close();
+    }
+
+    const provider = new OpenCodeSessionsProvider();
+    const history = await provider.fetchHistory('open-session-1');
+    const boundaries = history.messages.filter((message) => message.kind === 'compact_boundary');
+
+    // One marker for the message, not one per part.
+    assert.equal(boundaries.length, 1);
+    assert.equal(boundaries[0]?.compaction?.summary, 'What we did so far.\n\nWhat is left to do.');
+    // And none of its text leaked out as an assistant bubble.
+    assert.equal(
+      history.messages.some((message) => message.kind === 'text' && String(message.content).includes('What is left to do.')),
+      false,
+    );
+  } finally {
+    restoreHomeDir();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});

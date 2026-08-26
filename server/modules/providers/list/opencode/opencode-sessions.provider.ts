@@ -2,6 +2,7 @@ import fsSync from 'node:fs';
 
 import Database from 'better-sqlite3';
 
+import { createCompactBoundaryMessage } from '@/shared/compaction.js';
 import { parseImagesInputTag } from '@/shared/image-attachments.js';
 import type { IProviderSessions } from '@/shared/interfaces.js';
 import type { AnyRecord, FetchHistoryOptions, FetchHistoryResult, NormalizedMessage, RewindResult } from '@/shared/types.js';
@@ -71,6 +72,38 @@ const extractText = (value: unknown): string => {
     ?? readOptionalString(record?.content)
     ?? '';
   return unwrapJsonStringLiteral(text);
+};
+
+/**
+ * Groups the text of every compaction-summary message, keyed by message id.
+ *
+ * OpenCode marks the assistant message that *is* a compaction summary with
+ * `summary: true` (distinct from the `summary: {diffs: […]}` object it hangs on
+ * ordinary user turns — hence the strict comparison). The text can be split
+ * across parts, and the parts arrive as separate joined rows, so they are
+ * gathered in one pass before normalization decides what to emit.
+ */
+const collectOpenCodeCompactSummaries = (rows: OpenCodeHistoryRow[]): Map<string, string> => {
+  const partsByMessage = new Map<string, string[]>();
+
+  for (const row of rows) {
+    const messageInfo = readJsonRecord(row.message_data);
+    if (messageInfo?.summary !== true) {
+      continue;
+    }
+
+    const parts = partsByMessage.get(row.message_id) ?? [];
+    const partData = readJsonRecord(row.part_data);
+    if (readOptionalString(partData?.type) === 'text') {
+      const text = extractText(partData);
+      if (text.trim()) {
+        parts.push(text);
+      }
+    }
+    partsByMessage.set(row.message_id, parts);
+  }
+
+  return new Map([...partsByMessage].map(([messageId, parts]) => [messageId, parts.join('\n\n')]));
 };
 
 /**
@@ -448,12 +481,31 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
   private normalizeHistoryRows(rows: OpenCodeHistoryRow[], sessionId: string): NormalizedMessage[] {
     const normalized: NormalizedMessage[] = [];
     const emittedMessageErrors = new Set<string>();
+    const compactSummaries = collectOpenCodeCompactSummaries(rows);
+    const emittedCompactBoundaries = new Set<string>();
 
     for (const row of rows) {
       const timestamp = normalizeProviderTimestamp(row.part_time_created ?? row.message_time_created);
       const baseId = `${row.message_id}_${row.part_id ?? normalized.length}`;
       const messageInfo = readJsonRecord(row.message_data);
       const messageRole = readOptionalString(messageInfo?.role);
+
+      // The message OpenCode compacted the conversation into. It reads like an
+      // assistant answer but is really a context reset, so it collapses to one
+      // boundary marker for the whole message rather than a bubble per part.
+      if (compactSummaries.has(row.message_id)) {
+        if (!emittedCompactBoundaries.has(row.message_id)) {
+          emittedCompactBoundaries.add(row.message_id);
+          normalized.push(createCompactBoundaryMessage({
+            id: `${row.message_id}_compact`,
+            sessionId,
+            timestamp,
+            provider: PROVIDER,
+            summary: compactSummaries.get(row.message_id),
+          }));
+        }
+        continue;
+      }
 
       if (
         messageInfo

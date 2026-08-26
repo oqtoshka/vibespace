@@ -1,5 +1,6 @@
 import crossSpawn from 'cross-spawn';
 
+import { buildAgentEnv } from './shared/agent-env.js';
 import { appendImagesInputTag } from './shared/image-attachments.js';
 import { notifyRunFailed, notifyRunStopped } from './services/notification-orchestrator.js';
 import { sessionsService } from './modules/providers/services/sessions.service.js';
@@ -134,7 +135,7 @@ async function spawnCursor(command, options = {}, ws) {
       const cursorProcess = spawnFunction('cursor-agent', args, {
         cwd: workingDir,
         stdio: ['pipe', 'pipe', 'pipe'],
-        env: { ...process.env } // Inherit all environment variables
+        env: buildAgentEnv() // Host env minus VibeSpace's own server config
       });
 
       activeCursorProcesses.set(processKey, cursorProcess);

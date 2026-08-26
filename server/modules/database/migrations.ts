@@ -474,7 +474,7 @@ const addSessionIsSide = (db: Database): void => {
  * Marks sessions the user started as private.
  *
  * Privacy is a launch-time property: the flag is read once per turn to put
- * `MC_DISABLE=1` into the harness process, and by VibeSpace's own outbound
+ * the private-variant env into the harness process, and by VibeSpace's own outbound
  * paths (notifications, the recap generator) to stay silent. Existing rows
  * default to 0 — every session that predates the flag has already been
  * reported, so calling it private now would be a lie.

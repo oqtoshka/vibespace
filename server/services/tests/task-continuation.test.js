@@ -78,12 +78,12 @@ const planCall = (plan) => ({
   payload: { type: 'function_call', name: 'update_plan', arguments: JSON.stringify({ plan }) },
 });
 
-test('the codex reader takes the newest plan, in either encoding, and filters to open steps', () => {
+test('the codex reader takes the newest plan, in every encoding, and filters to open steps', () => {
   const root = path.join(tmp, 'codex-sessions');
   writeRollout(root, 'sid-plan', [
     planCall([{ step: 'old world', status: 'pending' }]),
     { type: 'response_item', payload: { type: 'function_call', name: 'shell', arguments: '{}' } },
-    // Newest plan wins, and code-mode's custom_tool_call spelling is accepted.
+    // Older code-mode's direct custom_tool_call spelling is accepted.
     {
       type: 'response_item',
       payload: {
@@ -96,12 +96,29 @@ test('the codex reader takes the newest plan, in either encoding, and filters to
         ] }),
       },
     },
+    // Current code mode wraps the tool call in executable JavaScript. Newest
+    // still wins, including bare keys and trailing commas in the object.
+    {
+      type: 'response_item',
+      payload: {
+        type: 'custom_tool_call',
+        name: 'exec',
+        input: `const p = await tools.update_plan({
+          explanation: "keep punctuation like {step: untouched inside strings",
+          plan: [
+            {step: "wrapped done", status: "completed"},
+            {step: "wrapped active", status: "in_progress"},
+            {step: "wrapped next", status: "pending"},
+          ],
+        }); text(p)`,
+      },
+    },
   ]);
 
   const state = readCodexPlanState('sid-plan', root);
   assert.deepEqual(state.open, [
-    { id: '2', subject: 'the real work', status: 'in_progress' },
-    { id: '3', subject: 'and then this', status: 'pending' },
+    { id: '2', subject: 'wrapped active', status: 'in_progress' },
+    { id: '3', subject: 'wrapped next', status: 'pending' },
   ]);
   assert.ok(state.activity >= 2, 'tool calls in the window are counted');
 

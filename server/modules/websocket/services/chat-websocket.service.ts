@@ -8,6 +8,9 @@ import {
   subscribeProjectFiles,
   unsubscribeProjectFiles,
   unsubscribeAllProjectFiles,
+  subscribeFilePath,
+  unsubscribeFilePath,
+  unsubscribeAllFilePaths,
 } from '@/modules/websocket/services/project-files-watcher.service.js';
 import { connectedClients, WS_OPEN_STATE } from '@/modules/websocket/services/websocket-state.service.js';
 import { getGlobalImageAssetsDir, normalizeImageDescriptors } from '@/shared/image-attachments.js';
@@ -259,7 +262,7 @@ function buildRuntimeOptions(
     cwd: clientOptions.cwd ?? session.worktree_path ?? session.project_path ?? undefined,
     projectPath: session.project_path ?? clientOptions.projectPath,
     // Private is a property of the row, never of the client request: each
-    // runtime puts MC_DISABLE=1 into the harness process it spawns for this
+    // runtime puts the private-variant env (see collectAgentEnv) into the harness process it spawns for this
     // turn, so no presence reporter ever speaks for the session.
     private: Boolean(session.is_private),
   };
@@ -325,8 +328,12 @@ async function drainQueue(appSessionId: string): Promise<void> {
   // the authoritative copy is the provider transcript, which replaces this on
   // the next history load, so there is no lasting duplicate.
   if (item.content.trim()) {
+    const retryMessageId = typeof item.options?.rateLimitWakeMessageId === 'string'
+      ? item.options.rateLimitWakeMessageId
+      : '';
     run.writer.send(
       createNormalizedMessage({
+        ...(retryMessageId ? { id: `vibespace_retry_${retryMessageId}` } : {}),
         kind: 'text',
         role: 'user',
         content: item.content,
@@ -843,6 +850,8 @@ function readProjectId(data: AnyRecord): string | null {
  * - `chat.permission-response` { requestId, allow, updatedInput?, message?, rememberEntry? }
  * - `files.subscribe`          { projectId }   — watch a project's files
  * - `files.unsubscribe`        { projectId }
+ * - `files.watch`              { projectId, path } — stat-poll one file (any allowed root)
+ * - `files.unwatch`            { projectId, path }
  *
  * Outbound protocol (server to client): every frame is `kind`-based — either
  * a provider `NormalizedMessage` (with `seq`) or a gateway event
@@ -909,6 +918,22 @@ export function handleChatConnection(
           }
           return;
         }
+        case 'files.watch': {
+          const projectId = readProjectId(data);
+          const filePath = typeof data.path === 'string' ? data.path : '';
+          if (projectId && filePath) {
+            await subscribeFilePath(ws, projectId, filePath);
+          }
+          return;
+        }
+        case 'files.unwatch': {
+          const projectId = readProjectId(data);
+          const filePath = typeof data.path === 'string' ? data.path : '';
+          if (projectId && filePath) {
+            unsubscribeFilePath(ws, projectId, filePath);
+          }
+          return;
+        }
         default:
           sendProtocolError(ws, 'UNKNOWN_MESSAGE_TYPE', `Unknown message type "${messageType}".`);
           return;
@@ -924,13 +949,14 @@ export function handleChatConnection(
     console.log('[INFO] Chat client disconnected');
     connectedClients.delete(ws);
     unsubscribeAllProjectFiles(ws);
+    unsubscribeAllFilePaths(ws);
   });
 }
 
 /**
  * Boot-time registration of the chat dependencies for server-initiated runs.
  * Same object the websocket layer hands to each connection; registering at
- * listen-time means a server-spawned session (anthill mac watcher) can drain
+ * listen-time means a server-spawned session (a plugin host module driving a queue) can drain
  * its queue before any browser has ever connected — per-connection
  * registration alone would leave a boot-spawned session enqueued forever on a
  * headless server.
