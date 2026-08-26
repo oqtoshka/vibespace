@@ -35,6 +35,11 @@ function deps(root: string, plugins: ReturnType<typeof writePlugin>[]) {
         getById: (id: string) => (id === 'known' ? { session_id: id, provider: 'claude', provider_session_id: null, isArchived: false } : null),
         createAppSession: () => ({ sessionId: 'new' }),
         deleteOrArchiveById: async () => undefined,
+        rename: () => undefined,
+      },
+      runs: {
+        get: (id: string) => (id === 'known' ? { status: 'running' as const, providerSessionId: 'p1', lastAssistantText: 'hi' } : null),
+        abort: async (id: string) => id === 'known',
       },
       enqueueMessage: () => true,
     },
@@ -46,7 +51,7 @@ test('activates enabled host modules: routes mount, env contributors apply, shut
   const good = writePlugin(root, 'good', 'good', `
     export async function activate(host) {
       const r = host.createRouter();
-      r.get('/ping', (req, res) => res.json({ pong: host.pluginName, known: Boolean(host.sessions.getById('known')), mac: host.hmacSha256('x') }));
+      r.get('/ping', (req, res) => res.json({ pong: host.pluginName, known: Boolean(host.sessions.getById('known')), run: host.runs.get('known')?.status ?? null, mac: host.hmacSha256('x') }));
       host.mountRouter('/api/ext-test', r);
       host.registerAgentEnvContributor((ctx) => ctx.private ? { EXT_PRIVATE: '1' } : null);
       host.onShutdown(() => { globalThis.__extShutdown = (globalThis.__extShutdown ?? 0) + 1; });
@@ -73,9 +78,10 @@ test('activates enabled host modules: routes mount, env contributors apply, shut
       const { port } = server.address() as { port: number };
       const response = await fetch(`http://127.0.0.1:${port}/api/ext-test/ping`);
       assert.equal(response.status, 200);
-      const body = (await response.json()) as { pong: string; known: boolean; mac: unknown };
+      const body = (await response.json()) as { pong: string; known: boolean; run: string | null; mac: unknown };
       assert.equal(body.pong, 'good');
       assert.equal(body.known, true);
+      assert.equal(body.run, 'running');
       assert.equal(typeof body.mac, 'string');
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
