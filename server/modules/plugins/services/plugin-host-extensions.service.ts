@@ -34,6 +34,13 @@ export type HostSessionRow = {
   isArchived: boolean;
 };
 
+/** What a host module may see of a session's run. */
+export type HostRunView = {
+  status: 'running' | 'completed';
+  providerSessionId: string | null;
+  lastAssistantText: string;
+};
+
 /**
  * What `activate(host)` receives. Everything a host module can do to VibeSpace
  * goes through here.
@@ -67,6 +74,20 @@ export type PluginHost = {
       sessionId: string,
       options?: { force?: boolean; deletedFromDisk?: boolean },
     ) => Promise<void>;
+    /** Sets the title shown in the sidebar (cosmetic; never affects the run). */
+    rename: (sessionId: string, title: string) => void;
+  };
+  /** The live run of a session this plugin drives, and the one thing it may do to it. */
+  runs: {
+    /**
+     * null when the session has no run in the registry (never started, or
+     * evicted a few minutes after completion). `lastAssistantText` is the
+     * newest assistant text of the buffered run, for a plugin that has to
+     * report how a headless run ended.
+     */
+    get: (sessionId: string) => HostRunView | null;
+    /** Cancels a running turn as `chat.abort` would; false if nothing was running. */
+    abort: (sessionId: string) => Promise<boolean>;
   };
   /**
    * Pushes a prompt into a session through the server-owned queue, so a run
@@ -108,6 +129,7 @@ export type HostExtensionDependencies = {
   authenticateToken: RequestHandler;
   getSigningSecret: () => string;
   sessions: PluginHost['sessions'];
+  runs: PluginHost['runs'];
   enqueueMessage: PluginHost['enqueueMessage'];
 };
 
@@ -148,6 +170,7 @@ function buildHost(name: string, pluginDir: string, deps: HostExtensionDependenc
     },
     auth: { authenticateToken: deps.authenticateToken },
     sessions: deps.sessions,
+    runs: deps.runs,
     enqueueMessage: deps.enqueueMessage,
     hmacSha256: (input) =>
       crypto.createHmac('sha256', deps.getSigningSecret()).update(input).digest('base64url'),
