@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { createCompactBoundaryMessage, looksLikeCompactSummary } from '@/shared/compaction.js';
-import { parseImagesInputTag } from '@/shared/image-attachments.js';
+import { parseFilesInputTag, parseImagesInputTag } from '@/shared/image-attachments.js';
 import type { IProviderSessions } from '@/shared/interfaces.js';
 import type { AnyRecord, FetchHistoryOptions, FetchHistoryResult, NormalizedMessage } from '@/shared/types.js';
 import {
@@ -100,16 +100,22 @@ function unwrapUserQueryText(value: string, role: 'user' | 'assistant'): string 
 function extractUserTextAndImages(
   value: string,
   role: 'user' | 'assistant',
-): { text: string; images?: Array<{ path: string; name?: string }> } {
+): {
+  text: string;
+  images?: Array<{ path: string; name?: string }>;
+  files?: Array<{ path: string; name?: string }>;
+} {
   const unwrapped = unwrapUserQueryText(value, role);
   if (role !== 'user') {
     return { text: unwrapped };
   }
 
-  const { text, attachments } = parseImagesInputTag(unwrapped);
+  const parsedImages = parseImagesInputTag(unwrapped);
+  const parsedFiles = parseFilesInputTag(parsedImages.text);
   return {
-    text,
-    images: attachments.length > 0 ? attachments : undefined,
+    text: parsedFiles.text,
+    images: parsedImages.attachments.length > 0 ? parsedImages.attachments : undefined,
+    files: parsedFiles.attachments.length > 0 ? parsedFiles.attachments : undefined,
   };
 }
 
@@ -486,16 +492,18 @@ export class CursorSessionsProvider implements IProviderSessions {
                 text = unwrapUserQueryText(content.message.content, role);
               }
             }
-            const { text: cleanText, images } = role === 'user'
+            const { text: cleanText, images, files } = role === 'user'
               ? (() => {
-                const parsed = parseImagesInputTag(text);
+                const parsedImages = parseImagesInputTag(text);
+                const parsedFiles = parseFilesInputTag(parsedImages.text);
                 return {
-                  text: parsed.text,
-                  images: parsed.attachments.length > 0 ? parsed.attachments : undefined,
+                  text: parsedFiles.text,
+                  images: parsedImages.attachments.length > 0 ? parsedImages.attachments : undefined,
+                  files: parsedFiles.attachments.length > 0 ? parsedFiles.attachments : undefined,
                 };
               })()
-              : { text, images: undefined };
-            if (cleanText?.trim() || images) {
+              : { text, images: undefined, files: undefined };
+            if (cleanText?.trim() || images || files) {
               messages.push(createNormalizedMessage({
                 id: baseId,
                 sessionId,
@@ -505,6 +513,7 @@ export class CursorSessionsProvider implements IProviderSessions {
                 role,
                 content: cleanText,
                 images,
+                files,
                 sequence: blob.sequence,
                 rowid: blob.rowid,
               }));
@@ -572,8 +581,8 @@ export class CursorSessionsProvider implements IProviderSessions {
             }
 
             if (part?.type === 'text' && part?.text) {
-              const { text: normalizedPartText, images } = extractUserTextAndImages(part.text, role);
-              if (!normalizedPartText && !images) {
+              const { text: normalizedPartText, images, files } = extractUserTextAndImages(part.text, role);
+              if (!normalizedPartText && !images && !files) {
                 continue;
               }
               messages.push(createNormalizedMessage({
@@ -585,6 +594,7 @@ export class CursorSessionsProvider implements IProviderSessions {
                 role,
                 content: normalizedPartText,
                 images,
+                files,
                 sequence: blob.sequence,
                 rowid: blob.rowid,
               }));
@@ -624,8 +634,8 @@ export class CursorSessionsProvider implements IProviderSessions {
           && content.content.trim()
           && !isInternalCursorText(content.content)
         ) {
-          const { text: normalizedText, images } = extractUserTextAndImages(content.content, role);
-          if (!normalizedText && !images) {
+          const { text: normalizedText, images, files } = extractUserTextAndImages(content.content, role);
+          if (!normalizedText && !images && !files) {
             continue;
           }
           messages.push(createNormalizedMessage({
@@ -637,6 +647,7 @@ export class CursorSessionsProvider implements IProviderSessions {
             role,
             content: normalizedText,
             images,
+            files,
             sequence: blob.sequence,
             rowid: blob.rowid,
           }));

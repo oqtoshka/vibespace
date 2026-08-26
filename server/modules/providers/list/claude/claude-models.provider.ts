@@ -14,7 +14,7 @@ import {
   writeProviderSessionActiveModelChange,
 } from '@/shared/utils.js';
 
-export const CLAUDE_FALLBACK_MODELS: ProviderModelsDefinition = {
+export const CLAUDE_PREDEFINED_MODELS: ProviderModelsDefinition = {
   OPTIONS: [
     {
       value: 'default',
@@ -32,9 +32,9 @@ export const CLAUDE_FALLBACK_MODELS: ProviderModelsDefinition = {
       },
     },
     {
-      value: 'fable',
-      label: 'Fable',
-      description: 'Fable 5 · Most capable for your hardest and longest-running tasks · Uses your limits ~2× faster than Opus',
+      value: 'best',
+      label: 'Best available',
+      description: 'Use Fable 5 when available, otherwise the latest Opus model.',
       effort: {
         default: 'high',
         values: [
@@ -47,9 +47,39 @@ export const CLAUDE_FALLBACK_MODELS: ProviderModelsDefinition = {
       },
     },
     {
-      value: "sonnet",
-      label: "Sonnet",
-      description: "Sonnet 5 · Efficient for routine tasks",
+      value: 'fable',
+      label: 'Fable 5',
+      description: 'Fable 5 · Most capable, for the hardest, longest-running tasks',
+      effort: {
+        default: 'high',
+        values: [
+          { value: 'low' },
+          { value: 'medium' },
+          { value: 'high' },
+          { value: 'xhigh' },
+          { value: 'max' },
+        ],
+      },
+    },
+    {
+      value: 'sonnet',
+      label: 'Sonnet',
+      description: 'Sonnet 5 · Efficient for routine tasks',
+      effort: {
+        default: 'high',
+        values: [
+          { value: 'low' },
+          { value: 'medium' },
+          { value: 'high' },
+          { value: 'xhigh' },
+          { value: 'max' },
+        ],
+      },
+    },
+    {
+      value: 'sonnet[1m]',
+      label: 'Sonnet (1M context)',
+      description: 'Sonnet 5 with 1M context · Efficient for routine tasks',
       effort: {
         default: 'high',
         values: [
@@ -96,9 +126,27 @@ export const CLAUDE_FALLBACK_MODELS: ProviderModelsDefinition = {
       label: 'Haiku',
       description: 'Haiku 4.5 · Fastest for quick answers',
     },
+    {
+      value: 'opusplan',
+      label: 'Opus Plan',
+      description: 'Opus while planning, then Sonnet for execution',
+      effort: {
+        default: 'high',
+        values: [
+          { value: 'low' },
+          { value: 'medium' },
+          { value: 'high' },
+          { value: 'xhigh' },
+          { value: 'max' },
+        ],
+      },
+    },
   ],
   DEFAULT: 'default',
 };
+
+/** @deprecated Pre-1.37 name; the catalog is now CLAUDE_PREDEFINED_MODELS. */
+export const CLAUDE_FALLBACK_MODELS = CLAUDE_PREDEFINED_MODELS;
 
 export const findClaudeModelOption = (model: string | undefined | null): ProviderModelOption | null => {
   const normalizedModel = typeof model === 'string' ? model.trim() : '';
@@ -106,7 +154,7 @@ export const findClaudeModelOption = (model: string | undefined | null): Provide
     return null;
   }
 
-  return CLAUDE_FALLBACK_MODELS.OPTIONS.find((option) => option.value === normalizedModel) ?? null;
+  return CLAUDE_PREDEFINED_MODELS.OPTIONS.find((option) => option.value === normalizedModel) ?? null;
 };
 /**
  * Transcript rows record full model ids (`claude-fable-5`,
@@ -262,7 +310,7 @@ export class ClaudeProviderModels implements IProviderModels {
     // const supportedModels = await queryInstance.supportedModels();
     // queryInstance.close();
     // return buildClaudeModelsDefinition(supportedModels);
-    return CLAUDE_FALLBACK_MODELS;
+    return CLAUDE_PREDEFINED_MODELS;
   }
 
   async getCurrentActiveModel(sessionId?: string): Promise<ProviderCurrentActiveModel> {

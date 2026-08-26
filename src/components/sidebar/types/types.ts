@@ -4,7 +4,7 @@ export type ProjectSortOrder = 'name' | 'date';
 // 'projects' is the regular sessions list (search unifies name + content
 // matches); 'archived' shows the archive. The old 'conversations' mode was
 // folded into the unified search.
-export type SidebarSearchMode = 'projects' | 'archived';
+export type SidebarSearchMode = 'projects' | 'conversations' | 'archived';
 // Top-level sidebar view: the sessions/projects list or the project file tree.
 export type SidebarView = 'sessions' | 'files';
 // How the Projects tab lays out its content: the classic project-grouped tree,
@@ -37,6 +37,11 @@ export type ArchivedSessionListItem = {
   lastActivity: string | null;
   isProjectArchived: boolean;
 };
+
+export type RecentConversationListItem = Pick<
+  ArchivedSessionListItem,
+  'sessionId' | 'provider' | 'projectId' | 'projectDisplayName' | 'sessionTitle' | 'lastActivity'
+>;
 
 export type DeleteProjectConfirmation = {
   project: Project;

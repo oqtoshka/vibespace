@@ -180,6 +180,7 @@ export default tseslint.config(
             "server/utils/runtime-paths.js",
             "server/utils/worktrees.js",
             "server/utils/allowedPaths.js", // per-file watches (websocket module) share the file API's containment rules
+            "server/constants/config.js", // auth middleware still reads the worker/OIDC header names from the legacy config
           ], // provider history loading still resolves session data through these legacy runtime files
           mode: "file",
         },
@@ -256,6 +257,17 @@ export default tseslint.config(
         },
       ],
       "boundaries/no-unknown": "error", // fail fast if boundaries cannot classify a dependency, which prevents silent rule bypasses
+    },
+  },
+  {
+    // The provider runtime implementations (server/claude-sdk.js, openai-codex.js,
+    // opencode-cli.js, cursor-cli.js) are still root-level legacy files — their move
+    // into server/modules is tracked in docs/upstream-reconciliation.md. Only these
+    // thin module-side adapters may reach out to them, so the "unknown element"
+    // check is relaxed here and nowhere else.
+    files: ["server/modules/providers/list/*/*-runtime.provider.js"],
+    rules: {
+      "boundaries/no-unknown": "off",
     },
   }
 );

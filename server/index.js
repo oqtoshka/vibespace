@@ -13,13 +13,14 @@ import spawn from 'cross-spawn';
 import express from 'express';
 import cors from 'cors';
 import mime from 'mime-types';
+import ignore from 'ignore';
 import Database from 'better-sqlite3';
 
 import { AppError, WORKSPACES_ROOT, getOpenCodeDatabasePath, resolveConfiguredContextWindow, validateWorkspacePath } from '@/shared/utils.js';
 import { recallContextUsage } from '@/shared/context-usage-cache.js';
 import { buildCodexTokenBudget } from '@/shared/codex-token-usage.js';
 import { validateAccessiblePath, validatePathInProject } from './utils/allowedPaths.js';
-import { closeSessionsWatcher, initializeSessionsWatcher, registerPendingCliSession, registerSessionShredDependencies } from '@/modules/providers/index.js';
+import { closeSessionsWatcher, initializeSessionsWatcher, providerRuntimeService, registerPendingCliSession, registerSessionShredDependencies } from '@/modules/providers/index.js';
 import { getSubagentConversation } from '@/modules/providers/list/claude/claude-sessions.provider.js';
 import { createWebSocketServer } from '@/modules/websocket/index.js';
 import { chatRunRegistry } from '@/modules/websocket/services/chat-run-registry.service.js';
@@ -35,63 +36,45 @@ import {
     queryClaudeSDK,
     injectClaudeMessage,
     cancelInjectedClaudeMessage,
-    abortClaudeSDKSession,
     stopClaudeSDKTask,
     getClaudeSDKBackgroundTasks,
     isClaudeSDKSessionAlive,
-    resolveToolApproval,
-    getPendingApprovalsForSession,
 } from './claude-sdk.js';
-import {
-    spawnCursor,
-    abortCursorSession,
-} from './cursor-cli.js';
-import {
-    queryCodex,
-    injectCodexMessage,
-    abortCodexSession,
-} from './openai-codex.js';
-import {
-    spawnOpenCode,
-    abortOpenCodeSession,
-} from './opencode-cli.js';
+import { spawnCursor } from './cursor-cli.js';
+import { injectCodexMessage } from './openai-codex.js';
 import { encodePlantUmlSource, inlinePlantUmlIncludes } from './utils/plantuml.js';
 import { renderDbmlToSvg } from './utils/dbml.js';
-import {
-    stripAnsiSequences,
-    normalizeDetectedUrl,
-    extractUrlsFromText,
-    shouldAutoOpenUrlFromOutput,
-} from './utils/url-detection.js';
-import gitRoutes from './routes/git.js';
+import { createGitModule } from '@/modules/git/index.js';
 import authRoutes from './routes/auth.js';
-import cursorRoutes from './routes/cursor.js';
-import taskmasterRoutes from './routes/taskmaster.js';
-import mcpUtilsRoutes from './routes/mcp-utils.js';
-import commandsRoutes from './routes/commands.js';
+import { taskmasterRoutes } from '@/modules/taskmaster/index.js';
+import { worktreesRoutes } from '@/modules/worktrees/index.js';
+import { commandsRoutes } from '@/modules/commands/index.js';
 import settingsRoutes from './routes/settings.js';
 import agentRoutes from './routes/agent.js';
 import projectModuleRoutes from './modules/projects/projects.routes.js';
 import notificationRoutes from './modules/notifications/notifications.routes.js';
 import userRoutes from './routes/user.js';
-import pluginsRoutes from './routes/plugins.js';
 import providerRoutes from './modules/providers/provider.routes.js';
 import voiceRoutes from './voice-proxy.js';
 import browserUseRoutes from './modules/browser-use/browser-use.routes.js';
 import { assetsRoutes } from './modules/assets/index.js';
 import browserUseMcpRoutes from './modules/browser-use/browser-use-mcp.routes.js';
 import { browserUseService } from './modules/browser-use/browser-use.service.js';
-import { startEnabledPluginServers, stopAllPlugins, getPluginPort } from './utils/plugin-process-manager.js';
-import { scanPlugins, getPluginsDir } from './utils/plugin-loader.js';
 import { initializeDatabase, projectsDb, sessionsDb, fileSharesDb, appConfigDb } from './modules/database/index.js';
 import { sessionsService } from '@/modules/providers/index.js';
 import {
     activateHostExtensions,
     deactivateHostExtensions,
     getHostExtensionRouter,
+    startEnabledPluginServers,
+    stopAllPlugins,
+    getPluginPort,
+    scanPlugins,
+    getPluginsDir,
+    pluginsRoutes,
 } from '@/modules/plugins/index.js';
 import crypto from 'crypto';
-import { configureWebPush } from './services/vapid-keys.js';
+import { configureWebPush } from '@/modules/notifications/index.js';
 import { validateApiKey, authenticateToken, authenticateWebSocket, readWorkerIdentity, JWT_SECRET } from './middleware/auth.js';
 import jwt from 'jsonwebtoken';
 import {
@@ -149,18 +132,9 @@ const webSocketDependencies = {
         },
     },
     chat: {
-        spawnFns: {
-            claude: queryClaudeSDK,
-            cursor: spawnCursor,
-            codex: queryCodex,
-            opencode: spawnOpenCode,
-        },
-        abortFns: {
-            claude: abortClaudeSDKSession,
-            cursor: abortCursorSession,
-            codex: abortCodexSession,
-            opencode: abortOpenCodeSession,
-        },
+        // Every provider run/abort/approval goes through the runtime gateway,
+        // which owns the app-session-id ↔ provider-session-id aliasing.
+        runtime: providerRuntimeService,
         // Per-background-job cancel. Only Claude's SDK exposes a task-level stop
         // (`stopTask`); other providers have no equivalent, so they're omitted
         // and the handler no-ops for them.
@@ -177,8 +151,6 @@ const webSocketDependencies = {
         cancelInjectedFns: {
             claude: cancelInjectedClaudeMessage,
         },
-        resolveToolApproval,
-        getPendingApprovalsForSession,
     },
     shell: {
         resolveProviderSessionId: (sessionId, provider) => {
@@ -190,10 +162,6 @@ const webSocketDependencies = {
             return null;
         },
         registerPendingCliSession,
-        stripAnsiSequences,
-        normalizeDetectedUrl,
-        extractUrlsFromText,
-        shouldAutoOpenUrlFromOutput,
     },
     getPluginPort,
 };
@@ -451,16 +419,13 @@ app.use('/api/projects', authenticateToken, projectModuleRoutes);
 app.use('/api/assets', authenticateToken, assetsRoutes);
 
 // Git API Routes (protected)
-app.use('/api/git', authenticateToken, gitRoutes);
+app.use('/api/git', authenticateToken, createGitModule({ queryClaude: queryClaudeSDK, queryCursor: spawnCursor }));
 
-// Cursor API Routes (protected)
-app.use('/api/cursor', authenticateToken, cursorRoutes);
+// Worktrees API (protected) — upstream's Worktrees tab in the git panel
+app.use('/api/worktrees', authenticateToken, worktreesRoutes);
 
 // TaskMaster API Routes (protected)
 app.use('/api/taskmaster', authenticateToken, taskmasterRoutes);
-
-// MCP utilities
-app.use('/api/mcp-utils', authenticateToken, mcpUtilsRoutes);
 
 // Commands API Routes (protected)
 app.use('/api/commands', authenticateToken, commandsRoutes);
@@ -1449,6 +1414,11 @@ app.get('/api/projects/:projectId/files', authenticateToken, async (req, res) =>
         // and types alone are enough for path-only consumers and cut both the
         // walk time and the payload roughly in half.
         const includeMeta = req.query.meta !== '0';
+        // respectGitignore=1 hides what the project's root .gitignore hides
+        // (upstream's gitignore-aware tree). Nested .gitignore files are not
+        // consulted — the root file covers build output, which is the point.
+        const respectGitignore = req.query.respectGitignore === '1' || req.query.respectGitignore === 'true';
+        const includeEntry = respectGitignore ? await createGitignoreEntryFilter(actualPath) : null;
 
         // Stop walking when the client gives up (project switches abort the
         // fetch); without this, orphaned walks keep consuming fs permits and
@@ -1458,6 +1428,7 @@ app.get('/api/projects/:projectId/files', authenticateToken, async (req, res) =>
 
         const files = await getFileTree(rootPath, maxDepth, 0, true, {
             includeMeta,
+            includeEntry,
             isCancelled: () => clientGone,
         });
         if (clientGone) {
@@ -2442,8 +2413,34 @@ function release() {
     activeFsOperations = Math.max(0, activeFsOperations - 1);
 }
 
+/**
+ * Build an entry filter from a project's root .gitignore. Returns null when
+ * there is no .gitignore (nothing to hide). Paths handed to `ignore` must be
+ * relative to the root and POSIX-style; directories get a trailing slash so
+ * patterns like `build/` match.
+ */
+async function createGitignoreEntryFilter(projectRoot) {
+    let content;
+    try {
+        content = await fsPromises.readFile(path.join(projectRoot, '.gitignore'), 'utf8');
+    } catch (error) {
+        if (error.code !== 'ENOENT') {
+            console.error(`[files] cannot read .gitignore in ${projectRoot}:`, error.message);
+        }
+        return null;
+    }
+    const matcher = ignore().add(content);
+    return (absolutePath, isDirectory) => {
+        const relative = path.relative(projectRoot, absolutePath).split(path.sep).join('/');
+        if (!relative || relative.startsWith('..')) {
+            return true;
+        }
+        return !matcher.ignores(isDirectory ? `${relative}/` : relative);
+    };
+}
+
 async function getFileTree(dirPath, maxDepth = 3, currentDepth = 0, showHidden = true, options = {}) {
-    const { includeMeta = true, isCancelled = null } = options;
+    const { includeMeta = true, isCancelled = null, includeEntry = null } = options;
     if (isCancelled?.()) {
         return [];
     }
@@ -2464,7 +2461,12 @@ async function getFileTree(dirPath, maxDepth = 3, currentDepth = 0, showHidden =
         return [];
     }
 
-    const filteredEntries = entries.filter((entry) => !(entry.isDirectory() && IGNORED_DIRS.has(entry.name)));
+    const filteredEntries = entries.filter((entry) => {
+        if (entry.isDirectory() && IGNORED_DIRS.has(entry.name)) {
+            return false;
+        }
+        return includeEntry ? includeEntry(path.join(dirPath, entry.name), entry.isDirectory()) : true;
+    });
 
     // Process every entry in parallel. On high-latency filesystems (NFS/SMB)
     // serial stat() was the real bottleneck — issuing them concurrently lets

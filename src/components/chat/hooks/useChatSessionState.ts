@@ -5,8 +5,10 @@ import { authenticatedFetch } from '../../../utils/api';
 import type { MarkSessionIdle, SessionActivityMap } from '../../../hooks/useSessionProtection';
 import type { Project, ProjectSession, LLMProvider } from '../../../types/app';
 import type { SessionStore, NormalizedMessage, ContextUsage } from '../../../stores/useSessionStore';
+import { SESSION_MESSAGES_PAGE_SIZE } from '../../../stores/sessionMessagePagination';
 import type { ChatMessage } from '../types/types';
 import { getIntrinsicMessageKey } from '../utils/messageKeys';
+import { createMessageHistoryRefreshCoordinator } from '../utils/messageHistoryRefreshCoordinator';
 import { createCachedDiffCalculator, type DiffCalculator } from '../utils/messageTransforms';
 
 import { normalizedToChatMessages } from './useChatMessages';
@@ -41,6 +43,7 @@ const FOLLOW_BOTTOM_PX = 4;
 const SCROLL_TO_BOTTOM_BUTTON_PX = 120;
 
 interface UseChatSessionStateArgs {
+  isActive: boolean;
   selectedProject: Project | null;
   selectedSession: ProjectSession | null;
   ws: WebSocket | null;
@@ -194,8 +197,9 @@ function chatMessageToNormalized(
     role: msg.type === 'user' ? 'user' : 'assistant',
     content: msg.content || '',
     // Keep attachment references on the local echo so the user bubble shows
-    // its images immediately, before the server-backed copy replaces it.
+    // its files immediately, before the server-backed copy replaces it.
     images: Array.isArray(msg.images) && msg.images.length > 0 ? msg.images : undefined,
+    files: Array.isArray(msg.files) && msg.files.length > 0 ? msg.files : undefined,
   } as NormalizedMessage;
 }
 
@@ -204,6 +208,7 @@ function chatMessageToNormalized(
 /* ------------------------------------------------------------------ */
 
 export function useChatSessionState({
+  isActive,
   selectedProject,
   selectedSession,
   ws,
@@ -360,17 +365,59 @@ export function useChatSessionState({
   const processingSessionsRef = useRef(processingSessions);
   processingSessionsRef.current = processingSessions;
 
+  const isActiveRef = useRef(isActive);
+  const activeSessionIdRef = useRef(activeSessionId);
+  isActiveRef.current = isActive;
+  activeSessionIdRef.current = activeSessionId;
+
+  const latestRefreshExecutorRef = useRef<(sessionId: string) => Promise<boolean | void>>(
+    async () => true,
+  );
+  latestRefreshExecutorRef.current = async (sessionId: string) => {
+    const result = await sessionStore.refreshLatestFromServer(sessionId, {
+      limit: SESSION_MESSAGES_PAGE_SIZE,
+      canRequest: () => (
+        isActiveRef.current
+        && activeSessionIdRef.current === sessionId
+      ),
+    });
+    const slot = result.slot;
+    if (slot && activeSessionIdRef.current === sessionId) {
+      setHasMoreMessages(slot.hasMore);
+      setTotalMessages(slot.total);
+      messagesOffsetRef.current = slot.offset;
+      if (slot.tokenUsage !== undefined) {
+        setTokenBudget((slot.tokenUsage as Record<string, unknown> | null) ?? null);
+      }
+    }
+    return !result.deferred;
+  };
+
+  const refreshCoordinatorRef = useRef<ReturnType<typeof createMessageHistoryRefreshCoordinator> | null>(null);
+  if (!refreshCoordinatorRef.current) {
+    refreshCoordinatorRef.current = createMessageHistoryRefreshCoordinator(
+      (sessionId) => latestRefreshExecutorRef.current(sessionId),
+      (sessionId) => isActiveRef.current && activeSessionIdRef.current === sessionId,
+    );
+  }
+
+  const requestLatestMessages = useCallback((sessionId: string, allowNetwork = isActiveRef.current) => (
+    refreshCoordinatorRef.current?.request(sessionId, allowNetwork) ?? Promise.resolve()
+  ), []);
+
   /* ---------------------------------------------------------------- */
   /*  Derive chatMessages from the store                              */
   /* ---------------------------------------------------------------- */
   const [pendingUserMessage, setPendingUserMessage] = useState<ChatMessage | null>(null);
   const flushedPendingUserMessageRef = useRef<ChatMessage | null>(null);
 
-  // Tell the store which session we're viewing so it only re-renders for this one
+  // Hidden Chat tabs keep collecting realtime rows without re-rendering the
+  // CSS-hidden tree. Activation itself renders once and reads the latest cache.
+  const activeSessionForStore = isActive ? activeSessionId : null;
   const prevActiveForStoreRef = useRef<string | null>(null);
-  if (activeSessionId !== prevActiveForStoreRef.current) {
-    prevActiveForStoreRef.current = activeSessionId;
-    sessionStore.setActiveSession(activeSessionId);
+  if (activeSessionForStore !== prevActiveForStoreRef.current) {
+    prevActiveForStoreRef.current = activeSessionForStore;
+    sessionStore.setActiveSession(activeSessionForStore);
   }
 
   useEffect(() => {
@@ -593,6 +640,7 @@ export function useChatSessionState({
 
   const loadOlderMessages = useCallback(
     async (container: HTMLDivElement) => {
+      if (!isActive) return false;
       if (!container || isLoadingMoreRef.current || isLoadingMoreMessages) return false;
       if (allMessagesLoadedRef.current) return false;
       if (!hasMoreMessages || !selectedSession || !selectedProject) return false;
@@ -600,13 +648,23 @@ export function useChatSessionState({
       isLoadingMoreRef.current = true;
 
       try {
-        const slot = await sessionStore.fetchMore(selectedSession.id, {
-          limit: MESSAGES_PER_PAGE,
+        const result = await sessionStore.fetchMore(selectedSession.id, {
+          limit: SESSION_MESSAGES_PAGE_SIZE,
+          canRequest: () => (
+            isActiveRef.current
+            && activeSessionIdRef.current === selectedSession.id
+          ),
         });
-        if (!slot) return false;
-        if (slot.serverMessages.length === 0) {
+        const { slot, prependedCount } = result;
+        setHasMoreMessages(slot.hasMore);
+        setTotalMessages(slot.total);
+        messagesOffsetRef.current = slot.offset;
+        if (slot.tokenUsage !== undefined) {
+          setTokenBudget((slot.tokenUsage as Record<string, unknown> | null) ?? null);
+        }
+
+        if (prependedCount === 0) {
           if (!slot.hasMore) {
-            setHasMoreMessages(false);
             allMessagesLoadedRef.current = true;
             setAllMessagesLoaded(true);
             if (loadAllOverlayTimerRef.current) {
@@ -618,8 +676,6 @@ export function useChatSessionState({
           return false;
         }
 
-        setHasMoreMessages(slot.hasMore);
-        setTotalMessages(slot.total);
         setVisibleMessageCount((prev) => prev + MESSAGES_PER_PAGE);
         if (!slot.hasMore) {
           allMessagesLoadedRef.current = true;
@@ -635,10 +691,11 @@ export function useChatSessionState({
         isLoadingMoreRef.current = false;
       }
     },
-    [hasMoreMessages, isLoadingMoreMessages, selectedProject, selectedSession, sessionStore],
+    [hasMoreMessages, isActive, isLoadingMoreMessages, selectedProject, selectedSession, sessionStore],
   );
 
   const handleScroll = useCallback(async () => {
+    if (!isActive) return;
     const container = scrollContainerRef.current;
     if (!container) return;
 
@@ -747,6 +804,26 @@ export function useChatSessionState({
     return () => observer.disconnect();
   }, [restoreScrollAnchor, transcriptList]);
 
+  // The Chat tab is CSS-hidden while another main tab shows; rows keep
+  // arriving meanwhile and nothing above could measure a hidden layout. On
+  // re-activation put the reader back: at the bottom if they were following,
+  // otherwise on the anchored message.
+  const wasChatActiveRef = useRef(isActive);
+  useLayoutEffect(() => {
+    const becameActive = isActive && !wasChatActiveRef.current;
+    wasChatActiveRef.current = isActive;
+    if (!becameActive) return;
+    const container = scrollContainerRef.current;
+    if (!container) return;
+
+    if (isUserScrolledUp) {
+      restoreScrollAnchor();
+      return;
+    }
+    container.scrollTop = container.scrollHeight;
+    lastScrollTopRef.current = container.scrollTop;
+  }, [isActive, isUserScrolledUp, restoreScrollAnchor]);
+
   // Reset scroll/pagination state on session change
   useEffect(() => {
     if (!searchScrollActiveRef.current) {
@@ -773,6 +850,7 @@ export function useChatSessionState({
   // still growing, capped at ~1s (60 frames) or 3 consecutive stable
   // frames. Cancels cleanly on session change via the pending flag.
   useEffect(() => {
+    if (!isActive) return;
     if (!pendingInitialScrollRef.current || !scrollContainerRef.current || isLoadingSessionMessages) return;
     if (chatMessages.length === 0) { pendingInitialScrollRef.current = false; return; }
     if (searchScrollActiveRef.current) { pendingInitialScrollRef.current = false; return; }
@@ -804,7 +882,22 @@ export function useChatSessionState({
     return () => {
       if (rafId) cancelAnimationFrame(rafId);
     };
-  }, [chatMessages.length, isLoadingSessionMessages, scrollToBottom]);
+  }, [chatMessages.length, isActive, isLoadingSessionMessages, scrollToBottom]);
+
+  // Session replay/subscription remains active regardless of which main tab is
+  // visible. Only persisted-history HTTP traffic is visibility-gated below.
+  useEffect(() => {
+    if (!selectedSession || !selectedProject || !ws) return;
+
+    statusCheckSentAtRef.current.set(selectedSession.id, Date.now());
+    sendMessage({
+      type: 'chat.subscribe',
+      sessions: [{
+        sessionId: selectedSession.id,
+        lastSeq: lastSeqRef.current.get(selectedSession.id) ?? 0,
+      }],
+    });
+  }, [lastSeqRef, selectedProject, selectedSession, sendMessage, statusCheckSentAtRef, ws]);
 
   // Main session loading effect — store-based
   useEffect(() => {
@@ -827,27 +920,25 @@ export function useChatSessionState({
       return;
     }
 
+    if (!isActive) {
+      setIsLoadingSessionMessages(false);
+      return;
+    }
+
     const selectedSessionId = selectedSession.id;
     const sessionKey = `${selectedSessionId}:${selectedProject.projectId}`;
 
-    const subscribeToSelectedSession = () => {
-      if (!ws) {
-        return;
+    const existingSlot = sessionStore.getSessionSlot(selectedSessionId);
+    const isCurrentHydratedSession =
+      lastLoadedSessionKeyRef.current === sessionKey
+      && Boolean(existingSlot?.fetchedAt);
+
+    // Returning from another tab must not reset pagination or scroll. Refresh
+    // a stale hydrated session through the bounded tail path instead.
+    if (isCurrentHydratedSession) {
+      if (sessionStore.isStale(selectedSessionId)) {
+        void requestLatestMessages(selectedSessionId);
       }
-
-      statusCheckSentAtRef.current.set(selectedSessionId, Date.now());
-      sendMessage({
-        type: 'chat.subscribe',
-        sessions: [{
-          sessionId: selectedSessionId,
-          lastSeq: lastSeqRef.current.get(selectedSessionId) ?? 0,
-        }],
-      });
-    };
-
-    // Skip if already loaded and fresh
-    if (lastLoadedSessionKeyRef.current === sessionKey && sessionStore.has(selectedSessionId) && !sessionStore.isStale(selectedSessionId)) {
-      subscribeToSelectedSession();
       return;
     }
 
@@ -879,40 +970,53 @@ export function useChatSessionState({
 
     setCurrentSessionId(selectedSessionId);
 
-    // Subscribe to the session's live run (if any): the ack reconciles the
-    // processing indicator, re-attaches a mid-flight stream to this socket,
-    // and replays any live events missed since `lastSeq`. Recording the send
-    // time lets the ack handler discard idle acks that a newer request has
-    // since outdated.
-    subscribeToSelectedSession();
-
     lastLoadedSessionKeyRef.current = sessionKey;
 
     // Fetch from server → store updates → chatMessages re-derives automatically
     setIsLoadingSessionMessages(true);
     sessionStore.fetchFromServer(selectedSessionId, {
-      limit: MESSAGES_PER_PAGE,
+      limit: SESSION_MESSAGES_PAGE_SIZE,
       offset: 0,
+      canRequest: () => (
+        isActiveRef.current
+        && activeSessionIdRef.current === selectedSessionId
+      ),
     }).then(slot => {
       if (slot) {
         setHasMoreMessages(slot.hasMore);
         setTotalMessages(slot.total);
-        if (slot.tokenUsage) setTokenBudget(slot.tokenUsage as Record<string, unknown>);
+        messagesOffsetRef.current = slot.offset;
+        if (slot.tokenUsage !== undefined) {
+          setTokenBudget((slot.tokenUsage as Record<string, unknown> | null) ?? null);
+        }
       }
       setIsLoadingSessionMessages(false);
     }).catch(() => {
       setIsLoadingSessionMessages(false);
     });
   }, [
+    isActive,
     resetStreamingState,
+    requestLatestMessages,
     selectedProject,
     selectedSession?.id,
-    sendMessage,
-    statusCheckSentAtRef,
-    lastSeqRef,
-    ws,
     sessionStore,
   ]);
+
+  // Hidden refresh signals are coalesced. An initial page load supersedes a
+  // pending latest refresh for an unhydrated/loading slot; otherwise activation
+  // flushes exactly one request for the selected session.
+  useEffect(() => {
+    if (!isActive || !activeSessionId) return;
+
+    const slot = sessionStore.getSessionSlot(activeSessionId);
+    if (!slot?.fetchedAt || slot.status === 'loading') {
+      refreshCoordinatorRef.current?.discardPending(activeSessionId);
+      return;
+    }
+
+    void refreshCoordinatorRef.current?.flushPending(activeSessionId);
+  }, [activeSessionId, isActive, sessionStore]);
 
   // External message update (e.g. WebSocket reconnect, background refresh)
   useEffect(() => {
@@ -922,9 +1026,10 @@ export function useChatSessionState({
       try {
         // Skip store refresh during active streaming
         if (!isProcessing) {
-          await sessionStore.refreshFromServer(selectedSession.id);
+          const shouldStickToBottom = isActiveRef.current && isNearBottom();
+          await requestLatestMessages(selectedSession.id);
 
-          if (isNearBottom()) {
+          if (shouldStickToBottom) {
             setTimeout(() => scrollToBottom(), 200);
           }
         }
@@ -937,10 +1042,10 @@ export function useChatSessionState({
   }, [
     externalMessageUpdate,
     isNearBottom,
+    requestLatestMessages,
     scrollToBottom,
     selectedProject,
     selectedSession,
-    sessionStore,
     isProcessing,
   ]);
 
@@ -978,11 +1083,12 @@ export function useChatSessionState({
 
     if (selfHealRefetchedRef.current === sid) return;
     selfHealRefetchedRef.current = sid;
-    void sessionStore.refreshFromServer(sid);
+    void requestLatestMessages(sid);
   }, [
     chatMessages.length,
     isLoadingMoreMessages,
     isLoadingSessionMessages,
+    requestLatestMessages,
     selectedProject,
     selectedSession,
     sessionStore,
@@ -1004,7 +1110,7 @@ export function useChatSessionState({
 
   // Scroll to search target
   useEffect(() => {
-    if (!searchTarget || chatMessages.length === 0 || isLoadingSessionMessages) return;
+    if (!isActive || !searchTarget || chatMessages.length === 0 || isLoadingSessionMessages) return;
 
     const target = searchTarget;
     setSearchTarget(null);
@@ -1016,15 +1122,22 @@ export function useChatSessionState({
             const slot = await sessionStore.fetchFromServer(selectedSession.id, {
               limit: null,
               offset: 0,
+              canRequest: () => (
+                isActiveRef.current
+                && activeSessionIdRef.current === selectedSession.id
+              ),
             });
             if (slot) {
               setHasMoreMessages(false);
               setTotalMessages(slot.total);
-              messagesOffsetRef.current = slot.total;
+              messagesOffsetRef.current = slot.offset;
               setVisibleMessageCount(Infinity);
               setAllMessagesLoaded(true);
               allMessagesLoadedRef.current = true;
               await new Promise(resolve => setTimeout(resolve, 300));
+            } else if (!isActiveRef.current) {
+              setSearchTarget(target);
+              return;
             }
           } catch {
             // Fall through and scroll in current messages
@@ -1079,19 +1192,19 @@ export function useChatSessionState({
 
     scrollToTarget();
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chatMessages.length, isLoadingSessionMessages, searchTarget]);
+  }, [chatMessages.length, isActive, isLoadingSessionMessages, searchTarget]);
 
   // Initial token usage fetch for providers with file-backed usage data.
   useEffect(() => {
-    if (!selectedProject || !selectedSession?.id) {
+    if (!selectedSession?.id) {
       setTokenBudget(null);
       setContextUsage(null);
       return;
     }
     const fetchInitialTokenUsage = async () => {
       try {
-        // The backend resolves the provider from the indexed session row.
-        const url = `/api/projects/${selectedProject.projectId}/sessions/${selectedSession.id}/token-usage`;
+        // The provider module resolves storage and provider details from the session id.
+        const url = `/api/providers/sessions/${encodeURIComponent(selectedSession.id)}/token-usage`;
         const response = await authenticatedFetch(url);
         if (response.ok) {
           const usage = await response.json();
@@ -1109,7 +1222,7 @@ export function useChatSessionState({
       }
     };
     fetchInitialTokenUsage();
-  }, [selectedProject, selectedSession?.id]);
+  }, [selectedSession?.id]);
 
   const visibleMessages = useMemo(() => {
     if (chatMessages.length <= visibleMessageCount) return chatMessages;
@@ -1156,13 +1269,14 @@ export function useChatSessionState({
   // re-deriving a position from a height delta — every version of that moved
   // the view out from under them instead.
   useEffect(() => {
+    if (!isActive) return;
     if (!scrollContainerRef.current || chatMessages.length === 0) return;
     if (isLoadingMoreRef.current || isLoadingMoreMessages) return;
     if (searchScrollActiveRef.current) return;
     if (isUserScrolledUp) return;
 
     setTimeout(() => scrollToBottom(), 50);
-  }, [chatMessages.length, isLoadingMoreMessages, isUserScrolledUp, scrollToBottom]);
+  }, [chatMessages.length, isActive, isLoadingMoreMessages, isUserScrolledUp, scrollToBottom]);
 
   useEffect(() => {
     const container = scrollContainerRef.current;
@@ -1175,6 +1289,7 @@ export function useChatSessionState({
   // timers are cleared on session change via the reset effect above.
 
   const loadAllMessages = useCallback(async () => {
+    if (!isActive) return;
     if (!selectedSession || !selectedProject) return;
     if (isLoadingAllMessages) return;
     const requestSessionId = selectedSession.id;
@@ -1191,6 +1306,10 @@ export function useChatSessionState({
       const slot = await sessionStore.fetchFromServer(requestSessionId, {
         limit: null,
         offset: 0,
+        canRequest: () => (
+          isActiveRef.current
+          && activeSessionIdRef.current === requestSessionId
+        ),
       });
 
       if (currentSessionId !== requestSessionId) return;
@@ -1206,7 +1325,7 @@ export function useChatSessionState({
 
         setHasMoreMessages(false);
         setTotalMessages(slot.total);
-        messagesOffsetRef.current = slot.total;
+        messagesOffsetRef.current = slot.offset;
         setVisibleMessageCount(Infinity);
         setAllMessagesLoaded(true);
 
@@ -1229,7 +1348,7 @@ export function useChatSessionState({
       isLoadingMoreRef.current = false;
       setIsLoadingAllMessages(false);
     }
-  }, [selectedSession, selectedProject, isLoadingAllMessages, currentSessionId, sessionStore]);
+  }, [isActive, selectedSession, selectedProject, isLoadingAllMessages, currentSessionId, sessionStore]);
 
   const loadEarlierMessages = useCallback(() => {
     setVisibleMessageCount((prev) => prev + 100);
@@ -1274,5 +1393,6 @@ export function useChatSessionState({
     scrollToBottomAndReset,
     isNearBottom,
     handleScroll,
+    requestLatestMessages,
   };
 }

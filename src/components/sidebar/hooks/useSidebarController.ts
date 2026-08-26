@@ -12,6 +12,7 @@ import type {
   DeleteProjectConfirmation,
   ProjectSortOrder,
   ProjectViewMode,
+  RecentConversationListItem,
   SidebarSearchMode,
   SessionDeleteConfirmation,
   SessionWithProvider,
@@ -62,8 +63,18 @@ type ConversationProjectResult = {
   sessions: ConversationSession[];
 };
 
+export type SessionTitleSearchResult = {
+  sessionId: string;
+  provider: string;
+  projectId: string | null;
+  projectDisplayName: string;
+  sessionTitle: string;
+  lastActivity: string | null;
+};
+
 export type ConversationSearchResults = {
   results: ConversationProjectResult[];
+  titleResults: SessionTitleSearchResult[];
   totalMatches: number;
   query: string;
 };
@@ -84,6 +95,15 @@ type ArchivedProjectsApiPayload = {
   success?: boolean;
   data?: {
     projects?: ArchivedProjectListItem[];
+  };
+};
+
+type RecentConversationsApiPayload = {
+  success?: boolean;
+  data?: {
+    conversations?: RecentConversationListItem[];
+    total?: number;
+    hasMore?: boolean;
   };
 };
 
@@ -150,10 +170,17 @@ export function useSidebarController({
   const [archivedProjects, setArchivedProjects] = useState<ArchivedProjectListItem[]>([]);
   const [archivedSessions, setArchivedSessions] = useState<ArchivedSessionListItem[]>([]);
   const [isArchivedSessionsLoading, setIsArchivedSessionsLoading] = useState(false);
+  const [recentConversations, setRecentConversations] = useState<RecentConversationListItem[]>([]);
+  const [recentConversationsTotal, setRecentConversationsTotal] = useState(0);
+  const [recentConversationsHasMore, setRecentConversationsHasMore] = useState(false);
+  const [isRecentConversationsLoading, setIsRecentConversationsLoading] = useState(false);
+  const [isLoadingMoreRecentConversations, setIsLoadingMoreRecentConversations] = useState(false);
+  const [recentConversationsError, setRecentConversationsError] = useState(false);
   const [debouncedSearchQuery, setDebouncedSearchQuery] = useState('');
   const [optimisticStarByProjectId, setOptimisticStarByProjectId] = useState<Map<string, boolean>>(new Map());
   const [loadingMoreProjects, setLoadingMoreProjects] = useState<Set<string>>(new Set());
   const searchSeqRef = useRef(0);
+  const recentConversationsSeqRef = useRef(0);
   const eventSourceRef = useRef<EventSource | null>(null);
   const starToggleSequenceByProjectRef = useRef<Map<string, number>>(new Map());
   const migrationStartedRef = useRef(false);
@@ -276,6 +303,73 @@ export function useSidebarController({
     }
   }, []);
 
+  const fetchRecentConversationsPage = useCallback(async (offset: number, append: boolean) => {
+    const requestSequence = ++recentConversationsSeqRef.current;
+    if (append) {
+      setIsLoadingMoreRecentConversations(true);
+    } else {
+      setIsRecentConversationsLoading(true);
+    }
+    setRecentConversationsError(false);
+
+    try {
+      const response = await api.recentConversations({ limit: 40, offset });
+      if (!response.ok) {
+        throw new Error(`Failed to load recent conversations: ${response.status}`);
+      }
+
+      const payload = (await response.json()) as RecentConversationsApiPayload;
+      const conversations = Array.isArray(payload.data?.conversations)
+        ? payload.data.conversations
+        : [];
+
+      if (requestSequence !== recentConversationsSeqRef.current) {
+        return;
+      }
+
+      setRecentConversations((previous) => {
+        if (!append) {
+          return conversations;
+        }
+
+        const existingIds = new Set(previous.map((conversation) => conversation.sessionId));
+        return [
+          ...previous,
+          ...conversations.filter((conversation) => !existingIds.has(conversation.sessionId)),
+        ];
+      });
+      setRecentConversationsTotal(Number(payload.data?.total ?? conversations.length));
+      setRecentConversationsHasMore(Boolean(payload.data?.hasMore));
+    } catch (error) {
+      if (requestSequence !== recentConversationsSeqRef.current) {
+        return;
+      }
+      console.error('[Sidebar] Failed to load recent conversations:', error);
+      setRecentConversationsError(true);
+    } finally {
+      if (requestSequence === recentConversationsSeqRef.current) {
+        setIsRecentConversationsLoading(false);
+        setIsLoadingMoreRecentConversations(false);
+      }
+    }
+  }, []);
+
+  const reloadRecentConversations = useCallback(() => {
+    void fetchRecentConversationsPage(0, false);
+  }, [fetchRecentConversationsPage]);
+
+  const loadMoreRecentConversations = useCallback(() => {
+    if (isLoadingMoreRecentConversations || !recentConversationsHasMore) {
+      return;
+    }
+    void fetchRecentConversationsPage(recentConversations.length, true);
+  }, [
+    fetchRecentConversationsPage,
+    isLoadingMoreRecentConversations,
+    recentConversations.length,
+    recentConversationsHasMore,
+  ]);
+
   useEffect(() => {
     if (migrationStartedRef.current) {
       return;
@@ -305,6 +399,14 @@ export function useSidebarController({
   useEffect(() => {
     void fetchArchivedSessions();
   }, [fetchArchivedSessions]);
+
+  useEffect(() => {
+    if (searchMode !== 'conversations' || debouncedSearchQuery.length >= 2) {
+      return;
+    }
+
+    reloadRecentConversations();
+  }, [debouncedSearchQuery, reloadRecentConversations, searchMode]);
 
   useEffect(() => {
     if (searchMode !== 'archived') {
@@ -365,7 +467,7 @@ export function useSidebarController({
     const query = debouncedSearchQuery;
     // Unified search: the regular sessions list streams conversation-content
     // matches alongside name filtering whenever the query is long enough.
-    if (searchMode !== 'projects' || query.length < 2) {
+    if ((searchMode !== 'projects' && searchMode !== 'conversations') || query.length < 2) {
       searchSeqRef.current += 1;
       setConversationResults(null);
       setSearchProgress(null);
@@ -374,6 +476,8 @@ export function useSidebarController({
     }
 
     setIsSearching(true);
+    setConversationResults(null);
+    setSearchProgress(null);
     const seq = ++searchSeqRef.current;
 
     if (seq !== searchSeqRef.current) {
@@ -385,7 +489,24 @@ export function useSidebarController({
     eventSourceRef.current = es;
 
     const accumulated: ConversationProjectResult[] = [];
+    let titleResults: SessionTitleSearchResult[] = [];
     let totalMatches = 0;
+
+    es.addEventListener('title-results', (evt) => {
+      if (seq !== searchSeqRef.current) { es.close(); return; }
+      try {
+        const data = JSON.parse(evt.data) as { titleResults: SessionTitleSearchResult[] };
+        titleResults = Array.isArray(data.titleResults) ? data.titleResults : [];
+        setConversationResults({
+          results: [...accumulated],
+          titleResults: [...titleResults],
+          totalMatches,
+          query,
+        });
+      } catch {
+        // Ignore malformed SSE data
+      }
+    });
 
     es.addEventListener('result', (evt) => {
       if (seq !== searchSeqRef.current) { es.close(); return; }
@@ -398,7 +519,12 @@ export function useSidebarController({
         };
         accumulated.push(data.projectResult);
         totalMatches = data.totalMatches;
-        setConversationResults({ results: [...accumulated], totalMatches, query });
+        setConversationResults({
+          results: [...accumulated],
+          titleResults: [...titleResults],
+          totalMatches,
+          query,
+        });
         setSearchProgress({ scannedProjects: data.scannedProjects, totalProjects: data.totalProjects });
       } catch {
         // Ignore malformed SSE data
@@ -422,9 +548,12 @@ export function useSidebarController({
       eventSourceRef.current = null;
       setIsSearching(false);
       setSearchProgress(null);
-      if (accumulated.length === 0) {
-        setConversationResults({ results: [], totalMatches: 0, query });
-      }
+      setConversationResults({
+        results: [...accumulated],
+        titleResults: [...titleResults],
+        totalMatches,
+        query,
+      });
     });
 
     es.addEventListener('error', () => {
@@ -433,9 +562,12 @@ export function useSidebarController({
       eventSourceRef.current = null;
       setIsSearching(false);
       setSearchProgress(null);
-      if (accumulated.length === 0) {
-        setConversationResults({ results: [], totalMatches: 0, query });
-      }
+      setConversationResults({
+        results: [...accumulated],
+        titleResults: [...titleResults],
+        totalMatches,
+        query,
+      });
     });
 
     return () => {
@@ -945,11 +1077,14 @@ export function useSidebarController({
       await Promise.all([
         Promise.resolve(onRefresh()),
         fetchArchivedSessions(),
+        searchMode === 'conversations'
+          ? fetchRecentConversationsPage(0, false)
+          : Promise.resolve(),
       ]);
     } finally {
       setIsRefreshing(false);
     }
-  }, [fetchArchivedSessions, onRefresh]);
+  }, [fetchArchivedSessions, fetchRecentConversationsPage, onRefresh, searchMode]);
 
   const updateSessionSummary = useCallback(
     // `_projectId` and `_provider` are preserved for compatibility with
@@ -1014,6 +1149,14 @@ export function useSidebarController({
     archivedSessions: filteredArchivedSessions,
     archivedSessionsCount: archivedProjects.length + archivedSessions.length,
     isArchivedSessionsLoading,
+    recentConversations,
+    recentConversationsTotal,
+    recentConversationsHasMore,
+    isRecentConversationsLoading,
+    isLoadingMoreRecentConversations,
+    recentConversationsError,
+    reloadRecentConversations,
+    loadMoreRecentConversations,
     toggleProject,
     handleSessionClick,
     toggleStarProject,

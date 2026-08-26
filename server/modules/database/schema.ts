@@ -131,6 +131,11 @@ CREATE TABLE IF NOT EXISTS sessions (
     project_path TEXT,
     jsonl_path TEXT,
     worktree_path TEXT,
+    -- Model and reasoning effort this session runs with. Written when the user
+    -- changes either selection and on every send, so reopening a session
+    -- restores its exact runtime configuration instead of provider defaults.
+    model TEXT,
+    effort TEXT,
     isArchived BOOLEAN DEFAULT 0,
     -- 1 while this session only backs a \`/btw\` side question. Such a session is
     -- real and resumable but stays out of the session lists; "branching out"
@@ -185,6 +190,27 @@ CREATE TABLE IF NOT EXISTS file_shares (
 );
 `;
 
+/**
+ * Persistent custom-model library used by the Providers module.
+ *
+ * Only user-created models are stored here. Predefined models remain source-
+ * controlled in each provider's `-models.provider.ts` adapter so they can be
+ * updated without migrating application data. `model_id` is unique only within
+ * a provider because different CLIs can accept the same identifier.
+ */
+export const PROVIDER_MODELS_TABLE_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS provider_models (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    provider TEXT NOT NULL CHECK (provider IN ('claude', 'cursor', 'codex', 'opencode')),
+    model_id TEXT NOT NULL,
+    model_name TEXT NOT NULL,
+    sort_order INTEGER NOT NULL DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(provider, model_id)
+);
+`;
+
 export const INIT_SCHEMA_SQL = `
 -- Initialize authentication database
 PRAGMA foreign_keys = ON;
@@ -233,4 +259,7 @@ ${APP_CONFIG_TABLE_SCHEMA_SQL}
 
 ${FILE_SHARES_TABLE_SCHEMA_SQL}
 CREATE INDEX IF NOT EXISTS idx_file_shares_project_file ON file_shares(project_id, file_path);
+${PROVIDER_MODELS_TABLE_SCHEMA_SQL}
+CREATE INDEX IF NOT EXISTS idx_provider_models_provider_order
+ON provider_models(provider, sort_order, id);
 `;
