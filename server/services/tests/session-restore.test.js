@@ -17,14 +17,17 @@ import {
 const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'session-restore-'));
 process.env.DATABASE_PATH = path.join(tmp, 'data', 'auth.db');
 process.env.CLAUDE_CONFIG_DIR = path.join(tmp, 'claude');
+process.env.CODEX_HOME = path.join(tmp, 'codex');
 
-const stateFile = path.join(tmp, 'data', 'active-claude-sessions.json');
+const stateFile = path.join(tmp, 'data', 'active-agent-sessions.json');
+const legacyStateFile = path.join(tmp, 'data', 'active-claude-sessions.json');
 
-async function seedOpenTask(sessionId) {
+async function seedOpenTask(sessionId, { id = '1', metadata } = {}) {
   const dir = path.join(tmp, 'claude', 'tasks', sessionId);
   await fs.mkdir(dir, { recursive: true });
-  await fs.writeFile(path.join(dir, '1.json'), JSON.stringify({
-    id: '1', subject: 'open item', status: 'pending', blocks: [], blockedBy: [],
+  await fs.writeFile(path.join(dir, `${id}.json`), JSON.stringify({
+    id, subject: 'open item', status: 'pending', blocks: [], blockedBy: [],
+    ...(metadata ? { metadata } : {}),
   }));
 }
 
@@ -36,6 +39,7 @@ beforeEach(async () => {
   __resetSessionRestoreState();
   await fs.rm(path.join(tmp, 'data'), { recursive: true, force: true });
   await fs.rm(path.join(tmp, 'claude'), { recursive: true, force: true });
+  await fs.rm(path.join(tmp, 'codex'), { recursive: true, force: true });
 });
 
 test('a session recorded mid-turn is resumed with its spawn options', async () => {
@@ -62,6 +66,23 @@ test('a cleanly ended session is not resumed', async () => {
   assert.equal(calls.length, 0);
 });
 
+test('a Codex session recorded mid-turn is restored through the provider starter', async () => {
+  await recordSessionActivity({
+    provider: 'codex', sessionId: 'codex-midturn', cwd: '/proj', userId: 9, turnActive: true,
+  });
+  const claudeCalls = [];
+  const codexCalls = [];
+  const resumed = await restoreInterruptedSessions({
+    claude: spawnRecorder(claudeCalls),
+    codex: spawnRecorder(codexCalls),
+  });
+  assert.deepEqual(resumed, ['codex-midturn']);
+  assert.equal(claudeCalls.length, 0);
+  assert.equal(codexCalls.length, 1);
+  assert.equal(codexCalls[0].options.sessionId, 'codex-midturn');
+  assert.equal(codexCalls[0].writer.userId, 9);
+});
+
 test('an idle session with no open ledger tasks is dropped, not woken', async () => {
   await recordSessionActivity({ sessionId: 's-idle', cwd: '/proj', turnActive: false });
   const calls = [];
@@ -74,6 +95,23 @@ test('an idle session with open ledger tasks is resumed', async () => {
   await recordSessionActivity({ sessionId: 's-ledger', cwd: '/proj', turnActive: false });
   const calls = [];
   assert.deepEqual(await restoreInterruptedSessions(spawnRecorder(calls)), ['s-ledger']);
+  assert.equal(calls.length, 1);
+});
+
+test('an idle session whose open tasks all wait on the user is not resumed', async () => {
+  await seedOpenTask('s-parked', { metadata: { waitingOnUser: true } });
+  await recordSessionActivity({ sessionId: 's-parked', cwd: '/proj', turnActive: false });
+  const calls = [];
+  assert.deepEqual(await restoreInterruptedSessions(spawnRecorder(calls)), []);
+  assert.equal(calls.length, 0);
+});
+
+test('a user-parked task does not block resuming for other open tasks', async () => {
+  await seedOpenTask('s-parked-mixed', { id: '1', metadata: { waitingOnUser: true } });
+  await seedOpenTask('s-parked-mixed', { id: '2' });
+  await recordSessionActivity({ sessionId: 's-parked-mixed', cwd: '/proj', turnActive: false });
+  const calls = [];
+  assert.deepEqual(await restoreInterruptedSessions(spawnRecorder(calls)), ['s-parked-mixed']);
   assert.equal(calls.length, 1);
 });
 
@@ -94,6 +132,16 @@ test('the registry survives a process restart via the state file', async () => {
   __resetSessionRestoreState();
   const calls = [];
   assert.deepEqual(await restoreInterruptedSessions(spawnRecorder(calls)), ['s-persist']);
+});
+
+test('the provider-neutral registry migrates the legacy Claude state file', async () => {
+  await fs.mkdir(path.dirname(legacyStateFile), { recursive: true });
+  await fs.writeFile(legacyStateFile, JSON.stringify([{
+    sessionId: 'legacy-claude', cwd: '/proj', turnActive: true, updatedAt: Date.now(),
+  }]));
+  const calls = [];
+  assert.deepEqual(await restoreInterruptedSessions(spawnRecorder(calls)), ['legacy-claude']);
+  assert.equal(calls.length, 1);
 });
 
 test('a startTurn hook that takes the turn suppresses the detached spawn', async () => {

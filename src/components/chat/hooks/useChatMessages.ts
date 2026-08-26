@@ -281,8 +281,24 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
 
       // The seam where the conversation was summarized. Rendered as a marker
       // rather than a bubble: what matters is that everything above it is no
-      // longer in the model's context, and roughly how much was dropped.
-      case 'compact_boundary':
+      // longer in the model's context, and roughly how much was dropped — the
+      // summary itself is there to expand, not to read by default.
+      //
+      // Claude records one compaction as two rows: the boundary carrying the
+      // token metrics, immediately followed by the summary it replayed into the
+      // next turn. Fold that pair into a single marker instead of drawing two
+      // dividers, one of them blank. Only a summary-bearing row merges into a
+      // summary-less one, so two genuine back-to-back compactions still read as
+      // two seams.
+      case 'compact_boundary': {
+        const previous = converted[converted.length - 1];
+        if (previous?.isCompactBoundary && !previous.compaction?.summary && msg.compaction?.summary) {
+          previous.compaction = {
+            ...(previous.compaction ?? { trigger: 'manual' as const }),
+            summary: msg.compaction.summary,
+          };
+          break;
+        }
         converted.push({
           type: 'system',
           content: '',
@@ -292,6 +308,7 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
           ...sharedMetadata,
         });
         break;
+      }
 
       case 'stream_delta':
         if (msg.content) {

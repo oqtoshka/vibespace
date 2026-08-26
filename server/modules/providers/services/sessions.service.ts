@@ -256,7 +256,7 @@ export const sessionsService = {
    * every way, but kept out of the session lists until it is promoted.
    *
    * `isPrivate` starts the session private: every harness process that runs a
-   * turn for it is spawned with `MC_DISABLE=1`, so no Mission Control reporter
+   * turn for it is spawned with the private-variant env (see collectAgentEnv), so no presence reporter
    * ever speaks for it, and VibeSpace's own notifications and recap skip it.
    * This is the only place the flag is ever set — it must precede the first
    * turn, because the reporter's SessionStart hook fires before anything here
@@ -479,7 +479,7 @@ export const sessionsService = {
    *
    * The sidebar payload is deliberately narrow: `isArchived = 0`, `is_side = 0`,
    * and the newest 20 rows per project. Anything outside that window still has a
-   * URL — Mission Control links to `/session/:id`, and so does a bookmark or a
+   * URL — an external board links to `/session/:id`, and so does a bookmark or a
    * reload after archiving — and resolving such a link against the payload found
    * nothing, which the app rendered as its blank new-session screen. This is the
    * lookup that answers those URLs: one row by id, no list filters at all.

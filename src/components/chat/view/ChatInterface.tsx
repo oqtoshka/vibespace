@@ -481,7 +481,7 @@ function ChatInterface({
             <LockIcon className="h-3 w-3 flex-shrink-0" aria-hidden />
             <span className="font-medium">{t('chat.private', { defaultValue: 'private' })}</span>
             <span className="truncate text-violet-700/70 dark:text-violet-400/70">
-              {t('chat.privateHint', { defaultValue: 'not reported to Mission Control, no notifications, no recap' })}
+              {t('chat.privateHint', { defaultValue: 'not reported to external boards, no notifications, no recap' })}
             </span>
           </div>
         )}

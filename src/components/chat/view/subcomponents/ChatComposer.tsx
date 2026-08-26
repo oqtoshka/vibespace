@@ -628,8 +628,8 @@ export default function ChatComposer({
               isPrivate && (
                 <span
                   className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-violet-300/60 bg-violet-50 px-2 text-xs font-medium text-violet-700 dark:border-violet-600/40 dark:bg-violet-900/15 dark:text-violet-300 sm:px-2.5"
-                  title={t('input.privateLocked', { defaultValue: 'Private session: not reported to Mission Control, no notifications, no recap. Fixed for the life of the session.' })}
-                  aria-label={t('input.privateLocked', { defaultValue: 'Private session: not reported to Mission Control, no notifications, no recap. Fixed for the life of the session.' })}
+                  title={t('input.privateLocked', { defaultValue: 'Private session: not reported to external boards, no notifications, no recap. Fixed for the life of the session.' })}
+                  aria-label={t('input.privateLocked', { defaultValue: 'Private session: not reported to external boards, no notifications, no recap. Fixed for the life of the session.' })}
                 >
                   <LockIcon className="h-3 w-3 shrink-0" aria-hidden />
                   <span className="whitespace-nowrap">{t('input.private', { defaultValue: 'private' })}</span>
@@ -645,7 +645,7 @@ export default function ChatComposer({
                     ? 'border-violet-300/60 bg-violet-50 text-violet-700 hover:bg-violet-100 dark:border-violet-600/40 dark:bg-violet-900/15 dark:text-violet-300 dark:hover:bg-violet-900/25'
                     : 'border-border/60 bg-muted/50 text-muted-foreground hover:bg-muted'
                 }`}
-                title={t('input.privateToggle', { defaultValue: 'Start this session private: not reported to Mission Control, no notifications, no recap. Decided before the first message.' })}
+                title={t('input.privateToggle', { defaultValue: 'Start this session private: not reported to external boards, no notifications, no recap. Decided before the first message.' })}
               >
                 {isPrivate
                   ? <LockIcon className="h-3 w-3 shrink-0" aria-hidden />

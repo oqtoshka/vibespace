@@ -11,8 +11,10 @@ export type Plugin = {
   icon: string;
   type: 'react' | 'module';
   slot: 'tab';
-  entry: string;
+  entry: string | null;
   server: string | null;
+  /** Server-side extension loaded in-process at boot; a plugin may have only this and no tab. */
+  hostModule: string | null;
   permissions: string[];
   enabled: boolean;
   serverRunning: boolean;

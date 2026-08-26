@@ -286,7 +286,7 @@ export async function runOpenCodeHttpTurn(command, options, ws, hooks = {}) {
   const workingDir = cwd || projectPath || process.cwd();
   const { registerHandle, releaseHandle, onCompleted } = hooks;
 
-  // A private session runs against the server spawned with MC_DISABLE=1.
+  // A private session runs against the server spawned with the private-variant env (see collectAgentEnv).
   const server = await ensureOpenCodeServer({ private: Boolean(options.private) });
   const { files, passthrough } = await buildOpenCodePromptAttachments(images, workingDir);
 

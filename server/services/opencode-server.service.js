@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { collectAgentEnv } from '../shared/agent-env.js';
 import { mkdirSync } from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
@@ -43,17 +44,26 @@ function getServerWorkspace() {
 /**
  * One server per variant.
  *
- * The OpenCode reporter plugin reads the presence gate (`MC_DISABLE`) from the
- * server process's environment when it loads, so a session hosted by the
- * ordinary server is reported whatever its row says. A private session is
- * therefore routed to a second server spawned with the gate set; every
- * private session shares that one, and the ordinary server is untouched.
+ * Anything that reads the server process's environment when it loads (an
+ * OpenCode plugin, say) sees the same values for every session that server
+ * hosts, so a session hosted by the ordinary server cannot be told apart from
+ * the rest whatever its row says. A private session is therefore routed to a
+ * second server spawned with whatever host plugins contribute for the private
+ * variant (see collectAgentEnv); every private session shares that one, and
+ * the ordinary server is untouched.
  *
- * variant -> { bootPromise, serverProcess }
+ * `extraEnv` is evaluated at spawn time, not at load: contributors register
+ * during boot, after this module is imported.
+ *
+ * variant -> { bootPromise, serverProcess, extraEnv }
  */
 const instances = {
-  shared: { bootPromise: null, serverProcess: null, extraEnv: {} },
-  private: { bootPromise: null, serverProcess: null, extraEnv: { MC_DISABLE: '1' } },
+  shared: { bootPromise: null, serverProcess: null, extraEnv: () => ({}) },
+  private: {
+    bootPromise: null,
+    serverProcess: null,
+    extraEnv: () => collectAgentEnv({ provider: 'opencode', scope: 'server', private: true }),
+  },
 };
 let exitHooksInstalled = false;
 
@@ -151,7 +161,7 @@ function bootServer(slot) {
       const child = crossSpawn('opencode', ['serve', '--port', String(port), '--hostname', '127.0.0.1'], {
         cwd: workspace,
         stdio: ['ignore', 'pipe', 'pipe'],
-        env: { ...process.env, OPENCODE_SERVER_PASSWORD: password, ...slot.extraEnv },
+        env: { ...process.env, OPENCODE_SERVER_PASSWORD: password, ...slot.extraEnv() },
       });
 
       let settled = false;
@@ -229,7 +239,7 @@ function bootServer(slot) {
  * is not already running.
  *
  * @param {{ private?: boolean }} [options] - `private` selects the server
- *   spawned with `MC_DISABLE=1`.
+ *   spawned with the private-variant env (see collectAgentEnv).
  */
 export async function ensureOpenCodeServer(options = {}) {
   const slot = instances[variantFor(options)];

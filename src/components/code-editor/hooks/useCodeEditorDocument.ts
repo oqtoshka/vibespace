@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../../../utils/api';
-import { useProjectFilesWatch, type FileChange } from '../../../hooks/useProjectFilesWatch';
+import { useFileChangeSignal } from '../../../hooks/useFileChangeSignal';
 import type { CodeEditorFile } from '../types/types';
 import { isBinaryFile } from '../utils/binaryFile';
 import { getPreviewKind } from '../utils/previewableFile';
@@ -121,14 +121,11 @@ export const useCodeEditorDocument = ({ file, projectPath }: UseCodeEditorDocume
   // Live-reload when the open file changes on disk (e.g. an agent edits it),
   // unless the user has unsaved edits or a save is in flight.
   const handleExternalChange = useCallback(
-    (changes: FileChange[]) => {
+    (type: 'add' | 'change' | 'unlink' | 'addDir' | 'unlinkDir') => {
       if (isBinary || hasDiff || savingRef.current) {
         return;
       }
-      const touched = changes.some(
-        (change) => change.path === filePath && (change.type === 'change' || change.type === 'add'),
-      );
-      if (!touched) {
+      if (type !== 'change' && type !== 'add') {
         return;
       }
       // Unsaved local edits diverge from disk — leave the buffer alone.
@@ -137,9 +134,9 @@ export const useCodeEditorDocument = ({ file, projectPath }: UseCodeEditorDocume
       }
       void loadFileContent({ silent: true });
     },
-    [content, filePath, hasDiff, isBinary, loadFileContent],
+    [content, hasDiff, isBinary, loadFileContent],
   );
-  useProjectFilesWatch(fileProjectId, handleExternalChange);
+  useFileChangeSignal(fileProjectId, filePath, handleExternalChange);
 
   const handleSave = useCallback(async () => {
     // Preview-only and binary files have no editable text buffer; never write

@@ -2,6 +2,8 @@ import fsSync from 'node:fs';
 import readline from 'node:readline';
 
 import { sessionsDb } from '@/modules/database/index.js';
+import { buildCodexTokenBudget } from '@/shared/codex-token-usage.js';
+import { createCompactBoundaryMessage, looksLikeCompactSummary } from '@/shared/compaction.js';
 import { toImageAttachments } from '@/shared/image-attachments.js';
 import type { IProviderSessions } from '@/shared/interfaces.js';
 import type { AnyRecord, FetchHistoryOptions, FetchHistoryResult, NormalizedMessage } from '@/shared/types.js';
@@ -30,6 +32,43 @@ function isVisibleCodexUserMessage(payload: AnyRecord | null | undefined): boole
   }
 
   return typeof payload.message === 'string' && payload.message.trim().length > 0;
+}
+
+/**
+ * Pulls the readable summary out of a Codex `compacted` entry, if there is one.
+ *
+ * Codex >=0.144 replaces the transcript with an opaque `compaction` item whose
+ * body is encrypted, so most compactions have no text to show and the marker
+ * stands alone. Older rollouts left the summary in `payload.message`, or as the
+ * replayed bridge turn at the tail of `replacement_history` — both are worth
+ * recovering for sessions already on disk.
+ *
+ * Exported for tests.
+ */
+export function extractCodexCompactionSummary(payload: AnyRecord | null | undefined): string | undefined {
+  if (!payload) {
+    return undefined;
+  }
+
+  if (typeof payload.message === 'string' && payload.message.trim()) {
+    return payload.message;
+  }
+
+  const history = Array.isArray(payload.replacement_history) ? payload.replacement_history : [];
+  for (let index = history.length - 1; index >= 0; index--) {
+    const item = readObjectRecord(history[index]);
+    const text = Array.isArray(item?.content)
+      ? item.content
+          .map((part: AnyRecord) => (typeof part?.text === 'string' ? part.text : ''))
+          .filter(Boolean)
+          .join('\n')
+      : '';
+    if (looksLikeCompactSummary(text)) {
+      return text;
+    }
+  }
+
+  return undefined;
 }
 
 /**
@@ -123,14 +162,20 @@ async function getCodexSessionMessages(
         const entry = JSON.parse(line) as AnyRecord;
 
         if (entry.type === 'event_msg' && entry.payload?.type === 'token_count' && entry.payload?.info) {
-          const info = entry.payload.info as AnyRecord;
-          if (info.total_token_usage) {
-            const usage = info.total_token_usage as AnyRecord;
-            tokenUsage = {
-              used: usage.total_tokens || 0,
-              total: info.model_context_window || 200000,
-            };
-          }
+          tokenUsage = buildCodexTokenBudget(entry.payload.info);
+        }
+
+        // Codex records a compaction as a `compacted` rollout entry (with the
+        // replayed history that replaced the transcript) and, redundantly, a
+        // `context_compacted` event right after it. Only the first is turned
+        // into a marker — emitting both would draw two dividers for one
+        // compaction.
+        if (entry.type === 'compacted') {
+          messages.push({
+            type: 'compact_boundary',
+            timestamp: entry.timestamp,
+            summary: extractCodexCompactionSummary(entry.payload as AnyRecord),
+          });
         }
 
         if (entry.type === 'event_msg' && isVisibleCodexUserMessage(entry.payload as AnyRecord)) {
@@ -308,6 +353,16 @@ export class CodexSessionsProvider implements IProviderSessions {
     const ts = raw.timestamp || new Date().toISOString();
     const baseId = raw.uuid || generateMessageId('codex');
 
+    if (raw.type === 'compact_boundary') {
+      return [createCompactBoundaryMessage({
+        id: baseId,
+        sessionId,
+        timestamp: ts,
+        provider: PROVIDER,
+        summary: typeof raw.summary === 'string' ? raw.summary : undefined,
+      })];
+    }
+
     if (raw.type === 'thinking' || raw.isReasoning) {
       const thinkingContent = typeof raw.message?.content === 'string'
         ? raw.message.content
@@ -411,7 +466,7 @@ export class CodexSessionsProvider implements IProviderSessions {
       return [];
     }
 
-    if (raw.message?.role) {
+    if (raw.message?.role || raw.type === 'compact_boundary') {
       return this.normalizeHistoryEntry(raw, sessionId);
     }
 

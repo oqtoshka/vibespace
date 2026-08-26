@@ -45,12 +45,15 @@ function makeRecordingWriter() {
   };
 }
 
-function writeTask(sessionId, id, status, subject = `task ${id}`) {
+function writeTask(sessionId, id, status, subject = `task ${id}`, metadata = undefined) {
   const dir = path.join(configDir, 'tasks', sessionId);
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(
     path.join(dir, `${id}.json`),
-    JSON.stringify({ id: String(id), subject, description: subject, status, blocks: [], blockedBy: [] }),
+    JSON.stringify({
+      id: String(id), subject, description: subject, status, blocks: [], blockedBy: [],
+      ...(metadata ? { metadata } : {}),
+    }),
   );
 }
 
@@ -168,6 +171,91 @@ test('a working-but-never-closing session is bounded by the nudge budget', async
     await waitUntil(() => !isClaudeSDKSessionAlive(sessionId), 'the budget to run out', 5000);
     // …but the budget (3, set at the top of this file) still bounds the loop.
     assert.equal(received.filter(isNudge).length, 3, 'exactly VIBESPACE_TASK_NUDGE_MAX nudges');
+  } finally {
+    await abortClaudeSDKSession(sessionId).catch(() => {});
+    __setClaudeQueryImpl(null);
+  }
+});
+
+// The false-completion bug: a session parked on a question to the user must
+// NOT be nudged into closing that task. A task marked waitingOnUser (after the
+// last user turn) stands the supervisor down — the session is reaped, but the
+// ledger stays open, so Mission Control still shows the outstanding work.
+test('a session whose open tasks all wait on the user is reaped without nudges, ledger left open', async () => {
+  const sessionId = 'nudge-waiting-1';
+
+  const received = [];
+  const respond = function* (i) {
+    yield assistantText(`asked the user something ${i}`, sessionId);
+  };
+  __setClaudeQueryImpl(scriptedRuntime(sessionId, respond, received));
+
+  try {
+    await queryClaudeSDK('start', { sessionId, ephemeral: false }, makeRecordingWriter());
+    // Marked after the user's turn started → the marker is fresh and honored.
+    await delay(10);
+    writeTask(sessionId, 1, 'pending', 'needs a decision', { waitingOnUser: true });
+
+    await waitUntil(() => !isClaudeSDKSessionAlive(sessionId), 'the session to be reaped');
+    assert.equal(received.filter(isNudge).length, 0, 'no nudges for a user-parked ledger');
+    const onDisk = JSON.parse(fs.readFileSync(path.join(configDir, 'tasks', sessionId, '1.json'), 'utf8'));
+    assert.equal(onDisk.status, 'pending', 'the task must remain open for Mission Control');
+  } finally {
+    await abortClaudeSDKSession(sessionId).catch(() => {});
+    __setClaudeQueryImpl(null);
+  }
+});
+
+// A waitingOnUser marker set before the user's latest message is stale — the
+// user has since replied, so the task is actionable again and nudging resumes.
+test('a waitingOnUser marker older than the last user turn is ignored', async () => {
+  const sessionId = 'nudge-stale-marker-1';
+  writeTask(sessionId, 1, 'pending', 'was waiting, user replied', { waitingOnUser: true });
+  // Ensure the marker's mtime predates the session's first user turn.
+  await delay(10);
+
+  const received = [];
+  const respond = function* (i) {
+    yield assistantText(`turn ${i}`, sessionId);
+  };
+  __setClaudeQueryImpl(scriptedRuntime(sessionId, respond, received));
+
+  try {
+    await queryClaudeSDK('start', { sessionId, ephemeral: false }, makeRecordingWriter());
+    await waitUntil(() => received.some(isNudge), 'the nudge to arrive');
+    assert.ok(received.find(isNudge).includes('was waiting, user replied'), 'the stale-marked task is nudged again');
+  } finally {
+    await abortClaudeSDKSession(sessionId).catch(() => {});
+    __setClaudeQueryImpl(null);
+  }
+});
+
+// Mixed ledger: the nudge lists only actionable items; user-parked ones are
+// neither listed nor allowed to keep the loop alive on their own.
+test('user-parked tasks are excluded from the nudge listing', async () => {
+  const sessionId = 'nudge-mixed-1';
+
+  const received = [];
+  const respond = function* (i) {
+    yield assistantText(`turn ${i}`, sessionId);
+  };
+  __setClaudeQueryImpl(scriptedRuntime(sessionId, respond, received));
+
+  try {
+    await queryClaudeSDK('start', { sessionId, ephemeral: false }, makeRecordingWriter());
+    await delay(10);
+    writeTask(sessionId, 1, 'pending', 'blocked-on-dmitri', { waitingOnUser: true });
+    writeTask(sessionId, 2, 'pending', 'still actionable');
+
+    await waitUntil(() => received.some(isNudge), 'the nudge to arrive');
+    const nudge = received.find(isNudge);
+    assert.ok(nudge.includes('still actionable'), 'actionable task is listed');
+    assert.ok(!nudge.includes('blocked-on-dmitri'), 'user-parked task is not listed');
+
+    // The actionable task closes; only the parked one remains → reap, no more nudges.
+    writeTask(sessionId, 2, 'completed', 'still actionable');
+    await waitUntil(() => !isClaudeSDKSessionAlive(sessionId), 'the session to be reaped');
+    assert.equal(received.filter(isNudge).length, 1, 'the parked task alone earns no further nudges');
   } finally {
     await abortClaudeSDKSession(sessionId).catch(() => {});
     __setClaudeQueryImpl(null);
