@@ -225,7 +225,7 @@ export default function SidebarSessionItem({
                 ? t('tooltips.attentionRequiredIndicator', { defaultValue: 'Session needs attention' })
                 : t('tooltips.activeSessionIndicator')}
               className={cn(
-                'h-2 w-2 animate-pulse rounded-full',
+                'h-2 w-2 rounded-full',
                 showAttentionIndicator ? 'bg-amber-500' : 'bg-green-500',
               )}
             />
