@@ -82,7 +82,7 @@ export const QueueItemIndicator = React.forwardRef<HTMLDivElement, React.HTMLAtt
           </svg>
         )}
         {status === 'in_progress' && (
-          <span className="h-2 w-2 animate-pulse rounded-full bg-blue-500 dark:bg-blue-400" />
+          <span className="h-2 w-2 rounded-full bg-blue-500 dark:bg-blue-400" />
         )}
         {status === 'pending' && (
           <svg className="h-3.5 w-3.5 text-muted-foreground/50" fill="none" stroke="currentColor" viewBox="0 0 24 24">

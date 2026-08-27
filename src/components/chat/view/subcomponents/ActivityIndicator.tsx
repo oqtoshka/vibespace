@@ -32,6 +32,10 @@ export default function ActivityIndicator({ activity, onAbort, isInputFocused = 
   const { t } = useTranslation('chat');
   const [renderedActivity, setRenderedActivity] = useState<SessionActivity | null>(activity);
   const [isExiting, setIsExiting] = useState(false);
+  // Once the enter animation has played, drop its class: `.chat-activity-enter`
+  // carries `will-change`, which pins a composited layer for as long as it is
+  // applied. A resting indicator must not hold one.
+  const [hasEntered, setHasEntered] = useState(false);
   const startedAt = renderedActivity?.startedAt ?? null;
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
 
@@ -48,6 +52,7 @@ export default function ActivityIndicator({ activity, onAbort, isInputFocused = 
     const timer = setTimeout(() => {
       setRenderedActivity(null);
       setIsExiting(false);
+      setHasEntered(false);
     }, EXIT_ANIMATION_MS);
 
     return () => clearTimeout(timer);
@@ -79,16 +84,23 @@ export default function ActivityIndicator({ activity, onAbort, isInputFocused = 
       : 'border-border/50 shadow-[0_-1px_1px_hsl(var(--foreground)/0.04),1px_0_1px_hsl(var(--foreground)/0.03),-1px_0_1px_hsl(var(--foreground)/0.03)]',
   ].join(' ');
 
+  // Animations run only while the request is genuinely in flight. During the
+  // exit fade the label goes static so no infinite animation outlives the work.
+  const isLive = !isExiting;
+
   return (
     <div
       className={`pointer-events-none bg-transparent ${
-        isExiting ? 'chat-activity-exit' : 'chat-activity-enter'
+        isExiting ? 'chat-activity-exit' : hasEntered ? '' : 'chat-activity-enter'
       }`}
+      onAnimationEnd={(event) => {
+        if (event.animationName === 'chat-activity-enter') setHasEntered(true);
+      }}
     >
       <div className="flex items-end justify-between gap-2">
         <div className={`${tabSurfaceClassName} gap-2`}>
-          <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-primary" aria-hidden />
-          <Shimmer className="font-medium">{`${label}…`}</Shimmer>
+          <span className={`h-1.5 w-1.5 shrink-0 rounded-full bg-primary${isLive ? ' animate-pulse' : ''}`} aria-hidden />
+          <Shimmer className="font-medium" active={isLive}>{`${label}…`}</Shimmer>
           <span className="tabular-nums text-muted-foreground/60">{elapsedLabel}</span>
         </div>
 
