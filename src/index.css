@@ -573,6 +573,9 @@
   }
 
   .chat-activity-enter {
+    /* `both` keeps the 100% frame while the class is applied; ActivityIndicator
+       removes the class on animationend so `will-change` (a compositing hint,
+       not a resting style) is released with it. */
     animation: chat-activity-enter 320ms cubic-bezier(0.22, 1, 0.36, 1) both;
     transform-origin: bottom center;
     will-change: transform, opacity, filter;
@@ -988,8 +991,8 @@
     }
     100% {
       opacity: 1;
-      filter: blur(0);
-      transform: translateY(0) scaleY(1);
+      filter: none;
+      transform: none;
     }
   }
 

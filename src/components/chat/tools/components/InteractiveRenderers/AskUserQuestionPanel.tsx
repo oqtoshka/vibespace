@@ -165,7 +165,7 @@ export const AskUserQuestionPanel: React.FC<PermissionPanelProps> = ({
                   <path strokeLinecap="round" strokeLinejoin="round" d="M9.879 7.519c1.171-1.025 3.071-1.025 4.242 0 1.172 1.025 1.172 2.687 0 3.712-.203.179-.43.326-.67.442-.745.361-1.45.999-1.45 1.827m0 3h.01" />
                 </svg>
               </div>
-              <div className="absolute -right-0.5 -top-0.5 h-2 w-2 animate-pulse rounded-full bg-cyan-400 dark:bg-cyan-500" />
+              <div className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-cyan-400 dark:bg-cyan-500" />
             </div>
 
             <div className="flex min-w-0 flex-1 items-center gap-2">
