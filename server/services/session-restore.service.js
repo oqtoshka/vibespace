@@ -18,7 +18,7 @@ import path from 'path';
 
 import { readOpenClaudeTasks } from '../shared/claude-task-ledger.js';
 import { readCodexPlanState } from '../shared/codex-plan-ledger.js';
-import { getDataDir } from '../utils/worktrees.js';
+import { getDataDir } from '../shared/utils.js';
 
 import { isRateLimitWakePending, loadRateLimitWakes } from './rate-limit-wake.service.js';
 

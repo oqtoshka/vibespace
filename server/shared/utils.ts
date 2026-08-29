@@ -42,6 +42,19 @@ import type {
  */
 export const IS_PLATFORM = process.env.VITE_IS_PLATFORM === 'true';
 
+/**
+ * The app's data directory — the folder holding `auth.db` (default
+ * `~/.vibespace`). Sidecar state files (session restore, rate-limit wake,
+ * shred manifests) live next to the database so a custom `DATABASE_PATH`
+ * relocates all of them together.
+ *
+ * Used by session-restore, rate-limit-wake, and session-shred.
+ */
+export function getDataDir(): string {
+  const dbPath = process.env.DATABASE_PATH || path.join(os.homedir(), '.vibespace', 'auth.db');
+  return path.dirname(dbPath);
+}
+
 // ---------------------------
 //----------------- NORMALIZED MESSAGE HELPER INPUT TYPES ------------
 /**

@@ -61,20 +61,6 @@ export type GitReposResponse = GitApiErrorResponse & {
   repos?: GitDiscoveredRepo[];
 };
 
-export type GitWorktree = {
-  path: string;
-  head: string | null;
-  branch: string | null;
-  detached: boolean;
-  locked: boolean;
-  bare: boolean;
-  isMain: boolean;
-};
-
-export type GitWorktreesResponse = GitApiErrorResponse & {
-  worktrees?: GitWorktree[];
-};
-
 export type GitCommitSummary = {
   hash: string;
   author: string;
@@ -139,11 +125,6 @@ export type GitPanelController = {
   operationError: string | null;
   clearOperationError: () => void;
   refreshAll: () => void;
-  worktrees: GitWorktree[];
-  activeWorktreePath: string | null;
-  selectWorktree: (worktree: GitWorktree | null) => void;
-  addWorktree: (opts: { branch: string; createBranch: boolean; base?: string | null }) => Promise<boolean>;
-  removeWorktree: (worktreePath: string) => Promise<boolean>;
   switchBranch: (branchName: string) => Promise<boolean>;
   createBranch: (branchName: string) => Promise<boolean>;
   deleteBranch: (branchName: string, force?: boolean) => Promise<boolean>;
