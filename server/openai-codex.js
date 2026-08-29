@@ -26,7 +26,7 @@ import { cancelRateLimitWake, scheduleRateLimitWake } from './services/rate-limi
 import { scheduleSessionRecap } from './services/session-recap.service.js';
 import { recordSessionActivity, recordSessionEnd } from './services/session-restore.service.js';
 import { planTaskContinuation } from './services/task-continuation.js';
-import { broadcastSessionUpdate } from './modules/providers/index.js';
+import { broadcastSessionUpdate, generateInitialSessionTitle } from './modules/providers/index.js';
 import { buildCodexTokenBudget, readLatestCodexTokenBudget } from './shared/codex-token-usage.js';
 import { toCodexAppServerSandboxPolicy } from './shared/codex-sandbox-policy.js';
 import { createCompleteMessage, createNormalizedMessage } from './shared/utils.js';
@@ -402,6 +402,25 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
   );
 
   const workingDirectory = cwd || projectPath || process.cwd();
+
+  // A short AI title only needs the first user message. Start that isolated
+  // helper beside the real turn instead of waiting minutes for the turn to
+  // finish before the fuller recap job is even scheduled.
+  if (!ephemeral) {
+    void generateInitialSessionTitle({
+      sessionId: appSessionId || sessionId,
+      initialMessage: command,
+      cwd: workingDirectory,
+      model: resolvedModel,
+      runQuery: (prompt, helperOptions, writer) => queryCodex(prompt, {
+        ...helperOptions,
+        permissionMode: 'plan',
+        ephemeral: true,
+        private: true,
+      }, writer),
+    });
+  }
+
   const { sandboxMode, approvalPolicy } = mapPermissionModeToCodexOptions(permissionMode);
   // app-server removed the legacy `on-failure` spelling from its wire schema;
   // `on-request` is the closest supported interactive policy.
