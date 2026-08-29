@@ -16,6 +16,7 @@ import { authenticatedFetch } from '../../../utils/api';
 import { downscaleImageFiles } from '../../../utils/imageDownscale';
 import type { MarkSessionProcessing } from '../../../hooks/useSessionProtection';
 import { grantClaudeToolPermission } from '../utils/chatPermissions';
+import { buildSessionCreationRequest } from '../utils/sessionCreation';
 import {
   addPendingSend,
   readPendingSends,
@@ -861,11 +862,12 @@ export function useChatComposerState({
         try {
           const response = await authenticatedFetch('/api/providers/sessions', {
             method: 'POST',
-            body: JSON.stringify({
+            body: JSON.stringify(buildSessionCreationRequest({
               provider,
               projectPath: resolvedProjectPath,
-              private: Boolean(privateMode),
-            }),
+              isPrivate: Boolean(privateMode),
+              initialMessage: content,
+            })),
           });
           if (!response.ok) {
             throw new Error(`Failed to create session (${response.status})`);
