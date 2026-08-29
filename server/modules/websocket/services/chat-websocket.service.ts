@@ -279,11 +279,10 @@ function buildRuntimeOptions(
     sessionId: appSessionId,
     providerSessionId: session.provider_session_id ?? undefined,
     resume: Boolean(session.provider_session_id),
-    // Worktree-pinned sessions run in the worktree dir. The client sends `cwd`
-    // explicitly (live path); `session.worktree_path` is the headless fallback
-    // (e.g. background-job resume, a reload before the client rebinds cwd, or a
-    // server-drained queued message with no client behind it).
-    cwd: clientOptions.cwd ?? session.worktree_path ?? session.project_path ?? undefined,
+    // The client sends `cwd` explicitly; the session's project path is the
+    // headless fallback (background-job resume, a server-drained queued
+    // message with no client behind it). A worktree is its own project.
+    cwd: clientOptions.cwd ?? session.project_path ?? undefined,
     projectPath: session.project_path ?? clientOptions.projectPath,
     // Private is a property of the row, never of the client request: each
     // runtime puts the private-variant env (see collectAgentEnv) into the harness process it spawns for this

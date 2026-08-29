@@ -2,7 +2,6 @@ import { getConnection } from '@/modules/database/connection.js';
 import { projectsDb } from '@/modules/database/repositories/projects.db.js';
 import type { SessionNameSource } from '@/shared/utils.js';
 import { normalizeProjectPath } from '@/shared/utils.js';
-import { parentProjectFromWorktreeCwd } from '@/utils/worktrees.js';
 
 type SessionRow = {
   session_id: string;
@@ -10,7 +9,6 @@ type SessionRow = {
   provider_session_id: string | null;
   project_path: string | null;
   jsonl_path: string | null;
-  worktree_path: string | null;
   custom_name: string | null;
   name_source: string | null;
   recap: string | null;
@@ -32,7 +30,7 @@ type RecentSessionsPage = {
 };
 
 const SESSION_ROW_COLUMNS =
-  'session_id, provider, provider_session_id, project_path, jsonl_path, worktree_path, custom_name, name_source, recap, recap_message_count, model, effort, isArchived, is_side, is_private, created_at, updated_at';
+  'session_id, provider, provider_session_id, project_path, jsonl_path, custom_name, name_source, recap, recap_message_count, model, effort, isArchived, is_side, is_private, created_at, updated_at';
 
 /**
  * SQL predicate: a transcript sync must not rename an app-created session.
@@ -124,22 +122,7 @@ export const sessionsDb = {
     const incomingName = customName ?? null;
     const incomingNameSource = customName ? nameSource ?? null : null;
 
-    // Worktree reverse-map: a session whose cwd is a vibespace-managed worktree
-    // (~/.vibespace/worktrees/<projectId>/<slug>) belongs to its PARENT project,
-    // not a standalone project at the worktree path. Record the parent path and
-    // keep the worktree dir in worktree_path so the UI can pin/indicate it.
-    let effectiveProjectPath = projectPath;
-    let worktreePath: string | null = null;
-    const parent = parentProjectFromWorktreeCwd(projectPath);
-    if (parent) {
-      const parentProjectPath = projectsDb.getProjectPathById(parent.projectId);
-      if (parentProjectPath) {
-        effectiveProjectPath = parentProjectPath;
-        worktreePath = projectPath;
-      }
-    }
-
-    const normalizedProjectPath = normalizeProjectPathForProvider(provider, effectiveProjectPath);
+    const normalizedProjectPath = normalizeProjectPathForProvider(provider, projectPath);
 
     // First, ensure the project path is recorded in the projects table,
     // since it's a foreign key in the sessions table.
@@ -160,7 +143,6 @@ export const sessionsDb = {
            updated_at = COALESCE(?, CURRENT_TIMESTAMP),
            project_path = ?,
            jsonl_path = ?,
-           worktree_path = ?,
            ${archivedAssignment}
            custom_name = CASE WHEN ${KEEP_APP_SESSION_NAME_SQL('?')} THEN custom_name ELSE COALESCE(?, custom_name) END,
            name_source = CASE WHEN ${KEEP_APP_SESSION_NAME_SQL('?')} THEN name_source ELSE COALESCE(?, name_source) END
@@ -170,7 +152,6 @@ export const sessionsDb = {
         updatedAtValue,
         normalizedProjectPath,
         jsonlPath ?? null,
-        worktreePath,
         incomingName,
         incomingNameSource,
         incomingName,
@@ -187,15 +168,14 @@ export const sessionsDb = {
     // keyed by the provider-native id for both columns. The ON CONFLICT path
     // covers legacy rows that predate the provider_session_id mapping.
     db.prepare(
-      `INSERT INTO sessions (session_id, provider, provider_session_id, custom_name, name_source, project_path, jsonl_path, worktree_path, isArchived, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, COALESCE(?, CURRENT_TIMESTAMP), COALESCE(?, CURRENT_TIMESTAMP))
+      `INSERT INTO sessions (session_id, provider, provider_session_id, custom_name, name_source, project_path, jsonl_path, isArchived, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 0, COALESCE(?, CURRENT_TIMESTAMP), COALESCE(?, CURRENT_TIMESTAMP))
        ON CONFLICT(session_id) DO UPDATE SET
          provider = excluded.provider,
          provider_session_id = excluded.provider_session_id,
          updated_at = excluded.updated_at,
          project_path = excluded.project_path,
          jsonl_path = excluded.jsonl_path,
-         worktree_path = excluded.worktree_path,
          ${archivedAssignment}
          custom_name = CASE WHEN ${KEEP_APP_SESSION_NAME_SQL('excluded.custom_name', 'excluded.name_source', 'sessions.')}
            THEN sessions.custom_name ELSE COALESCE(excluded.custom_name, sessions.custom_name) END,
@@ -209,7 +189,6 @@ export const sessionsDb = {
       incomingNameSource,
       normalizedProjectPath,
       jsonlPath ?? null,
-      worktreePath,
       createdAtValue,
       updatedAtValue
     );
