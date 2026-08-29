@@ -735,8 +735,8 @@ router.post(
     // row before the first turn spawns anything, which is why it is accepted
     // here and nowhere else.
     const isPrivate = body.private === true;
-    // Upstream clients send the first message so the row can be named up
-    // front; ours leave naming to the provider/recap.
+    // Web clients send the first message so the row gets a provisional title
+    // immediately; the provider/recap may replace that derived name later.
     const initialMessage = typeof body.initialMessage === 'string' ? body.initialMessage : undefined;
     const result = sessionsService.createAppSession(provider, projectPath, isSide, isPrivate, initialMessage);
     res.status(201).json(createApiSuccessResponse(result));
