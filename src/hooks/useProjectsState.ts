@@ -14,6 +14,8 @@ import type {
   ProjectsUpdatedMessage,
 } from '../types/app';
 
+import { reconcileSelectedSession } from './projectSessionSelection';
+
 type UseProjectsStateArgs = {
   sessionId?: string;
   navigate: NavigateFunction;
@@ -682,14 +684,13 @@ export function useProjectsState({
       if (session) {
         const sessionProvider = getSessionProvider(session);
         const shouldUpdateProject = selectedProject?.projectId !== project.projectId;
-        const shouldUpdateSession =
-          selectedSession?.id !== sessionId || selectedSession.__provider !== sessionProvider;
+        const reconciledSession = reconcileSelectedSession(selectedSession, session, sessionProvider);
 
         if (shouldUpdateProject) {
           setSelectedProject(project);
         }
-        if (shouldUpdateSession) {
-          setSelectedSession({ ...session, __provider: sessionProvider });
+        if (reconciledSession !== selectedSession) {
+          setSelectedSession(reconciledSession);
         }
         return;
       }
@@ -787,7 +788,7 @@ export function useProjectsState({
       __projectId: selectedProject.projectId,
       summary: '',
     });
-  }, [sessionId, projects, selectedProject, selectedSession?.id, selectedSession?.__provider, navigate]);
+  }, [sessionId, projects, selectedProject, selectedSession, navigate]);
 
   const handleProjectSelect = useCallback(
     (project: Project) => {
