@@ -376,10 +376,9 @@ export const sessionsService = {
     }
 
     const sessionId = randomUUID();
-    // Only a caller that sends the first message (upstream's client flow)
-    // names the row up front — an empty message still gets the stable
-    // fallback. Ours pass nothing and leave the title to the provider or the
-    // recap, so the sidebar never shows a placeholder.
+    // A caller that sends the first message names the row up front — an empty
+    // message still gets the stable fallback. The title is only provisional:
+    // provider metadata or the background recap may replace the derived name.
     const sessionName = typeof initialMessage === 'string' ? buildCloudCliSessionName(initialMessage) : '';
     sessionsDb.createAppSession(sessionId, provider, normalizedProjectPath, isSide, isPrivate, sessionName || null);
 
