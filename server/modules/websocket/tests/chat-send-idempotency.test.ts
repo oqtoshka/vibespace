@@ -123,6 +123,32 @@ test('a chat.send replayed with the same clientMsgId is re-acked, not run again'
   });
 });
 
+test('chat.send seeds the first-prompt title for a stale client allocation', async () => {
+  await withIsolatedDatabase(async () => {
+    sessionsDb.createAppSession('session-untitled', 'codex', '/workspace/demo');
+    sessionsDb.updateSessionCustomName('session-untitled', 'Untitled Codex Session', 'derived');
+
+    const spawnCalls: SpawnCall[] = [];
+    const socket = new FakeSocket();
+    handleChatConnection(
+      socket as never,
+      { user: { id: 1 } } as never,
+      buildDependencies(spawnCalls),
+    );
+
+    await send(socket, {
+      type: 'chat.send',
+      sessionId: 'session-untitled',
+      clientMsgId: 'send_title',
+      content: 'remove the open source footer everywhere',
+      options: {},
+    });
+
+    assert.equal(sessionsDb.getSessionById('session-untitled')?.custom_name, 'remove the open source');
+    assert.equal(spawnCalls.length, 1);
+  });
+});
+
 test('a distinct clientMsgId in the same session still starts its own run', async () => {
   await withIsolatedDatabase(async () => {
     sessionsDb.createSession('session-distinct', 'claude', '/workspace/demo', 'Distinct');
