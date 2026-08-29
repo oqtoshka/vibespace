@@ -1,5 +1,5 @@
-import { appendImagesInputTag, buildOpenCodePromptAttachments } from '../shared/image-attachments.js';
-import { createCompleteMessage, createNormalizedMessage } from '../shared/utils.js';
+import { appendFilesInputTag, buildOpenCodePromptAttachments } from '../shared/image-attachments.js';
+import { createCompleteMessage, createNormalizedMessage, generateMessageId } from '../shared/utils.js';
 import { readOpenCodeTokenUsage } from '../shared/opencode-token-usage.js';
 import { sendOpenCodeContextUsage } from '../shared/opencode-context.js';
 import { providerModelsService } from '../modules/providers/services/provider-models.service.js';
@@ -12,9 +12,10 @@ import { ensureOpenCodeServer } from './opencode-server.service.js';
 /**
  * Runs one OpenCode turn over the HTTP server instead of `opencode run`.
  *
- * Used only when the message carries an image, because that is the only thing
- * `run` cannot do — see the note on {@link ensureOpenCodeServer}. Everything
- * else still goes down the CLI path, which is the better-worn road.
+ * Used for interactive VibeSpace turns because the server's durable prompt API
+ * accepts `delivery: "steer"` while an agent loop is running. It is also the
+ * only transport that can put image bytes directly into a user message. Small
+ * internal helper turns still use the CLI path.
  *
  * The sessions are the same sessions either way (one opencode.db, one id
  * space), so a conversation can move between the two transports message by
@@ -29,6 +30,9 @@ import { ensureOpenCodeServer } from './opencode-server.service.js';
 // quiet: the settle timer is re-armed by every further event and only fires
 // once nothing has followed the final step.
 const TURN_SETTLE_MS = 1_500;
+const HISTORY_BRIDGE_MESSAGES = 40;
+const HISTORY_BRIDGE_MESSAGE_CHARS = 1_500;
+const HISTORY_BRIDGE_CHARS = 20_000;
 
 /**
  * How OpenCode's permission prompts are answered without a human present.
@@ -230,6 +234,73 @@ async function requestJson(server, path, init = {}) {
 }
 
 /**
+ * Builds the server prompt shape while keeping ordinary files as paths the
+ * agent can open and inlining only media that the model must receive as bytes.
+ */
+async function buildPrompt(command, options, workingDir) {
+  const attachments = [
+    ...(Array.isArray(options?.images) ? options.images : []),
+    ...(Array.isArray(options?.files) ? options.files : []),
+  ];
+  const { files, passthrough } = await buildOpenCodePromptAttachments(attachments, workingDir);
+  return {
+    text: appendFilesInputTag(command?.trim() || '', passthrough),
+    files,
+  };
+}
+
+/**
+ * Replays the readable tail of a CLI-era session when it first enters the
+ * durable server engine. OpenCode keeps those two histories separately, so
+ * without this one-time bridge an existing conversation would resume with no
+ * memory the first time steering was enabled for it.
+ */
+async function readHistoryBridge(sessionId) {
+  if (!sessionId) {
+    return '';
+  }
+
+  try {
+    const history = await sessionsService.fetchHistory(sessionId, {
+      limit: HISTORY_BRIDGE_MESSAGES * 4,
+      offset: 0,
+    });
+    const messages = (history.messages ?? [])
+      .filter((message) => message?.kind === 'text' && (message.role === 'user' || message.role === 'assistant'))
+      .map((message) => {
+        const text = typeof message.content === 'string' ? message.content.trim() : '';
+        return text
+          ? `${message.role === 'user' ? 'User' : 'Assistant'}: ${text.slice(0, HISTORY_BRIDGE_MESSAGE_CHARS)}`
+          : '';
+      })
+      .filter(Boolean)
+      .slice(-HISTORY_BRIDGE_MESSAGES);
+
+    return messages.join('\n\n').slice(-HISTORY_BRIDGE_CHARS);
+  } catch (error) {
+    console.warn('[OpenCode] Could not bridge the CLI session history:', error?.message || error);
+    return '';
+  }
+}
+
+function prependHistoryBridge(promptText, historyBridge) {
+  if (!historyBridge) {
+    return promptText;
+  }
+
+  return [
+    '<prior_conversation>',
+    'Continue this existing coding session using the conversation history below.',
+    historyBridge,
+    '</prior_conversation>',
+    '',
+    '<current_user_message>',
+    promptText,
+    '</current_user_message>',
+  ].join('\n');
+}
+
+/**
  * Consumes the server's event bus, handing every parsed event to `onEvent`.
  *
  * `/api/event` rather than `/event`: the latter carries only server-level
@@ -274,7 +345,7 @@ async function consumeEvents(server, signal, onEvent) {
 }
 
 /**
- * Runs an image-bearing OpenCode turn end to end.
+ * Runs one interactive OpenCode turn end to end.
  *
  * Matches the CLI runner's contract exactly: one `session_created` for a new
  * session, streamed messages, a token-budget status, exactly one terminal
@@ -284,11 +355,12 @@ async function consumeEvents(server, signal, onEvent) {
 export async function runOpenCodeHttpTurn(command, options, ws, hooks = {}) {
   const { sessionId, projectPath, cwd, model, effort, sessionSummary, images, permissionMode } = options;
   const workingDir = cwd || projectPath || process.cwd();
-  const { registerHandle, releaseHandle, onCompleted } = hooks;
+  const { registerHandle, releaseHandle, onContinue, onCompleted } = hooks;
 
   // A private session runs against the server spawned with the private-variant env (see collectAgentEnv).
   const server = await ensureOpenCodeServer({ private: Boolean(options.private) });
-  const { files, passthrough } = await buildOpenCodePromptAttachments(images, workingDir);
+  const initialPrompt = await buildPrompt(command, options, workingDir);
+  const persistedPromptText = initialPrompt.text;
 
   const resolvedModel = await providerModelsService.resolveResumeModel('opencode', sessionId, model);
   const variant = typeof effort === 'string' && effort !== 'default' ? effort : undefined;
@@ -297,6 +369,19 @@ export async function runOpenCodeHttpTurn(command, options, ws, hooks = {}) {
 
   let activeSessionId = sessionId || null;
   if (activeSessionId) {
+    // Idempotently materialize a durable-server aggregate for CLI-era ids.
+    // Without this, model/agent updates can race a 404 before the first prompt
+    // implicitly creates the server-side session.
+    await requestJson(server, '/api/session', {
+      method: 'POST',
+      body: JSON.stringify({
+        id: activeSessionId,
+        ...(modelRef ? { model: modelRef } : {}),
+        ...(agent ? { agent } : {}),
+        location: { directory: workingDir },
+      }),
+    });
+
     // A session that already exists keeps its own settings until told
     // otherwise, so the picker's current choices are pushed before prompting.
     if (modelRef) {
@@ -310,6 +395,17 @@ export async function runOpenCodeHttpTurn(command, options, ws, hooks = {}) {
         method: 'POST',
         body: JSON.stringify({ agent }),
       }).catch((error) => console.warn('[OpenCode] Could not set the session agent:', error?.message || error));
+    }
+
+    // Durable server sessions survive server restarts. Only a CLI-era session
+    // has an empty server context while legacy message history already exists.
+    const serverContext = await requestJson(server, `/api/session/${activeSessionId}/context`)
+      .catch(() => []);
+    if (!Array.isArray(serverContext) || serverContext.length === 0) {
+      initialPrompt.text = prependHistoryBridge(
+        initialPrompt.text,
+        await readHistoryBridge(activeSessionId),
+      );
     }
   } else {
     const created = await requestJson(server, '/api/session', {
@@ -341,6 +437,11 @@ export async function runOpenCodeHttpTurn(command, options, ws, hooks = {}) {
   // The turn is transcribed as it streams so it can be written to opencode.db
   // at the end: the server keeps its own copy and shares none of it.
   const transcript = { text: '', tools: [], assistantMessageId: null, startedAt: Date.now() };
+  const injectedMessages = [];
+  let resolveInitialAdmission;
+  const initialAdmission = new Promise((resolve) => {
+    resolveInitialAdmission = resolve;
+  });
   let lastStepTokens = null;
   let settle = null;
   let idleTimer = null;
@@ -360,6 +461,52 @@ export async function runOpenCodeHttpTurn(command, options, ws, hooks = {}) {
 
   const handle = {
     aborted: false,
+    inject: async (injectedCommand, injectedOptions = {}) => {
+      // The handle is published before the initial request so Stop can always
+      // reach it. A message queued in that narrow window must wait, otherwise
+      // its steer can become the session's first prompt and race the real turn.
+      if (!await initialAdmission) {
+        return null;
+      }
+      if (handle.aborted || !settle) {
+        return null;
+      }
+
+      // Admission is atomic. Once this returns, OpenCode owns the message and
+      // will fold it into the running loop at the next agent step.
+      turnLooksDone = false;
+      const prompt = await buildPrompt(injectedCommand, injectedOptions, workingDir);
+      const serverMessageId = generateMessageId('msg');
+      const admitted = await requestJson(server, `/api/session/${activeSessionId}/prompt`, {
+        method: 'POST',
+        body: JSON.stringify({
+          id: serverMessageId,
+          prompt,
+          delivery: 'steer',
+        }),
+      });
+      const admittedMessageId = admitted?.id || serverMessageId;
+      const clientMessageId = injectedOptions.clientUserMessageId || admittedMessageId;
+
+      injectedMessages.push({
+        promptText: prompt.text,
+        images: injectedOptions.images,
+        createdAt: admitted?.timeCreated ?? Date.now(),
+      });
+      ws.send(createNormalizedMessage({
+        id: clientMessageId,
+        kind: 'text',
+        role: 'user',
+        content: injectedCommand,
+        images: Array.isArray(injectedOptions.images) && injectedOptions.images.length > 0
+          ? injectedOptions.images
+          : undefined,
+        sessionId: activeSessionId,
+        provider: 'opencode',
+      }));
+      injectedOptions.onDelivered?.();
+      return admittedMessageId;
+    },
     kill: () => {
       handle.aborted = true;
       void requestJson(server, `/api/session/${activeSessionId}/interrupt`, { method: 'POST' })
@@ -411,6 +558,11 @@ export async function runOpenCodeHttpTurn(command, options, ws, hooks = {}) {
     if (type === 'session.idle') {
       finish({ ok: true });
       return;
+    }
+
+    if (type === 'session.next.prompt.admitted' || type === 'session.next.prompted') {
+      // A steer arriving during the post-step settle window re-opens the turn.
+      turnLooksDone = false;
     }
 
     if (type === 'session.error' || type === 'session.next.step.failed') {
@@ -489,18 +641,16 @@ export async function runOpenCodeHttpTurn(command, options, ws, hooks = {}) {
   });
   await streamReady;
 
-  // Non-image attachments keep the CLI path's arrangement: listed for the agent
-  // to open with its own tools, which works for everything but images.
-  const text = appendImagesInputTag(command?.trim() || '', passthrough);
-
   let outcome;
   try {
     await requestJson(server, `/api/session/${activeSessionId}/prompt`, {
       method: 'POST',
-      body: JSON.stringify({ prompt: { text, ...(files.length ? { files } : {}) } }),
+      body: JSON.stringify({ prompt: initialPrompt }),
     });
+    resolveInitialAdmission(true);
     outcome = await finished;
   } catch (error) {
+    resolveInitialAdmission(false);
     abortController.abort();
     outcome = { ok: false, error: error?.message || String(error) };
     if (!handle.aborted) {
@@ -523,8 +673,9 @@ export async function runOpenCodeHttpTurn(command, options, ws, hooks = {}) {
     providerId: modelRef?.providerID,
     modelId: modelRef?.id,
     agent: agent ?? 'build',
-    promptText: command?.trim() || '',
+    promptText: persistedPromptText,
     images,
+    injectedMessages,
     assistantMessageId: transcript.assistantMessageId,
     text: transcript.text,
     tools: transcript.tools,
@@ -558,6 +709,10 @@ export async function runOpenCodeHttpTurn(command, options, ws, hooks = {}) {
     tokens: lastStepTokens,
   });
 
+  if (outcome.ok && !options.ephemeral && await onContinue?.({ sessionId: activeSessionId, cwd: workingDir })) {
+    return;
+  }
+
   // An aborted run already had its terminal `complete` sent on its behalf.
   if (!handle.aborted) {
     ws.send(createCompleteMessage({
@@ -590,3 +745,8 @@ export async function runOpenCodeHttpTurn(command, options, ws, hooks = {}) {
   });
   throw new Error(outcome.error);
 }
+
+/** Test seam for the CLI-to-server context migration prompt. */
+export const __testing = {
+  prependHistoryBridge,
+};

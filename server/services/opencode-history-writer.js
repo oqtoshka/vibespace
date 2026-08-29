@@ -34,7 +34,8 @@ function generateId(prefix) {
 }
 
 /**
- * Appends one turn to a session's history.
+ * Appends one turn to a session's history, including user messages steered
+ * into the agent loop before its final answer.
  *
  * Best effort by design: the answer has already been streamed to the user and
  * is not worth losing to a locked database, so a failure is logged and the turn
@@ -49,6 +50,7 @@ export function persistOpenCodeTurn(turn) {
     agent = 'build',
     promptText,
     images,
+    injectedMessages = [],
     assistantMessageId,
     text,
     tools = [],
@@ -74,7 +76,11 @@ export function persistOpenCodeTurn(turn) {
     // a turn that starts and finishes inside the same millisecond can be read
     // back with the answer above the question. One millisecond of separation is
     // what keeps the pair in the order it happened.
-    const completed = Math.max(endedAt ?? Date.now(), created + 1);
+    const lastInjectedAt = injectedMessages.reduce(
+      (latest, message) => Math.max(latest, Number(message?.createdAt) || 0),
+      created,
+    );
+    const completed = Math.max(endedAt ?? Date.now(), lastInjectedAt + 1);
     const userMessageId = generateId('msg');
     const assistantId = assistantMessageId ?? generateId('msg');
     const usage = tokens ?? { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } };
@@ -108,8 +114,26 @@ export function persistOpenCodeTurn(turn) {
         text: appendImagesInputTag(promptText ?? '', images),
       }));
 
+      let parentMessageId = userMessageId;
+      for (const injected of injectedMessages) {
+        const injectedAt = Math.max(Number(injected?.createdAt) || created, created);
+        const injectedMessageId = generateId('msg');
+        insertMessage.run(injectedMessageId, sessionId, injectedAt, injectedAt, JSON.stringify({
+          role: 'user',
+          time: { created: injectedAt },
+          agent,
+          model: { providerID: providerId, modelID: modelId },
+          summary: { diffs: [] },
+        }));
+        insertPart.run(generateId('prt'), injectedMessageId, sessionId, injectedAt, injectedAt, JSON.stringify({
+          type: 'text',
+          text: appendImagesInputTag(injected?.promptText ?? '', injected?.images),
+        }));
+        parentMessageId = injectedMessageId;
+      }
+
       insertMessage.run(assistantId, sessionId, completed, completed, JSON.stringify({
-        parentID: userMessageId,
+        parentID: parentMessageId,
         role: 'assistant',
         mode: agent,
         agent,
