@@ -235,10 +235,40 @@ async function spawnOpenCode(command, options = {}, ws, context = undefined) {
   // anomalyco/opencode#16723). The HTTP server takes an image as a part of the
   // user message, which is the shape vision models actually read — so a turn
   // with an image goes that way and every other turn stays on the CLI.
-  if (normalizeImageDescriptors(options.images).length > 0) {
+  if (options.enableMidTurnInjection || normalizeImageDescriptors(options.images).length > 0) {
     return runOpenCodeHttpTurn(command, options, ws, {
       registerHandle,
       releaseHandle,
+      onContinue: async ({ sessionId: continuedSessionId }) => {
+        if (options.ephemeral) {
+          return false;
+        }
+
+        const continuation = planTaskContinuation({
+          provider: 'opencode',
+          sessionId: continuedSessionId,
+          userId: ws?.userId || null,
+          sessionName: options.sessionSummary,
+        });
+        if (!continuation) {
+          return false;
+        }
+
+        ws.send(createNormalizedMessage({
+          kind: 'status',
+          text: 'Resuming — open tasks remain',
+          sessionId: continuedSessionId,
+          provider: 'opencode',
+        }));
+        await spawnOpenCode(continuation, {
+          ...options,
+          sessionId: continuedSessionId,
+          images: undefined,
+          files: undefined,
+          rewind: undefined,
+        }, ws);
+        return true;
+      },
       onCompleted: ({ sessionId, cwd }) => queueOpenCodeRecap({ sessionId, cwd, ws }),
     });
   }
@@ -625,6 +655,22 @@ function abortOpenCodeSession(sessionId) {
     if (handle === process) activeOpenCodeProcesses.delete(key);
   }
   return true;
+}
+
+/**
+ * Sends a user message into an active OpenCode server turn.
+ *
+ * The websocket queue consumes this export through `server/index.js`. CLI
+ * turns and already-finished server turns have no injectable handle and return
+ * null, which leaves the message in VibeSpace's ordinary next-turn queue.
+ */
+export async function injectOpenCodeMessage(sessionId, command, options = {}) {
+  const handle = activeOpenCodeProcesses.get(sessionId);
+  if (!handle?.inject || handle.aborted) {
+    return null;
+  }
+
+  return handle.inject(command, options);
 }
 
 function isOpenCodeSessionActive(sessionId) {

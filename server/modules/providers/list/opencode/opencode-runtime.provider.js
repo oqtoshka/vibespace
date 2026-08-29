@@ -1,10 +1,11 @@
 /**
  * OpenCode runtime adapter — the registry-facing surface over `server/opencode-cli.js`
- * (CLI runs with the HTTP-server path for image turns, lock retries, recap and
- * task continuation). See the Claude adapter for the `run` id conventions.
+ * (interactive server turns with mid-turn steering, CLI helpers, lock retries,
+ * recap and task continuation). See the Claude adapter for the `run` id conventions.
  */
 import {
   spawnOpenCode,
+  injectOpenCodeMessage,
   abortOpenCodeSession,
   isOpenCodeSessionActive,
   getActiveOpenCodeSessions,
@@ -28,6 +29,7 @@ opencodeRuntime.abort = (sessionId) => abortOpenCodeSession(sessionId);
 
 export {
   spawnOpenCode,
+  injectOpenCodeMessage,
   abortOpenCodeSession,
   isOpenCodeSessionActive,
   getActiveOpenCodeSessions,

@@ -288,6 +288,10 @@ function buildRuntimeOptions(
     // runtime puts the private-variant env (see collectAgentEnv) into the harness process it spawns for this
     // turn, so no presence reporter ever speaks for the session.
     private: Boolean(session.is_private),
+    // OpenCode can only accept `delivery: "steer"` while the conversation is
+    // running through its server engine. Interactive websocket turns opt into
+    // that transport; internal one-shot helpers keep using the lighter CLI.
+    enableMidTurnInjection: provider === 'opencode',
   };
 
   // Claude background-job auto-resume: when a `run_in_background` job finishes

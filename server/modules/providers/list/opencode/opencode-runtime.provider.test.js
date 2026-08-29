@@ -4,13 +4,15 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
+import { registerAgentEnvContributor } from '../../../../shared/agent-env.js';
 import {
   opencodeRuntime,
+  injectOpenCodeMessage,
+  isOpenCodeSessionActive,
   resolveOpenCodePermissionOptions,
   spawnOpenCode,
 } from './opencode-runtime.provider.js';
 import { OpenCodeSessionsProvider } from './opencode-sessions.provider.js';
-import { registerAgentEnvContributor } from '../../../../shared/agent-env.js';
 
 // Stands in for a host plugin (e.g. a presence reporter's opt-out): the runtime's
 // job is to tag the spawn correctly and merge what contributors return.
@@ -30,6 +32,15 @@ const runtimeContext = {
 
 const findEnvKey = (name) =>
   Object.keys(process.env).find((key) => key.toLowerCase() === name.toLowerCase()) || name;
+
+async function waitFor(predicate, message) {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(message);
+}
 
 async function createFakeOpenCodeExecutable(binDir) {
   const scriptPath = path.join(binDir, 'opencode.js');
@@ -66,6 +77,186 @@ for (const event of events) {
   await writeFile(commandPath, '#!/bin/sh\nnode "$(dirname "$0")/opencode.js" "$@"\n', 'utf8');
   await chmod(commandPath, 0o755);
 }
+
+async function createFakeOpenCodeServerExecutable(binDir) {
+  const scriptPath = path.join(binDir, 'opencode-server.js');
+  await writeFile(scriptPath, `
+const fs = require('node:fs');
+const http = require('node:http');
+
+if (process.argv[2] !== 'serve') process.exit(2);
+const port = Number(process.argv[process.argv.indexOf('--port') + 1]);
+const capturePath = process.env.OPENCODE_SERVER_CAPTURE;
+const streams = new Set();
+const sendJson = (response, status, body) => {
+  response.writeHead(status, { 'Content-Type': 'application/json' });
+  response.end(JSON.stringify(body));
+};
+const broadcast = (event) => {
+  const frame = 'data: ' + JSON.stringify(event) + '\\n\\n';
+  for (const stream of streams) stream.write(frame);
+};
+const readBody = (request) => new Promise((resolve) => {
+  let body = '';
+  request.on('data', (chunk) => { body += chunk; });
+  request.on('end', () => resolve(body ? JSON.parse(body) : {}));
+});
+
+const server = http.createServer(async (request, response) => {
+  if (request.method === 'GET' && request.url === '/api/model') {
+    sendJson(response, 200, { data: [{ id: 'local', providerID: 'dudin' }] });
+    return;
+  }
+  if (request.method === 'GET' && request.url === '/api/event') {
+    response.writeHead(200, { 'Content-Type': 'text/event-stream', Connection: 'keep-alive' });
+    response.write(': connected\\n\\n');
+    streams.add(response);
+    request.on('close', () => streams.delete(response));
+    return;
+  }
+  if (request.method === 'POST' && request.url === '/api/session') {
+    await readBody(request);
+    sendJson(response, 200, { data: { id: 'open-server-1' } });
+    return;
+  }
+  if (request.method === 'POST' && /\\/api\\/session\\/open-server-1\\/(model|agent)$/.test(request.url)) {
+    await readBody(request);
+    sendJson(response, 200, { data: true });
+    return;
+  }
+  if (request.method === 'POST' && request.url === '/api/session/open-server-1/prompt') {
+    const body = await readBody(request);
+    fs.appendFileSync(capturePath, JSON.stringify(body) + '\\n');
+    const id = body.id || 'msg_initial';
+    sendJson(response, 200, { data: {
+      admittedSeq: body.delivery === 'steer' ? 2 : 1,
+      id,
+      sessionID: 'open-server-1',
+      prompt: body.prompt,
+      delivery: body.delivery || 'steer',
+      timeCreated: Date.now(),
+    } });
+    if (body.delivery === 'steer') {
+      setTimeout(() => {
+        broadcast({ type: 'session.next.prompted', data: {
+          sessionID: 'open-server-1', messageID: id, prompt: body.prompt, delivery: 'steer', timestamp: Date.now(),
+        } });
+        broadcast({ type: 'session.next.text.delta', data: {
+          sessionID: 'open-server-1', assistantMessageID: 'msg_assistant', textID: 'text-1',
+          delta: 'steered answer', timestamp: Date.now(),
+        } });
+        broadcast({ type: 'session.next.step.ended', data: {
+          sessionID: 'open-server-1', assistantMessageID: 'msg_assistant', finish: 'stop', timestamp: Date.now(),
+        } });
+        server.close(() => process.exit(0));
+      }, 25);
+    } else {
+      broadcast({ type: 'session.next.step.started', data: {
+        sessionID: 'open-server-1', assistantMessageID: 'msg_assistant', timestamp: Date.now(),
+      } });
+    }
+    return;
+  }
+  if (request.method === 'GET' && request.url === '/api/session/open-server-1/context') {
+    sendJson(response, 200, { data: {} });
+    return;
+  }
+  if (request.method === 'POST' && request.url === '/api/session/open-server-1/interrupt') {
+    sendJson(response, 200, { data: true });
+    return;
+  }
+  sendJson(response, 404, { error: 'not found' });
+});
+server.listen(port, '127.0.0.1', () => {
+  console.log('opencode server listening on http://127.0.0.1:' + port);
+});
+process.on('SIGTERM', () => server.close(() => process.exit(0)));
+`, 'utf8');
+
+  if (process.platform === 'win32') {
+    await writeFile(path.join(binDir, 'opencode.cmd'), '@echo off\r\nnode "%~dp0opencode-server.js" %*\r\n', 'utf8');
+    return;
+  }
+
+  const commandPath = path.join(binDir, 'opencode');
+  await writeFile(commandPath, '#!/bin/sh\nexec node "$(dirname "$0")/opencode-server.js" "$@"\n', 'utf8');
+  await chmod(commandPath, 0o755);
+}
+
+test('OpenCode injection falls back when no server turn is active', async () => {
+  assert.equal(await injectOpenCodeMessage('missing-open-session', 'Queue me'), null);
+});
+
+test('interactive OpenCode turns admit queued messages as live steers', { concurrency: false }, async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'opencode-server-steer-'));
+  const capturePath = path.join(tempRoot, 'requests.jsonl');
+  const pathKey = findEnvKey('PATH');
+  const pathExtKey = findEnvKey('PATHEXT');
+  const previousPath = process.env[pathKey];
+  const previousPathExt = process.env[pathExtKey];
+  const previousCapture = process.env.OPENCODE_SERVER_CAPTURE;
+  const originalHomedir = os.homedir;
+  const messages = [];
+  const writer = {
+    userId: null,
+    sessionId: null,
+    send(message) { messages.push(message); },
+    setSessionId(sessionId) { this.sessionId = sessionId; },
+  };
+
+  try {
+    await createFakeOpenCodeServerExecutable(tempRoot);
+    process.env[pathKey] = `${tempRoot}${path.delimiter}${previousPath || ''}`;
+    process.env.OPENCODE_SERVER_CAPTURE = capturePath;
+    os.homedir = () => tempRoot;
+    if (process.platform === 'win32') {
+      process.env[pathExtKey] = previousPathExt?.toUpperCase().includes('.CMD')
+        ? previousPathExt
+        : `.COM;.EXE;.BAT;.CMD${previousPathExt ? `;${previousPathExt}` : ''}`;
+    }
+
+    const running = spawnOpenCode('Start the task', {
+      cwd: tempRoot,
+      model: 'dudin/local',
+      enableMidTurnInjection: true,
+      ephemeral: true,
+    }, writer);
+    await waitFor(
+      () => isOpenCodeSessionActive('open-server-1'),
+      'the fake OpenCode server turn never became active',
+    );
+
+    let delivered = 0;
+    const injectedId = await injectOpenCodeMessage('open-server-1', 'Use the new direction.', {
+      clientUserMessageId: 'queued-1',
+      onDelivered: () => { delivered += 1; },
+    });
+    await running;
+
+    assert.match(injectedId, /^msg_/);
+    assert.equal(delivered, 1);
+    const userMessage = messages.find((message) => message.id === 'queued-1');
+    const assistantMessage = messages.find((message) => message.content === 'steered answer');
+    assert.equal(userMessage?.role, 'user');
+    assert.equal(userMessage?.content, 'Use the new direction.');
+    assert.ok(messages.indexOf(userMessage) < messages.indexOf(assistantMessage));
+    assert.equal(messages.filter((message) => message.kind === 'complete').length, 1);
+
+    const requests = (await readFile(capturePath, 'utf8')).trim().split('\n').map(JSON.parse);
+    assert.equal(requests[0].prompt.text, 'Start the task');
+    assert.equal(requests[1].delivery, 'steer');
+    assert.equal(requests[1].prompt.text, 'Use the new direction.');
+  } finally {
+    os.homedir = originalHomedir;
+    if (previousPath === undefined) delete process.env[pathKey];
+    else process.env[pathKey] = previousPath;
+    if (previousPathExt === undefined) delete process.env[pathExtKey];
+    else process.env[pathExtKey] = previousPathExt;
+    if (previousCapture === undefined) delete process.env.OPENCODE_SERVER_CAPTURE;
+    else process.env.OPENCODE_SERVER_CAPTURE = previousCapture;
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
 
 test('spawnOpenCode emits session_created before normalized live messages for new sessions', async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'opencode-cli-live-'));
