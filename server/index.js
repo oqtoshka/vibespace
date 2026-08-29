@@ -42,6 +42,7 @@ import {
 } from './claude-sdk.js';
 import { spawnCursor } from './cursor-cli.js';
 import { injectCodexMessage } from './openai-codex.js';
+import { injectOpenCodeMessage } from './opencode-cli.js';
 import { encodePlantUmlSource, inlinePlantUmlIncludes } from './utils/plantuml.js';
 import { renderDbmlToSvg } from './utils/dbml.js';
 import { createGitModule } from '@/modules/git/index.js';
@@ -147,6 +148,7 @@ const webSocketDependencies = {
         injectFns: {
             claude: injectClaudeMessage,
             codex: injectCodexMessage,
+            opencode: injectOpenCodeMessage,
         },
         cancelInjectedFns: {
             claude: cancelInjectedClaudeMessage,
