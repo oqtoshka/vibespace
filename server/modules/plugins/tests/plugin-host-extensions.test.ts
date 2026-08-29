@@ -13,7 +13,9 @@ import {
   activeHostExtensionNames,
   deactivateHostExtensions,
   getHostExtensionRouter,
+  publishSessionMetadataChange,
 } from '@/modules/plugins/index.js';
+import { resetSessionMetadataEventsForTests } from '@/modules/plugins/services/session-metadata-events.service.js';
 
 function writePlugin(root: string, dirName: string, name: string, body: string, enabled = true) {
   const dir = path.join(root, dirName);
@@ -54,6 +56,7 @@ test('activates enabled host modules: routes mount, env contributors apply, shut
       r.get('/ping', (req, res) => res.json({ pong: host.pluginName, known: Boolean(host.sessions.getById('known')), run: host.runs.get('known')?.status ?? null, mac: host.hmacSha256('x') }));
       host.mountRouter('/api/ext-test', r);
       host.registerAgentEnvContributor((ctx) => ctx.private ? { EXT_PRIVATE: '1' } : null);
+      host.sessions.onMetadataChanged((change) => { globalThis.__extMetadata = change; });
       host.onShutdown(() => { globalThis.__extShutdown = (globalThis.__extShutdown ?? 0) + 1; });
     }
   `);
@@ -69,6 +72,16 @@ test('activates enabled host modules: routes mount, env contributors apply, shut
 
     assert.deepEqual(collectAgentEnv({ provider: 'claude', scope: 'session', private: true }), { EXT_PRIVATE: '1' });
     assert.deepEqual(collectAgentEnv({ provider: 'claude', scope: 'session', private: false }), {});
+
+    publishSessionMetadataChange({
+      sessionId: 'known', provider: 'claude', providerSessionId: 'p1',
+      projectPath: '/project', transcriptPath: '/transcript.jsonl',
+      title: 'Generated Name', recap: 'Current recap.', isPrivate: false,
+    });
+    assert.equal(
+      ((globalThis as Record<string, unknown>).__extMetadata as { title: string }).title,
+      'Generated Name',
+    );
 
     const app = express();
     app.use(getHostExtensionRouter());
@@ -92,8 +105,16 @@ test('activates enabled host modules: routes mount, env contributors apply, shut
     assert.equal((globalThis as Record<string, unknown>).__extShutdown, 1);
     // Contributors are gone with the extension.
     assert.deepEqual(collectAgentEnv({ provider: 'claude', scope: 'session', private: true }), {});
+    delete (globalThis as Record<string, unknown>).__extMetadata;
+    publishSessionMetadataChange({
+      sessionId: 'known', provider: 'claude', providerSessionId: 'p1',
+      projectPath: '/project', transcriptPath: '/transcript.jsonl',
+      title: 'Newer Name', recap: 'Newer recap.', isPrivate: false,
+    });
+    assert.equal((globalThis as Record<string, unknown>).__extMetadata, undefined);
   } finally {
     await deactivateHostExtensions();
+    resetSessionMetadataEventsForTests();
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
