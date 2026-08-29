@@ -8,9 +8,10 @@ import path from 'node:path';
 import crossSpawn from 'cross-spawn';
 
 /**
- * Lazily-booted `opencode serve` process, shared by every turn that needs it.
+ * Lazily-booted `opencode serve` process, shared by interactive OpenCode turns.
  *
- * `opencode run` cannot put an image in front of the model. Its read tool
+ * The server's durable prompt API is also OpenCode's mid-turn steering
+ * transport. Separately, `opencode run` cannot put an image in front of the model. Its read tool
  * returns images as part of a *tool result*, and an OpenAI-compatible transport
  * flattens tool results to plain text, while `--file` labels every attachment
  * `text/plain` (upstream anomalyco/opencode#16723). The HTTP server is the only

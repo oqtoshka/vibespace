@@ -11,7 +11,7 @@ import { sessionsService } from '../modules/providers/services/sessions.service.
 import { buildOpenCodePromptAttachments } from '../shared/image-attachments.js';
 
 import { persistOpenCodeTurn } from './opencode-history-writer.js';
-import { toModelRef, toTokenBudget, translateEvent } from './opencode-http-runner.js';
+import { __testing, toModelRef, toTokenBudget, translateEvent } from './opencode-http-runner.js';
 
 const SESSION_ID = 'ses_test';
 
@@ -127,6 +127,17 @@ test('token totals come out of the step payload', () => {
   assert.equal(toTokenBudget(undefined), null);
 });
 
+test('CLI history is separated from the current request when a session first enters the server engine', () => {
+  const prompt = __testing.prependHistoryBridge(
+    'Fix the remaining test.',
+    'User: Start the migration.\n\nAssistant: The schema is ready.',
+  );
+
+  assert.match(prompt, /<prior_conversation>[\s\S]*Start the migration/);
+  assert.match(prompt, /<current_user_message>\nFix the remaining test\.\n<\/current_user_message>/);
+  assert.equal(__testing.prependHistoryBridge('Fresh request', ''), 'Fresh request');
+});
+
 // An image has to travel as bytes: OpenCode's server rejects a file:// URI for
 // media, and a path the model is told to read comes back inside a tool result,
 // which OpenAI-compatible transports flatten to text.
@@ -220,6 +231,10 @@ test('a turn run over the server is written back as readable history', async () 
       modelId: 'vision-model',
       promptText: 'What colour is this image?',
       images: [{ path: '/assets/dot.png', name: 'dot.png' }],
+      injectedMessages: [{
+        promptText: 'Focus on the centre pixel.',
+        createdAt: Date.now() + 1,
+      }],
       assistantMessageId: 'msg_assistant',
       text: 'Blue',
       tools: [{ callId: 'call_1', name: 'bash', input: { command: 'ls' }, output: 'dot.png' }],
@@ -233,6 +248,11 @@ test('a turn run over the server is written back as readable history', async () 
     const [prompt] = history.messages;
     assert.equal(prompt.content, 'What colour is this image?', 'the attachment block is stripped back out');
     assert.equal((prompt.images as unknown[] | undefined)?.length, 1, 'the attachment is recorded so it renders again on reload');
+
+    const steer = history.messages.find((message) =>
+      message.kind === 'text' && message.role === 'user' && message.content === 'Focus on the centre pixel.',
+    );
+    assert.ok(steer, 'a mid-turn steer must survive the reload as user-authored context');
 
     const reply = history.messages.find((message) => message.kind === 'text' && message.content === 'Blue');
     assert.ok(reply, 'the answer must survive the reload');
