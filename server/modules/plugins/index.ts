@@ -8,6 +8,11 @@ export {
   activeHostExtensionNames,
 } from './services/plugin-host-extensions.service.js';
 export type { HostRunView, PluginHost, PluginHostModule } from './services/plugin-host-extensions.service.js';
+export {
+  publishSessionMetadataChange,
+  subscribeSessionMetadataChanges,
+} from './services/session-metadata-events.service.js';
+export type { SessionMetadataChange } from './services/session-metadata-events.service.js';
 // pluginsRoutes: used by the server entrypoint to mount protected plugin-management endpoints.
 export { pluginsRoutes } from './plugins.module.js';
 
