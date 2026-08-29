@@ -14,7 +14,6 @@ import { useDropzone, type FileRejection } from 'react-dropzone';
 
 import { authenticatedFetch } from '../../../utils/api';
 import { downscaleImageFiles } from '../../../utils/imageDownscale';
-import { readActiveWorktree, bindSessionCwd, getSessionCwd } from '../../../hooks/useActiveWorktree';
 import type { MarkSessionProcessing } from '../../../hooks/useSessionProtection';
 import { grantClaudeToolPermission } from '../utils/chatPermissions';
 import {
@@ -900,19 +899,8 @@ export function useChatComposerState({
         });
       }
 
-      // Worktree-aware cwd. An existing session resolves to its pinned worktree
-      // (or a stable binding made earlier this page session); a brand-new
-      // session resolves to the project's active worktree. bindSessionCwd keeps
-      // the cwd stable across a session's messages before the server-synced
-      // worktreePath is available. `null` worktree falls back to the project.
-      const isExistingSession = Boolean(selectedSession?.id || currentSessionId);
-      const sessionWorktreePath = (selectedSession?.worktreePath as string | null | undefined) ?? null;
-      const effectiveCwd =
-        getSessionCwd(targetSessionId) ||
-        (isExistingSession
-          ? sessionWorktreePath || resolvedProjectPath
-          : readActiveWorktree(selectedProject.projectId)?.path || resolvedProjectPath);
-      bindSessionCwd(targetSessionId, effectiveCwd);
+      // A worktree is its own project, so the session runs in the project dir.
+      const effectiveCwd = resolvedProjectPath;
 
       const userMessage: ChatMessage = {
         type: 'user',
@@ -1022,12 +1010,7 @@ export function useChatComposerState({
       }
 
       const resolvedProjectPath = selectedProject.fullPath || selectedProject.path || '';
-      const sessionWorktreePath = (selectedSession?.worktreePath as string | null | undefined) ?? null;
-      const effectiveCwd =
-        getSessionCwd(targetSessionId) ||
-        sessionWorktreePath ||
-        readActiveWorktree(selectedProject.projectId)?.path ||
-        resolvedProjectPath;
+      const effectiveCwd = resolvedProjectPath;
 
       const toolsSettings = getToolsSettings();
       const id = `queued_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -1426,10 +1409,7 @@ export function useChatComposerState({
 
       const resolvedProjectPath = selectedProject.fullPath || selectedProject.path || '';
       const sessionSummary = getNotificationSessionSummary(selectedSession, content);
-      const sessionWorktreePath = (selectedSession?.worktreePath as string | null | undefined) ?? null;
-      const effectiveCwd =
-        getSessionCwd(effectiveSessionId) || sessionWorktreePath || resolvedProjectPath;
-      bindSessionCwd(effectiveSessionId, effectiveCwd);
+      const effectiveCwd = resolvedProjectPath;
 
       const model = provider === 'opencode' ? opencodeModel : claudeModel;
 

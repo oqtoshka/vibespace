@@ -1,9 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ArrowDownIcon, LockIcon, TreePine } from 'lucide-react';
+import { ArrowDownIcon, LockIcon } from 'lucide-react';
 
 import { useTasksSettings } from '../../../contexts/TasksSettingsContext';
-import { useActiveWorktree } from '../../../hooks/useActiveWorktree';
 import { useWebSocket } from '../../../contexts/WebSocketContext';
 import PermissionContext from '../../../contexts/PermissionContext';
 import { QuickSettingsPanel } from '../../quick-settings-panel';
@@ -164,8 +163,6 @@ function ChatInterface({
     onNavigateToSession?.(sessionId);
   }, [setCurrentSessionId, onSessionEstablished, onNavigateToSession]);
 
-  const { activeWorktree } = useActiveWorktree(selectedProject?.projectId ?? null);
-
   // Every keystroke re-renders this component (the composer's input state lives
   // in useChatComposerState below), so anything fed to the memoized transcript
   // must be referentially stable — an inline closure here re-renders all visible
@@ -185,12 +182,7 @@ function ChatInterface({
   // It follows the visible session's working directory so answers are about
   // the tree the user is actually looking at.
   const [isBtwOpen, setIsBtwOpen] = useState(false);
-  const btwCwd =
-    (selectedSession?.worktreePath as string | null | undefined)
-    || activeWorktree?.path
-    || selectedProject?.fullPath
-    || selectedProject?.path
-    || '';
+  const btwCwd = selectedProject?.fullPath || selectedProject?.path || '';
   // The provider's picker default — what a *new* conversation starts on.
   const providerDefaultModel = provider === 'cursor'
     ? cursorModel
@@ -464,13 +456,6 @@ function ChatInterface({
     );
   }
 
-  // Worktree indicator: an existing session shows its pinned worktree; a pending
-  // (new) session shows the project's active worktree it will run in.
-  const sessionWorktreeBranch = (selectedSession?.worktreeBranch as string | null | undefined) ?? null;
-  const worktreeLabel = selectedSession
-    ? sessionWorktreeBranch
-    : activeWorktree?.branch ?? (activeWorktree ? activeWorktree.path.split('/').pop() ?? null : null);
-
   // Private: an existing session reads the flag off its row; a session that
   // was allocated a moment ago (id known, row not yet on any list) still shows
   // the choice it was created with; a pending session shows the toggle.
@@ -494,13 +479,6 @@ function ChatInterface({
             <span className="truncate text-violet-700/70 dark:text-violet-400/70">
               {t('chat.privateHint', { defaultValue: 'not reported to external boards, no notifications, no recap' })}
             </span>
-          </div>
-        )}
-        {worktreeLabel && (
-          <div className="flex flex-shrink-0 items-center gap-1.5 border-b border-amber-500/20 bg-amber-500/5 px-3 py-1 text-xs text-amber-700 dark:text-amber-400">
-            <TreePine className="h-3 w-3 flex-shrink-0" />
-            <span className="text-amber-700/70 dark:text-amber-400/70">worktree</span>
-            <span className="truncate font-medium">{worktreeLabel}</span>
           </div>
         )}
         <ChatMessagesPane

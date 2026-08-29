@@ -28,10 +28,18 @@ next person does not re-litigate it:
   over". Our behaviour wins.
 - **Notifications are still keyed on provider session ids**, not app session
   ids. Works, but it is the seam to revisit when notifications move to app ids.
-- **Two worktree UIs coexist**: our `WorktreePicker` and upstream's
-  `WorktreesView` tab (backed by `/api/worktrees`). Dmitri decides which one
-  stays. Upstream's sidebar `isProcessing`/`needsAttention` indicators are wired
-  but dormant.
+- **Worktrees: upstream's model won** (decided 2026-08-26). Ours pinned a
+  worktree to a *session* (`sessions.worktree_path`, reverse-mapped to the
+  parent project, a per-project "active worktree" picker driving the next
+  session's cwd); upstream registers the worktree as its own *project*
+  (`/api/worktrees/open`) and adds `merge`. Nothing had ever used ours (no row
+  with `worktree_path`, an empty `~/.vibespace/worktrees/`), so it was removed
+  outright: `server/utils/worktrees.js`, the `/api/git/worktrees*` routes, the
+  reverse-map, `useActiveWorktree`, `WorktreePicker`, the composer cwd
+  override and the chat header badge. The `worktree_path` column stays (never
+  written); `getDataDir` moved to `server/shared/utils.ts`. Stale
+  `git-active-worktree:<projectId>` localStorage keys are inert. Upstream's
+  sidebar `isProcessing`/`needsAttention` indicators are wired but dormant.
 - Adopted as-is: gitignore-aware file tree (`respectGitignore`), visibility-gated
   history refresh (`isActive`), recent-conversation feed, mermaid,
   `remark-breaks`, Codex SDK 0.146, es/ko/zh i18n, `promote-dist-server`

@@ -31,7 +31,7 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { randomUUID } from 'crypto';
 
-import { getDataDir } from '../utils/worktrees.js';
+import { getDataDir } from '../shared/utils.js';
 
 import { notifyRunFailed, notifyRunPaused } from './notification-orchestrator.js';
 
