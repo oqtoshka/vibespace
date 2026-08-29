@@ -12,7 +12,6 @@ import GitRepositoryErrorState from '../view/GitRepositoryErrorState';
 import GitViewTabs from '../view/GitViewTabs';
 import ConfirmActionModal from '../view/modals/ConfirmActionModal';
 import RepoPicker from '../view/RepoPicker';
-import WorktreePicker from '../view/WorktreePicker';
 
 // Remembers which tab (changes/history/branches) was open per project, so
 // closing and reopening the panel lands back where the user was.
@@ -85,11 +84,6 @@ export default function GitPanel({
     operationError,
     clearOperationError,
     refreshAll,
-    worktrees,
-    activeWorktreePath,
-    selectWorktree,
-    addWorktree,
-    removeWorktree,
     switchBranch,
     createBranch,
     deleteBranch,
@@ -163,18 +157,6 @@ export default function GitPanel({
           repos={discoveredRepos}
           selectedRepoPath={selectedRepoPath}
           onSelectRepo={selectRepo}
-        />
-      )}
-
-      {worktrees.length > 0 && (
-        <WorktreePicker
-          isMobile={isMobile}
-          worktrees={worktrees}
-          branches={localBranches}
-          activeWorktreePath={activeWorktreePath}
-          onSelect={selectWorktree}
-          onAdd={addWorktree}
-          onRemove={removeWorktree}
         />
       )}
 
