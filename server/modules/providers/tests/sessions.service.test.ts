@@ -62,6 +62,38 @@ test('app sessions without message text receive a stable fallback name', { concu
   });
 });
 
+test('a stale client send replaces a provider placeholder with the first prompt', { concurrency: false }, async () => {
+  await withIsolatedDatabase(() => {
+    sessionsDb.createAppSession('stale-client-session', 'codex', '/tmp/session-name-project');
+    sessionsDb.updateSessionCustomName('stale-client-session', 'Untitled Codex Session', 'derived');
+
+    assert.equal(
+      sessionsService.seedDerivedSessionNameFromMessage(
+        'stale-client-session',
+        'remove the open source footer everywhere',
+      ),
+      'remove the open source',
+    );
+
+    const row = sessionsDb.getSessionById('stale-client-session');
+    assert.equal(row?.custom_name, 'remove the open source');
+    assert.equal(row?.name_source, 'derived');
+  });
+});
+
+test('a stale client send does not overwrite a user or AI title', { concurrency: false }, async () => {
+  await withIsolatedDatabase(() => {
+    sessionsDb.createAppSession('named-session', 'opencode', '/tmp/session-name-project');
+    sessionsDb.updateSessionCustomName('named-session', 'Checkout Crash', 'ai');
+
+    assert.equal(
+      sessionsService.seedDerivedSessionNameFromMessage('named-session', 'a later prompt'),
+      'Checkout Crash',
+    );
+    assert.equal(sessionsDb.getSessionById('named-session')?.name_source, 'ai');
+  });
+});
+
 test('provider session id is unavailable until the provider assigns one', { concurrency: false }, async () => {
   await withIsolatedDatabase(() => {
     sessionsDb.createAppSession('pending-app-session', 'claude', '/tmp/session-id-copy-project');

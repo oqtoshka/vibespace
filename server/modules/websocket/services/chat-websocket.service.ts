@@ -3,7 +3,7 @@ import path from 'node:path';
 import type { WebSocket } from 'ws';
 
 import { sessionsDb } from '@/modules/database/index.js';
-import { providerModelsService } from '@/modules/providers/index.js';
+import { providerModelsService, sessionsService } from '@/modules/providers/index.js';
 import { chatRunRegistry } from '@/modules/websocket/services/chat-run-registry.service.js';
 import {
   subscribeProjectFiles,
@@ -442,6 +442,9 @@ async function handleChatSend(
     return;
   }
 
+  const command = typeof data.content === 'string' ? data.content : '';
+  sessionsService.seedDerivedSessionNameFromMessage(sessionId, command);
+
   // A resend of something already accepted (the client's ack died with its
   // socket). Re-ack it and stop — checked before `startRun` so the duplicate
   // can neither open a second run nor be bounced as RUN_IN_PROGRESS, which the
@@ -502,8 +505,6 @@ async function handleChatSend(
   }
 
   const clientOptions = (data.options ?? {}) as AnyRecord;
-  const command = typeof data.content === 'string' ? data.content : '';
-
   recordSessionPreferences(provider, sessionId, clientOptions);
   const runtimeOptions = buildRuntimeOptions(session, clientOptions, provider, sessionId);
 
