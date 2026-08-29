@@ -78,6 +78,13 @@ type SessionDetails = {
 };
 
 const MAX_CLOUDCLI_SESSION_NAME_WORDS = 4;
+const SESSION_PLACEHOLDER_NAMES = new Set([
+  'Untitled Session',
+  'Untitled Claude Session',
+  'Untitled Codex Session',
+  'Untitled Cursor Session',
+  'Untitled OpenCode Session',
+]);
 
 function buildCloudCliSessionName(initialMessage: string): string {
   const words = initialMessage.trim().split(/\s+/).filter(Boolean);
@@ -400,6 +407,28 @@ export const sessionsService = {
       isPrivate,
       sessionName,
     };
+  },
+
+  /**
+   * Gives a newly allocated session its provisional first-prompt title.
+   * The websocket module calls this as a compatibility fallback for browser
+   * tabs and older clients that allocate without `initialMessage`.
+   */
+  seedDerivedSessionNameFromMessage(sessionId: string, initialMessage: string): string | null {
+    const session = sessionsDb.getSessionById(sessionId);
+    if (!session) {
+      return null;
+    }
+
+    const currentName = session.custom_name?.trim() || '';
+    if (currentName && !SESSION_PLACEHOLDER_NAMES.has(currentName)) {
+      return currentName;
+    }
+
+    const derivedName = buildCloudCliSessionName(initialMessage);
+    sessionsDb.updateSessionCustomName(sessionId, derivedName, 'derived');
+    broadcastSessionUpdate(sessionId);
+    return derivedName;
   },
 
   /**
