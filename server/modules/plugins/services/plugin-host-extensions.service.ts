@@ -4,6 +4,10 @@ import crypto from 'node:crypto';
 
 import express, { type RequestHandler, type Router } from 'express';
 
+import {
+  subscribeSessionMetadataChanges,
+  type SessionMetadataChange,
+} from '@/modules/plugins/services/session-metadata-events.service.js';
 import { registerAgentEnvContributor, type AgentEnvContributor } from '@/shared/agent-env.js';
 
 /**
@@ -76,6 +80,11 @@ export type PluginHost = {
     ) => Promise<void>;
     /** Sets the title shown in the sidebar (cosmetic; never affects the run). */
     rename: (sessionId: string, title: string) => void;
+    /**
+     * Subscribes to deduplicated title/recap changes after VibeSpace stores
+     * them. Optional integrations use this instead of polling the database.
+     */
+    onMetadataChanged: (callback: (change: SessionMetadataChange) => void) => () => void;
   };
   /** The live run of a session this plugin drives, and the one thing it may do to it. */
   runs: {
@@ -128,7 +137,7 @@ export type HostExtensionDependencies = {
   getPluginsDir: () => string;
   authenticateToken: RequestHandler;
   getSigningSecret: () => string;
-  sessions: PluginHost['sessions'];
+  sessions: Omit<PluginHost['sessions'], 'onMetadataChanged'>;
   runs: PluginHost['runs'];
   enqueueMessage: PluginHost['enqueueMessage'];
 };
@@ -169,7 +178,14 @@ function buildHost(name: string, pluginDir: string, deps: HostExtensionDependenc
       console.log(`${prefix} mounted ${mountPath}`);
     },
     auth: { authenticateToken: deps.authenticateToken },
-    sessions: deps.sessions,
+    sessions: {
+      ...deps.sessions,
+      onMetadataChanged: (callback) => {
+        const unregister = subscribeSessionMetadataChanges(callback);
+        state.unregisterContributors.push(unregister);
+        return unregister;
+      },
+    },
     runs: deps.runs,
     enqueueMessage: deps.enqueueMessage,
     hmacSha256: (input) =>

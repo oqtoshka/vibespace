@@ -5,6 +5,7 @@ import { promises as fsPromises } from 'node:fs';
 import chokidar, { type FSWatcher } from 'chokidar';
 
 import { projectsDb, sessionsDb } from '@/modules/database/index.js';
+import { publishSessionMetadataChange } from '@/modules/plugins/index.js';
 import { sessionSynchronizerService } from '@/modules/providers/services/session-synchronizer.service.js';
 import { WS_OPEN_STATE, connectedClients } from '@/modules/websocket/index.js';
 import type { LLMProvider } from '@/shared/types.js';
@@ -160,6 +161,17 @@ async function buildSessionUpsertedEvent(updatedProviderSessionId: string): Prom
   if (!row || row.isArchived || row.is_side) {
     return null;
   }
+
+  publishSessionMetadataChange({
+    sessionId: row.session_id,
+    provider: row.provider,
+    providerSessionId: row.provider_session_id,
+    projectPath: row.project_path,
+    transcriptPath: row.jsonl_path,
+    title: row.custom_name || '',
+    recap: row.recap || '',
+    isPrivate: Boolean(row.is_private),
+  });
 
   const projectPath = row.project_path;
   const project = projectPath ? projectsDb.getProjectPath(projectPath) : null;
