@@ -403,15 +403,25 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
 
   const workingDirectory = cwd || projectPath || process.cwd();
 
+  const { sandboxMode, approvalPolicy } = mapPermissionModeToCodexOptions(permissionMode);
+  // app-server removed the legacy `on-failure` spelling from its wire schema;
+  // `on-request` is the closest supported interactive policy.
+  const appServerApprovalPolicy = approvalPolicy === 'on-failure' ? 'on-request' : approvalPolicy;
+  const catalog = await runtime.getProviderModels();
+  const titleModel = catalog.OPTIONS.some((option) => option.value === 'gpt-5.4-mini')
+    ? 'gpt-5.4-mini'
+    : resolvedModel;
+
   // A short AI title only needs the first user message. Start that isolated
   // helper beside the real turn instead of waiting minutes for the turn to
-  // finish before the fuller recap job is even scheduled.
+  // finish before the fuller recap job is even scheduled. Prefer the installed
+  // mini model for latency, but never assume a catalog contains it.
   if (!ephemeral) {
     void generateInitialSessionTitle({
       sessionId: appSessionId || sessionId,
       initialMessage: command,
       cwd: workingDirectory,
-      model: resolvedModel,
+      model: titleModel,
       runQuery: (prompt, helperOptions, writer) => queryCodex(prompt, {
         ...helperOptions,
         permissionMode: 'plan',
@@ -421,11 +431,6 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
     });
   }
 
-  const { sandboxMode, approvalPolicy } = mapPermissionModeToCodexOptions(permissionMode);
-  // app-server removed the legacy `on-failure` spelling from its wire schema;
-  // `on-request` is the closest supported interactive policy.
-  const appServerApprovalPolicy = approvalPolicy === 'on-failure' ? 'on-request' : approvalPolicy;
-  const catalog = await runtime.getProviderModels();
   const selectedModel = catalog.OPTIONS.find((option) => option.value === resolvedModel) || null;
   const allowedEfforts = selectedModel?.effort?.values?.map((value) => value.value) || [];
   const resolvedEffort = typeof effort === 'string' && effort !== 'default' && allowedEfforts.includes(effort)
