@@ -4,7 +4,7 @@ import readline from 'node:readline';
 import { sessionsDb } from '@/modules/database/index.js';
 import { buildCodexTokenBudget } from '@/shared/codex-token-usage.js';
 import { createCompactBoundaryMessage, looksLikeCompactSummary } from '@/shared/compaction.js';
-import { parseFilesInputTag, toImageAttachments } from '@/shared/image-attachments.js';
+import { extractToolResultImages, parseFilesInputTag, toImageAttachments } from '@/shared/image-attachments.js';
 import type { IProviderSessions } from '@/shared/interfaces.js';
 import type { AnyRecord, FetchHistoryOptions, FetchHistoryResult, NormalizedMessage } from '@/shared/types.js';
 import { createNormalizedMessage, generateMessageId, readObjectRecord, sliceTailPage } from '@/shared/utils.js';
@@ -545,6 +545,7 @@ async function getCodexSessionMessages(
             timestamp: entry.timestamp,
             toolCallId: entry.payload.call_id,
             output: extractCodexToolOutput(entry.payload.output),
+            images: extractToolResultImages(entry.payload.output),
           });
         }
 
@@ -628,6 +629,7 @@ async function getCodexSessionMessages(
             timestamp: entry.timestamp,
             toolCallId: entry.payload.call_id,
             output,
+            images: extractToolResultImages(entry.payload.output),
           });
         }
       } catch {
@@ -774,6 +776,7 @@ export class CodexSessionsProvider implements IProviderSessions {
         kind: 'tool_result',
         toolId: raw.toolCallId || '',
         content: raw.output || '',
+        images: raw.images,
         isError: Boolean(raw.isError),
       })];
     }
@@ -966,7 +969,11 @@ export class CodexSessionsProvider implements IProviderSessions {
       if (msg.kind === 'tool_use' && msg.toolId && toolResultMap.has(msg.toolId)) {
         const toolResult = toolResultMap.get(msg.toolId);
         if (toolResult) {
-          msg.toolResult = { content: toolResult.content, isError: toolResult.isError };
+          msg.toolResult = {
+            content: toolResult.content,
+            isError: toolResult.isError,
+            ...(toolResult.images ? { images: toolResult.images } : {}),
+          };
         }
       }
     }

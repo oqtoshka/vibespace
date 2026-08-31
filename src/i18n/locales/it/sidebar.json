@@ -72,9 +72,6 @@
     "reportIssue": "Segnala problema",
     "starOnGithub": "Metti stella su GitHub"
   },
-  "branding": {
-    "openSource": "Open Source"
-  },
   "status": {
     "active": "Attivo",
     "inactive": "Inattivo",

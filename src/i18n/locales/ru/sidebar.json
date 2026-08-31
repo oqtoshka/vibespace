@@ -70,10 +70,8 @@
     "rename": "Переименовать",
     "joinCommunity": "Присоединиться к сообществу",
     "reportIssue": "Сообщить о проблеме",
-    "starOnGithub": "Звезда на GitHub"
-  },
-  "branding": {
-    "openSource": "Открытый исходный код"
+    "starOnGithub": "Звезда на GitHub",
+    "close": "Закрыть"
   },
   "status": {
     "active": "Активен",
@@ -122,7 +120,13 @@
   "search": {
     "modeProjects": "Проекты",
     "modeConversations": "Разговоры",
+    "modeSessions": "Сеансы",
+    "modeRecent": "Недавние",
+    "modeFiles": "Файлы",
     "conversationsPlaceholder": "Поиск в разговорах...",
+    "unifiedPlaceholder": "Поиск сеансов и разговоров...",
+    "inConversations": "В разговорах",
+    "archiveOnlyTooltip": "Только архив",
     "searching": "Поиск...",
     "sessionTitles": "Названия сеансов",
     "conversationContents": "Содержимое разговоров",
@@ -137,6 +141,15 @@
     "projectsScanned_many": "{{count}} проектов просканировано",
     "projectsScanned_other": "{{count}} проектов просканировано"
   },
+  "recent": {
+    "title": "Недавние разговоры",
+    "loading": "Загрузка недавних разговоров",
+    "emptyTitle": "Разговоров пока нет",
+    "emptyDescription": "Здесь появятся последние обновлённые разговоры.",
+    "loadFailed": "Не удалось загрузить недавние разговоры",
+    "loadMore": "Загрузить более старые разговоры",
+    "loadingMore": "Загрузка..."
+  },
   "deleteConfirmation": {
     "deleteProject": "Убрать проект",
     "deleteSession": "Удалить сеанс",
@@ -145,9 +158,32 @@
     "sessionCount_few": "Этот проект содержит {{count}} разговора.",
     "sessionCount_many": "Этот проект содержит {{count}} разговоров.",
     "sessionCount_other": "Этот проект содержит {{count}} разговоров.",
+    "privateSession": "приватный сеанс",
+    "shred": "Уничтожить все данные",
+    "shredDetails": "Что будет удалено безвозвратно",
+    "shredHint": "Удаляет данные сеанса VibeSpace, журнал среды выполнения, реестр задач и связанные записи базы данных, если провайдер предоставляет к ним доступ.",
+    "deleteSessionAndShred": "Удалить навсегда со всеми данными",
     "removeFromSidebar": "Убрать только из боковой панели",
     "deleteAllData": "Удалить все данные навсегда",
     "allConversationsDeleted": "Проект будет убран из боковой панели. Ваши файлы, воспоминания и данные сеансов сохранятся.",
     "cannotUndo": "Вы сможете добавить проект позже."
+  },
+  "session": {
+    "private": "приватный",
+    "options": "Действия с сеансом",
+    "optionsFor": "Действия с сеансом «{{name}}»",
+    "providerSession": "Сеанс {{provider}}",
+    "name": "Название сеанса",
+    "rename": "Переименовать сеанс",
+    "archiveOrDelete": "Архивировать или удалить сеанс",
+    "tapToRetry": "Нажмите, чтобы повторить.",
+    "clickToRetry": "Нажмите, чтобы повторить.",
+    "unavailableTapToRetry": "Недоступно. Нажмите, чтобы повторить.",
+    "unavailableClickToRetry": "Недоступно. Нажмите, чтобы повторить.",
+    "providerIdLoading": "Загрузка ID сеанса {{provider}}…",
+    "providerIdCopied": "ID сеанса {{provider}} скопирован",
+    "providerIdCopyFailed": "Не удалось скопировать ID сеанса {{provider}}",
+    "providerIdUnavailable": "ID сеанса {{provider}} недоступен",
+    "providerIdCopy": "Копировать ID сеанса {{provider}}"
   }
 }

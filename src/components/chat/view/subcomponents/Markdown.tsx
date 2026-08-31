@@ -9,7 +9,14 @@ import { oneDark, oneLight } from 'react-syntax-highlighter/dist/esm/styles/pris
 import { useTranslation } from 'react-i18next';
 
 import { normalizeInlineCodeFences } from '../../utils/chatFormatting';
+import { authenticatedFetch } from '../../../../utils/api';
 import { copyTextToClipboard } from '../../../../utils/clipboard';
+import {
+  generatedImageArtifactUrl,
+  projectImageArtifactUrl,
+  resolveGeneratedImageArtifactPath,
+  resolveProjectImagePath,
+} from '../../../../utils/generatedImageArtifacts';
 import { resolveMarkdownLinkPath } from '../../../../utils/markdownLinks';
 import { projectFileExists } from '../../../../utils/projectFileLookup';
 import { usePaletteOps } from '../../../../contexts/PaletteOpsContext';
@@ -17,10 +24,12 @@ import { useTheme } from '../../../../contexts/ThemeContext';
 import MermaidDiagram from '../../../markdown/MermaidDiagram';
 import PlantUmlDiagram from '../../../markdown/PlantUmlDiagram';
 
+import { ImageLightbox } from './ChatMessageImages';
+
 type MarkdownProps = {
   children: React.ReactNode;
   className?: string;
-  /** Opens an in-project file when a relative link is clicked (resolves against project root). */
+  /** Opens a relative or absolute workspace file when its link is clicked. */
   onFileOpen?: ((filePath: string) => void) | null;
   /** Enables clickable inline-code file paths (existence-checked per project). */
   projectId?: string | null;
@@ -81,6 +90,167 @@ const childrenToText = (children: React.ReactNode): string => {
   }
   return '';
 };
+
+function useAuthenticatedImageSrc(
+  requestUrl: string,
+  enabled = true,
+): { src: string | null; failed: boolean } {
+  const [src, setSrc] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    if (!enabled) {
+      return;
+    }
+
+    const controller = new AbortController();
+    let objectUrl: string | null = null;
+
+    setSrc(null);
+    setFailed(false);
+    void authenticatedFetch(requestUrl, { signal: controller.signal })
+      .then(async (response) => {
+        if (!response.ok) {
+          throw new Error(`Generated image request failed with ${response.status}`);
+        }
+        const blob = await response.blob();
+        if (!blob.type.startsWith('image/')) {
+          throw new Error('Generated artifact is not an image');
+        }
+        objectUrl = URL.createObjectURL(blob);
+        setSrc(objectUrl);
+      })
+      .catch((error) => {
+        if (!(error instanceof Error && error.name === 'AbortError')) {
+          setFailed(true);
+        }
+      });
+
+    return () => {
+      controller.abort();
+      if (objectUrl) {
+        URL.revokeObjectURL(objectUrl);
+      }
+    };
+  }, [enabled, requestUrl]);
+
+  return { src, failed };
+}
+
+/**
+ * Keeps a Markdown image link as text while loading an authenticated preview
+ * on first hover/focus. Project images still open in the file editor; generated
+ * artifacts open in the existing image lightbox because they live outside the
+ * active project and cannot be represented by a project file tab.
+ */
+function AuthenticatedImageLink({
+  href,
+  requestUrl,
+  filename,
+  children,
+  onOpen,
+}: {
+  href?: string;
+  requestUrl: string;
+  filename: string;
+  children?: React.ReactNode;
+  onOpen?: () => void;
+}) {
+  const [loadRequested, setLoadRequested] = useState(false);
+  const [previewVisible, setPreviewVisible] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+  const { src, failed } = useAuthenticatedImageSrc(requestUrl, loadRequested);
+  const label = childrenToText(children).trim() || filename;
+
+  const showPreview = () => {
+    setLoadRequested(true);
+    setPreviewVisible(true);
+  };
+
+  return (
+    <>
+      <span className="relative inline-block">
+        <a
+          href={href}
+          className="cursor-pointer text-blue-600 hover:underline dark:text-blue-400"
+          onMouseEnter={showPreview}
+          onMouseLeave={() => setPreviewVisible(false)}
+          onFocus={showPreview}
+          onBlur={() => setPreviewVisible(false)}
+          onClick={(event) => {
+            event.preventDefault();
+            if (onOpen) {
+              onOpen();
+              return;
+            }
+            setLoadRequested(true);
+            setPreviewVisible(false);
+            setExpanded(true);
+          }}
+        >
+          {children}
+        </a>
+        {previewVisible && (
+          <span className="pointer-events-none absolute bottom-full left-1/2 z-50 mb-2 block -translate-x-1/2 overflow-hidden rounded-xl border border-border bg-popover p-1.5 shadow-xl">
+            {failed ? (
+              <span className="block w-48 px-2 py-3 text-xs text-muted-foreground">
+                Could not load image preview
+              </span>
+            ) : src ? (
+              <img src={src} alt="" className="max-h-72 max-w-80 rounded-lg object-contain" />
+            ) : (
+              <span className="block h-32 w-48 animate-pulse rounded-lg bg-muted" />
+            )}
+          </span>
+        )}
+      </span>
+      {expanded && src && (
+        <ImageLightbox src={src} alt={label} onClose={() => setExpanded(false)} />
+      )}
+    </>
+  );
+}
+
+/** Inline preview for links into Codex's generated-image artifact directory. */
+function AuthenticatedMarkdownImage({
+  requestUrl,
+  filename,
+  alt,
+}: {
+  requestUrl: string;
+  filename: string;
+  alt: string;
+}) {
+  const { src, failed } = useAuthenticatedImageSrc(requestUrl);
+  const [expanded, setExpanded] = useState(false);
+  const label = alt.trim() || filename;
+
+  if (failed) {
+    return (
+      <span className="my-2 block rounded-lg border border-border/60 bg-muted/40 px-3 py-2 text-sm text-muted-foreground">
+        Could not load image: <code>{filename}</code>
+      </span>
+    );
+  }
+
+  if (!src) {
+    return <span className="my-2 block h-40 w-full animate-pulse rounded-xl border border-border/50 bg-muted" />;
+  }
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setExpanded(true)}
+        aria-label={`Expand ${label}`}
+        className="my-2 block max-w-full overflow-hidden rounded-xl border border-border/50 bg-muted/20 shadow-sm focus:outline-none focus:ring-2 focus:ring-primary/60"
+      >
+        <img src={src} alt={label} className="max-h-[32rem] max-w-full cursor-zoom-in object-contain" />
+      </button>
+      {expanded && <ImageLightbox src={src} alt={label} onClose={() => setExpanded(false)} />}
+    </>
+  );
+}
 
 /**
  * Reduces an inline-code span to a project-root-relative path candidate, or
@@ -383,10 +553,61 @@ function MarkdownBase({
   const components = useMemo(
     () => ({
       ...markdownComponents,
+      img: ({ src, alt }: { src?: string; alt?: string }) => {
+        const artifactPath = resolveGeneratedImageArtifactPath(src);
+        if (artifactPath) {
+          return (
+            <AuthenticatedMarkdownImage
+              requestUrl={generatedImageArtifactUrl(artifactPath)}
+              filename={artifactPath.split('/').pop() || 'Generated image'}
+              alt={alt || ''}
+            />
+          );
+        }
+        const projectImagePath = projectId ? resolveProjectImagePath(src, projectPath) : null;
+        if (projectId && projectImagePath) {
+          return (
+            <AuthenticatedMarkdownImage
+              requestUrl={projectImageArtifactUrl(projectId, projectImagePath)}
+              filename={projectImagePath.split('/').pop() || 'Project image'}
+              alt={alt || ''}
+            />
+          );
+        }
+        return <img src={src} alt={alt || ''} className="my-2 max-w-full rounded-lg" loading="lazy" />;
+      },
       a: ({ href, children: linkChildren }: { href?: string; children?: React.ReactNode }) => {
+        const artifactPath = resolveGeneratedImageArtifactPath(href);
+        if (artifactPath) {
+          return (
+            <AuthenticatedImageLink
+              href={href}
+              requestUrl={generatedImageArtifactUrl(artifactPath)}
+              filename={artifactPath.split('/').pop() || 'Generated image'}
+            >
+              {linkChildren}
+            </AuthenticatedImageLink>
+          );
+        }
+
+        const projectImagePath = projectId ? resolveProjectImagePath(href, projectPath) : null;
+        if (projectId && projectImagePath) {
+          return (
+            <AuthenticatedImageLink
+              href={href}
+              requestUrl={projectImageArtifactUrl(projectId, projectImagePath)}
+              filename={projectImagePath.split('/').pop() || 'Project image'}
+              onOpen={() => (onFileOpen ?? openFileInEditor)(projectImagePath)}
+            >
+              {linkChildren}
+            </AuthenticatedImageLink>
+          );
+        }
+
         // Chat messages have no source file, so relative links resolve against
-        // the project root (the server resolves non-absolute paths there).
-        const internalPath = onFileOpen ? resolveMarkdownLinkPath(href, null) : null;
+        // the project root. Preserve absolute paths so the editor can pass them
+        // to the server's configured-workspace path validator unchanged.
+        const internalPath = onFileOpen ? resolveMarkdownLinkPath(href, null, true) : null;
         if (internalPath) {
           return (
             <a
@@ -430,7 +651,7 @@ function MarkdownBase({
         );
       },
     }),
-    [onFileOpen, openFileInEditor],
+    [onFileOpen, openFileInEditor, projectId, projectPath],
   );
 
   return (

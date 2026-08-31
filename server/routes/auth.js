@@ -179,6 +179,14 @@ router.get('/user', authenticateToken, (req, res) => {
   });
 });
 
+// Re-issue the caller's token. The client refreshes on a timer once the token
+// passes its half-life, so a long-lived tab keeps a valid session without a
+// round trip through the identity provider. `authenticateToken` has already
+// proven the bearer and loaded the user, so this only re-mints for that user.
+router.post('/refresh', authenticateToken, (req, res) => {
+  res.json({ token: generateToken(req.user) });
+});
+
 // Logout (client-side token removal, but this endpoint can be used for logging)
 router.post('/logout', authenticateToken, (req, res) => {
   // In a simple JWT system, logout is mainly client-side

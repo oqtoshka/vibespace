@@ -210,6 +210,7 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
           ? {
               content: formatToolResultContent(tr.content),
               isError: Boolean(tr.isError),
+              images: Array.isArray(tr.images) ? tr.images : undefined,
               toolUseResult: (tr as any).toolUseResult,
               interruptedByShutdown: Boolean((tr as any).interruptedByShutdown),
             }

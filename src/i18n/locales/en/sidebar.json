@@ -73,9 +73,6 @@
     "starOnGithub": "Star on GitHub",
     "close": "Close"
   },
-  "branding": {
-    "openSource": "Open Source"
-  },
   "status": {
     "active": "Active",
     "inactive": "Inactive",
@@ -142,6 +139,7 @@
   },
   "recent": {
     "title": "Recent conversations",
+    "loading": "Loading recent conversations",
     "emptyTitle": "No conversations yet",
     "emptyDescription": "Your most recently updated conversations will appear here.",
     "loadFailed": "Could not load recent conversations",
@@ -165,6 +163,21 @@
     "deleteSessionAndShred": "Delete permanently and shred"
   },
   "session": {
-    "private": "private"
+    "private": "private",
+    "options": "Session options",
+    "optionsFor": "Session options for {{name}}",
+    "providerSession": "{{provider}} session",
+    "name": "Session name",
+    "rename": "Rename session",
+    "archiveOrDelete": "Archive or delete session",
+    "tapToRetry": "Tap to try again.",
+    "clickToRetry": "Click to try again.",
+    "unavailableTapToRetry": "Unavailable. Tap to try again.",
+    "unavailableClickToRetry": "Unavailable. Click to try again.",
+    "providerIdLoading": "Loading {{provider}} session ID…",
+    "providerIdCopied": "{{provider}} session ID copied",
+    "providerIdCopyFailed": "Couldn't copy {{provider}} session ID",
+    "providerIdUnavailable": "{{provider}} session ID unavailable",
+    "providerIdCopy": "Copy {{provider}} session ID"
   }
 }

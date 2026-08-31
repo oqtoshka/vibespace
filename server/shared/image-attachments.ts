@@ -32,6 +32,98 @@ export type ImageAttachmentDescriptor = {
 
 /** Provider-neutral descriptor used for both image and non-image chat attachments. */
 export type ChatAttachmentDescriptor = ImageAttachmentDescriptor;
+
+const SAFE_INLINE_TOOL_IMAGE_TYPES = new Set([
+  'image/jpeg',
+  'image/png',
+  'image/gif',
+  'image/webp',
+  'image/avif',
+]);
+
+function readSafeImageDataUrl(value: unknown): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const match = /^data:(image\/[a-z0-9.+-]+);base64,[a-z0-9+/=\s]+$/i.exec(value);
+  return match && SAFE_INLINE_TOOL_IMAGE_TYPES.has(match[1].toLowerCase()) ? value : null;
+}
+
+/**
+ * Extracts inline raster images from provider tool-result payloads. Codex,
+ * Claude, Cursor, and OpenCode adapters use this at their normalization
+ * boundary so provider-specific image block shapes become the shared
+ * `images: [{ data }]` representation consumed by the chat UI.
+ */
+export function extractToolResultImages(value: unknown): Array<{ data: string }> | undefined {
+  const images: Array<{ data: string }> = [];
+  const seenData = new Set<string>();
+  const seenObjects = new WeakSet<object>();
+
+  const add = (candidate: unknown) => {
+    const data = readSafeImageDataUrl(candidate);
+    if (data && !seenData.has(data)) {
+      seenData.add(data);
+      images.push({ data });
+    }
+  };
+
+  const visit = (candidate: unknown, depth: number) => {
+    if (depth > 8 || images.length >= 10 || candidate == null) {
+      return;
+    }
+    add(candidate);
+    if (typeof candidate !== 'object') {
+      return;
+    }
+    if (seenObjects.has(candidate)) {
+      return;
+    }
+    seenObjects.add(candidate);
+
+    if (Array.isArray(candidate)) {
+      for (const item of candidate) {
+        visit(item, depth + 1);
+      }
+      return;
+    }
+
+    const record = candidate as Record<string, unknown>;
+    add(record.image_url);
+    const imageUrlRecord = record.image_url && typeof record.image_url === 'object'
+      ? record.image_url as Record<string, unknown>
+      : null;
+    add(imageUrlRecord?.url);
+
+    const source = record.source && typeof record.source === 'object'
+      ? record.source as Record<string, unknown>
+      : null;
+    if (
+      source?.type === 'base64'
+      && typeof source.media_type === 'string'
+      && SAFE_INLINE_TOOL_IMAGE_TYPES.has(source.media_type.toLowerCase())
+      && typeof source.data === 'string'
+    ) {
+      add(`data:${source.media_type.toLowerCase()};base64,${source.data}`);
+    }
+
+    if (
+      record.type === 'image'
+      && typeof record.mimeType === 'string'
+      && SAFE_INLINE_TOOL_IMAGE_TYPES.has(record.mimeType.toLowerCase())
+      && typeof record.data === 'string'
+    ) {
+      add(`data:${record.mimeType.toLowerCase()};base64,${record.data}`);
+    }
+
+    for (const child of Object.values(record)) {
+      visit(child, depth + 1);
+    }
+  };
+
+  visit(value, 0);
+  return images.length > 0 ? images : undefined;
+}
 /**
  * Ceiling for base64-inlining an image into a Claude message. Attachments may
  * be as large as the upload cap (200MB), and reading one of those into a ~4/3

@@ -9,6 +9,7 @@ import {
   appendImagesInputTag,
   buildClaudeUserContent,
   buildCodexInputItems,
+  extractToolResultImages,
   isImageAttachmentDescriptor,
   normalizeAttachmentDescriptors,
   isAllowedImageSourcePath,
@@ -24,6 +25,27 @@ const PNG_BYTES = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==',
   'base64',
 );
+
+const PNG_DATA_URL = `data:image/png;base64,${PNG_BYTES.toString('base64')}`;
+
+test('extractToolResultImages normalizes Codex, Claude, and MCP image blocks', () => {
+  assert.deepEqual(
+    extractToolResultImages([
+      { type: 'input_image', image_url: PNG_DATA_URL },
+      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: PNG_BYTES.toString('base64') } },
+      { type: 'image', mimeType: 'image/png', data: PNG_BYTES.toString('base64') },
+    ]),
+    [{ data: PNG_DATA_URL }],
+  );
+});
+
+test('extractToolResultImages rejects active, remote, and malformed image values', () => {
+  assert.equal(extractToolResultImages([
+    { image_url: 'https://example.com/image.png' },
+    { image_url: 'data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=' },
+    { source: { type: 'base64', media_type: 'text/html', data: 'PGgxPm5vPC9oMT4=' } },
+  ]), undefined);
+});
 
 const SYMLINK_UNSUPPORTED_CODES = new Set(['EACCES', 'EINVAL', 'ENOSYS', 'ENOTSUP', 'EPERM']);
 

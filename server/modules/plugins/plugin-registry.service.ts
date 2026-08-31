@@ -53,6 +53,7 @@ export function savePluginsConfig(config) {
   fs.writeFileSync(PLUGINS_CONFIG_PATH, JSON.stringify(config, null, 2), { mode: 0o600 });
 }
 
+/** Validates manifests before the plugins service exposes them or loads their code. */
 export function validateManifest(manifest) {
   if (!manifest || typeof manifest !== 'object') {
     return { valid: false, error: 'Manifest must be a JSON object' };
@@ -106,6 +107,34 @@ export function validateManifest(manifest) {
   if (manifest.permissions !== undefined) {
     if (!Array.isArray(manifest.permissions) || !manifest.permissions.every(p => typeof p === 'string')) {
       return { valid: false, error: 'Permissions must be an array of strings' };
+    }
+  }
+
+  if (manifest.sessionActions !== undefined) {
+    if (!Array.isArray(manifest.sessionActions)) {
+      return { valid: false, error: 'sessionActions must be an array' };
+    }
+    for (const action of manifest.sessionActions) {
+      if (!action || typeof action !== 'object') {
+        return { valid: false, error: 'Each session action must be an object' };
+      }
+      if (typeof action.id !== 'string' || !/^[a-zA-Z0-9_-]+$/.test(action.id)) {
+        return { valid: false, error: 'Each session action needs an alphanumeric id' };
+      }
+      if (typeof action.label !== 'string' || !action.label.trim()) {
+        return { valid: false, error: 'Each session action needs a label' };
+      }
+      if (
+        typeof action.endpoint !== 'string'
+        || !action.endpoint.startsWith('/')
+        || action.endpoint.startsWith('//')
+        || !action.endpoint.includes('{sessionId}')
+      ) {
+        return {
+          valid: false,
+          error: 'Each session action endpoint must be a same-origin path containing "{sessionId}"',
+        };
+      }
     }
   }
 
@@ -238,6 +267,7 @@ export function scanPlugins() {
         entry: manifest.entry || null,
         server: manifest.server || null,
         hostModule: manifest.hostModule || null,
+        sessionActions: manifest.sessionActions || [],
         permissions: manifest.permissions || [],
         enabled: config[manifest.name]?.enabled !== false, // enabled by default
         dirName: entry.name,

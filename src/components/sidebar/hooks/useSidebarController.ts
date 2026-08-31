@@ -6,12 +6,10 @@ import { dbg } from '../../../utils/debugLog';
 import { usePaletteOps } from '../../../contexts/PaletteOpsContext';
 import type { Project, ProjectSession, LLMProvider } from '../../../types/app';
 import type {
-  ActivitySessionItem,
   ArchivedProjectListItem,
   ArchivedSessionListItem,
   DeleteProjectConfirmation,
   ProjectSortOrder,
-  ProjectViewMode,
   RecentConversationListItem,
   SidebarSearchMode,
   SessionDeleteConfirmation,
@@ -21,17 +19,10 @@ import {
   clearLegacyStarredProjectIds,
   filterProjects,
   getAllSessions,
-  getSessionDate,
-  getSessionName,
   readLegacyStarredProjectIds,
   readProjectSortOrder,
-  readProjectViewMode,
   sortProjects,
-  writeProjectViewMode,
 } from '../utils/utils';
-import { isSessionUnread } from '../utils/sessionReadState';
-
-import { useSessionReadState } from './useSessionReadState';
 
 type SnippetHighlight = {
   start: number;
@@ -121,7 +112,6 @@ type UseSidebarControllerArgs = {
   onLoadMoreSessions?: (projectId: string) => Promise<void> | void;
   // `projectId` is the DB-assigned identifier; callbacks use that post-migration.
   onProjectDelete?: (projectId: string) => void;
-  processingSessions?: Set<string>;
   setCurrentProject: (project: Project) => void;
   setSidebarVisible: (visible: boolean) => void;
   sidebarVisible: boolean;
@@ -140,7 +130,6 @@ export function useSidebarController({
   onSessionDelete,
   onLoadMoreSessions,
   onProjectDelete,
-  processingSessions,
   setCurrentProject,
   setSidebarVisible,
   sidebarVisible,
@@ -153,8 +142,6 @@ export function useSidebarController({
   const [initialSessionsLoaded, setInitialSessionsLoaded] = useState<Set<string>>(new Set());
   const [currentTime, setCurrentTime] = useState(new Date());
   const [projectSortOrder, setProjectSortOrder] = useState<ProjectSortOrder>('date');
-  const [projectViewMode, setProjectViewModeState] = useState<ProjectViewMode>('grouped');
-  const { readMap, markRead } = useSessionReadState();
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [editingSession, setEditingSession] = useState<string | null>(null);
   const [editingSessionName, setEditingSessionName] = useState('');
@@ -212,7 +199,7 @@ export function useSidebarController({
     setExpandedProjects((prev) => {
       // Accordion: only the selected project stays open. Clicking a project row
       // already replaces the set via toggleProject, but selecting a project
-      // *indirectly* (session click, tab restore, the "By activity" view, a deep
+      // *indirectly* (session click, tab restore, or a deep
       // link) routes here. An additive merge would accumulate one expanded
       // project per navigation and never prune, so several rows end up open at
       // once — and collapsing any one then wipes them all. Collapse to a
@@ -240,7 +227,6 @@ export function useSidebarController({
   useEffect(() => {
     const loadSortOrder = () => {
       setProjectSortOrder(readProjectSortOrder());
-      setProjectViewModeState(readProjectViewMode());
     };
 
     loadSortOrder();
@@ -593,29 +579,12 @@ export function useSidebarController({
 
   const handleSessionClick = useCallback(
     (session: SessionWithProvider, projectId: string) => {
-      // Opening a session clears its unread flag in the activity view.
-      markRead(session.id);
       // Tag the session with its owning projectId so downstream handlers
       // can correlate it with the selectedProject in the app state.
       onSessionSelect({ ...session, __projectId: projectId });
     },
-    [markRead, onSessionSelect],
+    [onSessionSelect],
   );
-
-  const setProjectViewMode = useCallback((mode: ProjectViewMode) => {
-    setProjectViewModeState(mode);
-    writeProjectViewMode(mode);
-  }, []);
-
-  // Keep the active session marked read as it accrues activity while open, so it
-  // doesn't flip back to unread the moment new output streams in.
-  const selectedSessionId = _selectedSession?.id ?? null;
-  const selectedSessionActivity = _selectedSession?.lastActivity ?? null;
-  useEffect(() => {
-    if (selectedSessionId) {
-      markRead(selectedSessionId);
-    }
-  }, [selectedSessionId, selectedSessionActivity, markRead]);
 
   const resolveProjectStarState = useCallback(
     (projectId: string): boolean => {
@@ -759,41 +728,6 @@ export function useSidebarController({
     () => filterProjects(sortedProjects, debouncedSearchQuery),
     [debouncedSearchQuery, sortedProjects],
   );
-
-  // Flat "by activity" view: every session across all projects, ordered purely
-  // by most recent activity. Unread is surfaced by the row's dot marker only —
-  // it deliberately does NOT affect ordering. Floating stopped-and-unread
-  // sessions to the top made the list jump under you as runs finished, and it
-  // meant "by activity" did not actually mean by activity.
-  const activitySessions = useMemo<ActivitySessionItem[]>(() => {
-    const normalizedSearch = debouncedSearchQuery.trim().toLowerCase();
-    const items: ActivitySessionItem[] = [];
-
-    for (const project of projectsWithResolvedStarState) {
-      const projectLabel = (project.displayName || project.projectId).toLowerCase();
-
-      for (const session of getAllSessions(project)) {
-        if (normalizedSearch) {
-          const matchesSession = getSessionName(session, t).toLowerCase().includes(normalizedSearch);
-          const matchesProject = projectLabel.includes(normalizedSearch);
-          if (!matchesSession && !matchesProject) {
-            continue;
-          }
-        }
-
-        items.push({
-          session,
-          project,
-          isUnread: isSessionUnread(session, readMap, selectedSessionId),
-          isRunning: Boolean(processingSessions?.has(session.id)),
-        });
-      }
-    }
-
-    items.sort((a, b) => getSessionDate(b.session).getTime() - getSessionDate(a.session).getTime());
-
-    return items;
-  }, [debouncedSearchQuery, processingSessions, projectsWithResolvedStarState, readMap, selectedSessionId, t]);
 
   const filteredArchivedSessions = useMemo(() => {
     const normalizedSearch = debouncedSearchQuery.trim().toLowerCase();
@@ -1132,9 +1066,6 @@ export function useSidebarController({
     initialSessionsLoaded,
     currentTime,
     projectSortOrder,
-    projectViewMode,
-    setProjectViewMode,
-    activitySessions,
     isRefreshing,
     editingSession,
     editingSessionName,

@@ -37,6 +37,9 @@ type TasksSettingsContextValue = {
 /** Minimum width the files pane keeps when the split is active. */
 const FILES_PANE_MIN_WIDTH = 260;
 
+/** Tailwind's `w-1.5` divider width, kept here for split-width calculations. */
+const PANE_DIVIDER_WIDTH = '0.375rem';
+
 /** Bottom terminal pane height bounds + persistence. */
 const TERMINAL_PANE_MIN_HEIGHT = 120;
 const TERMINAL_PANE_DEFAULT_HEIGHT = 280;
@@ -320,10 +323,15 @@ function MainContent({
   const filesVisible = isMobile ? mobileView === 'files' : rightHasContent;
   const showDivider = !isMobile && sessionPaneOpen && rightHasContent;
 
-  // Desktop session-pane width: fixed basis only when both panes share the row.
+  // Desktop session-pane width: use the persisted width as a preference, but
+  // cap it against the live row width. A width saved on a larger window (or
+  // before widening the sidebar) must not push the files pane off-screen.
   const sessionStyle =
     !isMobile && sessionPaneOpen && rightHasContent && sessionPaneWidth !== null
-      ? { flex: `0 0 ${sessionPaneWidth}px` }
+      ? {
+          flex: `0 1 ${sessionPaneWidth}px`,
+          maxWidth: `calc(100% - ${FILES_PANE_MIN_WIDTH}px - ${PANE_DIVIDER_WIDTH})`,
+        }
       : undefined;
   const sessionGrow = !sessionStyle; // fill remaining space when alone
 
@@ -387,7 +395,7 @@ function MainContent({
         {showDivider && <PaneDivider containerRef={containerRef} onWidthChange={onSessionPaneWidthChange} />}
 
         {/* FILES PANE — file tabs + singleton panels. */}
-        <div className={`min-h-0 min-w-[200px] flex-1 flex-col overflow-hidden ${filesVisible ? 'flex' : 'hidden'}`}>
+        <div className={`min-h-0 min-w-[260px] flex-1 flex-col overflow-hidden ${filesVisible ? 'flex' : 'hidden'}`}>
           {workspace.tabs.map((tab) => {
             const isTabActive = activeId === tab.id;
             return (

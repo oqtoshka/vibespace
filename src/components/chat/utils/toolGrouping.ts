@@ -15,6 +15,11 @@ export function isToolGroupItem(item: MessageListItem): item is ToolGroupItem {
   return '_isGroup' in item && (item as ToolGroupItem)._isGroup === true;
 }
 
+/** True when at least one grouped tool result carries inline images. */
+export function toolGroupHasImages(group: ToolGroupItem): boolean {
+  return group.messages.some((message) => Boolean(message.toolResult?.images?.length));
+}
+
 function isGroupableToolMessage(message: ChatMessage): message is ChatMessage & { toolName: string } {
   return Boolean(message.isToolUse && message.toolName && !message.isSubagentContainer);
 }

@@ -2,12 +2,16 @@ import { Readable } from 'node:stream';
 
 import express from 'express';
 
-import type { VoiceRequestOverrides, VoiceService, VoiceServiceResult } from '@/shared/types.js';
+import type { VoiceService, VoiceServiceResult } from '@/shared/types.js';
 import { asyncHandler } from '@/shared/utils.js';
 
 type VoiceRouterDependencies = {
   voiceService: VoiceService;
   parseAudioUpload: express.RequestHandler;
+};
+
+type AuthenticatedVoiceRequest = express.Request & {
+  user?: { id?: number | string };
 };
 
 function readHeaderValue(value: string | string[] | undefined): string | undefined {
@@ -16,14 +20,9 @@ function readHeaderValue(value: string | string[] | undefined): string | undefin
   return trimmedValue || undefined;
 }
 
-function parseVoiceOverrides(request: express.Request): VoiceRequestOverrides {
-  return {
-    apiKey: readHeaderValue(request.headers['x-voice-api-key']),
-    sttModel: readHeaderValue(request.headers['x-voice-stt-model']),
-    ttsModel: readHeaderValue(request.headers['x-voice-tts-model']),
-    ttsVoice: readHeaderValue(request.headers['x-voice-tts-voice']),
-    ttsFormat: readHeaderValue(request.headers['x-voice-tts-format']),
-  };
+function readAuthenticatedUserId(request: AuthenticatedVoiceRequest): number | null {
+  const userId = Number(request.user?.id);
+  return Number.isInteger(userId) && userId > 0 ? userId : null;
 }
 
 function sendFailure<TValue>(
@@ -61,18 +60,25 @@ export function createVoiceRouter(dependencies: VoiceRouterDependencies): expres
       // Multer uses a callback API, so bridge its parsed request into the async
       // service call and forward unexpected rejections to Express middleware.
       void (async () => {
+        const userId = readAuthenticatedUserId(request as AuthenticatedVoiceRequest);
+        if (userId === null) {
+          response.status(401).json({ error: 'Authentication required' });
+          return;
+        }
+
         if (!request.file) {
           response.status(400).json({ error: 'No audio uploaded' });
           return;
         }
 
         const result = await dependencies.voiceService.transcribe({
+          userId,
           audio: {
             bytes: request.file.buffer,
             mimeType: request.file.mimetype || 'audio/webm',
             fileName: request.file.originalname || 'recording.webm',
           },
-          overrides: parseVoiceOverrides(request),
+          presetId: readHeaderValue(request.headers['x-voice-preset']),
         });
 
         if (sendFailure(response, result)) {
@@ -85,6 +91,12 @@ export function createVoiceRouter(dependencies: VoiceRouterDependencies): expres
   });
 
   router.post('/tts', asyncHandler(async (request, response) => {
+    const userId = readAuthenticatedUserId(request as AuthenticatedVoiceRequest);
+    if (userId === null) {
+      response.status(401).json({ error: 'Authentication required' });
+      return;
+    }
+
     const text = request.body?.text;
     if (typeof text !== 'string' || !text.trim()) {
       response.status(400).json({ error: 'text required' });
@@ -92,8 +104,8 @@ export function createVoiceRouter(dependencies: VoiceRouterDependencies): expres
     }
 
     const result = await dependencies.voiceService.synthesizeSpeech({
+      userId,
       text,
-      overrides: parseVoiceOverrides(request),
     });
     if (sendFailure(response, result)) {
       return;

@@ -113,7 +113,8 @@
     "loading": "Loading…",
     "pauseRecording": "Pause recording",
     "resumeRecording": "Resume recording",
-    "cancelRecording": "Discard recording"
+    "cancelRecording": "Discard recording",
+    "selectPreset": "Select transcription preset"
   },
   "input": {
     "placeholder": "Type / for commands, @ for files, or ask {{provider}} anything...",
@@ -121,6 +122,7 @@
     "disabled": "Input disabled",
     "attachFiles": "Attach files",
     "attachImages": "Attach images",
+    "dropFiles": "Drop files here",
     "send": "Send",
     "stop": "Stop",
     "hintText": {
@@ -155,12 +157,22 @@
     "effortDefault": "Default",
     "loadingModels": "Loading models…",
     "modelMenu": "Select model and reasoning effort",
-    "permissionHeading": "How should {{provider}} actions be approved?"
+    "permissionHeading": "How should {{provider}} actions be approved?",
+    "effortMenu": "Select reasoning effort"
   },
   "providerSelection": {
     "title": "Choose Your AI Assistant",
     "description": "Select a provider to start a new conversation",
     "selectModel": "Select Model",
+    "modelSelector": "Model selector",
+    "chooseModel": "Choose a model",
+    "chooseModelDescription": "Built-in and custom models in one list",
+    "addModel": "Add model",
+    "searchModels": "Search models...",
+    "noModelsFound": "No models found.",
+    "loadingModels": "Loading models…",
+    "customModel": "Custom",
+    "manageModels": "Manage models",
     "providerInfo": {
       "anthropic": "by Anthropic",
       "openai": "by OpenAI",

@@ -451,6 +451,16 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
                     </div>
                   )
                 )}
+
+                {message.toolResult?.images && message.toolResult.images.length > 0 && (
+                  <div className="mt-2">
+                    <ChatMessageImages
+                      images={message.toolResult.images}
+                      projectId={selectedProject?.projectId}
+                      align="start"
+                    />
+                  </div>
+                )}
               </>
             ) : message.isInteractivePrompt ? (
               // Special handling for interactive prompts
@@ -626,4 +636,3 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
 });
 
 export default MessageComponent;
-

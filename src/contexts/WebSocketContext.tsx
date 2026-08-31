@@ -73,7 +73,7 @@ const buildWebSocketUrl = (token: string | null) => {
   if (IS_PLATFORM) return `${protocol}//${window.location.host}/ws`; // Platform mode: Use same domain as the page (goes through proxy)
   if (!token) return null;
   if (isAuthTokenExpired(token)) {
-    expireAuthSession();
+    expireAuthSession('websocket url built from an expired token');
     return null;
   }
   return `${protocol}//${window.location.host}/ws?token=${encodeURIComponent(token)}`; // OSS mode: Use same host:port that served the page
@@ -223,6 +223,7 @@ const useWebSocketProviderState = (): WebSocketContextType => {
         // loop forever. Hand off to AuthContext so the login screen renders;
         // a successful login changes `token`, which reconnects via the effect.
         if (event.code === WS_CLOSE_CODE_AUTH_FAILED && !IS_PLATFORM) {
+          console.warn('[auth] session cleared: chat websocket closed 4401 (server rejected the JWT)');
           window.dispatchEvent(new CustomEvent(AUTH_SESSION_EXPIRED_EVENT));
           return;
         }

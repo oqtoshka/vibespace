@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 
 import { authenticatedFetch } from '../../../utils/api';
 import { useWebSocket, useWebSocketEvent } from '../../../contexts/WebSocketContext';
@@ -54,6 +55,8 @@ const createExchangeId = () =>
 
 export function useBtwSession({ selectedProject, provider, model, cwd }: UseBtwSessionOptions) {
   const { sendMessage } = useWebSocket();
+  const { i18n } = useTranslation();
+  const interfaceLanguage = i18n.resolvedLanguage || i18n.language || 'en';
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [exchanges, setExchanges] = useState<BtwExchange[]>([]);
   const [isPromoted, setIsPromoted] = useState(false);
@@ -201,11 +204,12 @@ export function useBtwSession({ selectedProject, provider, model, cwd }: UseBtwS
           toolsSettings: { disallowedTools: BTW_DISALLOWED_TOOLS },
           skipPermissions: false,
           sessionSummary: trimmed.length > 80 ? `${trimmed.slice(0, 77)}...` : trimmed,
+          locale: interfaceLanguage,
           images: [],
         },
       });
     },
-    [cwd, ensureSessionId, model, provider, sendMessage, updateExchange],
+    [cwd, ensureSessionId, interfaceLanguage, model, provider, sendMessage, updateExchange],
   );
 
   const abort = useCallback(() => {
