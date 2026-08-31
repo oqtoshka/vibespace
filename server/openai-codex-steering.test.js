@@ -75,8 +75,13 @@ rl.on('line', (line) => {
           turn: { id: activeTurnId, status: 'completed', items: [] },
         } });
       } else if (message.params.input?.some((item) =>
-        item.text === 'Complete immediately.' || item.text.startsWith('[session supervisor]')
+        item.text === 'Complete immediately.'
+          || item.text === 'Fail with work open.'
+          || item.text.startsWith('[session supervisor]')
       )) {
+        const failedWithOpenWork = message.params.input.some(
+          (item) => item.text === 'Fail with work open.'
+        );
         send({ method: 'item/completed', params: {
           threadId: message.params.threadId,
           turnId: activeTurnId,
@@ -89,7 +94,12 @@ rl.on('line', (line) => {
         } });
         send({ method: 'turn/completed', params: {
           threadId: message.params.threadId,
-          turn: { id: activeTurnId, status: 'completed', items: [] },
+          turn: {
+            id: activeTurnId,
+            status: failedWithOpenWork ? 'failed' : 'completed',
+            error: failedWithOpenWork ? { message: 'synthetic turn failure' } : undefined,
+            items: [],
+          },
         } });
       }
       break;
@@ -267,6 +277,69 @@ test('Codex resumes the same thread while its plan has open tasks', async () => 
     assert.ok(messages.some((message) =>
       message.kind === 'text' && message.content === 'Continuation finished.',
     ));
+  } finally {
+    __setTaskLedgerReader('codex', null);
+    __clearTaskContinuationState();
+    stopCodexAppServer();
+    if (previousPath === undefined) delete process.env.VIBESPACE_CODEX_PATH;
+    else process.env.VIBESPACE_CODEX_PATH = previousPath;
+    if (previousCapture === undefined) delete process.env.VIBESPACE_CODEX_CAPTURE;
+    else process.env.VIBESPACE_CODEX_CAPTURE = previousCapture;
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('Codex resumes open plan work after a non-user-aborted turn failure', async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'codex-failed-continuation-'));
+  const executable = path.join(tempRoot, 'fake-codex');
+  const capturePath = path.join(tempRoot, 'requests.jsonl');
+  const previousPath = process.env.VIBESPACE_CODEX_PATH;
+  const previousCapture = process.env.VIBESPACE_CODEX_CAPTURE;
+  const messages = [];
+  const writer = {
+    isWebSocketWriter: true,
+    send(message) {
+      messages.push(message);
+    },
+    setSessionId() {},
+  };
+  let ledgerReads = 0;
+
+  try {
+    await createFakeCodex(executable);
+    process.env.VIBESPACE_CODEX_PATH = executable;
+    process.env.VIBESPACE_CODEX_CAPTURE = capturePath;
+    __clearTaskContinuationState();
+    __setTaskLedgerReader('codex', () => {
+      ledgerReads += 1;
+      return ledgerReads === 1
+        ? { open: [{ id: '1', subject: 'recover unfinished work', status: 'in_progress' }], activity: 1 }
+        : { open: [], activity: 2 };
+    });
+
+    await queryCodex('Fail with work open.', {
+      cwd: tempRoot,
+      sessionId: 'codex-thread-1',
+      model: 'gpt-5.4',
+      permissionMode: 'acceptEdits',
+    }, writer);
+
+    const requests = (await readFile(capturePath, 'utf8'))
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line));
+    const turns = requests.filter((request) => request.method === 'turn/start');
+    assert.equal(turns.length, 2, 'failed work with an open plan must start a continuation turn');
+    assert.match(turns[1].params.input[0].text, /recover unfinished work/);
+    assert.ok(messages.some((message) =>
+      message.kind === 'status' && message.text === 'Resuming — open tasks remain',
+    ));
+    assert.equal(
+      messages.filter((message) => message.kind === 'complete').length,
+      1,
+      'only the continuation emits the terminal completion',
+    );
+    assert.ok(!messages.some((message) => message.kind === 'error'));
   } finally {
     __setTaskLedgerReader('codex', null);
     __clearTaskContinuationState();
