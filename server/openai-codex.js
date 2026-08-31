@@ -441,6 +441,46 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
   let capturedSessionId = sessionId;
   let terminalFailure = null;
   let unsubscribe = null;
+  let activeSession = null;
+
+  const continueOpenPlan = async (terminalReason) => {
+    if (!capturedSessionId || !activeSession || ephemeral) {
+      return false;
+    }
+
+    const continuation = planTaskContinuation({
+      provider: 'codex',
+      sessionId: capturedSessionId,
+      userId: ws?.userId || null,
+      sessionName: sessionSummary,
+    });
+    if (!continuation) {
+      return false;
+    }
+
+    console.log(
+      `[codex tasks] session ${capturedSessionId}: resuming after ${terminalReason}`
+    );
+    // This turn is over, so stop its listener before the resumed turn
+    // installs its own. Withhold the terminal `complete` and recap until
+    // the plan closes or the continuation service reaches its bound.
+    unsubscribe?.();
+    unsubscribe = null;
+    activeSession.status = 'completed';
+    sendMessage(ws, createNormalizedMessage({
+      kind: 'status',
+      text: 'Resuming — open tasks remain',
+      sessionId: capturedSessionId,
+      provider: 'codex',
+    }));
+    await queryCodex(continuation, {
+      ...options,
+      sessionId: capturedSessionId,
+      images: undefined,
+      files: undefined,
+    }, ws);
+    return true;
+  };
 
   // A new turn supersedes a pending usage-limit wake (the wake consumes its
   // own entry before enqueueing; a re-hit below re-records).
@@ -487,7 +527,7 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
       resolveCompletion = resolve;
       rejectCompletion = reject;
     });
-    const activeSession = {
+    activeSession = {
       appServer,
       // Provider-native thread id — the map is also keyed by the app id, so
       // abort/steer look this up rather than trusting the key they came in by.
@@ -604,9 +644,11 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
     activeSession.resolveTurnReady(activeSession.turnId);
 
     const completedTurn = await completion;
+    let usageLimitFailure = false;
     if (completedTurn?.status !== 'completed' && activeSession.status !== 'aborted') {
       terminalFailure = completedTurn.error || new Error('Codex turn failed');
-      if (!ephemeral && isCodexUsageLimitError(terminalFailure)) {
+      usageLimitFailure = !ephemeral && isCodexUsageLimitError(terminalFailure);
+      if (usageLimitFailure) {
         // Not a failure the user can act on — the work resumes by itself once
         // the limit resets. The wake service sends the "paused" ping.
         const { resetsAt, limitType, limitText } = await resolveCodexLimitReset(appServer, terminalFailure);
@@ -619,14 +661,6 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
           limitType,
           limitText,
           permissionMode,
-        });
-      } else {
-        notifyRunFailed({
-          userId: ws?.userId || null,
-          provider: 'codex',
-          sessionId: capturedSessionId,
-          sessionName: sessionSummary,
-          error: terminalFailure,
         });
       }
     }
@@ -648,34 +682,23 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
     // terminal `complete` (aborted: true) was already sent by abort-session.
     const runSession = capturedSessionId ? activeCodexSessions.get(capturedSessionId) : null;
     const runAborted = runSession?.status === 'aborted';
-    if (!terminalFailure && !runAborted && !ephemeral) {
-      const continuation = planTaskContinuation({
+    const terminalStatus = completedTurn?.status || 'unknown';
+    console.log(
+      `[Codex] turn terminal: session=${capturedSessionId} status=${terminalStatus} `
+        + `aborted=${Boolean(runAborted)} failure=${Boolean(terminalFailure)}`
+    );
+    if (!runAborted && !usageLimitFailure
+      && await continueOpenPlan(`terminal status ${terminalStatus}`)) {
+      return;
+    }
+    if (terminalFailure && !usageLimitFailure && !runAborted) {
+      notifyRunFailed({
+        userId: ws?.userId || null,
         provider: 'codex',
         sessionId: capturedSessionId,
-        userId: ws?.userId || null,
         sessionName: sessionSummary,
+        error: terminalFailure,
       });
-      if (continuation) {
-        // This turn is over, so stop its listener before the resumed turn
-        // installs its own. Withhold the terminal `complete` and recap until
-        // the plan closes or the continuation service reaches its bound.
-        unsubscribe?.();
-        unsubscribe = null;
-        activeSession.status = 'completed';
-        sendMessage(ws, createNormalizedMessage({
-          kind: 'status',
-          text: 'Resuming — open tasks remain',
-          sessionId: capturedSessionId,
-          provider: 'codex',
-        }));
-        await queryCodex(continuation, {
-          ...options,
-          sessionId: capturedSessionId,
-          images: undefined,
-          files: undefined,
-        }, ws);
-        return;
-      }
     }
     if (!runAborted) {
       sendMessage(ws, createCompleteMessage({
@@ -712,6 +735,10 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
 
     if (!wasAborted) {
       console.error('[Codex] Error:', error);
+
+      if (await continueOpenPlan(`runtime error: ${String(error?.message || error)}`)) {
+        return;
+      }
 
       // Check if Codex SDK is available for a clearer error message
       const installed = await runtime.isProviderInstalled();
