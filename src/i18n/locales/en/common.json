@@ -209,6 +209,50 @@
       "failedToCreateFolder": "Failed to create folder"
     }
   },
+  "commandPalette": {
+    "title": "Command palette",
+    "pages": {
+      "actions": "Actions",
+      "files": "Files",
+      "sessions": "Sessions",
+      "commits": "Commits",
+      "branches": "Branches"
+    },
+    "backToAll": "Back to all",
+    "backspaceHint": "Backspace to go back",
+    "searchPage": "Search {{page}}…",
+    "searchAll": "Type to search anything…",
+    "noResults": "No results.",
+    "groups": {
+      "actions": "Actions",
+      "navigate": "Navigate",
+      "git": "Git",
+      "settings": "Settings",
+      "sessions": "Sessions",
+      "files": "Files",
+      "commits": "Commits",
+      "branches": "Branches"
+    },
+    "startNewChat": "Start new chat",
+    "selectProjectFirst": "Select a project first",
+    "openSettings": "Open settings",
+    "toggleTheme": "Toggle theme",
+    "goTo": {
+      "chat": "Go to Chat",
+      "files": "Go to Files",
+      "shell": "Go to Terminal",
+      "git": "Go to Git",
+      "tasks": "Go to Tasks"
+    },
+    "gitActions": {
+      "fetch": "Git: Fetch",
+      "pull": "Git: Pull",
+      "push": "Git: Push"
+    },
+    "settingsItem": "Settings: {{label}}",
+    "browseAll": "Browse all {{section}} ({{count}})",
+    "switchToBranch": "Switch to: {{branch}}"
+  },
   "notifications": {
     "genericTool": "a tool",
     "codes": {

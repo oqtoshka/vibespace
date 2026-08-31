@@ -359,6 +359,8 @@ export type NormalizedMessage = {
   toolResult?: {
     content?: string;
     isError?: boolean;
+    /** Provider tool-output images normalized to chat image descriptors. */
+    images?: unknown;
     toolUseResult?: unknown;
     /** The run was killed mid-tool (server restart), not refused by the user. */
     interruptedByShutdown?: boolean;
@@ -1232,12 +1234,12 @@ export type FileTreeServices = {
 // ---------------------------
 //----------------- VOICE MODULE CONTRACTS ------------
 /**
- * Per-request voice settings parsed from authenticated HTTP headers.
+ * Optional user-specific voice settings loaded by the Voice service.
  *
- * The Voice routes create this value from the optional `x-voice-*` headers and
- * pass it to the Voice service. Empty values mean "use the server-configured
- * default"; the backend base URL is intentionally absent because clients must
- * never control the server's outbound destination.
+ * The database repository provides these values for the authenticated user.
+ * Empty values mean "use the server-configured default"; the backend base URL
+ * is intentionally absent because clients must never control the server's
+ * outbound destination.
  */
 export type VoiceRequestOverrides = {
   apiKey?: string;
@@ -1245,6 +1247,36 @@ export type VoiceRequestOverrides = {
   ttsModel?: string;
   ttsVoice?: string;
   ttsFormat?: string;
+};
+
+/**
+ * Server-owned speech-to-text backend preset.
+ *
+ * The Voice composition root builds these from trusted environment variables.
+ * Routes accept only the opaque `id`; URLs and credentials never cross the
+ * client boundary, which allows local/private backends without creating SSRF
+ * input or exposing their API keys.
+ */
+export type VoiceTranscriptionPresetConfig = {
+  id: string;
+  label: string;
+  baseUrl: string;
+  apiKey: string;
+  sttModel: string;
+};
+
+/**
+ * Non-secret transcription preset metadata returned by Voice health checks.
+ *
+ * The chat composer uses this list to render its preset selector. `isDefault`
+ * identifies the server's existing `VOICE_API_*` backend; preset URLs and keys
+ * are deliberately omitted.
+ */
+export type VoiceTranscriptionPresetSummary = {
+  id: string;
+  label: string;
+  sttModel: string;
+  isDefault: boolean;
 };
 
 /**
@@ -1290,14 +1322,19 @@ export type VoiceServiceResult<TValue> =
  * contract with handwritten fetch fakes and never patch global state.
  */
 export type VoiceService = {
-  getHealth(): { configured: boolean };
+  getHealth(): {
+    configured: boolean;
+    defaultPresetId: string | null;
+    presets: VoiceTranscriptionPresetSummary[];
+  };
   transcribe(input: {
+    userId: number;
     audio: VoiceAudioUpload;
-    overrides: VoiceRequestOverrides;
+    presetId?: string;
   }): Promise<VoiceServiceResult<{ text: string }>>;
   synthesizeSpeech(input: {
+    userId: number;
     text: string;
-    overrides: VoiceRequestOverrides;
   }): Promise<VoiceServiceResult<VoiceSpeechPayload>>;
 };
 

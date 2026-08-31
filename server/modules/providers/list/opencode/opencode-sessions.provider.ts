@@ -3,7 +3,7 @@ import fsSync from 'node:fs';
 import Database from 'better-sqlite3';
 
 import { createCompactBoundaryMessage } from '@/shared/compaction.js';
-import { parseFilesInputTag, parseImagesInputTag } from '@/shared/image-attachments.js';
+import { extractToolResultImages, parseFilesInputTag, parseImagesInputTag } from '@/shared/image-attachments.js';
 import type { IProviderSessions } from '@/shared/interfaces.js';
 import type { AnyRecord, FetchHistoryOptions, FetchHistoryResult, NormalizedMessage, RewindResult } from '@/shared/types.js';
 import {
@@ -188,9 +188,12 @@ const buildToolUseMessage = (part: AnyRecord, meta: ToolMessageMeta): Normalized
     : output !== undefined || error !== undefined;
   if (hasResult) {
     const isError = status === 'error' || (!status && error !== undefined);
+    const resultValue = isError ? error ?? output : output ?? error;
+    const images = extractToolResultImages(resultValue);
     message.toolResult = {
-      content: formatToolContent(isError ? error ?? output : output ?? error),
+      content: formatToolContent(resultValue),
       isError,
+      ...(images ? { images } : {}),
     };
   }
 

@@ -323,10 +323,9 @@ async function applyPendingModelSwitch(session) {
  * The agent has no way to know it is answering into VibeSpace rather than a
  * terminal, and the difference matters for one thing: the chat renderer turns
  * any non-external markdown link into a click that opens that file in the
- * editor pane (see `Markdown.tsx`). That only works for paths relative to the
- * project root — the renderer deliberately refuses `/…` and `~/…`, which it
- * cannot resolve through the project file API. Absolute paths, the terminal's
- * natural habit, render as dead links.
+ * editor pane (see `Markdown.tsx`). Project-relative paths are portable, while
+ * absolute paths are useful when the agent worked in another configured
+ * workspace root. Home-relative `~/…` paths remain ambiguous and unsupported.
  *
  * So this states the one convention the host needs and nothing else. Kept
  * short on purpose: it rides on every request, and a long preamble here is a
@@ -350,9 +349,8 @@ function buildVibespaceSystemPrompt(cwd) {
     '    - [src/components/Foo.tsx](src/components/Foo.tsx) — what changed',
     '',
     'VibeSpace turns those links into clicks that open the file in the editor',
-    'pane. This only works for project-root-relative paths: absolute paths and',
-    '`~/…` cannot be resolved and render as dead links. A `:line` suffix is',
-    'understood and jumps to that line.',
+    'pane. Absolute paths inside configured workspace roots also work when a',
+    'changed file is outside the project root. Do not use `~/…` paths.',
     '',
     'Skip the list entirely when a turn changed no files — do not pad a reply',
     'with an empty or irrelevant one.',
@@ -541,10 +539,18 @@ function removeSession(sessionId) {
  */
 function recordRestoreState(session, turnActive) {
   if (!session.sessionId || session.ephemeral) return;
+  // `session.options` is the spawn-time snapshot. A warm session can switch
+  // permission mode on a later turn, in which case reuseSession updates the
+  // live SDK options but intentionally does not rebuild that snapshot. Persist
+  // the effective SDK mode so a server restart cannot silently downgrade a
+  // bypassPermissions session back to its original default/acceptEdits mode.
+  const permissionMode = session.sdkOptions?.permissionMode
+    || session.options?.permissionMode
+    || 'default';
   recordSessionActivity({
     sessionId: session.sessionId,
     cwd: session.options?.cwd,
-    permissionMode: session.options?.permissionMode,
+    permissionMode,
     userId: session.userId,
     // Carried so a detached restore after a restart spawns the resumed turn
     // with the same gate the session was started with.
@@ -1701,6 +1707,7 @@ function queueRecapForSession(session) {
   scheduleSessionRecap({
     sessionId,
     cwd,
+    locale: session.options?.locale,
     // Injected rather than imported by the service, which would close a cycle
     // back into this module.
     runQuery: queryClaudeSDK,
@@ -2157,6 +2164,9 @@ async function reuseSession(session, command, options, ws) {
   }
   session.currentRateLimitWakeMessageId = options.rateLimitWakeMessageId ?? null;
   session.currentRateLimitWakeAttempts = options.rateLimitWakeAttempts ?? 0;
+  if (typeof options.locale === 'string' && options.locale.trim()) {
+    session.options.locale = options.locale;
+  }
 
   // If a turn is mid-flight, interrupt it so the new message starts promptly
   // (the streaming query stays alive for the next turn).

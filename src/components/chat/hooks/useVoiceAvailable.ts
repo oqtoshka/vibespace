@@ -9,15 +9,61 @@ import { VOICE_CONFIG_SYNC_EVENT } from '../../../hooks/useVoiceConfig';
 // blob is only consulted when the versioned one hasn't been written yet.
 const STORAGE_KEYS = ['uiPreferences.v2', 'uiPreferences'];
 const SYNC_EVENT = 'ui-preferences:sync';
-let healthRequest: Promise<boolean> | null = null;
+let healthRequest: Promise<VoiceHealth> | null = null;
 
-function checkVoiceHealth(): Promise<boolean> {
+export type VoicePreset = {
+  id: string;
+  label: string;
+  sttModel: string;
+  isDefault: boolean;
+};
+
+type VoiceHealth = {
+  configured: boolean;
+  defaultPresetId: string | null;
+  presets: VoicePreset[];
+};
+
+const EMPTY_HEALTH: VoiceHealth = {
+  configured: false,
+  defaultPresetId: null,
+  presets: [],
+};
+
+function normalizeVoiceHealth(value: unknown): VoiceHealth {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return EMPTY_HEALTH;
+  }
+
+  const source = value as Record<string, unknown>;
+  const presets = Array.isArray(source.presets)
+    ? source.presets.flatMap((value): VoicePreset[] => {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
+        const preset = value as Record<string, unknown>;
+        if (typeof preset.id !== 'string' || typeof preset.label !== 'string') return [];
+        return [{
+          id: preset.id,
+          label: preset.label,
+          sttModel: typeof preset.sttModel === 'string' ? preset.sttModel : '',
+          isDefault: preset.isDefault === true,
+        }];
+      })
+    : [];
+
+  return {
+    configured: source.configured === true,
+    defaultPresetId: typeof source.defaultPresetId === 'string' ? source.defaultPresetId : null,
+    presets,
+  };
+}
+
+function checkVoiceHealth(): Promise<VoiceHealth> {
   if (healthRequest) return healthRequest;
   const request = authenticatedFetch('/api/voice/health')
     .then(async (response) => {
       if (!response.ok) throw new Error(`Voice health check failed (${response.status})`);
       const data = await response.json();
-      return data?.configured === true;
+      return normalizeVoiceHealth(data);
     })
     .finally(() => {
       healthRequest = null;
@@ -40,11 +86,11 @@ function readVoiceEnabled(): boolean {
   return false;
 }
 
-export function useVoiceAvailable(): boolean {
+export function useVoiceAvailable(): VoiceHealth & { available: boolean } {
   const [enabled, setEnabled] = useState<boolean>(() =>
     typeof window === 'undefined' ? false : readVoiceEnabled(),
   );
-  const [available, setAvailable] = useState(false);
+  const [health, setHealth] = useState<VoiceHealth>(EMPTY_HEALTH);
 
   useEffect(() => {
     const update = () => setEnabled(readVoiceEnabled());
@@ -62,15 +108,15 @@ export function useVoiceAvailable(): boolean {
 
     const check = async () => {
       if (!enabled) {
-        setAvailable(false);
+        setHealth(EMPTY_HEALTH);
         return;
       }
       const id = ++requestId;
       try {
         const result = await checkVoiceHealth();
-        if (active && id === requestId) setAvailable(result);
+        if (active && id === requestId) setHealth(result);
       } catch {
-        if (active && id === requestId) setAvailable(false);
+        if (active && id === requestId) setHealth(EMPTY_HEALTH);
       }
     };
 
@@ -82,5 +128,5 @@ export function useVoiceAvailable(): boolean {
     };
   }, [enabled]);
 
-  return enabled && available;
+  return { ...health, available: enabled && health.configured };
 }

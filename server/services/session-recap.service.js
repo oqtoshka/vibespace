@@ -56,6 +56,21 @@ const MAX_RECAP_CHARS = 400;
  */
 const DEFAULT_RECAP_MODEL = 'haiku';
 
+/** UI locales supported by the frontend, mapped to prompt-safe names. */
+const RECAP_LANGUAGE_NAMES = {
+  en: 'English',
+  fr: 'French',
+  es: 'Spanish',
+  ko: 'Korean',
+  'zh-CN': 'Simplified Chinese',
+  'zh-TW': 'Traditional Chinese',
+  ja: 'Japanese',
+  ru: 'Russian',
+  de: 'German',
+  tr: 'Turkish',
+  it: 'Italian',
+};
+
 /** sessionId -> pending debounce timer. */
 const pendingRecaps = new Map();
 
@@ -176,7 +191,19 @@ async function readIndexedTranscriptTail(
   };
 }
 
-function buildRecapPrompt(messages) {
+function resolveRecapLanguage(locale) {
+  if (typeof locale !== 'string') return RECAP_LANGUAGE_NAMES.en;
+
+  const exactLocale = Object.keys(RECAP_LANGUAGE_NAMES).find(
+    (supportedLocale) => supportedLocale.toLowerCase() === locale.trim().toLowerCase(),
+  );
+  if (exactLocale) return RECAP_LANGUAGE_NAMES[exactLocale];
+
+  const baseLocale = locale.trim().split('-')[0].toLowerCase();
+  return RECAP_LANGUAGE_NAMES[baseLocale] ?? RECAP_LANGUAGE_NAMES.en;
+}
+
+function buildRecapPrompt(messages, locale = 'en') {
   const transcript = messages
     .map((message) => `${message.role === 'user' ? 'User' : 'Assistant'}: ${message.text}`)
     .join('\n\n')
@@ -184,13 +211,16 @@ function buildRecapPrompt(messages) {
 
   return [
     'Below is the tail of a coding session between a user and an AI assistant.',
+    `Write both the title and recap in ${resolveRecapLanguage(locale)}. Follow the selected`,
+    'interface language even when the transcript uses another language.',
     '',
     'Reply with ONLY a JSON object, no prose and no code fence:',
     '',
     '{"title": "...", "recap": "..."}',
     '',
     `- "title": 2-4 words naming what this session is about, like a tab label.`,
-    '  Title Case, no trailing punctuation, no quotes. Name the subject, not the',
+    '  Use natural capitalization for that language, no trailing punctuation,',
+    '  no quotes. Name the subject, not the',
     '  activity: "Dind Image Pruning", not "Fixing A Bug".',
     `- "recap": 1-2 sentences (max ${MAX_RECAP_CHARS} characters) on what the`,
     '  session is doing and where it currently stands. Write it for someone',
@@ -255,6 +285,9 @@ function parseRecapResponse(text) {
  *   non-Claude JSONL formats need this path because readTranscriptTail parses
  *   Claude's on-disk schema.
  * @param {Function} [params.fetchHistory] - Test seam for indexed history.
+ * @param {string} [params.locale] - Selected interface locale. The prompt
+ *   validates it against the frontend-supported locale list and falls back to
+ *   English, preventing arbitrary client text from entering the helper prompt.
  */
 async function generateRecap({
   sessionId,
@@ -265,6 +298,7 @@ async function generateRecap({
   onRecap,
   useIndexedHistory = false,
   fetchHistory,
+  locale = 'en',
 }) {
   const session = sessionsDb.getSessionById(sessionId)
     ?? sessionsDb.getSessionByProviderSessionId(sessionId);
@@ -315,7 +349,7 @@ async function generateRecap({
   // run the default pass fallbackModel: null and get the provider's own.
   const helperModel = model || fallbackModel || undefined;
 
-  await runQuery(buildRecapPrompt(messages), {
+  await runQuery(buildRecapPrompt(messages, locale), {
     cwd,
     model: helperModel,
     permissionMode: 'bypassPermissions',
@@ -374,6 +408,7 @@ export function scheduleSessionRecap({
   onRecap,
   useIndexedHistory = false,
   fetchHistory,
+  locale = 'en',
 }) {
   if (!sessionId || !cwd || typeof runQuery !== 'function') return;
 
@@ -396,6 +431,7 @@ export function scheduleSessionRecap({
       onRecap,
       useIndexedHistory,
       fetchHistory,
+      locale,
     })
       .catch((error) => {
         console.warn(`[recap] ${sessionId} failed:`, error?.message || error);

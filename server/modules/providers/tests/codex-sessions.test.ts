@@ -161,7 +161,16 @@ test('Codex history preserves wrapped exec tool calls and results', { concurrenc
   try {
     const providerSessionId = 'codex-exec-1';
     const transcriptPath = await writeCodexTranscript(tempRoot, providerSessionId, workspacePath);
-    const wrappedCalls = [
+    const imageDataUrl = 'data:image/png;base64,aGVsbG8=';
+    type WrappedCall = {
+      callId: string;
+      input: string;
+      expectedToolName?: string;
+      expectedToolInput?: string;
+      output?: unknown;
+      expectedImages?: Array<{ data: string }>;
+    };
+    const wrappedCalls: WrappedCall[] = [
       {
         callId: 'shell-command-1',
         input: 'const cmds = ["echo one", "echo two"]; await Promise.all(cmds.map(command => tools.shell_command({ command })));',
@@ -184,6 +193,12 @@ test('Codex history preserves wrapped exec tool calls and results', { concurrenc
       { callId: 'web-run-1', input: 'await tools.web__run({ search_query: [{ q: "Codex" }] });' },
       { callId: 'update-plan-1', input: 'await tools.update_plan({ plan: [] });' },
       { callId: 'unknown-1', input: 'await tools.unknown_wrapper({ value: true });' },
+      {
+        callId: 'image-output-1',
+        input: 'const result = await tools.view_image({ path: "/tmp/image.png" }); image(result.image_url);',
+        output: [{ type: 'input_image', image_url: imageDataUrl }],
+        expectedImages: [{ data: imageDataUrl }],
+      },
     ];
     const transcriptLines = [
       JSON.stringify({ type: 'session_meta', payload: { id: providerSessionId, cwd: workspacePath } }),
@@ -196,7 +211,11 @@ test('Codex history preserves wrapped exec tool calls and results', { concurrenc
         }),
         JSON.stringify({
           type: 'response_item',
-          payload: { type: 'custom_tool_call_output', call_id: call.callId, output: `result:${call.callId}` },
+          payload: {
+            type: 'custom_tool_call_output',
+            call_id: call.callId,
+            output: call.output ?? `result:${call.callId}`,
+          },
         }),
       );
     }
@@ -220,8 +239,11 @@ test('Codex history preserves wrapped exec tool calls and results', { concurrenc
         assert.ok(toolUse);
         assert.equal(toolUse.toolName, call.expectedToolName || 'exec');
         assert.equal(toolUse.toolInput, call.expectedToolInput || call.input);
-        assert.equal(toolUse.toolResult?.content, `result:${call.callId}`);
-        assert.equal(toolResultsById.get(call.callId)?.content, `result:${call.callId}`);
+        const expectedContent = call.output === undefined ? `result:${call.callId}` : '';
+        assert.equal(toolUse.toolResult?.content, expectedContent);
+        assert.deepEqual(toolUse.toolResult?.images, call.expectedImages);
+        assert.equal(toolResultsById.get(call.callId)?.content, expectedContent);
+        assert.deepEqual(toolResultsById.get(call.callId)?.images, call.expectedImages);
       }
     });
   } finally {

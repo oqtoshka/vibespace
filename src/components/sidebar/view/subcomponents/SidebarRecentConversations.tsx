@@ -28,9 +28,9 @@ type SidebarRecentConversationsProps = {
   t: TFunction;
 };
 
-function RecentConversationSkeleton() {
+function RecentConversationSkeleton({ loadingLabel }: { loadingLabel: string }) {
   return (
-    <div className="space-y-1 px-1" aria-label="Loading recent conversations">
+    <div className="space-y-1 px-1" aria-label={loadingLabel}>
       {Array.from({ length: 8 }).map((_, index) => (
         <div key={index} className="flex items-center gap-2 rounded-lg px-2 py-2.5">
           <div className="h-7 w-7 animate-pulse rounded-md bg-muted" />
@@ -59,7 +59,7 @@ export default function SidebarRecentConversations({
   t,
 }: SidebarRecentConversationsProps) {
   if (isLoading && conversations.length === 0) {
-    return <RecentConversationSkeleton />;
+    return <RecentConversationSkeleton loadingLabel={t('recent.loading', 'Loading recent conversations')} />;
   }
 
   if (hasError && conversations.length === 0) {

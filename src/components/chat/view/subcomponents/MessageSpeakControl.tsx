@@ -7,7 +7,7 @@ import { useVoiceAvailable } from '../../hooks/useVoiceAvailable';
 // Renders nothing unless the optional voice feature is enabled.
 const MessageSpeakControl = ({ content }: { content: string }) => {
   const { t } = useTranslation('chat');
-  const available = useVoiceAvailable();
+  const { available } = useVoiceAvailable();
   const { state, toggle, error } = useTts(() => content);
 
   if (!available) return null;

@@ -71,9 +71,6 @@
     "reportIssue": "回報問題",
     "starOnGithub": "在 GitHub 上加星"
   },
-  "branding": {
-    "openSource": "開源"
-  },
   "status": {
     "active": "使用中",
     "inactive": "非使用中",

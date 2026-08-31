@@ -6,7 +6,7 @@ import readline from 'node:readline';
 import { createCompactBoundaryMessage, looksLikeCompactSummary } from '@/shared/compaction.js';
 import type { IProviderSessions } from '@/shared/interfaces.js';
 import type { AnyRecord, FetchHistoryOptions, FetchHistoryResult, NormalizedMessage, RewindResult } from '@/shared/types.js';
-import { parseFilesInputTag } from '@/shared/image-attachments.js';
+import { extractToolResultImages, parseFilesInputTag } from '@/shared/image-attachments.js';
 import { createNormalizedMessage, generateMessageId, readFiniteNumber, readObjectRecord, sliceTailPage } from '@/shared/utils.js';
 import { sessionsDb } from '@/modules/database/index.js';
 
@@ -15,6 +15,7 @@ const PROVIDER = 'claude';
 type ClaudeToolResult = {
   content: unknown;
   isError: boolean;
+  images?: unknown;
   subagentTools?: unknown;
   toolUseResult?: unknown;
   interruptedByShutdown?: boolean;
@@ -676,6 +677,7 @@ export class ClaudeSessionsProvider implements IProviderSessions {
               kind: 'tool_result',
               toolId: part.tool_use_id,
               content: typeof part.content === 'string' ? part.content : JSON.stringify(part.content),
+              images: extractToolResultImages(part.content),
               isError: Boolean(part.is_error),
               subagentTools: raw.subagentTools,
               // JSONL transcript rows spell this `toolUseResult`; live SDK
@@ -861,6 +863,7 @@ export class ClaudeSessionsProvider implements IProviderSessions {
         kind: 'tool_result',
         toolId: raw.toolCallId || '',
         content: raw.output || '',
+        images: extractToolResultImages(raw.output),
         isError: false,
       }));
       return messages;
@@ -968,6 +971,7 @@ export class ClaudeSessionsProvider implements IProviderSessions {
             toolResultMap.set(part.tool_use_id, {
               content: part.content,
               isError: Boolean(part.is_error),
+              images: extractToolResultImages(part.content),
               subagentTools: raw.subagentTools,
               toolUseResult: raw.toolUseResult,
               interruptedByShutdown: Boolean(raw.interruptedByShutdown),
@@ -1002,6 +1006,7 @@ export class ClaudeSessionsProvider implements IProviderSessions {
             ? toolResult.content
             : JSON.stringify(toolResult.content),
           isError: toolResult.isError,
+          ...(toolResult.images ? { images: toolResult.images } : {}),
           toolUseResult: toolResult.toolUseResult,
           interruptedByShutdown: toolResult.interruptedByShutdown,
         };

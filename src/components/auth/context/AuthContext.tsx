@@ -76,7 +76,8 @@ export function AuthProvider({ children }: AuthProviderProps) {
     return () => window.removeEventListener(AUTH_TOKEN_REFRESHED_EVENT, onRefreshed);
   }, []);
 
-  const clearSession = useCallback(() => {
+  const clearSession = useCallback((reason = 'unspecified') => {
+    console.warn('[auth] clearSession:', reason);
     setUser(null);
     setToken(null);
     clearAuthToken();
@@ -87,7 +88,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
   // where every fetch 401s — which used to surface as "empty chat history".
   useEffect(() => {
     const onExpired = () => {
-      clearSession();
+      clearSession('auth-session-expired event');
       // Surfaced by LoginForm so the user learns why they are back at the form.
       setError(AUTH_ERROR_MESSAGES.sessionExpired);
     };
@@ -170,13 +171,13 @@ export function AuthProvider({ children }: AuthProviderProps) {
 
       const userResponse = await api.auth.user();
       if (!userResponse.ok) {
-        clearSession();
+        clearSession('/api/auth/user did not return ok');
         return;
       }
 
       const userPayload = await parseJsonSafely<AuthUserPayload>(userResponse);
       if (!userPayload?.user) {
-        clearSession();
+        clearSession('/api/auth/user returned no user');
         return;
       }
 
@@ -293,7 +294,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
 
   const logout = useCallback(() => {
     const tokenToInvalidate = token;
-    clearSession();
+    clearSession('explicit logout');
 
     if (tokenToInvalidate) {
       void api.auth

@@ -5,6 +5,7 @@ import {
   buildStoredAttachmentRecords,
   buildStoredImageRecords,
   ensureImageAssetsDir,
+  openGeneratedImageArtifact,
   openStoredAttachmentAsset,
 } from '@/modules/assets/services/image-assets.service.js';
 
@@ -120,6 +121,36 @@ router.get('/images/:filename', async (req, res) => {
     console.error('Error streaming image asset:', error);
     if (!res.headersSent) {
       res.status(500).json({ error: 'Error reading asset' });
+    }
+  });
+});
+
+/**
+ * Serves raster images created by Codex image generation. The service accepts
+ * only paths relative to Codex's generated-image root and performs both
+ * lexical and realpath containment checks before opening the file.
+ */
+router.get('/generated-images', async (req, res) => {
+  const artifactPath = typeof req.query.path === 'string' ? req.query.path : '';
+  const artifact = await openGeneratedImageArtifact(artifactPath);
+  if (artifact.status === 'invalid') {
+    return res.status(400).json({ error: 'Invalid generated image path' });
+  }
+  if (artifact.status === 'missing') {
+    return res.status(404).json({ error: 'Generated image not found' });
+  }
+  if (artifact.status === 'unsupported') {
+    return res.status(415).json({ error: 'Unsupported generated image type' });
+  }
+
+  res.setHeader('Content-Type', artifact.contentType);
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Cache-Control', 'private, max-age=3600');
+  artifact.stream.pipe(res);
+  artifact.stream.on('error', (error) => {
+    console.error('Error streaming generated image:', error);
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Error reading generated image' });
     }
   });
 });

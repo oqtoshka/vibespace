@@ -169,3 +169,28 @@ describe('local oidc: binding an identity to the single user', () => {
     assert.match(fragment.get('message') ?? '', /stranger/);
   });
 });
+
+describe('session refresh', () => {
+  it('re-issues a token for the bearer', async () => {
+    const token = (await signIn('main')).get('token');
+
+    const res = await fetch(`${baseUrl}/api/auth/refresh`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}` },
+    });
+
+    // The client calls this on a timer once the token passes its half-life;
+    // a 404 here silently ends every long-lived session at the 7-day mark.
+    assert.equal(res.status, 200);
+
+    const { token: refreshed } = await res.json();
+    assert.match(refreshed ?? '', /^ey/);
+    assert.equal(jwt.verify(refreshed, JWT_SECRET).username, 'main');
+  });
+
+  it('rejects an unauthenticated refresh', async () => {
+    const res = await fetch(`${baseUrl}/api/auth/refresh`, { method: 'POST' });
+
+    assert.equal(res.status, 401);
+  });
+});

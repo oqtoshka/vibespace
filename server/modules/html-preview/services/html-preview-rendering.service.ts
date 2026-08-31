@@ -1,5 +1,5 @@
 /**
- * HTML live-preview support.
+ * HTML live-preview rendering support.
  *
  * Sketch-style HTML (e.g. the oqto design sketches) isn't self-contained: it
  * loads React/Babel/CSS from root-absolute paths (`/kit/...`, `/static/...`)
@@ -13,12 +13,31 @@
  * `/kit` convention so the sketches work with no config.
  */
 
-import path from 'path';
-import { promises as fsPromises } from 'fs';
+import { promises as fsPromises } from 'node:fs';
+import path from 'node:path';
+
+type PreviewAliases = Record<string, string>;
+
+type PreviewConfig = {
+  root?: string;
+  aliases?: PreviewAliases;
+  renderers?: unknown[];
+};
+
+type PreviewModel = {
+  webRoot: string;
+  aliases: PreviewAliases;
+  entryRel: string;
+};
+
+type RendererCommand = {
+  bin: string;
+  args: string[];
+};
 
 // Default aliases for the sketcher convention: a `_kit/` dir served at `/kit`,
 // fonts under `_assets/fonts` at `/fonts`, and the whole web root at `/static`.
-const DEFAULT_ALIASES = {
+const DEFAULT_ALIASES: PreviewAliases = {
   '/kit': '_kit',
   '/fonts': '_assets/fonts',
   '/static': '.',
@@ -30,18 +49,36 @@ const TEXT_EXTENSIONS = new Set([
 ]);
 
 /** Reads `.vibespace/preview.json` if present. Returns null when absent/invalid. */
-async function readPreviewConfig(projectRoot) {
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function readAliases(value: unknown): PreviewAliases | undefined {
+  if (!isRecord(value)) return undefined;
+  const entries = Object.entries(value).filter((entry): entry is [string, string] =>
+    typeof entry[1] === 'string');
+  return Object.fromEntries(entries);
+}
+
+/** Reads preview configuration for the HTML-preview rendering service. */
+async function readPreviewConfig(projectRoot: string): Promise<PreviewConfig | null> {
   try {
     const raw = await fsPromises.readFile(path.join(projectRoot, '.vibespace', 'preview.json'), 'utf8');
-    const parsed = JSON.parse(raw);
-    return parsed?.html && typeof parsed.html === 'object' ? parsed.html : parsed;
+    const parsed: unknown = JSON.parse(raw);
+    const selected = isRecord(parsed) && isRecord(parsed.html) ? parsed.html : parsed;
+    if (!isRecord(selected)) return null;
+    return {
+      root: typeof selected.root === 'string' ? selected.root : undefined,
+      aliases: readAliases(selected.aliases),
+      renderers: Array.isArray(selected.renderers) ? selected.renderers : undefined,
+    };
   } catch {
     return null;
   }
 }
 
 /** Walks up from `startDir` (inclusive) to `projectRoot` looking for a `_kit` dir. */
-async function detectKitRoot(startDir, projectRoot) {
+async function detectKitRoot(startDir: string, projectRoot: string): Promise<string | null> {
   const normalizedRoot = path.resolve(projectRoot);
   let dir = path.resolve(startDir);
   for (let i = 0; i < 40; i += 1) {
@@ -62,17 +99,20 @@ async function detectKitRoot(startDir, projectRoot) {
 }
 
 /**
- * Resolves the serving model for previewing `entryAbsPath`.
- * @returns {Promise<{ webRoot: string, aliases: Record<string,string>, entryRel: string }>}
+ * Resolves the serving model used by the HTML-preview module routes for
+ * previewing `entryAbsPath`.
  */
-export async function resolvePreviewModel(entryAbsPath, projectRoot) {
+export async function resolvePreviewModel(
+  entryAbsPath: string,
+  projectRoot: string,
+): Promise<PreviewModel> {
   const config = await readPreviewConfig(projectRoot);
 
-  let webRoot;
-  let aliases;
+  let webRoot: string;
+  let aliases: PreviewAliases;
   if (config?.root) {
     webRoot = path.resolve(projectRoot, config.root);
-    aliases = config.aliases && typeof config.aliases === 'object' ? config.aliases : DEFAULT_ALIASES;
+    aliases = config.aliases || DEFAULT_ALIASES;
   } else {
     const kitRoot = await detectKitRoot(path.dirname(entryAbsPath), projectRoot);
     if (kitRoot) {
@@ -92,9 +132,14 @@ export async function resolvePreviewModel(entryAbsPath, projectRoot) {
 /**
  * Maps a request path (e.g. `/kit/tokens.css`) to an absolute file under the
  * web root, applying aliases. Returns null when the resolved path escapes the
- * project root.
+ * project root. Used by authenticated and shared HTML-preview asset routes.
  */
-export function resolvePreviewAssetPath(reqPath, webRoot, aliases, projectRoot) {
+export function resolvePreviewAssetPath(
+  reqPath: string,
+  webRoot: string,
+  aliases: PreviewAliases,
+  projectRoot: string,
+): string | null {
   const normalizedReq = reqPath.startsWith('/') ? reqPath : `/${reqPath}`;
 
   // Longest alias prefix first so `/static` doesn't shadow a more specific one.
@@ -118,7 +163,8 @@ export function resolvePreviewAssetPath(reqPath, webRoot, aliases, projectRoot) 
   return target;
 }
 
-export function isTextAsset(filePath) {
+/** Tells HTML-preview routes which assets require URL rewriting before serving. */
+export function isTextAsset(filePath: string): boolean {
   return TEXT_EXTENSIONS.has(path.extname(filePath).toLowerCase());
 }
 
@@ -132,7 +178,11 @@ export function isTextAsset(filePath) {
  * `diagrams/` dir, replace the href with a data attribute, and inject a click
  * interceptor that postMessages the path up to the parent (which opens the file).
  */
-export function wireFlowCrossLinks(html, currentFileAbs, projectRoot) {
+export function wireFlowCrossLinks(
+  html: string,
+  currentFileAbs: string,
+  projectRoot: string,
+): string {
   const diagSegment = `${path.sep}diagrams${path.sep}`;
   const diagIdx = currentFileAbs.indexOf(diagSegment);
   const diagramsRoot = diagIdx >= 0
@@ -142,7 +192,7 @@ export function wireFlowCrossLinks(html, currentFileAbs, projectRoot) {
 
   let out = html.replace(
     /href="DOCSIFY_BASE_URL_PLACEHOLDER\/diagrams\/([^"']+?)\.html"/g,
-    (match, ref) => {
+    (match: string, ref: string) => {
       const target = path.resolve(diagramsRoot, `${ref}.flow.json`);
       if (!`${target}${path.sep}`.startsWith(normalizedProjectRoot)) {
         return match; // outside project — leave untouched
@@ -163,7 +213,7 @@ export function wireFlowCrossLinks(html, currentFileAbs, projectRoot) {
 }
 
 /** Matches a basename against a simple `*.ext`/`*.a.b` or exact-name glob. */
-function matchesGlob(basename, pattern) {
+function matchesGlob(basename: string, pattern: string): boolean {
   if (pattern.startsWith('*')) {
     return basename.endsWith(pattern.slice(1));
   }
@@ -178,16 +228,21 @@ function matchesGlob(basename, pattern) {
  * placeholders), then the built-in convention — a `*.flow.json` whose sibling
  * `_kit/render.mjs` exists is rendered with `node render.mjs <in> <out>`.
  *
- * @returns {Promise<{ bin: string, args: string[] } | null>} argv template with
- *   `{input}`/`{output}` still in `args`, or null when nothing renders it.
+ * Returns an argv template with `{input}`/`{output}` still in `args`, or null
+ * when nothing renders it. The custom-preview route consumes this command.
  */
-export async function resolveCustomRenderer(absFilePath, projectRoot, nodeBin) {
+export async function resolveCustomRenderer(
+  absFilePath: string,
+  projectRoot: string,
+  nodeBin: string,
+): Promise<RendererCommand | null> {
   const basename = path.basename(absFilePath);
 
   const config = await readPreviewConfig(projectRoot);
   const renderers = Array.isArray(config?.renderers) ? config.renderers : [];
   for (const entry of renderers) {
-    if (entry?.match && Array.isArray(entry.command) && entry.command.length > 0 && matchesGlob(basename, entry.match)) {
+    if (!isRecord(entry) || typeof entry.match !== 'string' || !Array.isArray(entry.command)) continue;
+    if (entry.command.length > 0 && entry.command.every((argument) => typeof argument === 'string') && matchesGlob(basename, entry.match)) {
       const [bin, ...args] = entry.command;
       const resolvedBin = bin === 'node' ? nodeBin : bin;
       return { bin: resolvedBin, args };
@@ -223,9 +278,14 @@ export async function resolveCustomRenderer(absFilePath, projectRoot, nodeBin) {
 /**
  * Rewrites root-absolute alias references inside a served text asset so they
  * point at the preview route (`assetBase` = `/api/projects/:id/preview-fs`).
- * e.g. `/kit/x` → `/api/projects/:id/preview-fs/kit/x`.
+ * e.g. `/kit/x` → `/api/projects/:id/preview-fs/kit/x`. HTML-preview routes use
+ * this for text entry files and subresources.
  */
-export function rewriteAssetReferences(text, aliases, assetBase) {
+export function rewriteAssetReferences(
+  text: string,
+  aliases: PreviewAliases,
+  assetBase: string,
+): string {
   let out = text;
   for (const prefix of Object.keys(aliases)) {
     // Match the alias prefix only at a URL boundary (after quote, paren, `=`,
