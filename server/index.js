@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Load environment variables before other imports execute
 import './load-env.js';
+import { startEventLoopHealthMonitor } from './shared/event-loop-health.js';
 import fs, { promises as fsPromises } from 'fs';
 import path from 'path';
 import os from 'os';
@@ -19,7 +20,8 @@ import Database from 'better-sqlite3';
 import { AppError, WORKSPACES_ROOT, getOpenCodeDatabasePath, resolveConfiguredContextWindow, validateWorkspacePath } from '@/shared/utils.js';
 import { recallContextUsage } from '@/shared/context-usage-cache.js';
 import { buildCodexTokenBudget } from '@/shared/codex-token-usage.js';
-import { validateAccessiblePath, validatePathInProject } from './utils/allowedPaths.js';
+import { getAdditionalFileRoots, validateAccessiblePath, validatePathInProject } from './utils/allowedPaths.js';
+import { buildFileAccessRoots } from '@/modules/file-tree/index.js';
 import { closeSessionsWatcher, initializeSessionsWatcher, providerRuntimeService, registerPendingCliSession, registerSessionShredDependencies } from '@/modules/providers/index.js';
 import { getSubagentConversation } from '@/modules/providers/list/claude/claude-sessions.provider.js';
 import { createWebSocketServer } from '@/modules/websocket/index.js';
@@ -56,7 +58,7 @@ import projectModuleRoutes from './modules/projects/projects.routes.js';
 import notificationRoutes from './modules/notifications/notifications.routes.js';
 import userRoutes from './routes/user.js';
 import providerRoutes from './modules/providers/provider.routes.js';
-import voiceRoutes from './voice-proxy.js';
+import { voiceRoutes } from '@/modules/voice/index.js';
 import browserUseRoutes from './modules/browser-use/browser-use.routes.js';
 import { assetsRoutes } from './modules/assets/index.js';
 import browserUseMcpRoutes from './modules/browser-use/browser-use-mcp.routes.js';
@@ -79,13 +81,15 @@ import { configureWebPush } from '@/modules/notifications/index.js';
 import { validateApiKey, authenticateToken, authenticateWebSocket, readWorkerIdentity, JWT_SECRET } from './middleware/auth.js';
 import jwt from 'jsonwebtoken';
 import {
+    resolveHtmlPreviewAsset,
+    resolveHtmlPreviewEntry,
     resolvePreviewModel,
     resolvePreviewAssetPath,
     isTextAsset,
     rewriteAssetReferences,
     resolveCustomRenderer,
     wireFlowCrossLinks,
-} from './utils/htmlPreview.js';
+} from '@/modules/html-preview/index.js';
 import { IS_PLATFORM, IS_WORKER_MODE } from './constants/config.js';
 import { c } from './utils/colors.js';
 
@@ -384,7 +388,7 @@ app.get('/api/projects/:projectId/preview-fs/*', async (req, res) => {
         }
 
         const reqPath = `/${req.params[0] || ''}`;
-        const target = resolvePreviewAssetPath(reqPath, claims.webRoot, claims.aliases || {}, projectRoot);
+        const target = await resolveHtmlPreviewAsset(reqPath, claims, projectRoot);
         if (!target) {
             return res.status(403).send('Path outside project');
         }
@@ -811,7 +815,14 @@ app.get('/api/projects/:projectId/file', authenticateToken, async (req, res) => 
 
         // Handle both absolute and relative paths, and allow the additional
         // roots — the agent's edits are not confined to the project.
-        const allowed = await validateAccessiblePath(projectRoot, filePath);
+        const allowed = await validateAccessiblePath(
+            projectRoot,
+            filePath,
+            buildFileAccessRoots(
+                getAdditionalFileRoots(),
+                projectsDb.getProjectPaths().map((project) => project.project_path),
+            ),
+        );
         if (!allowed.valid) {
             return res.status(403).json({ error: allowed.error });
         }
@@ -1172,22 +1183,15 @@ app.post('/api/projects/:projectId/html-preview', authenticateToken, async (req,
         if (!projectRoot) {
             return res.status(404).json({ error: 'Project not found' });
         }
-        const validation = validatePathInProject(projectRoot, filePath);
-        if (!validation.valid) {
-            return res.status(400).json({ error: validation.error });
+        const preview = await resolveHtmlPreviewEntry(projectRoot, filePath);
+        if (!preview.valid) {
+            return res.status(400).json({ error: preview.error });
         }
 
-        const { webRoot, aliases, entryRel } = await resolvePreviewModel(validation.resolved, projectRoot);
-        // The directories the page's subresources come from, so the client can
-        // reload the iframe when one of them changes (the entry file alone is
-        // watched separately). Absolute, like the watcher's change paths.
-        const resourceRoots = [...new Set([
-            webRoot,
-            ...Object.values(aliases).map((target) => path.resolve(webRoot, target)),
-        ])];
+        const { webRoot, aliases, entryRel, previewRoot, resourceRoots } = preview;
 
         const previewToken = jwt.sign(
-            { userId: req.user.id, projectId, webRoot, aliases },
+            { userId: req.user.id, projectId, webRoot, aliases, previewRoot },
             JWT_SECRET,
             { expiresIn: '12h' },
         );
@@ -1290,7 +1294,14 @@ app.get('/api/projects/:projectId/files/content', authenticateToken, async (req,
 
         // Match the text reader endpoint so callers can pass either project-relative
         // or absolute paths without changing how the bytes are served.
-        const allowed = await validateAccessiblePath(projectRoot, filePath);
+        const allowed = await validateAccessiblePath(
+            projectRoot,
+            filePath,
+            buildFileAccessRoots(
+                getAdditionalFileRoots(),
+                projectsDb.getProjectPaths().map((project) => project.project_path),
+            ),
+        );
         if (!allowed.valid) {
             return res.status(403).json({ error: allowed.error });
         }
@@ -1351,7 +1362,14 @@ app.put('/api/projects/:projectId/file', authenticateToken, async (req, res) => 
         // Same reach as the reader: a file you can open is a file you can save,
         // otherwise opening an out-of-project file leaves a tab that can never
         // be written back.
-        const allowed = await validateAccessiblePath(projectRoot, filePath);
+        const allowed = await validateAccessiblePath(
+            projectRoot,
+            filePath,
+            buildFileAccessRoots(
+                getAdditionalFileRoots(),
+                projectsDb.getProjectPaths().map((project) => project.project_path),
+            ),
+        );
         if (!allowed.valid) {
             return res.status(403).json({ error: allowed.error });
         }
@@ -1393,7 +1411,14 @@ app.get('/api/projects/:projectId/files', authenticateToken, async (req, res) =>
         // the breadcrumb of an out-of-project file can still list its folder.
         let rootPath = actualPath;
         if (typeof req.query.dir === 'string' && req.query.dir) {
-            const validation = await validateAccessiblePath(actualPath, req.query.dir);
+            const validation = await validateAccessiblePath(
+                actualPath,
+                req.query.dir,
+                buildFileAccessRoots(
+                    getAdditionalFileRoots(),
+                    projectsDb.getProjectPaths().map((project) => project.project_path),
+                ),
+            );
             if (!validation.valid) {
                 return res.status(400).json({ error: validation.error });
             }
@@ -1428,13 +1453,18 @@ app.get('/api/projects/:projectId/files', authenticateToken, async (req, res) =>
         let clientGone = false;
         res.on('close', () => { clientGone = true; });
 
+        const budget = { remaining: FILE_TREE_MAX_ENTRIES, truncated: false };
         const files = await getFileTree(rootPath, maxDepth, 0, true, {
             includeMeta,
             includeEntry,
             isCancelled: () => clientGone,
+            budget,
         });
         if (clientGone) {
             return;
+        }
+        if (budget.truncated) {
+            console.warn(`[files] tree for ${rootPath} truncated at ${FILE_TREE_MAX_ENTRIES} entries (depth ${maxDepth})`);
         }
         res.json(files);
     } catch (error) {
@@ -2386,13 +2416,42 @@ const IGNORED_DIRS = new Set([
     '.gradle', '.idea', 'coverage', '.nyc_output'
 ]);
 
+// Hard ceiling on how many entries one file-tree request may materialize.
+//
+// The walk defaults to depth 10 with per-entry lstat and prunes only by
+// directory name, so its cost is set by whatever root the client asks for.
+// `/Users/dudin/projects` is a registered project: a default walk of it passes
+// 672,000 entries and is still going after 30s, building a JS object per entry.
+// On a host already in swap (2026-08-31: 16GB RAM, 8.5GB swap used, 4.1GB held
+// by the compressor) that allocation spike is what pushes the process into a
+// page-fault storm and freezes the event loop for 10-15s — the stalls behind
+// the `heartbeat-monitor-down` alert. Real projects are nowhere near this:
+// vibespace is 2.3k entries, anthill 25k.
+const FILE_TREE_MAX_ENTRIES = 50_000;
+
 const DEFAULT_FS_CONCURRENCY = 64;
 const parsedFsConcurrency = Number.parseInt(process.env.FS_CONCURRENCY || '', 10);
 const FS_CONCURRENCY = Number.isFinite(parsedFsConcurrency) && parsedFsConcurrency > 0
     ? parsedFsConcurrency
     : DEFAULT_FS_CONCURRENCY;
 let activeFsOperations = 0;
+
+// A FIFO of waiters, drained through a head index rather than `shift()`.
+//
+// `shift()` is O(n): it re-indexes the whole array on every call. A wide tree
+// parks one waiter per directory entry here, so a walk that queues n entries
+// costs O(n^2) to drain — and it is drained on the main thread, one waiter per
+// `release()`. On 2026-08-31 that was 16.7s of self time in `release` inside a
+// single 14s event-loop stall (plus 6.2s of GC from the array churn, heap
+// 533MB -> 1.3GB), which is what made the server stop answering `GET /` and
+// tripped the `heartbeat-monitor-down` alert on `site-vibespace-mac`.
+//
+// Advancing an index is O(1); the consumed prefix is reclaimed once it is both
+// long enough to be worth a copy and at least half the array, keeping the
+// amortized cost constant without leaving drained entries alive.
 const pendingFsOperations = [];
+let pendingFsHead = 0;
+const PENDING_FS_COMPACT_THRESHOLD = 1_024;
 
 async function acquire() {
     if (activeFsOperations < FS_CONCURRENCY) {
@@ -2406,10 +2465,27 @@ async function acquire() {
 }
 
 function release() {
-    const next = pendingFsOperations.shift();
-    if (next) {
+    if (pendingFsHead < pendingFsOperations.length) {
+        const next = pendingFsOperations[pendingFsHead];
+        // Drop the reference so a long queue does not pin drained closures.
+        pendingFsOperations[pendingFsHead] = undefined;
+        pendingFsHead += 1;
+
+        if (pendingFsHead >= PENDING_FS_COMPACT_THRESHOLD
+            && pendingFsHead * 2 >= pendingFsOperations.length) {
+            pendingFsOperations.splice(0, pendingFsHead);
+            pendingFsHead = 0;
+        }
+
         next();
         return;
+    }
+
+    // Fully drained: reset so the backing array does not grow without bound
+    // across successive walks.
+    if (pendingFsOperations.length > 0) {
+        pendingFsOperations.length = 0;
+        pendingFsHead = 0;
     }
 
     activeFsOperations = Math.max(0, activeFsOperations - 1);
@@ -2442,8 +2518,12 @@ async function createGitignoreEntryFilter(projectRoot) {
 }
 
 async function getFileTree(dirPath, maxDepth = 3, currentDepth = 0, showHidden = true, options = {}) {
-    const { includeMeta = true, isCancelled = null, includeEntry = null } = options;
+    const { includeMeta = true, isCancelled = null, includeEntry = null, budget = null } = options;
     if (isCancelled?.()) {
+        return [];
+    }
+    if (budget && budget.remaining <= 0) {
+        budget.truncated = true;
         return [];
     }
     // Using fsPromises from import
@@ -2470,10 +2550,22 @@ async function getFileTree(dirPath, maxDepth = 3, currentDepth = 0, showHidden =
         return includeEntry ? includeEntry(path.join(dirPath, entry.name), entry.isDirectory()) : true;
     });
 
+    // Spend the budget before the per-entry lstat and recursion, so a single
+    // oversized directory cannot blow past the ceiling on its own.
+    const budgetedEntries = budget
+        ? filteredEntries.slice(0, Math.max(0, budget.remaining))
+        : filteredEntries;
+    if (budget) {
+        if (budgetedEntries.length < filteredEntries.length) {
+            budget.truncated = true;
+        }
+        budget.remaining -= budgetedEntries.length;
+    }
+
     // Process every entry in parallel. On high-latency filesystems (NFS/SMB)
     // serial stat() was the real bottleneck — issuing them concurrently lets
     // the kernel pipeline the round-trips and the recursive calls overlap too.
-    const items = await Promise.all(filteredEntries.map(async (entry) => {
+    const items = await Promise.all(budgetedEntries.map(async (entry) => {
         const itemPath = path.join(dirPath, entry.name);
         const item = {
             name: entry.name,
@@ -2618,6 +2710,11 @@ async function startServer() {
             console.log(`${c.info('[INFO]')} Installed at: ${c.dim(appInstallPath)}`);
             console.log(`${c.tip('[TIP]')}  Run "vibespace status" for full configuration details`);
             console.log('');
+
+            // Watch for the stalls that make the heartbeat monitor mark this
+            // server down. Must start before the sessions watcher, which is
+            // the prime suspect for causing them.
+            startEventLoopHealthMonitor();
 
             // Start watching the projects folder for changes
             await initializeSessionsWatcher();
