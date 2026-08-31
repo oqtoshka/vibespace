@@ -1,9 +1,9 @@
-import { memo, useMemo, useState } from 'react';
+import { memo, useEffect, useMemo, useState } from 'react';
 import { ChevronRight } from 'lucide-react';
 
 import type { ChatMessage, ClaudePermissionSuggestion, PermissionGrantResult, Provider } from '../../types/types';
 import type { Project } from '../../../../types/app';
-import type { ToolGroupItem } from '../../utils/toolGrouping';
+import { toolGroupHasImages, type ToolGroupItem } from '../../utils/toolGrouping';
 import { getToolConfig } from '../../tools';
 
 import MessageComponent from './MessageComponent';
@@ -70,12 +70,21 @@ function ToolGroupContainer({
   selectedProject,
   provider,
 }: ToolGroupContainerProps) {
-  const [isExpanded, setIsExpanded] = useState(false);
+  const hasImageOutput = toolGroupHasImages(group);
+  const [isExpanded, setIsExpanded] = useState(hasImageOutput);
   const config = getToolConfig(group.toolName).input;
   const label = config.label || group.toolName;
   const borderClass = config.colorScheme?.border || 'border-border';
   const iconClass = config.colorScheme?.icon || 'text-muted-foreground';
   const icon = getToolGroupIcon(config.icon, group.toolName);
+
+  // Results can arrive after the group first renders. Reveal the group once an
+  // image appears, but let the user collapse it manually after that transition.
+  useEffect(() => {
+    if (hasImageOutput) {
+      setIsExpanded(true);
+    }
+  }, [hasImageOutput]);
 
   const preview = useMemo(() => {
     const visiblePreviews = group.messages

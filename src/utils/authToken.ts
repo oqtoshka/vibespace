@@ -36,6 +36,9 @@ export const readAuthToken = (): string | null => {
 export const persistAuthToken = (token: string): void => {
   try {
     localStorage.setItem(AUTH_TOKEN_STORAGE_KEY, token);
+    // Pairs with the '[auth] session cleared' warnings so a login that does not
+    // stick can be read straight off the console.
+    console.info('[auth] token persisted');
     return;
   } catch (error) {
     if ((error as { name?: string })?.name !== 'QuotaExceededError') {

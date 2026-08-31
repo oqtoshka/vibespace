@@ -8,6 +8,7 @@ import type { ChatImage } from '../../types/types';
 type ChatMessageImagesProps = {
   images: ChatImage[];
   projectId?: string | null;
+  align?: 'start' | 'end';
 };
 
 /**
@@ -165,13 +166,13 @@ function ChatMessageImage({ image, projectId }: { image: ChatImage; projectId?: 
  * rounded square cards shown above the message bubble. Each thumbnail
  * expands to a fullscreen lightbox on click.
  */
-export default function ChatMessageImages({ images, projectId }: ChatMessageImagesProps) {
+export default function ChatMessageImages({ images, projectId, align = 'end' }: ChatMessageImagesProps) {
   if (!images || images.length === 0) {
     return null;
   }
 
   return (
-    <div className="flex flex-wrap justify-end gap-2">
+    <div className={`flex flex-wrap gap-2 ${align === 'start' ? 'justify-start' : 'justify-end'}`}>
       {images.map((image, index) => (
         <ChatMessageImage key={image.path || image.name || index} image={image} projectId={projectId} />
       ))}

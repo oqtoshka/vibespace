@@ -1,6 +1,10 @@
 import { useCallback, useRef } from 'react';
 
 import { api } from '../utils/api';
+import {
+  resolveFileTreeReference,
+  type FlatFileTreeEntry,
+} from '../utils/fileTreeReference';
 import type { Project } from '../types/app';
 
 type FileNode = {
@@ -10,46 +14,19 @@ type FileNode = {
   children?: FileNode[];
 };
 
-type FlatFile = {
-  name: string;
-  path: string;
-};
-
 // `diffInfo` is intentionally `any` so this resolver can wrap editor handlers
 // that expect a concrete diff payload type as well as generic callers.
 type OnFileOpen = (filePath: string, diffInfo?: any) => void;
 
 const normalize = (value: string): string => value.replace(/\\/g, '/');
 
-const flatten = (nodes: FileNode[], out: FlatFile[]): void => {
+const flatten = (nodes: FileNode[], out: FlatFileTreeEntry[]): void => {
   for (const node of nodes) {
-    if (node.type === 'file') {
-      out.push({ name: node.name, path: node.path });
-    } else if (node.children && node.children.length > 0) {
+    out.push({ name: node.name, path: node.path, type: node.type });
+    if (node.type === 'directory' && node.children && node.children.length > 0) {
       flatten(node.children, out);
     }
   }
-};
-
-// References inside chat messages are often bare basenames (`foo.ts`) or partial
-// paths (`utils/foo.ts`) rather than full paths, so match by path suffix and
-// fall back to filename equality.
-const findBestMatch = (files: FlatFile[], ref: string): string | null => {
-  const target = normalize(ref).replace(/^\.\//, '').replace(/^\/+/, '');
-  if (!target) {
-    return null;
-  }
-
-  const suffixMatch = files.find((file) => {
-    const filePath = normalize(file.path);
-    return filePath === target || filePath.endsWith(`/${target}`);
-  });
-  if (suffixMatch) {
-    return suffixMatch.path;
-  }
-
-  const base = target.split('/').pop() || target;
-  return files.find((file) => file.name === base)?.path ?? null;
 };
 
 /**
@@ -62,12 +39,12 @@ export function useFileOpenResolver(
   onFileOpen: OnFileOpen,
 ): OnFileOpen {
   const projectId = selectedProject?.projectId;
-  const cacheRef = useRef<{ projectId?: string; files: Promise<FlatFile[]> | null }>({
+  const cacheRef = useRef<{ projectId?: string; files: Promise<FlatFileTreeEntry[]> | null }>({
     projectId: undefined,
     files: null,
   });
 
-  const loadFiles = useCallback((): Promise<FlatFile[]> => {
+  const loadFiles = useCallback((): Promise<FlatFileTreeEntry[]> => {
     if (!projectId) {
       return Promise.resolve([]);
     }
@@ -83,7 +60,7 @@ export function useFileOpenResolver(
         }
         const data = await response.json();
         const tree: FileNode[] = Array.isArray(data) ? data : [];
-        const flat: FlatFile[] = [];
+        const flat: FlatFileTreeEntry[] = [];
         flatten(tree, flat);
         return flat;
       } catch {
@@ -99,8 +76,14 @@ export function useFileOpenResolver(
     (filePath: string, diffInfo?: any) => {
       const ref = normalize(filePath).trim();
       void loadFiles().then((files) => {
-        const match = findBestMatch(files, ref);
-        onFileOpen(match ?? filePath, diffInfo);
+        const match = resolveFileTreeReference(files, ref);
+        // A directory can be a valid path reference in chat, but it is not an
+        // editor document. Silently leave it as navigation text instead of
+        // creating a tab whose read request will fail with EISDIR.
+        if (match?.type === 'directory') {
+          return;
+        }
+        onFileOpen(match?.path ?? filePath, diffInfo);
       });
     },
     [loadFiles, onFileOpen],

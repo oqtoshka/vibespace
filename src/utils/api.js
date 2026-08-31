@@ -112,7 +112,10 @@ export const getAuthTokenRefreshDelay = (token) => {
  * The stored JWT is dead — drop it and tell AuthContext, so the login screen
  * renders instead of a hollow app where every fetch 401s.
  */
-export const expireAuthSession = () => {
+export const expireAuthSession = (reason = 'unspecified') => {
+  // Losing a session is the single most confusing thing this app can do to a
+  // user, and every path here is otherwise silent. Name the trigger.
+  console.warn('[auth] session cleared:', reason);
   clearAuthToken();
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new CustomEvent(AUTH_SESSION_EXPIRED_EVENT));
@@ -122,7 +125,7 @@ export const expireAuthSession = () => {
 export const getStoredAuthToken = () => {
   const token = readAuthToken();
   if (token && isAuthTokenExpired(token)) {
-    expireAuthSession();
+    expireAuthSession('stored token past its exp claim');
     return null;
   }
   return token;
@@ -178,7 +181,7 @@ export const authenticatedFetch = (url, options = {}) => {
       // The stored token is dead — every subsequent call would fail the same
       // way, leaving hollow UI (empty chat history, dead websocket). Surface
       // it once so AuthContext can clear the session and show the login form.
-      expireAuthSession();
+      expireAuthSession(`${options.method || 'GET'} ${url} -> ${response.status}`);
     }
     return response;
   });

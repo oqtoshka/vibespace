@@ -37,6 +37,7 @@ export type VoiceInputState = 'idle' | 'recording' | 'paused' | 'transcribing';
 export function useVoiceInput(
   onTranscript: (text: string, send?: boolean) => void,
   onError?: (msg: string) => void,
+  presetId?: string,
 ) {
   const [state, setState] = useState<VoiceInputState>('idle');
   const recorderRef = useRef<MediaRecorder | null>(null);
@@ -145,7 +146,7 @@ export function useVoiceInput(
         uploadAbortRef.current = abort;
         try {
           const ext = type.includes('mp4') ? 'm4a' : type.includes('ogg') ? 'ogg' : 'webm';
-          const res = await transcribeVoice(blob, `recording.${ext}`, abort.signal);
+          const res = await transcribeVoice(blob, `recording.${ext}`, presetId, abort.signal);
           if (!res.ok) throw new Error(`transcribe ${res.status}`);
           const data = await res.json();
           if (unmountedRef.current || abort.signal.aborted) return;
@@ -185,7 +186,7 @@ export function useVoiceInput(
     } finally {
       startingRef.current = false;
     }
-  }, [onTranscript, onError]);
+  }, [onTranscript, onError, presetId]);
 
   // Stop recording. Pass { send: true } to auto-send the transcript once it's ready.
   // Guard on the recorder's own state (not React state) so a double tap, or the mic

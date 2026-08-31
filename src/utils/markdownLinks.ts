@@ -18,7 +18,8 @@ export function isExternalHref(href: string): boolean {
  * - External (`https:`, `mailto:`, …) and `#fragment`-only links → `null`.
  * - Root-relative links (`/docs/x.md`) are treated GitHub-style as
  *   project-root-relative; the server resolves non-absolute paths against
- *   the project root (see `server/index.js` file endpoint).
+ *   the project root unless `preserveAbsolutePath` is enabled by a caller
+ *   such as the chat renderer.
  * - Relative links resolve against the directory of `currentFilePath`,
  *   preserving its absolute/relative form. Query strings and fragments are
  *   stripped; percent-encoding (e.g. `%20`) is decoded.
@@ -42,6 +43,7 @@ export function stripHrefDecorations(href: string): string | null {
 export function resolveMarkdownLinkPath(
   href: string | undefined,
   currentFilePath?: string | null,
+  preserveAbsolutePath = false,
 ): string | null {
   if (!href || href.startsWith('#') || isExternalHref(href)) {
     return null;
@@ -53,7 +55,7 @@ export function resolveMarkdownLinkPath(
   }
 
   if (target.startsWith('/')) {
-    return target.replace(/^\/+/, '');
+    return preserveAbsolutePath ? target : target.replace(/^\/+/, '');
   }
 
   const normalizedBase = (currentFilePath ?? '').replace(/\\/g, '/');

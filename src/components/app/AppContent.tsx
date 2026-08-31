@@ -361,7 +361,6 @@ function AppContentInner() {
     onSessionSelect: handleSidebarSessionSelect,
     onNewSession: startNewChat,
     onSessionDelete: handleSessionDelete,
-    processingSessions: activeSessions,
     view: sidebarView,
     onViewChange: setSidebarView,
     onFileOpen: (filePath: string) => {

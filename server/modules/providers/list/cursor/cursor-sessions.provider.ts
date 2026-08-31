@@ -3,7 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { createCompactBoundaryMessage, looksLikeCompactSummary } from '@/shared/compaction.js';
-import { parseFilesInputTag, parseImagesInputTag } from '@/shared/image-attachments.js';
+import { extractToolResultImages, parseFilesInputTag, parseImagesInputTag } from '@/shared/image-attachments.js';
 import type { IProviderSessions } from '@/shared/interfaces.js';
 import type { AnyRecord, FetchHistoryOptions, FetchHistoryResult, NormalizedMessage } from '@/shared/types.js';
 import {
@@ -548,6 +548,7 @@ export class CursorSessionsProvider implements IProviderSessions {
               kind: 'tool_result',
               toolId: toolCallId,
               content: extractCursorToolResultContent(item),
+              images: extractToolResultImages(item),
               isError: Boolean(item.isError || item.is_error),
               toolUseResult: highLevelToolCallResult,
             }));
@@ -664,6 +665,7 @@ export class CursorSessionsProvider implements IProviderSessions {
           toolUse.toolResult = {
             content: msg.content,
             isError: msg.isError,
+            ...(msg.images ? { images: msg.images } : {}),
             toolUseResult: msg.toolUseResult,
           };
         }

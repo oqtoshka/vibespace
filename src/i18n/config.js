@@ -116,6 +116,13 @@ import zhTWTasks from './locales/zh-TW/tasks.json';
 // Import supported languages configuration
 import { languages } from './languages.js';
 
+// A deployment can choose the first-run language at build time. A user's
+// explicit selection always wins after that and remains stored locally.
+const configuredDefaultLanguage = import.meta.env.VITE_DEFAULT_LANGUAGE?.trim();
+const defaultLanguage = languages.some((language) => language.value === configuredDefaultLanguage)
+  ? configuredDefaultLanguage
+  : 'en';
+
 // Get saved language preference from localStorage
 const getSavedLanguage = () => {
   try {
@@ -124,9 +131,9 @@ const getSavedLanguage = () => {
     if (saved && languages.some(lang => lang.value === saved)) {
       return saved;
     }
-    return 'en';
+    return defaultLanguage;
   } catch {
-    return 'en';
+    return defaultLanguage;
   }
 };
 
@@ -238,7 +245,7 @@ i18n
       },
     },
 
-    // Default language
+    // Saved user choice, or the deployment default for first-time visitors.
     lng: getSavedLanguage(),
 
     // Fallback language when a translation is missing

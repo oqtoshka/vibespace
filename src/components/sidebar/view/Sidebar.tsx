@@ -32,7 +32,6 @@ function Sidebar({
   onSessionDelete,
   onLoadMoreSessions,
   onProjectDelete,
-  processingSessions,
   isLoading,
   loadingProgress,
   onRefresh,
@@ -71,9 +70,6 @@ function Sidebar({
     searchFilter,
     searchMode,
     setSearchMode,
-    projectViewMode,
-    setProjectViewMode,
-    activitySessions,
     conversationResults,
     isSearching,
     searchProgress,
@@ -138,7 +134,6 @@ function Sidebar({
     onSessionDelete,
     onLoadMoreSessions,
     onProjectDelete,
-    processingSessions,
     setCurrentProject,
     setSidebarVisible: (visible) => setPreference('sidebarVisible', visible),
     sidebarVisible,
@@ -203,32 +198,6 @@ function Sidebar({
     onSaveEditingSession: (projectName: string, sessionId: string, summary: string, provider: LLMProvider) => {
       void updateSessionSummary(projectName, sessionId, summary, provider);
     },
-    t,
-  };
-
-  const activityListProps = {
-    items: activitySessions,
-    selectedSession,
-    currentTime,
-    editingSession,
-    editingSessionName,
-    onEditingSessionNameChange: setEditingSessionName,
-    onStartEditingSession: (sessionId: string, initialName: string) => {
-      setEditingSession(sessionId);
-      setEditingSessionName(initialName);
-    },
-    onCancelEditingSession: () => {
-      setEditingSession(null);
-      setEditingSessionName('');
-    },
-    onSaveEditingSession: (projectName: string, sessionId: string, summary: string, provider: LLMProvider) => {
-      void updateSessionSummary(projectName, sessionId, summary, provider);
-    },
-    onSelectSession: ({ session, project }: (typeof activitySessions)[number]) => {
-      handleProjectSelect(project);
-      handleSessionClick(session, project.projectId);
-    },
-    onDeleteSession: showDeleteSessionConfirmation,
     t,
   };
 
@@ -360,9 +329,6 @@ function Sidebar({
             onShowVersionModal={() => setShowVersionModal(true)}
             onShowSettings={onShowSettings}
             projectListProps={projectListProps}
-            projectViewMode={projectViewMode}
-            onProjectViewModeChange={setProjectViewMode}
-            activityListProps={activityListProps}
             t={t}
           />
         </>

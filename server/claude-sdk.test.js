@@ -9,6 +9,7 @@ import {
   __setClaudeQueryImpl,
   __setRewindHistoryImpl,
 } from './claude-sdk.js';
+import { __getSessionRestoreEntry } from './services/session-restore.service.js';
 
 const delay = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
 
@@ -349,6 +350,9 @@ test('a mid-session permission mode change is applied to the live session on reu
       await reader.next();
       yield assistantText('turn two', sessionId);
       yield resultMsg(sessionId);
+      // Keep the persistent query alive so its restore entry remains present
+      // while the assertion below simulates what the next boot would read.
+      await reader.next();
     })();
     gen.interrupt = async () => {};
     gen.setModel = async () => {};
@@ -364,6 +368,12 @@ test('a mid-session permission mode change is applied to the live session on reu
 
     await queryClaudeSDK('now push it', { sessionId, permissionMode: 'bypassPermissions' }, writer);
     assert.deepEqual(modeCalls, ['bypassPermissions'], 'the reused session adopts the new mode');
+    await delay(0);
+    assert.equal(
+      __getSessionRestoreEntry(sessionId)?.permissionMode,
+      'bypassPermissions',
+      'the restart registry persists the effective live mode, not the spawn-time default',
+    );
   } finally {
     await abortClaudeSDKSession(sessionId).catch(() => {});
     __setClaudeQueryImpl(null);

@@ -142,7 +142,7 @@ async function runOpenCodeRecapQuery(prompt, options, writer) {
  * haiku, so the only model known to be reachable is the one the conversation
  * is already running on.
  */
-async function queueOpenCodeRecap({ sessionId, cwd, ws }) {
+async function queueOpenCodeRecap({ sessionId, cwd, locale, ws }) {
   if (!sessionId || !cwd) {
     return;
   }
@@ -159,6 +159,7 @@ async function queueOpenCodeRecap({ sessionId, cwd, ws }) {
     sessionId,
     cwd,
     model,
+    locale,
     // OpenCode has no cheap tier, and the service's own default is a Claude
     // alias it cannot run — without a model of our own, let OpenCode choose.
     fallbackModel: null,
@@ -269,7 +270,7 @@ async function spawnOpenCode(command, options = {}, ws, context = undefined) {
         }, ws);
         return true;
       },
-      onCompleted: ({ sessionId, cwd }) => queueOpenCodeRecap({ sessionId, cwd, ws }),
+      onCompleted: ({ sessionId, cwd }) => queueOpenCodeRecap({ sessionId, cwd, locale: options.locale, ws }),
     });
   }
 
@@ -588,7 +589,7 @@ async function spawnOpenCode(command, options = {}, ws, context = undefined) {
             // Skipped for the summariser's own turns, or each recap would
             // schedule another one.
             if (!options.ephemeral) {
-              void queueOpenCodeRecap({ sessionId: finalSessionId, cwd: workingDir, ws });
+              void queueOpenCodeRecap({ sessionId: finalSessionId, cwd: workingDir, locale: options.locale, ws });
             }
             resolve();
             return;
