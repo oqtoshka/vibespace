@@ -110,6 +110,7 @@ export interface NormalizedMessage {
   toolResult?: {
     content: string;
     isError: boolean;
+    images?: Array<{ path?: string; data?: string; name?: string }>;
     toolUseResult?: unknown;
     /** The run was killed mid-tool (server restart), not refused by the user. */
     interruptedByShutdown?: boolean;

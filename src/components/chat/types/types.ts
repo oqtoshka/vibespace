@@ -26,6 +26,7 @@ export interface ChatImage extends ChatAttachment {
 export interface ToolResult {
   content?: unknown;
   isError?: boolean;
+  images?: ChatImage[];
   timestamp?: string | number | Date;
   toolUseResult?: unknown;
   [key: string]: unknown;

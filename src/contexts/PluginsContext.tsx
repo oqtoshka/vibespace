@@ -1,5 +1,5 @@
-import { createContext, useCallback, useContext, useEffect, useState } from 'react';
-import type { ReactNode } from 'react';
+import { createContext, type ReactNode, useCallback, useContext, useEffect, useState } from 'react';
+
 import { authenticatedFetch } from '../utils/api';
 
 export type Plugin = {
@@ -15,11 +15,20 @@ export type Plugin = {
   server: string | null;
   /** Server-side extension loaded in-process at boot; a plugin may have only this and no tab. */
   hostModule: string | null;
+  /** Actions an enabled plugin contributes to each session's options menu. */
+  sessionActions: PluginSessionAction[];
   permissions: string[];
   enabled: boolean;
   serverRunning: boolean;
   dirName: string;
   repoUrl: string | null;
+};
+
+export type PluginSessionAction = {
+  id: string;
+  label: string;
+  /** Authenticated same-origin endpoint; `{sessionId}` is replaced by the app session id. */
+  endpoint: string;
 };
 
 type PluginsContextValue = {

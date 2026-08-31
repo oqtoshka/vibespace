@@ -72,9 +72,6 @@
     "reportIssue": "문제 신고",
     "starOnGithub": "GitHub에서 스타"
   },
-  "branding": {
-    "openSource": "오픈 소스"
-  },
   "status": {
     "active": "활성",
     "inactive": "비활성",

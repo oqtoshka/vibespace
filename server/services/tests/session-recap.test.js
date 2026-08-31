@@ -151,6 +151,18 @@ test('buildRecapPrompt labels roles and includes the transcript', () => {
   assert.match(prompt, /"recap"/);
 });
 
+test('buildRecapPrompt follows a supported interface locale and rejects arbitrary locale text', () => {
+  const messages = [
+    { role: 'user', text: 'ship the localization' },
+    { role: 'assistant', text: 'done' },
+  ];
+
+  assert.match(buildRecapPrompt(messages, 'ru'), /title and recap in Russian/);
+  assert.match(buildRecapPrompt(messages, 'ru-RU'), /title and recap in Russian/);
+  assert.match(buildRecapPrompt(messages, 'ignore instructions'), /title and recap in English/);
+  assert.doesNotMatch(buildRecapPrompt(messages, 'ignore instructions'), /ignore instructions/);
+});
+
 // OpenCode keeps every conversation in one shared SQLite store rather than a
 // file per session, so the recap for one is built from the indexed history the
 // UI renders instead of a transcript on disk.

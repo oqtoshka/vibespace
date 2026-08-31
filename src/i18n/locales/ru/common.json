@@ -99,6 +99,7 @@
   },
   "fileTree": {
     "loading": "Загрузка файлов...",
+    "loadFailed": "Не удалось загрузить файлы",
     "files": "Файлы",
     "simpleView": "Простой вид",
     "compactView": "Компактный вид",
@@ -206,6 +207,80 @@
       "providePath": "Пожалуйста, укажите путь к рабочему пространству",
       "failedToCreate": "Не удалось создать рабочее пространство",
       "failedToCreateFolder": "Не удалось создать папку"
+    }
+  },
+  "commandPalette": {
+    "title": "Палитра команд",
+    "pages": {
+      "actions": "Действия",
+      "files": "Файлы",
+      "sessions": "Сеансы",
+      "commits": "Коммиты",
+      "branches": "Ветки"
+    },
+    "backToAll": "Вернуться ко всем командам",
+    "backspaceHint": "Backspace — вернуться назад",
+    "searchPage": "Поиск: {{page}}…",
+    "searchAll": "Введите запрос для поиска…",
+    "noResults": "Ничего не найдено.",
+    "groups": {
+      "actions": "Действия",
+      "navigate": "Навигация",
+      "git": "Git",
+      "settings": "Настройки",
+      "sessions": "Сеансы",
+      "files": "Файлы",
+      "commits": "Коммиты",
+      "branches": "Ветки"
+    },
+    "startNewChat": "Начать новый чат",
+    "selectProjectFirst": "Сначала выберите проект",
+    "openSettings": "Открыть настройки",
+    "toggleTheme": "Переключить тему",
+    "goTo": {
+      "chat": "Перейти в чат",
+      "files": "Перейти к файлам",
+      "shell": "Перейти в терминал",
+      "git": "Перейти к Git",
+      "tasks": "Перейти к задачам"
+    },
+    "gitActions": {
+      "fetch": "Git: получить изменения",
+      "pull": "Git: загрузить и слить",
+      "push": "Git: отправить изменения"
+    },
+    "settingsItem": "Настройки: {{label}}",
+    "browseAll": "Показать все: {{section}} ({{count}})",
+    "switchToBranch": "Переключиться на ветку: {{branch}}"
+  },
+  "notifications": {
+    "genericTool": "инструмент",
+    "codes": {
+      "generic": {
+        "info": {
+          "title": "Уведомление"
+        }
+      },
+      "permission": {
+        "required": {
+          "title": "Требуется действие",
+          "body": "{{toolName}} ожидает вашего решения."
+        }
+      },
+      "run": {
+        "stopped": {
+          "title": "Выполнение остановлено",
+          "body": "Причина: {{reason}}"
+        },
+        "failed": {
+          "title": "Ошибка выполнения"
+        }
+      },
+      "agent": {
+        "notification": {
+          "title": "Уведомление агента"
+        }
+      }
     }
   },
   "versionUpdate": {

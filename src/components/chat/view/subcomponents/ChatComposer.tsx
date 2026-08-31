@@ -223,7 +223,19 @@ export default function ChatComposer({
 
   // Voice state is hosted here (not in the mic button) so the main Send button can stop
   // recording and send the transcript in one tap, the way the mic button drops it in the box.
-  const voiceAvailable = useVoiceAvailable();
+  const voiceAvailability = useVoiceAvailable();
+  const voiceAvailable = voiceAvailability.available;
+  const [voicePresetId, setVoicePresetId] = useState('');
+  useEffect(() => {
+    if (
+      voiceAvailability.presets.length > 0
+      && !voiceAvailability.presets.some(({ id }) => id === voicePresetId)
+    ) {
+      setVoicePresetId(
+        voiceAvailability.defaultPresetId || voiceAvailability.presets[0]?.id || '',
+      );
+    }
+  }, [voiceAvailability.defaultPresetId, voiceAvailability.presets, voicePresetId]);
   const [voiceError, setVoiceError] = useState<string | null>(null);
   const voiceErrorTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const handleVoiceError = useCallback((msg: string) => {
@@ -246,6 +258,7 @@ export default function ChatComposer({
   } = useVoiceInput(
     onVoiceTranscript ?? noopTranscript,
     handleVoiceError,
+    voicePresetId || voiceAvailability.defaultPresetId || undefined,
   );
   // A paused take is still a take: Send must stop-and-send it exactly as it
   // does mid-recording, so everything keyed off "recording" covers paused too.
@@ -473,7 +486,7 @@ export default function ChatComposer({
                     d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"
                   />
                 </svg>
-                <p className="text-sm font-medium">Drop files here</p>
+                <p className="text-sm font-medium">{t('input.dropFiles')}</p>
               </div>
             </div>
           )}
@@ -686,10 +699,10 @@ export default function ChatComposer({
                   className="flex h-8 items-center gap-1.5 rounded-lg border border-border/60 bg-muted/40 px-2 text-xs font-medium text-foreground transition-all duration-200 hover:bg-muted"
                   aria-haspopup="menu"
                   aria-expanded={isEffortDropdownOpen}
-                  aria-label="Select reasoning effort"
-                  title="Select reasoning effort"
+                  aria-label={t('composer.effortMenu')}
+                  title={t('composer.effortMenu')}
                 >
-                  <span className="hidden text-[11px] text-muted-foreground sm:inline">Effort</span>
+                  <span className="hidden text-[11px] text-muted-foreground sm:inline">{t('input.effort')}</span>
                   <span className="max-w-16 truncate capitalize sm:max-w-20">{selectedEffortLabel}</span>
                   <ChevronDown className={`h-3 w-3 text-muted-foreground transition-transform ${isEffortDropdownOpen ? 'rotate-180' : ''}`} />
                 </button>
@@ -932,16 +945,34 @@ export default function ChatComposer({
               overflow check stays correct as the mic comes and goes. */}
           <div ref={footerActionsRef} className="flex shrink-0 items-center gap-2">
             {onVoiceTranscript && voiceAvailable && (
-              <VoiceInputButton
-                state={voiceState}
-                onToggle={voiceToggle}
-                onPause={voicePause}
-                onResume={voiceResume}
-                onCancel={voiceCancel}
-                canPause={voiceCanPause}
-                errorMsg={voiceError}
-                className="h-10 w-10 shrink-0 rounded-lg border border-border/60 bg-muted/40 hover:bg-muted [&_svg]:size-5"
-              />
+              <>
+                {voiceAvailability.presets.length > 1 && (
+                  <select
+                    aria-label={t('voice.selectPreset')}
+                    title={t('voice.selectPreset')}
+                    value={voicePresetId || voiceAvailability.defaultPresetId || ''}
+                    disabled={isRecording || isTranscribing}
+                    onChange={(event) => setVoicePresetId(event.target.value)}
+                    className="h-10 max-w-28 shrink-0 rounded-lg border border-border/60 bg-muted/40 px-2 text-xs text-foreground outline-none hover:bg-muted focus:ring-2 focus:ring-ring disabled:opacity-50 sm:max-w-36"
+                  >
+                    {voiceAvailability.presets.map((preset) => (
+                      <option key={preset.id} value={preset.id} title={preset.sttModel}>
+                        {preset.label}
+                      </option>
+                    ))}
+                  </select>
+                )}
+                <VoiceInputButton
+                  state={voiceState}
+                  onToggle={voiceToggle}
+                  onPause={voicePause}
+                  onResume={voiceResume}
+                  onCancel={voiceCancel}
+                  canPause={voiceCanPause}
+                  errorMsg={voiceError}
+                  className="h-10 w-10 shrink-0 rounded-lg border border-border/60 bg-muted/40 hover:bg-muted [&_svg]:size-5"
+                />
+              </>
             )}
             <PromptInputSubmit
               onClick={

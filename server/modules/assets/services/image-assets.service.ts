@@ -1,4 +1,5 @@
 import fsSync, { promises as fs } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 import mime from 'mime-types';
@@ -15,6 +16,15 @@ const ALLOWED_IMAGE_MIME_TYPES = new Set([
   'image/gif',
   'image/webp',
   'image/svg+xml',
+]);
+
+/** Raster formats that are safe to render inline in the authenticated UI. */
+const INLINE_SAFE_IMAGE_MIME_TYPES = new Set([
+  'image/jpeg',
+  'image/png',
+  'image/gif',
+  'image/webp',
+  'image/avif',
 ]);
 
 // Used only by this service and the assets routes via the barrel file.
@@ -123,5 +133,71 @@ export async function openStoredAttachmentAsset(filename: string) {
     status: 'found' as const,
     contentType: mime.lookup(resolved) || 'application/octet-stream',
     stream: fsSync.createReadStream(resolved),
+  };
+}
+
+function getCodexGeneratedImagesDir(): string {
+  const configuredCodexHome = process.env.CODEX_HOME?.trim();
+  return path.join(configuredCodexHome || path.join(os.homedir(), '.codex'), 'generated_images');
+}
+
+function isPathInside(root: string, candidate: string): boolean {
+  const relative = path.relative(root, candidate);
+  return relative !== '' && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+}
+
+/**
+ * Opens a Codex-generated raster image for the assets route. The route passes
+ * only a path relative to Codex's `generated_images` directory; lexical and
+ * realpath containment checks keep traversal and symlink escapes outside that
+ * directory unreadable. The optional root override is used only by this
+ * module's service tests.
+ */
+export async function openGeneratedImageArtifact(relativePath: string, rootOverride?: string) {
+  const trimmed = typeof relativePath === 'string' ? relativePath.trim() : '';
+  if (!trimmed || trimmed.includes('\\') || trimmed.includes('\0') || path.isAbsolute(trimmed)) {
+    return { status: 'invalid' as const };
+  }
+
+  const artifactRoot = path.resolve(rootOverride ?? getCodexGeneratedImagesDir());
+  const resolvedPath = path.resolve(artifactRoot, trimmed);
+  if (!isPathInside(artifactRoot, resolvedPath)) {
+    return { status: 'invalid' as const };
+  }
+
+  let canonicalRoot: string;
+  let canonicalPath: string;
+  try {
+    [canonicalRoot, canonicalPath] = await Promise.all([
+      fs.realpath(artifactRoot),
+      fs.realpath(resolvedPath),
+    ]);
+  } catch {
+    return { status: 'missing' as const };
+  }
+
+  if (!isPathInside(canonicalRoot, canonicalPath)) {
+    return { status: 'invalid' as const };
+  }
+
+  let stats;
+  try {
+    stats = await fs.stat(canonicalPath);
+  } catch {
+    return { status: 'missing' as const };
+  }
+  if (!stats.isFile()) {
+    return { status: 'missing' as const };
+  }
+
+  const contentType = mime.lookup(canonicalPath) || 'application/octet-stream';
+  if (!INLINE_SAFE_IMAGE_MIME_TYPES.has(contentType)) {
+    return { status: 'unsupported' as const };
+  }
+
+  return {
+    status: 'found' as const,
+    contentType,
+    stream: fsSync.createReadStream(canonicalPath),
   };
 }

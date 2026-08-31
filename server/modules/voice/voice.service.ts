@@ -4,23 +4,29 @@ import type {
   VoiceService,
   VoiceServiceResult,
   VoiceSpeechPayload,
+  VoiceTranscriptionPresetConfig,
 } from '@/shared/types.js';
 
 type VoiceServiceDependencies = {
   defaults: {
+    presetLabel: string;
     baseUrl: string;
     apiKey: string;
     sttModel: string;
     ttsModel: string;
     ttsVoice: string;
   };
+  transcriptionPresets: VoiceTranscriptionPresetConfig[];
+  loadUserOverrides(userId: number): VoiceRequestOverrides;
   timeoutMs: number;
   fetchBackend(url: string, options: RequestInit): Promise<Response>;
 };
 
-type ResolvedVoiceConfig = VoiceServiceDependencies['defaults'] & {
+type ResolvedVoiceConfig = Omit<VoiceServiceDependencies['defaults'], 'presetLabel'> & {
   ttsFormat: string;
 };
+
+const DEFAULT_PRESET_ID = 'default';
 
 function resolveVoiceConfig(
   defaults: VoiceServiceDependencies['defaults'],
@@ -33,6 +39,52 @@ function resolveVoiceConfig(
     ttsModel: overrides.ttsModel || defaults.ttsModel,
     ttsVoice: overrides.ttsVoice || defaults.ttsVoice,
     ttsFormat: overrides.ttsFormat?.trim() ?? '',
+  };
+}
+
+function loadUserOverrides(
+  dependencies: VoiceServiceDependencies,
+  userId: number,
+): VoiceRequestOverrides {
+  try {
+    return dependencies.loadUserOverrides(userId);
+  } catch {
+    // User-specific settings are optional. A transient repository failure must
+    // not hide otherwise valid server-owned voice configuration.
+    return {};
+  }
+}
+
+function resolveTranscriptionConfig(
+  dependencies: VoiceServiceDependencies,
+  userId: number,
+  presetId?: string,
+): VoiceServiceResult<ResolvedVoiceConfig> {
+  const requestedPresetId = presetId?.trim() || DEFAULT_PRESET_ID;
+  const userOverrides = loadUserOverrides(dependencies, userId);
+
+  if (requestedPresetId === DEFAULT_PRESET_ID) {
+    return {
+      ok: true,
+      value: resolveVoiceConfig(dependencies.defaults, userOverrides),
+    };
+  }
+
+  const preset = dependencies.transcriptionPresets.find(({ id }) => id === requestedPresetId);
+  if (!preset) {
+    return { ok: false, status: 400, error: 'Unknown voice transcription preset.' };
+  }
+
+  return {
+    ok: true,
+    value: {
+      baseUrl: preset.baseUrl,
+      apiKey: preset.apiKey,
+      sttModel: preset.sttModel,
+      ttsModel: dependencies.defaults.ttsModel,
+      ttsVoice: dependencies.defaults.ttsVoice,
+      ttsFormat: '',
+    },
   };
 }
 
@@ -115,10 +167,41 @@ function createTranscriptionFormData(audio: VoiceAudioUpload, sttModel: string):
  */
 export function createVoiceService(dependencies: VoiceServiceDependencies): VoiceService {
   return {
-    getHealth: () => ({ configured: Boolean(dependencies.defaults.baseUrl) }),
+    getHealth: () => {
+      const defaultConfigured = Boolean(dependencies.defaults.baseUrl);
+      const presets = [
+        ...(defaultConfigured ? [{
+          id: DEFAULT_PRESET_ID,
+          label: dependencies.defaults.presetLabel,
+          sttModel: dependencies.defaults.sttModel,
+          isDefault: true,
+        }] : []),
+        ...dependencies.transcriptionPresets.map(({ id, label, sttModel }) => ({
+          id,
+          label,
+          sttModel,
+          isDefault: false,
+        })),
+      ];
+
+      return {
+        configured: presets.length > 0,
+        defaultPresetId: defaultConfigured ? DEFAULT_PRESET_ID : presets[0]?.id ?? null,
+        presets,
+      };
+    },
 
     async transcribe(input) {
-      const config = resolveVoiceConfig(dependencies.defaults, input.overrides);
+      const resolvedConfig = resolveTranscriptionConfig(
+        dependencies,
+        input.userId,
+        input.presetId,
+      );
+      if (!resolvedConfig.ok) {
+        return resolvedConfig;
+      }
+
+      const config = resolvedConfig.value;
       const configurationFailure = validateConfiguredBackend(config);
       if (configurationFailure) {
         return configurationFailure;
@@ -153,7 +236,10 @@ export function createVoiceService(dependencies: VoiceServiceDependencies): Voic
     },
 
     async synthesizeSpeech(input) {
-      const config = resolveVoiceConfig(dependencies.defaults, input.overrides);
+      const config = resolveVoiceConfig(
+        dependencies.defaults,
+        loadUserOverrides(dependencies, input.userId),
+      );
       const configurationFailure = validateConfiguredBackend(config);
       if (configurationFailure) {
         return configurationFailure;

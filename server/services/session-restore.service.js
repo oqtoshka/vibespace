@@ -294,3 +294,8 @@ export function __resetSessionRestoreState() {
   bootPassDone = false;
   if (writeTimer) { clearTimeout(writeTimer); writeTimer = null; }
 }
+
+/** Test seam consumed by the Claude SDK test to inspect the next boot's restore value. */
+export function __getSessionRestoreEntry(sessionId) {
+  return entries.get(sessionId);
+}

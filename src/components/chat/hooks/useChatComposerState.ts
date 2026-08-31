@@ -284,7 +284,8 @@ export function useChatComposerState({
   setPendingPermissionRequests,
   onRewindTruncate,
 }: UseChatComposerStateArgs) {
-  const { t } = useTranslation('chat');
+  const { t, i18n } = useTranslation('chat');
+  const interfaceLanguage = i18n.resolvedLanguage || i18n.language || 'en';
   const [input, setInput] = useState(() => {
     if (typeof window !== 'undefined' && selectedProject) {
       // Draft inputs are keyed by the DB projectId so per-project drafts
@@ -959,6 +960,7 @@ export function useChatComposerState({
           toolsSettings,
           skipPermissions: toolsSettings?.skipPermissions || false,
           sessionSummary,
+          locale: interfaceLanguage,
           images: uploadedImages,
         },
       };
@@ -983,6 +985,7 @@ export function useChatComposerState({
       permissionMode,
       privateMode,
       effort,
+      interfaceLanguage,
       provider,
       scrollToBottom,
       selectedProject,
@@ -1041,6 +1044,7 @@ export function useChatComposerState({
           toolsSettings,
           skipPermissions: toolsSettings?.skipPermissions || false,
           sessionSummary: getNotificationSessionSummary(selectedSession, content),
+          locale: interfaceLanguage,
           images: uploadedImages,
         },
       });
@@ -1053,6 +1057,7 @@ export function useChatComposerState({
       getToolsSettings,
       activeModel,
       effort,
+      interfaceLanguage,
       permissionMode,
       provider,
       sendMessage,
@@ -1427,6 +1432,7 @@ export function useChatComposerState({
           toolsSettings,
           skipPermissions: Boolean(toolsSettings?.skipPermissions),
           sessionSummary,
+          locale: interfaceLanguage,
           images,
           rewind: rewindUuid,
         },
@@ -1438,6 +1444,7 @@ export function useChatComposerState({
       currentSessionId,
       provider,
       claudeModel,
+      interfaceLanguage,
       opencodeModel,
       permissionMode,
       onRewindTruncate,

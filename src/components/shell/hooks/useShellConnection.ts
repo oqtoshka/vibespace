@@ -198,6 +198,7 @@ export function useShellConnection({
           if (event.code === WS_CLOSE_CODE_AUTH_FAILED) {
             suppressAutoConnectRef.current = true;
             if (!IS_PLATFORM) {
+              console.warn('[auth] session cleared: shell websocket closed 4401 (server rejected the JWT)');
               window.dispatchEvent(new CustomEvent(AUTH_SESSION_EXPIRED_EVENT));
             }
           }

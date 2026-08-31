@@ -1,15 +1,16 @@
 import { useEffect, useRef, useState } from 'react';
-import { Check, Copy, Edit2, Loader2, Lock, MoreHorizontal, Trash2, X } from 'lucide-react';
+import { Check, Copy, Edit2, ExternalLink, Loader2, Lock, MoreHorizontal, Trash2, X } from 'lucide-react';
 import type { TFunction } from 'i18next';
 
 import { ActionMenu, Badge, Dialog, DialogContent, DialogTitle, Tooltip, buttonVariants } from '../../../../shared/view/ui';
 import { cn } from '../../../../lib/utils';
 import type { Project, ProjectSession, LLMProvider } from '../../../../types/app';
-import { api } from '../../../../utils/api';
+import { api, authenticatedFetch } from '../../../../utils/api';
 import { copyTextToClipboard } from '../../../../utils/clipboard';
 import type { SessionWithProvider } from '../../types/types';
 import { createSessionViewModel, formatCompactAge } from '../../utils/utils';
 import LLMProviderLogo from '../../../llm-provider-logo/LLMProviderLogo';
+import { usePlugins, type PluginSessionAction } from '../../../../contexts/PluginsContext';
 
 type SidebarSessionItemProps = {
   project: Project;
@@ -43,6 +44,15 @@ const PROVIDER_LABELS: Record<LLMProvider, string> = {
 };
 
 type CopyState = 'loading' | 'idle' | 'copying' | 'copied' | 'error';
+type SessionActionState =
+  | { status: 'loading' }
+  | { status: 'ready'; url: string }
+  | { status: 'error' };
+
+type ContributedSessionAction = {
+  key: string;
+  action: PluginSessionAction;
+};
 
 /**
  * Private-session mark. Glyph plus the word, never colour alone: a reader
@@ -77,6 +87,7 @@ export default function SidebarSessionItem({
   onDeleteSession,
   t,
 }: SidebarSessionItemProps) {
+  const { plugins } = usePlugins();
   const sessionView = createSessionViewModel(session, currentTime, t);
   const privateLabel = t('session.private', { defaultValue: 'private' });
   const isSelected = selectedSession?.id === session.id;
@@ -87,9 +98,16 @@ export default function SidebarSessionItem({
   const [copyState, setCopyState] = useState<CopyState>('idle');
   const [providerSessionId, setProviderSessionId] = useState<string | null>(null);
   const providerIdRequestRef = useRef(0);
+  const sessionActionRequestRef = useRef(0);
+  const [sessionActionStates, setSessionActionStates] = useState<Record<string, SessionActionState>>({});
   const showAttentionIndicator = needsAttention && !isSelected;
   const showRecentIndicator = !showAttentionIndicator && !isProcessing && sessionView.isActive;
   const providerLabel = PROVIDER_LABELS[session.__provider];
+  const contributedSessionActions: ContributedSessionAction[] = plugins.flatMap((plugin) => (
+    plugin.enabled && Array.isArray(plugin.sessionActions)
+      ? plugin.sessionActions.map((action) => ({ key: `${plugin.name}:${action.id}`, action }))
+      : []
+  ));
 
   // While editing, dismiss only when the user clicks outside the inline rename panel
   // (matches Escape / cancel-button behaviour). The mobile rename lives inside the
@@ -152,12 +170,50 @@ export default function SidebarSessionItem({
     setProviderSessionId(null);
   };
 
+  const loadContributedSessionActions = async () => {
+    const requestId = ++sessionActionRequestRef.current;
+    setSessionActionStates(Object.fromEntries(
+      contributedSessionActions.map(({ key }) => [key, { status: 'loading' }]),
+    ));
+
+    await Promise.all(contributedSessionActions.map(async ({ key, action }) => {
+      try {
+        const endpoint = action.endpoint.replace('{sessionId}', encodeURIComponent(session.id));
+        const response = await authenticatedFetch(endpoint);
+        const payload = await response.json();
+        const rawUrl = payload?.url;
+        if (!response.ok || typeof rawUrl !== 'string') {
+          throw new Error('Session action is unavailable');
+        }
+        const url = new URL(rawUrl);
+        if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+          throw new Error('Session action returned an unsafe URL');
+        }
+        if (requestId !== sessionActionRequestRef.current) return;
+        setSessionActionStates((states) => ({
+          ...states,
+          [key]: { status: 'ready', url: url.toString() },
+        }));
+      } catch {
+        if (requestId !== sessionActionRequestRef.current) return;
+        setSessionActionStates((states) => ({ ...states, [key]: { status: 'error' } }));
+      }
+    }));
+  };
+
+  const resetContributedSessionActions = () => {
+    sessionActionRequestRef.current += 1;
+    setSessionActionStates({});
+  };
+
   const setOptionsOpen = (open: boolean) => {
     if (open) {
       setProviderSessionId(null);
       void loadProviderSessionId();
+      void loadContributedSessionActions();
     } else {
       resetCopyState();
+      resetContributedSessionActions();
     }
   };
 
@@ -197,17 +253,29 @@ export default function SidebarSessionItem({
     }
   };
 
+  const handleContributedSessionAction = (contributedAction: ContributedSessionAction) => {
+    const state = sessionActionStates[contributedAction.key];
+    if (state?.status === 'ready') {
+      window.open(state.url, '_blank', 'noopener,noreferrer');
+      setMobileOptionsOpen(false);
+      return;
+    }
+    if (state?.status !== 'loading') {
+      void loadContributedSessionActions();
+    }
+  };
+
   const isCopyPending = copyState === 'loading' || copyState === 'copying';
   const CopyStateIcon = copyState === 'copied' ? Check : Copy;
   const copyLabel = copyState === 'loading'
-    ? `Loading ${providerLabel} session ID…`
+    ? t('session.providerIdLoading', { provider: providerLabel, defaultValue: 'Loading {{provider}} session ID…' })
     : copyState === 'copied'
-      ? `${providerLabel} session ID copied`
+      ? t('session.providerIdCopied', { provider: providerLabel, defaultValue: '{{provider}} session ID copied' })
       : copyState === 'error'
         ? providerSessionId
-          ? `Couldn't copy ${providerLabel} session ID`
-          : `${providerLabel} session ID unavailable`
-        : `Copy ${providerLabel} session ID`;
+          ? t('session.providerIdCopyFailed', { provider: providerLabel, defaultValue: "Couldn't copy {{provider}} session ID" })
+          : t('session.providerIdUnavailable', { provider: providerLabel, defaultValue: '{{provider}} session ID unavailable' })
+        : t('session.providerIdCopy', { provider: providerLabel, defaultValue: 'Copy {{provider}} session ID' });
 
   return (
     <div className="group relative">
@@ -309,7 +377,7 @@ export default function SidebarSessionItem({
             animationClassName="animate-bottom-sheet-content-show motion-reduce:animate-none"
             className="bottom-0 left-0 top-auto max-w-none translate-x-0 translate-y-0 rounded-b-none rounded-t-2xl border-x-0 border-b-0 px-4 pb-safe-area-inset-bottom pt-3"
           >
-            <DialogTitle>Session options</DialogTitle>
+            <DialogTitle>{t('session.options', 'Session options')}</DialogTitle>
             <div className="mx-auto mb-4 h-1 w-10 rounded-full bg-muted-foreground/30" aria-hidden="true" />
 
             <div className="mb-4 flex items-center gap-3 px-1">
@@ -321,7 +389,7 @@ export default function SidebarSessionItem({
                   {sessionView.sessionName}
                 </p>
                 <p id="mobile-session-options-description" className="text-xs text-muted-foreground">
-                  {providerLabel} session
+                  {t('session.providerSession', { provider: providerLabel, defaultValue: '{{provider}} session' })}
                 </p>
               </div>
             </div>
@@ -329,7 +397,7 @@ export default function SidebarSessionItem({
             {isEditing ? (
               <div className="mb-3 space-y-2">
                 <label htmlFor={`mobile-session-rename-${session.id}`} className="block px-1 text-xs font-medium text-muted-foreground">
-                  Session name
+                  {t('session.name', 'Session name')}
                 </label>
                 <input
                   id={`mobile-session-rename-${session.id}`}
@@ -355,7 +423,7 @@ export default function SidebarSessionItem({
                     className="flex min-h-12 flex-1 items-center justify-center gap-2 rounded-xl bg-primary px-4 py-3 text-sm font-medium text-primary-foreground transition-transform active:scale-95"
                   >
                     <Check className="h-5 w-5 flex-shrink-0" />
-                    Save
+                    {t('actions.save')}
                   </button>
                   <button
                     type="button"
@@ -363,7 +431,7 @@ export default function SidebarSessionItem({
                     className="flex min-h-12 flex-1 items-center justify-center gap-2 rounded-xl border border-border bg-muted/35 px-4 py-3 text-sm font-medium text-foreground transition-colors active:bg-muted"
                   >
                     <X className="h-5 w-5 flex-shrink-0" />
-                    Cancel
+                    {t('actions.cancel')}
                   </button>
                 </div>
               </div>
@@ -375,7 +443,7 @@ export default function SidebarSessionItem({
                   className="flex min-h-12 w-full items-center gap-3 rounded-xl border border-border bg-muted/35 px-4 py-3 text-left text-foreground transition-colors active:bg-muted"
                 >
                   <Edit2 className="h-5 w-5 flex-shrink-0" />
-                  <span className="text-sm font-medium">Rename session</span>
+                  <span className="text-sm font-medium">{t('session.rename', 'Rename session')}</span>
                 </button>
 
                 <button
@@ -399,10 +467,41 @@ export default function SidebarSessionItem({
                   <span className="min-w-0 flex-1">
                     <span className="block text-sm font-medium">{copyLabel}</span>
                     {copyState === 'error' && (
-                      <span className="mt-0.5 block text-xs">Tap to try again.</span>
+                      <span className="mt-0.5 block text-xs">{t('session.tapToRetry', 'Tap to try again.')}</span>
                     )}
                   </span>
                 </button>
+
+                {contributedSessionActions.map((contributedAction) => {
+                  const state = sessionActionStates[contributedAction.key];
+                  const isLoading = !state || state.status === 'loading';
+                  return (
+                    <button
+                      key={contributedAction.key}
+                      type="button"
+                      onClick={() => handleContributedSessionAction(contributedAction)}
+                      disabled={isLoading}
+                      className={cn(
+                        'flex min-h-12 w-full items-center gap-3 rounded-xl border px-4 py-3 text-left transition-colors',
+                        state?.status === 'error'
+                          ? 'border-red-500/30 bg-red-500/10 text-red-700 dark:text-red-300'
+                          : 'border-border bg-muted/35 text-foreground active:bg-muted',
+                      )}
+                    >
+                      {isLoading ? (
+                        <Loader2 className="h-5 w-5 flex-shrink-0 animate-spin" />
+                      ) : (
+                        <ExternalLink className="h-5 w-5 flex-shrink-0" />
+                      )}
+                      <span className="min-w-0 flex-1">
+                        <span className="block text-sm font-medium">{contributedAction.action.label}</span>
+                        {state?.status === 'error' && (
+                          <span className="mt-0.5 block text-xs">{t('session.unavailableTapToRetry', 'Unavailable. Tap to try again.')}</span>
+                        )}
+                      </span>
+                    </button>
+                  );
+                })}
 
                 {!isProcessing && (
                   <button
@@ -414,7 +513,7 @@ export default function SidebarSessionItem({
                     className="flex min-h-12 w-full items-center gap-3 rounded-xl px-4 py-3 text-left text-red-600 transition-colors active:bg-red-500/10 dark:text-red-400"
                   >
                     <Trash2 className="h-5 w-5 flex-shrink-0" />
-                    <span className="text-sm font-medium">Archive or delete session</span>
+                    <span className="text-sm font-medium">{t('session.archiveOrDelete', 'Archive or delete session')}</span>
                   </button>
                 )}
               </div>
@@ -426,7 +525,7 @@ export default function SidebarSessionItem({
                 onClick={() => setMobileOptionsOpen(false)}
                 className="mb-3 mt-2 min-h-11 w-full rounded-xl text-sm font-medium text-muted-foreground transition-colors active:bg-muted"
               >
-                Cancel
+                {t('actions.cancel')}
               </button>
             )}
           </DialogContent>
@@ -548,8 +647,8 @@ export default function SidebarSessionItem({
               </>
             ) : (
               <ActionMenu
-                label="Session options"
-                ariaLabel={`Session options for ${sessionView.sessionName}`}
+                label={t('session.options', 'Session options')}
+                ariaLabel={t('session.optionsFor', { name: sessionView.sessionName, defaultValue: 'Session options for {{name}}' })}
                 icon={MoreHorizontal}
                 iconOnly
                 portal
@@ -563,28 +662,45 @@ export default function SidebarSessionItem({
                     <p className="truncate text-xs font-medium text-foreground" title={sessionView.sessionName}>
                       {sessionView.sessionName}
                     </p>
-                    <p className="mt-0.5 text-[11px] text-muted-foreground">{providerLabel} session</p>
+                    <p className="mt-0.5 text-[11px] text-muted-foreground">
+                      {t('session.providerSession', { provider: providerLabel, defaultValue: '{{provider}} session' })}
+                    </p>
                   </div>
                 )}
                 items={[
                   {
                     key: 'rename',
-                    label: 'Rename session',
+                    label: t('session.rename', 'Rename session'),
                     icon: Edit2,
                     onSelect: () => onStartEditingSession(session.id, sessionView.sessionName),
                   },
                   {
                     key: 'copy',
                     label: copyLabel,
-                    description: copyState === 'error' ? 'Click to try again.' : undefined,
+                    description: copyState === 'error' ? t('session.clickToRetry', 'Click to try again.') : undefined,
                     icon: CopyStateIcon,
                     loading: isCopyPending,
                     closeOnSelect: false,
                     onSelect: handleCopyAction,
                   },
+                  ...contributedSessionActions.map((contributedAction, index) => {
+                    const state = sessionActionStates[contributedAction.key];
+                    return {
+                      key: `plugin:${contributedAction.key}`,
+                      label: contributedAction.action.label,
+                      description: state?.status === 'error'
+                        ? t('session.unavailableClickToRetry', 'Unavailable. Click to try again.')
+                        : undefined,
+                      icon: ExternalLink,
+                      loading: !state || state.status === 'loading',
+                      closeOnSelect: state?.status === 'ready',
+                      showDividerBefore: index === 0,
+                      onSelect: () => handleContributedSessionAction(contributedAction),
+                    };
+                  }),
                   ...(!isProcessing ? [{
                     key: 'delete',
-                    label: 'Archive or delete session',
+                    label: t('session.archiveOrDelete', 'Archive or delete session'),
                     icon: Trash2,
                     isDanger: true,
                     showDividerBefore: true,

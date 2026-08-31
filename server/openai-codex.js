@@ -336,7 +336,7 @@ function captureCodexTurnSummary(session, item) {
  * history the UI renders. Its helper turn is ephemeral at the app-server level
  * and therefore never creates a rollout file or a junk sidebar session.
  */
-function queueCodexRecap({ sessionId, cwd, model, ws }) {
+function queueCodexRecap({ sessionId, cwd, model, locale, ws }) {
   if (!sessionId || !cwd) {
     return;
   }
@@ -345,6 +345,7 @@ function queueCodexRecap({ sessionId, cwd, model, ws }) {
     sessionId,
     cwd,
     model,
+    locale,
     // A turn that resolved no model leaves the choice to Codex. The recap
     // service's own default is a Claude alias, which the Codex app-server
     // cannot serve: the helper turn then fails with no output at all and the
@@ -697,6 +698,7 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
           sessionId: capturedSessionId || sessionId || null,
           cwd: workingDirectory,
           model: resolvedModel,
+          locale: options.locale,
           ws,
         });
       }

@@ -72,9 +72,6 @@
     "reportIssue": "Sorun Bildir",
     "starOnGithub": "GitHub'da Yıldızla"
   },
-  "branding": {
-    "openSource": "Açık Kaynak"
-  },
   "status": {
     "active": "Aktif",
     "inactive": "Pasif",
