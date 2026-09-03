@@ -50,7 +50,7 @@ export type HostRunView = {
  * goes through here.
  */
 export type PluginHost = {
-  /** Manifest name, e.g. "dudin-integrations". */
+  /** Manifest name, e.g. "acme-integrations". */
   pluginName: string;
   /** Absolute plugin directory (realpath). */
   pluginDir: string;
@@ -60,7 +60,7 @@ export type PluginHost = {
   /** A fresh express Router (plugins have no express of their own to import). */
   createRouter: () => Router;
   /**
-   * Mounts an express router at an absolute path (e.g. `/api/mission-control`).
+   * Mounts an express router at an absolute path (e.g. `/api/acme`).
    * The router is reachable exactly like a core route, ahead of the SPA
    * catch-all; the plugin decides authentication (see `auth`).
    */

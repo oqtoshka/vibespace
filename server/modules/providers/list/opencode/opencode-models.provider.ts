@@ -143,7 +143,7 @@ const OPEN_CODE_MODELS_LOCK_RETRIES = 3;
 const OPEN_CODE_MODELS_LOCK_RETRY_DELAY_MS = 500;
 // `<provider>/<model>`, where the model half may itself contain slashes: a
 // custom openai-compatible provider addresses HuggingFace-style ids such as
-// `dudin/cyankiwi/Qwen3.6-27B-AWQ-INT4`.
+// `homelab/cyankiwi/Qwen3.6-27B-AWQ-INT4`.
 const MODEL_ID_LINE = /^[a-z0-9][a-z0-9._-]*(?:\/[a-z0-9][a-z0-9._-]*)+$/i;
 // cross-spawn resolves .cmd shims/PATHEXT on Windows and delegates to
 // child_process.spawn everywhere else.
@@ -330,7 +330,7 @@ const isSupportedOpenCodeModelId = (id: string): boolean => (
  * Both the catalog listing and the session row report the *bare* model id
  * beside its provider, and for a custom openai-compatible provider that id can
  * itself contain a slash (`{"id": "cyankiwi/Qwen3.6-27B-AWQ-INT4",
- * "providerID": "dudin"}`). Treating any slash as "already qualified" dropped
+ * "providerID": "homelab"}`). Treating any slash as "already qualified" dropped
  * the provider half and made every such run exit 1, so qualification keys off
  * the provider prefix instead.
  */
@@ -503,7 +503,7 @@ const parseOpenCodeSessionModelValue = (rawModel: unknown): string | null => {
   }
 
   // Sessions store the model split in two — `{"id": "zhiqing/Qwen3.6-27B",
-  // "providerID": "dudin"}` — and the id half alone is not something
+  // "providerID": "homelab"}` — and the id half alone is not something
   // `opencode run --model` accepts, nor does it match any catalog entry, so
   // the picker could never highlight what the session was actually running.
   return qualifyOpenCodeModelId(id, readOptionalString(record.providerID) ?? null);

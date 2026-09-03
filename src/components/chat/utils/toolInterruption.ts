@@ -5,7 +5,7 @@
  * ordinary refusal result — "The user doesn't want to proceed with this tool
  * use…" — and marks the transcript row `interruptedByShutdown`. Read literally,
  * the transcript accuses the reader of rejecting a prompt they never saw (and
- * on vs.dudin.net the killer is usually the health-check watchdog restarting a
+ * in practice the killer is usually the health-check watchdog restarting a
  * momentarily unresponsive server). The flag is the only thing that separates
  * this from a real denial, so the UI keys off it rather than the text.
  */

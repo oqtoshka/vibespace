@@ -8,13 +8,13 @@ import {
   resolveProjectImagePath,
 } from './generatedImageArtifacts';
 
-const ORIGIN = 'https://vs.dudin.net';
+const ORIGIN = 'https://vibespace.example.com';
 const RELATIVE_IMAGE = '01a048c5-c925-7581-8cbc-75f7a3675525/exec-84797002-ffd9-42d6-afea-d4639b341709.png';
 
 test('resolves the reported same-origin generated image URL', () => {
   assert.equal(
     resolveGeneratedImageArtifactPath(
-      `${ORIGIN}/Users/dudin/.codex/generated_images/${RELATIVE_IMAGE}`,
+      `${ORIGIN}/Users/dev/.codex/generated_images/${RELATIVE_IMAGE}`,
       ORIGIN,
     ),
     RELATIVE_IMAGE,
@@ -23,19 +23,19 @@ test('resolves the reported same-origin generated image URL', () => {
 
 test('resolves root-absolute, file, encoded, and Windows generated image paths', () => {
   assert.equal(
-    resolveGeneratedImageArtifactPath(`/Users/dudin/.codex/generated_images/${RELATIVE_IMAGE}`, ORIGIN),
+    resolveGeneratedImageArtifactPath(`/Users/dev/.codex/generated_images/${RELATIVE_IMAGE}`, ORIGIN),
     RELATIVE_IMAGE,
   );
   assert.equal(
-    resolveGeneratedImageArtifactPath(`file:///Users/dudin/.codex/generated_images/${RELATIVE_IMAGE}`, ORIGIN),
+    resolveGeneratedImageArtifactPath(`file:///Users/dev/.codex/generated_images/${RELATIVE_IMAGE}`, ORIGIN),
     RELATIVE_IMAGE,
   );
   assert.equal(
-    resolveGeneratedImageArtifactPath('/Users/dudin/.codex/generated_images/folder%20name/image.png', ORIGIN),
+    resolveGeneratedImageArtifactPath('/Users/dev/.codex/generated_images/folder%20name/image.png', ORIGIN),
     'folder name/image.png',
   );
   assert.equal(
-    resolveGeneratedImageArtifactPath('C:\\Users\\dudin\\.codex\\generated_images\\run\\image.webp', ORIGIN),
+    resolveGeneratedImageArtifactPath('C:\\Users\\dev\\.codex\\generated_images\\run\\image.webp', ORIGIN),
     'run/image.webp',
   );
 });
@@ -46,8 +46,8 @@ test('rejects remote, traversal, unrelated, and active image URLs', () => {
     null,
   );
   assert.equal(resolveGeneratedImageArtifactPath('/api/logo.png', ORIGIN), null);
-  assert.equal(resolveGeneratedImageArtifactPath('/Users/dudin/.codex/generated_images/../auth.png', ORIGIN), null);
-  assert.equal(resolveGeneratedImageArtifactPath('/Users/dudin/.codex/generated_images/run/image.svg', ORIGIN), null);
+  assert.equal(resolveGeneratedImageArtifactPath('/Users/dev/.codex/generated_images/../auth.png', ORIGIN), null);
+  assert.equal(resolveGeneratedImageArtifactPath('/Users/dev/.codex/generated_images/run/image.svg', ORIGIN), null);
   assert.equal(resolveGeneratedImageArtifactPath('data:image/png;base64,abc', ORIGIN), null);
 });
 
@@ -59,7 +59,7 @@ test('builds the authenticated generated-image endpoint URL', () => {
 });
 
 test('resolves provider-neutral project image references', () => {
-  const projectRoot = '/Users/dudin/projects/mission-control';
+  const projectRoot = '/Users/dev/projects/demo-app';
   assert.equal(resolveProjectImagePath('art/icons.png', projectRoot, ORIGIN), 'art/icons.png');
   assert.equal(resolveProjectImagePath('/art/icons.png', projectRoot, ORIGIN), 'art/icons.png');
   assert.equal(
@@ -74,9 +74,9 @@ test('resolves provider-neutral project image references', () => {
 });
 
 test('rejects remote and out-of-project absolute image references', () => {
-  const projectRoot = '/Users/dudin/projects/mission-control';
+  const projectRoot = '/Users/dev/projects/demo-app';
   assert.equal(resolveProjectImagePath('https://example.com/image.png', projectRoot, ORIGIN), null);
-  assert.equal(resolveProjectImagePath('/Users/dudin/.ssh/secret.png', projectRoot, ORIGIN), null);
+  assert.equal(resolveProjectImagePath('/Users/dev/.ssh/secret.png', projectRoot, ORIGIN), null);
   assert.equal(resolveProjectImagePath('../secret.png', projectRoot, ORIGIN), null);
   assert.equal(resolveProjectImagePath('art/../../secret.png', projectRoot, ORIGIN), null);
   assert.equal(resolveProjectImagePath('notes/readme.md', projectRoot, ORIGIN), null);

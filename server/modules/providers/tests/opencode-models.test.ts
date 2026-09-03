@@ -34,12 +34,12 @@ openai/gpt-5.5-pro
 
 test('OpenCode models provider keeps ids whose model half contains a slash', () => {
   const ids = parseOpenCodeModelsStdout(`
-dudin/cyankiwi/Qwen3.6-27B-AWQ-INT4
+homelab/cyankiwi/Qwen3.6-27B-AWQ-INT4
 opencode/big-pickle
 `);
 
   assert.deepEqual(ids, [
-    'dudin/cyankiwi/Qwen3.6-27B-AWQ-INT4',
+    'homelab/cyankiwi/Qwen3.6-27B-AWQ-INT4',
     'opencode/big-pickle',
   ]);
 });
@@ -165,10 +165,10 @@ google/model-alpha
 
 test('OpenCode models provider qualifies custom-provider models whose id contains a slash', () => {
   const models = parseOpenCodeVerboseModelsStdout(`
-dudin/cyankiwi/Qwen3.6-27B-AWQ-INT4
+homelab/cyankiwi/Qwen3.6-27B-AWQ-INT4
 {
   "id": "cyankiwi/Qwen3.6-27B-AWQ-INT4",
-  "providerID": "dudin",
+  "providerID": "homelab",
   "name": "Qwen 3.6 27B (AWQ INT4)"
 }
 opencode/big-pickle
@@ -182,7 +182,7 @@ opencode/big-pickle
   const definition = buildOpenCodeDefinitionFromVerboseModels(models);
 
   assert.deepEqual(definition.OPTIONS.map((option) => option.value), [
-    'dudin/cyankiwi/Qwen3.6-27B-AWQ-INT4',
+    'homelab/cyankiwi/Qwen3.6-27B-AWQ-INT4',
     'opencode/big-pickle',
   ]);
 });
@@ -195,17 +195,17 @@ opencode/big-pickle
   "providerID": "opencode",
   "name": "Big Pickle"
 }
-dudin/cyankiwi/Qwen3.6-27B-AWQ-INT4
+homelab/cyankiwi/Qwen3.6-27B-AWQ-INT4
 {
   "id": "cyankiwi/Qwen3.6-27B-AWQ-INT4",
-  "providerID": "dudin",
+  "providerID": "homelab",
   "name": "Qwen 3.6 27B (AWQ INT4)"
 }
 `);
 
   assert.equal(
-    buildOpenCodeDefinitionFromVerboseModels(models, 'dudin/cyankiwi/Qwen3.6-27B-AWQ-INT4').DEFAULT,
-    'dudin/cyankiwi/Qwen3.6-27B-AWQ-INT4',
+    buildOpenCodeDefinitionFromVerboseModels(models, 'homelab/cyankiwi/Qwen3.6-27B-AWQ-INT4').DEFAULT,
+    'homelab/cyankiwi/Qwen3.6-27B-AWQ-INT4',
   );
   assert.equal(buildOpenCodeDefinitionFromVerboseModels(models, 'gone/model').DEFAULT, 'opencode/big-pickle');
   assert.equal(buildOpenCodeDefinitionFromVerboseModels(models).DEFAULT, 'opencode/big-pickle');
@@ -241,16 +241,16 @@ test('OpenCode models provider reads the configured model out of a commented con
     path.join(configDir, 'opencode.jsonc'),
     `{
   // self-hosted vLLM
-  "model": "dudin/cyankiwi/Qwen3.6-27B-AWQ-INT4" /* not opencode zen */
+  "model": "homelab/cyankiwi/Qwen3.6-27B-AWQ-INT4" /* not opencode zen */
 }`,
   );
-  assert.equal(readOpenCodeConfiguredModel(), 'dudin/cyankiwi/Qwen3.6-27B-AWQ-INT4');
+  assert.equal(readOpenCodeConfiguredModel(), 'homelab/cyankiwi/Qwen3.6-27B-AWQ-INT4');
 });
 
 test('stripJsonComments leaves comment-like sequences inside strings alone', () => {
   assert.equal(
-    stripJsonComments('{"baseURL": "https://llm.dudin.net/v1", // trailing\n "a": 1}'),
-    '{"baseURL": "https://llm.dudin.net/v1", \n "a": 1}',
+    stripJsonComments('{"baseURL": "https://llm.example.com/v1", // trailing\n "a": 1}'),
+    '{"baseURL": "https://llm.example.com/v1", \n "a": 1}',
   );
 });
 
@@ -274,7 +274,7 @@ if [ "$attempt" -lt 3 ]; then
   printf '\\033[91m\\033[1mError: \\033[0mUnexpected error\\n\\ndatabase is locked\\n' >&2
   exit 1
 fi
-echo "dudin/only-real-model"
+echo "homelab/only-real-model"
 `,
     { mode: 0o755 },
   );
@@ -289,7 +289,7 @@ echo "dudin/only-real-model"
 
   assert.equal(fs.readFileSync(counterPath, 'utf8'), '3');
   assert.equal(models.PROVISIONAL, undefined);
-  assert.deepEqual(models.OPTIONS.map((option) => option.value), ['dudin/only-real-model']);
+  assert.deepEqual(models.OPTIONS.map((option) => option.value), ['homelab/only-real-model']);
 });
 
 test('OpenCode models provider gives up immediately on failures that are not locks', async () => {
@@ -329,11 +329,11 @@ test('OpenCode session model values keep their provider half', () => {
   const parse = __testing.parseOpenCodeSessionModelValue;
 
   assert.equal(
-    parse('{"id":"zhiqing/Huihui-Qwen3.6-27B-abliterated-AWQ","providerID":"dudin","variant":"default"}'),
-    'dudin/zhiqing/Huihui-Qwen3.6-27B-abliterated-AWQ',
+    parse('{"id":"zhiqing/Huihui-Qwen3.6-27B-abliterated-AWQ","providerID":"homelab","variant":"default"}'),
+    'homelab/zhiqing/Huihui-Qwen3.6-27B-abliterated-AWQ',
   );
   // Already qualified, or no provider to qualify with: left alone.
-  assert.equal(parse('{"id":"dudin/model-a","providerID":"dudin"}'), 'dudin/model-a');
+  assert.equal(parse('{"id":"homelab/model-a","providerID":"homelab"}'), 'homelab/model-a');
   assert.equal(parse('{"id":"anthropic/claude-sonnet-4-5"}'), 'anthropic/claude-sonnet-4-5');
   assert.equal(parse('anthropic/claude-sonnet-4-5'), 'anthropic/claude-sonnet-4-5');
   assert.equal(parse(''), null);
