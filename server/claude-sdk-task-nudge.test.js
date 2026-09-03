@@ -180,7 +180,7 @@ test('a working-but-never-closing session is bounded by the nudge budget', async
 // The false-completion bug: a session parked on a question to the user must
 // NOT be nudged into closing that task. A task marked waitingOnUser (after the
 // last user turn) stands the supervisor down — the session is reaped, but the
-// ledger stays open, so Mission Control still shows the outstanding work.
+// ledger stays open, so an external supervisor still sees the outstanding work.
 test('a session whose open tasks all wait on the user is reaped without nudges, ledger left open', async () => {
   const sessionId = 'nudge-waiting-1';
 
@@ -199,7 +199,7 @@ test('a session whose open tasks all wait on the user is reaped without nudges, 
     await waitUntil(() => !isClaudeSDKSessionAlive(sessionId), 'the session to be reaped');
     assert.equal(received.filter(isNudge).length, 0, 'no nudges for a user-parked ledger');
     const onDisk = JSON.parse(fs.readFileSync(path.join(configDir, 'tasks', sessionId, '1.json'), 'utf8'));
-    assert.equal(onDisk.status, 'pending', 'the task must remain open for Mission Control');
+    assert.equal(onDisk.status, 'pending', 'the task must remain open for the supervisor');
   } finally {
     await abortClaudeSDKSession(sessionId).catch(() => {});
     __setClaudeQueryImpl(null);

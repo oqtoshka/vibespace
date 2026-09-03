@@ -3,7 +3,7 @@ import { monitorEventLoopDelay, PerformanceObserver, performance } from 'node:pe
 /**
  * Reports the two ways this server goes silent without dying.
  *
- * vs.dudin.net stops answering HTTP for minutes at a time, several times a
+ * A deployed instance stops answering HTTP for minutes at a time, several times a
  * day: the heartbeat monitor `site-vibespace-mac` records 16s timeouts on
  * `GET /` and the Grafana rule `heartbeat-monitor-down` fires (2026-08-31,
  * 05:49-05:57Z). The process neither crashes nor logs anything, so the window

@@ -113,7 +113,7 @@ test('events with no counterpart in the CLI output are dropped', () => {
 // The provider id is the first segment only: custom providers routinely serve
 // models whose own id contains slashes.
 test('a model id keeps every slash after the provider', () => {
-  assert.deepEqual(toModelRef('dudin/zhiqing/Qwen3-VL'), { providerID: 'dudin', id: 'zhiqing/Qwen3-VL' });
+  assert.deepEqual(toModelRef('homelab/zhiqing/Qwen3-VL'), { providerID: 'homelab', id: 'zhiqing/Qwen3-VL' });
   assert.deepEqual(toModelRef('anthropic/claude', 'high'), { providerID: 'anthropic', id: 'claude', variant: 'high' });
   assert.equal(toModelRef('bare-model-id'), null);
 });
@@ -227,7 +227,7 @@ test('a turn run over the server is written back as readable history', async () 
     persistOpenCodeTurn({
       sessionId: SESSION_ID,
       cwd: '/workspace/notes',
-      providerId: 'dudin',
+      providerId: 'homelab',
       modelId: 'vision-model',
       promptText: 'What colour is this image?',
       images: [{ path: '/assets/dot.png', name: 'dot.png' }],

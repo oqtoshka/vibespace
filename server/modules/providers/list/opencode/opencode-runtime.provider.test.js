@@ -104,7 +104,7 @@ const readBody = (request) => new Promise((resolve) => {
 
 const server = http.createServer(async (request, response) => {
   if (request.method === 'GET' && request.url === '/api/model') {
-    sendJson(response, 200, { data: [{ id: 'local', providerID: 'dudin' }] });
+    sendJson(response, 200, { data: [{ id: 'local', providerID: 'homelab' }] });
     return;
   }
   if (request.method === 'GET' && request.url === '/api/event') {
@@ -217,7 +217,7 @@ test('interactive OpenCode turns admit queued messages as live steers', { concur
 
     const running = spawnOpenCode('Start the task', {
       cwd: tempRoot,
-      model: 'dudin/local',
+      model: 'homelab/local',
       enableMidTurnInjection: true,
       ephemeral: true,
     }, writer);
@@ -515,7 +515,7 @@ async function createLockingOpenCodeExecutable(binDir, attemptsPath, lockedAttem
   await writeFile(scriptPath, `
 const fs = require('node:fs');
 if (process.argv[2] === 'models') {
-  console.log('dudin/only-real-model');
+  console.log('homelab/only-real-model');
   process.exit(0);
 }
 

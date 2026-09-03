@@ -2420,13 +2420,13 @@ const IGNORED_DIRS = new Set([
 //
 // The walk defaults to depth 10 with per-entry lstat and prunes only by
 // directory name, so its cost is set by whatever root the client asks for.
-// `/Users/dudin/projects` is a registered project: a default walk of it passes
+// A whole `~/projects` directory registered as one project: a default walk of it passes
 // 672,000 entries and is still going after 30s, building a JS object per entry.
 // On a host already in swap (2026-08-31: 16GB RAM, 8.5GB swap used, 4.1GB held
 // by the compressor) that allocation spike is what pushes the process into a
 // page-fault storm and freezes the event loop for 10-15s — the stalls behind
 // the `heartbeat-monitor-down` alert. Real projects are nowhere near this:
-// vibespace is 2.3k entries, anthill 25k.
+// this repo is 2.3k entries, a large monorepo 25k.
 const FILE_TREE_MAX_ENTRIES = 50_000;
 
 const DEFAULT_FS_CONCURRENCY = 64;
