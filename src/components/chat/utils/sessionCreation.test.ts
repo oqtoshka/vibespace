@@ -8,11 +8,11 @@ test('includes the first prompt so a new session gets an immediate provisional t
     provider: 'codex',
     projectPath: '/workspace/project',
     isPrivate: false,
-    initialMessage: 'Add Mission Control session links',
+    initialMessage: 'Add session deep links',
   }), {
     provider: 'codex',
     projectPath: '/workspace/project',
     private: false,
-    initialMessage: 'Add Mission Control session links',
+    initialMessage: 'Add session deep links',
   });
 });

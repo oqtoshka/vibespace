@@ -48,7 +48,7 @@ test('credentials the agent genuinely needs still reach it', () => {
     ANTHROPIC_AUTH_TOKEN: 'auth',
     CLAUDE_CODE_OAUTH_TOKEN: 'oauth',
     ANTHROPIC_BASE_URL: 'https://example.invalid',
-    ANTHILL_SERVICE_TOKEN: 'anthill',
+    ACME_SERVICE_TOKEN: 'acme',
     PATH: '/usr/bin',
     HOME: '/Users/someone',
   });
@@ -57,7 +57,7 @@ test('credentials the agent genuinely needs still reach it', () => {
   assert.equal(env.ANTHROPIC_AUTH_TOKEN, 'auth');
   assert.equal(env.CLAUDE_CODE_OAUTH_TOKEN, 'oauth');
   assert.equal(env.ANTHROPIC_BASE_URL, 'https://example.invalid');
-  assert.equal(env.ANTHILL_SERVICE_TOKEN, 'anthill');
+  assert.equal(env.ACME_SERVICE_TOKEN, 'acme');
   assert.equal(env.PATH, '/usr/bin');
   assert.equal(env.HOME, '/Users/someone');
 });

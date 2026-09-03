@@ -6,25 +6,25 @@ import { resolveMarkdownLinkPath } from './markdownLinks';
 test('preserves absolute file links when requested by the chat renderer', () => {
   assert.equal(
     resolveMarkdownLinkPath(
-      '/Users/me/projects/anthill/worktrees/risk-map/spec/system/domains/risk/README.md',
+      '/Users/dev/projects/demo-app/worktrees/risk-map/spec/system/domains/risk/README.md',
       null,
       true,
     ),
-    '/Users/me/projects/anthill/worktrees/risk-map/spec/system/domains/risk/README.md',
+    '/Users/dev/projects/demo-app/worktrees/risk-map/spec/system/domains/risk/README.md',
   );
 });
 
 test('keeps root-relative Markdown preview links project-relative', () => {
   assert.equal(
-    resolveMarkdownLinkPath('/docs/guide.md', '/Users/me/projects/vibespace/README.md'),
+    resolveMarkdownLinkPath('/docs/guide.md', '/Users/dev/projects/vibespace/README.md'),
     'docs/guide.md',
   );
 });
 
 test('resolves relative links from an absolute Markdown document path', () => {
   assert.equal(
-    resolveMarkdownLinkPath('../guide.md', '/Users/me/projects/vibespace/docs/reference.md'),
-    '/Users/me/projects/vibespace/guide.md',
+    resolveMarkdownLinkPath('../guide.md', '/Users/dev/projects/vibespace/docs/reference.md'),
+    '/Users/dev/projects/vibespace/guide.md',
   );
 });
 
