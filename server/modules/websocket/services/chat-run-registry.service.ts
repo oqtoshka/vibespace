@@ -10,6 +10,7 @@ import type {
   NormalizedMessage,
   RealtimeClientConnection,
 } from '@/shared/types.js';
+import { sessionAvatarUrl } from '@/shared/utils.js';
 
 type ChatRunStatus = 'running' | 'completed';
 
@@ -175,6 +176,7 @@ async function broadcastCanonicalSessionUpsert(appSessionId: string): Promise<vo
       summary: row.custom_name || '',
       messageCount: 0,
       lastActivity: row.updated_at ?? row.created_at ?? new Date().toISOString(),
+      avatarUrl: sessionAvatarUrl(row.provider_session_id, Boolean(row.is_private)),
     },
     project: project
       ? {

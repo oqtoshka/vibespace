@@ -14,6 +14,7 @@ import SidebarFooter from './SidebarFooter';
 import SidebarHeader from './SidebarHeader';
 import SidebarProjectList, { type SidebarProjectListProps } from './SidebarProjectList';
 import SidebarRecentConversations from './SidebarRecentConversations';
+import SidebarSessionAvatar from './SidebarSessionAvatar';
 
 function HighlightedSnippet({ snippet, highlights }: { snippet: string; highlights: { start: number; end: number }[] }) {
   const parts: ReactNode[] = [];
@@ -501,9 +502,13 @@ export default function SidebarContent({
                                       ? session.created_at
                                       : null,
                               isProjectArchived: true,
+                              avatarUrl: session.avatarUrl,
                             })}
                           >
-                            <LLMProviderLogo provider={session.__provider} className="h-3.5 w-3.5 flex-shrink-0" />
+                            <SidebarSessionAvatar
+                              provider={session.__provider}
+                              avatarUrl={session.avatarUrl}
+                            />
                             <div className="min-w-0 flex-1">
                               <div className="flex items-center gap-2">
                                 <span className="truncate text-xs font-normal text-foreground">
@@ -569,7 +574,10 @@ export default function SidebarContent({
                           className="flex min-w-0 flex-1 items-center gap-2 text-left transition-colors hover:text-foreground"
                           onClick={() => onArchivedSessionClick(session)}
                         >
-                          <LLMProviderLogo provider={session.provider} className="h-3.5 w-3.5 flex-shrink-0" />
+                          <SidebarSessionAvatar
+                            provider={session.provider}
+                            avatarUrl={session.avatarUrl}
+                          />
                           <div className="min-w-0 flex-1">
                             <div className="flex items-center gap-2">
                               <span className="truncate text-xs font-normal text-foreground">
