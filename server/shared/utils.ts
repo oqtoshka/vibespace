@@ -73,6 +73,25 @@ type NormalizedMessageInput =
     timestamp?: string | null;
   } & Record<string, unknown>;
 
+const DEFAULT_AVATAR_BASE_URL = 'https://mc.dudin.net/avatars';
+
+/**
+ * Mission Control keys avatars by the provider-native CLI session id, not by
+ * VibeSpace's stable app-facing id. Private sessions never report to Mission
+ * Control and therefore deliberately have no avatar URL.
+ */
+export function sessionAvatarUrl(
+  providerSessionId: string | null | undefined,
+  isPrivate: boolean,
+): string | null {
+  if (isPrivate || !providerSessionId?.trim()) {
+    return null;
+  }
+
+  const base = (process.env.MC_AVATAR_PUBLIC_BASE_URL || DEFAULT_AVATAR_BASE_URL).replace(/\/+$/, '');
+  return `${base}/${encodeURIComponent(providerSessionId.trim())}`;
+}
+
 // ---------------------------
 //----------------- HTTP HANDLER UTILITIES ------------
 /**

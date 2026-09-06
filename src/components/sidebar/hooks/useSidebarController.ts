@@ -945,6 +945,7 @@ export function useSidebarController({
     const sessionPayload: ProjectSession = {
       id: session.sessionId,
       summary: session.sessionTitle,
+      avatarUrl: session.avatarUrl,
       __provider: session.provider,
       __projectId: matchingProject?.projectId ?? session.projectId ?? undefined,
     };
