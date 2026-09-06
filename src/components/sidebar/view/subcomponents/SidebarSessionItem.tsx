@@ -12,6 +12,8 @@ import { createSessionViewModel, formatCompactAge } from '../../utils/utils';
 import LLMProviderLogo from '../../../llm-provider-logo/LLMProviderLogo';
 import { usePlugins, type PluginSessionAction } from '../../../../contexts/PluginsContext';
 
+import SidebarSessionAvatar from './SidebarSessionAvatar';
+
 type SidebarSessionItemProps = {
   project: Project;
   session: SessionWithProvider;
@@ -315,14 +317,11 @@ export default function SidebarSessionItem({
           onClick={selectMobileSession}
         >
           <div className="flex items-center gap-2">
-            <div
-              className={cn(
-                'w-5 h-5 rounded-md flex items-center justify-center flex-shrink-0',
-                isSelected ? 'bg-primary/10' : 'bg-muted/50',
-              )}
-            >
-              <LLMProviderLogo provider={session.__provider} className="h-3 w-3" />
-            </div>
+            <SidebarSessionAvatar
+              provider={session.__provider}
+              avatarUrl={session.avatarUrl}
+              className={cn('h-8 w-8', isSelected && 'ring-primary/40')}
+            />
 
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2">
@@ -554,14 +553,11 @@ export default function SidebarSessionItem({
           }}
         >
           <div className="flex w-full min-w-0 items-center gap-2">
-            <div
-              className={cn(
-                'flex h-5 w-5 flex-shrink-0 items-center justify-center rounded-md',
-                isSelected ? 'bg-primary/10' : 'bg-muted/50',
-              )}
-            >
-              <LLMProviderLogo provider={session.__provider} className="h-3 w-3" />
-            </div>
+            <SidebarSessionAvatar
+              provider={session.__provider}
+              avatarUrl={session.avatarUrl}
+              className={cn('h-7 w-7', isSelected && 'ring-primary/40')}
+            />
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2">
                 <div
