@@ -7,7 +7,8 @@ import { cn } from '../../../../lib/utils';
 import type { ProjectSession } from '../../../../types/app';
 import type { RecentConversationListItem } from '../../types/types';
 import { formatCompactAge } from '../../utils/utils';
-import LLMProviderLogo from '../../../llm-provider-logo/LLMProviderLogo';
+
+import SidebarSessionAvatar from './SidebarSessionAvatar';
 
 type SidebarRecentConversationsProps = {
   conversations: RecentConversationListItem[];
@@ -129,12 +130,11 @@ export default function SidebarRecentConversations({
                   : 'text-foreground hover:bg-accent/60',
               )}
             >
-              <span className={cn(
-                'flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-md',
-                isSelected ? 'bg-primary/10' : 'bg-muted/60',
-              )}>
-                <LLMProviderLogo provider={conversation.provider} className="h-3.5 w-3.5" />
-              </span>
+              <SidebarSessionAvatar
+                provider={conversation.provider}
+                avatarUrl={conversation.avatarUrl}
+                className={isSelected ? 'ring-primary/40' : undefined}
+              />
 
               <span className="min-w-0 flex-1">
                 <span className="block truncate text-[13px] font-normal leading-4">

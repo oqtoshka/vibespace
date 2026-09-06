@@ -48,6 +48,8 @@ export interface ProjectSession {
    * first one has been generated.
    */
   recap?: string;
+  /** Mission Control's memorable recognition image for this provider session. */
+  avatarUrl?: string | null;
   name?: string;
   createdAt?: string;
   created_at?: string;

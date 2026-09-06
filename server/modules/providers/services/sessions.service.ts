@@ -15,7 +15,7 @@ import type {
   NormalizedMessage,
   RewindResult,
 } from '@/shared/types.js';
-import { AppError } from '@/shared/utils.js';
+import { AppError, sessionAvatarUrl } from '@/shared/utils.js';
 
 /**
  * How long after discarding a helper session to re-check that the session
@@ -45,6 +45,7 @@ type ArchivedSessionListItem = {
   lastActivity: string | null;
   isProjectArchived: boolean;
   isPrivate: boolean;
+  avatarUrl: string | null;
 };
 
 type RecentSessionListItem = Pick<
@@ -242,6 +243,7 @@ function toSessionListItem(
     lastActivity: session.updated_at ?? session.created_at ?? null,
     isProjectArchived: Boolean(project?.isArchived),
     isPrivate: Boolean(session.is_private),
+    avatarUrl: sessionAvatarUrl(session.provider_session_id, Boolean(session.is_private)),
     isArchived: Boolean(session.isArchived),
     isSide: Boolean(session.is_side),
   };

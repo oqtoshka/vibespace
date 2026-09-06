@@ -10,6 +10,7 @@ import { sessionSynchronizerService } from '@/modules/providers/services/session
 import { WS_OPEN_STATE, connectedClients } from '@/modules/websocket/index.js';
 import type { LLMProvider } from '@/shared/types.js';
 import { generateDisplayName } from '@/modules/projects/index.js';
+import { sessionAvatarUrl } from '@/shared/utils.js';
 
 type WatcherEventType = 'add' | 'change';
 
@@ -192,6 +193,7 @@ async function buildSessionUpsertedEvent(updatedProviderSessionId: string): Prom
       messageCount: 0,
       lastActivity: row.updated_at ?? row.created_at ?? new Date().toISOString(),
       isPrivate: Boolean(row.is_private),
+      avatarUrl: sessionAvatarUrl(row.provider_session_id, Boolean(row.is_private)),
     },
     project: project
       ? {
