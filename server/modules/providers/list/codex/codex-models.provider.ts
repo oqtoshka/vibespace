@@ -123,6 +123,11 @@ export class CodexProviderModels implements IProviderModels {
     return CODEX_PREDEFINED_MODELS;
   }
 
+  /** Provider-model cache uses this to invalidate older bundled Codex catalogs after an upgrade. */
+  async getCatalogFingerprint(): Promise<string> {
+    return JSON.stringify(CODEX_PREDEFINED_MODELS);
+  }
+
   async getCurrentActiveModel(): Promise<ProviderCurrentActiveModel> {
     try {
       const raw = await readFile(CODEX_CONFIG_PATH, 'utf8');
