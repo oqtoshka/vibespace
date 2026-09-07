@@ -22,6 +22,22 @@ import {
 export const CODEX_PREDEFINED_MODELS: ProviderModelsDefinition = {
   OPTIONS: [
     {
+      value: 'gpt-6-astra',
+      label: 'GPT-6 Astra',
+      description: 'Most capable model for complex, demanding work.',
+      effort: {
+        default: 'medium',
+        values: [
+          { value: 'low' },
+          { value: 'medium' },
+          { value: 'high' },
+          { value: 'xhigh' },
+          { value: 'max' },
+          { value: 'ultra' },
+        ],
+      },
+    },
+    {
       value: 'gpt-5.6-sol',
       label: 'GPT-5.6 Sol',
       description: 'Latest frontier agentic coding model.',
