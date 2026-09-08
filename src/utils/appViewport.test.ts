@@ -31,8 +31,8 @@ function setup(height = 800, offsetTop = 0) {
     },
     bounds() {
       const top = Number.parseFloat(values.get('--app-viewport-top')!);
-      const bottom = target.innerHeight - Number.parseFloat(values.get('--app-viewport-bottom')!);
-      return { top, bottom, height: bottom - top };
+      const height = Number.parseFloat(values.get('--app-viewport-height')!);
+      return { top, bottom: top + height, height };
     },
   };
 }
@@ -78,6 +78,19 @@ test('does not subtract a keyboard twice when the layout viewport itself shrinks
   app.target.dispatchEvent(new Event('resize'));
   app.flush();
   assert.deepEqual(app.bounds(), { top: 0, bottom: 360, height: 360 });
+  app.cleanup?.();
+});
+
+test('visible bounds do not depend on a stale layout viewport height', () => {
+  const app = setup(360, 100);
+  app.target.innerHeight = 1200;
+  app.viewport.dispatchEvent(new Event('resize'));
+  app.flush();
+  assert.deepEqual(app.bounds(), { top: 100, bottom: 460, height: 360 });
+  app.target.innerHeight = 360;
+  app.viewport.dispatchEvent(new Event('scroll'));
+  app.flush();
+  assert.deepEqual(app.bounds(), { top: 100, bottom: 460, height: 360 });
   app.cleanup?.();
 });
 
