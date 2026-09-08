@@ -185,12 +185,14 @@
 
   .app-viewport.fixed.inset-0 {
     top: var(--app-viewport-top, 0px);
-    bottom: var(--app-viewport-bottom, 0px);
+    bottom: auto;
+    height: var(--app-viewport-height, 100dvh);
   }
 
   body.pwa-mode .app-viewport.fixed.inset-0 {
     top: calc(var(--app-viewport-top, 0px) + var(--header-total-padding));
-    bottom: var(--app-viewport-bottom, 0px);
+    bottom: auto;
+    height: calc(var(--app-viewport-height, 100dvh) - var(--header-total-padding));
   }
   
   /* Global transition defaults */
