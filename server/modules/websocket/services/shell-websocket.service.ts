@@ -1,3 +1,4 @@
+import { providerPolicy } from '@/modules/providers/index.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -210,6 +211,8 @@ function buildShellCommand(
   if (isPlainShell) {
     return initialCommand;
   }
+
+  providerPolicy.assertEnabled(provider);
 
   if (provider === 'cursor') {
     if (resumeSessionId) {

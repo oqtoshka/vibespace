@@ -162,7 +162,14 @@ function bootServer(slot) {
       const child = crossSpawn('opencode', ['serve', '--port', String(port), '--hostname', '127.0.0.1'], {
         cwd: workspace,
         stdio: ['ignore', 'pipe', 'pipe'],
-        env: { ...process.env, OPENCODE_SERVER_PASSWORD: password, ...slot.extraEnv() },
+        env: {
+          ...process.env,
+          ...slot.extraEnv(),
+          ...(process.env.VS_OPENCODE_SERVER_CONFIG_DIR
+            ? { OPENCODE_CONFIG_DIR: process.env.VS_OPENCODE_SERVER_CONFIG_DIR }
+            : {}),
+          OPENCODE_SERVER_PASSWORD: password,
+        },
       });
 
       let settled = false;

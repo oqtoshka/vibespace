@@ -1,3 +1,4 @@
+import { providerPolicy } from './services/provider-policy.service.js';
 import express, { type Request, type Response } from 'express';
 
 import { providerAuthService } from '@/modules/providers/services/provider-auth.service.js';
@@ -25,6 +26,10 @@ import type {
 import { AppError, asyncHandler, createApiSuccessResponse } from '@/shared/utils.js';
 
 const router = express.Router();
+router.param('provider', (req, res, next, value) => {
+  try { providerPolicy.assertEnabled(String(value).trim().toLowerCase()); next(); }
+  catch (error) { next(error); }
+});
 
 const readPathParam = (value: unknown, name: string): string => {
   if (typeof value === 'string') {

@@ -17,6 +17,8 @@ import i18n from './i18n/config.js';
  * auth gate and the authenticated WebSocket provider.
  */
 function AuthedApp() {
+  const workspaceInvite = new URLSearchParams(window.location.search).get('workspaceShare');
+  if (workspaceInvite) sessionStorage.setItem('workspace-share-invitation', workspaceInvite);
   return (
     <AuthProvider>
       <WebSocketProvider>

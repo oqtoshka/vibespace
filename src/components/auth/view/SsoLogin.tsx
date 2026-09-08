@@ -2,6 +2,7 @@ import { useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { KeyRound, Loader2 } from 'lucide-react';
 
+import { APP_TITLE } from '../../../constants/config';
 import type { SsoConfig } from '../types';
 import { readSsoError, clearSsoError } from '../utils';
 
@@ -42,8 +43,8 @@ export default function SsoLogin({ sso }: SsoLoginProps) {
 
   return (
     <AuthScreenLayout
-      title={t('login.title')}
-      description={t('sso.description', { provider: sso.providerLabel })}
+      title={APP_TITLE}
+      description={t('sso.description', { provider: sso.providerLabel }).replace('VibeSpace', APP_TITLE)}
       footerText={t('sso.footer', { provider: sso.providerLabel })}
     >
       <div className="space-y-4">

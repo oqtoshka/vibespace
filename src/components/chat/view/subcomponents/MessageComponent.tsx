@@ -1,3 +1,4 @@
+import { OPENCODE_LABEL } from '../../../../constants/providerPolicy';
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { PaperclipIcon, PencilIcon } from 'lucide-react';
@@ -372,7 +373,7 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
                         : provider === 'codex'
                           ? t('messageTypes.codex')
                           : provider === 'opencode'
-                              ? t('messageTypes.opencode', { defaultValue: 'OpenCode' })
+                              ? OPENCODE_LABEL
                               : t('messageTypes.claude'))}
               </div>
             </div>

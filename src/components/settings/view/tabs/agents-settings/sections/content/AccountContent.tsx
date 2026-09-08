@@ -1,3 +1,4 @@
+import { OPENCODE_LABEL, OPENCODE_DEFAULT_MODEL } from '../../../../../../../constants/providerPolicy';
 import { LogIn } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Badge, Button } from '../../../../../../../shared/view/ui';
@@ -46,8 +47,8 @@ const agentConfig: Record<AgentProvider, AgentVisualConfig> = {
     buttonClass: 'bg-gray-800 hover:bg-gray-900 active:bg-gray-950 dark:bg-gray-700 dark:hover:bg-gray-600 dark:active:bg-gray-500',
   },
   opencode: {
-    name: 'OpenCode',
-    description: 'OpenCode CLI assistant',
+    name: OPENCODE_LABEL,
+    description: `${OPENCODE_LABEL} assistant`,
     bgClass: 'bg-zinc-50 dark:bg-zinc-900/20',
     borderClass: 'border-zinc-200 dark:border-zinc-700',
     textClass: 'text-zinc-900 dark:text-zinc-100',
@@ -59,6 +60,7 @@ const agentConfig: Record<AgentProvider, AgentVisualConfig> = {
 export default function AccountContent({ agent, authStatus, onLogin }: AccountContentProps) {
   const { t } = useTranslation('settings');
   const config = agentConfig[agent];
+  const managed = authStatus.method === 'managed' || (agent === 'opencode' && Boolean(OPENCODE_DEFAULT_MODEL));
 
   return (
     <div className="space-y-6">
@@ -67,7 +69,7 @@ export default function AccountContent({ agent, authStatus, onLogin }: AccountCo
         <div>
           <h3 className="text-lg font-medium text-foreground">{config.name}</h3>
           <p className="text-sm text-muted-foreground">
-            {t(`agents.account.${agent}.description`, {
+            {managed ? `${config.name} is configured for your workspace.` : t(`agents.account.${agent}.description`, {
               defaultValue: config.description || `${config.name} CLI assistant`,
             })}
           </p>
@@ -110,7 +112,7 @@ export default function AccountContent({ agent, authStatus, onLogin }: AccountCo
             </div>
           </div>
 
-          {authStatus.method !== 'api_key' && (
+          {!managed && !authStatus.loading && !['api_key', 'managed'].includes(authStatus.method || '') && (
             <div className="border-t border-border/50 pt-4">
               <div className="flex items-center justify-between">
                 <div>

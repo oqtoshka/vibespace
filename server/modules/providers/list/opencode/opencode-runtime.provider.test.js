@@ -103,7 +103,7 @@ const readBody = (request) => new Promise((resolve) => {
 });
 
 const server = http.createServer(async (request, response) => {
-  if (request.method === 'GET' && request.url === '/api/model') {
+  if (request.method === 'GET' && request.url.split('?')[0] === '/api/model') {
     sendJson(response, 200, { data: [{ id: 'local', providerID: 'homelab' }] });
     return;
   }

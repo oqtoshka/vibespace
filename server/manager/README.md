@@ -179,6 +179,40 @@ VIBESPACE_MODE=multi VS_MANAGER_PORT=7000 VS_MANAGER_JWT_SECRET=dev \
   vibespace manager
 ```
 
+## Managed deployments
+
+Everything below is optional and off by default; a deployment where an
+operator, not the user, owns the worker fleet, the harness and the model
+catalog sets what it needs. Unset means the behaviour described elsewhere in
+this file.
+
+Manager:
+
+| variable | purpose |
+|---|---|
+| `VS_MANAGER_REGISTRY_FILE` | replaces the static user map with a controller-owned registry (`{version:1, expiresAt, workers:[{username, upstream, workerToken, workspaceDir, workspaceId?, enabled?}]}`). Re-read on change; an expired, corrupt or missing file denies everyone rather than keeping the last good snapshot. Requires `VS_MANAGER_AUTH=oidc`. Established shells are cut when their link changes or disappears. |
+| `VS_WORKSPACE_SERVICES=true` | mounts `/api/workspace-control` (folder/skill invitations, recovery points) and shows the "Workspace sharing & recovery" panel. The manager only records grants and jobs in `VS_WORKSPACE_CONTROL_DB` (required); applying mounts and snapshots is the deployment controller's job, workers never see that database. |
+
+Manager and worker (branding is served to the SPA as `/deployment-config.js`
+before it boots, so set these on both):
+
+| variable | purpose |
+|---|---|
+| `VS_APP_TITLE` | application and sign-in title |
+| `VS_ENABLED_PROVIDERS` | comma-separated allow-list of `claude,codex,cursor,opencode`. Hides the rest in the UI and rejects their API routes and shell launches. An explicit empty or unknown value fails closed (503). |
+| `VS_OPENCODE_LABEL` / `VS_OPENCODE_AVATAR` | display name and avatar path used wherever the OpenCode harness is named |
+| `VS_SESSION_AVATAR_URL` | one avatar for every session instead of the per-session external service |
+
+Worker only:
+
+| variable | purpose |
+|---|---|
+| `VS_OPENCODE_MANAGED=true` | report OpenCode as authenticated, and complete Git identity/onboarding from the system `gitconfig` instead of prompting |
+| `VS_OPENCODE_MODELS` | JSON `{DEFAULT, OPTIONS:[{value,label}]}` — authoritative catalog; custom-model edits return 403 |
+| `VS_OPENCODE_DEFAULT_MODEL` | model shown on the first rendered frame, before the catalog loads |
+| `VS_OPENCODE_SERVER_CONFIG_DIR` | `OPENCODE_CONFIG_DIR` for the HTTP runtime only, so it can run a different (read-only) config than the CLI |
+| `VS_DEFAULT_PROJECTS` | comma-separated paths registered as projects at boot, idempotently (`/workspace` → "My workspace", `/recovered` → "Recovered", others → "Shared with me") |
+
 ## Share links
 
 Public share links (`/api/share/:shareId/…`) carry no identity, so there is no

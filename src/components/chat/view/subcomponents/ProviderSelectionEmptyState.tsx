@@ -1,3 +1,4 @@
+import { isProviderEnabled, OPENCODE_LABEL, OPENCODE_DEFAULT_MODEL } from '../../../../constants/providerPolicy';
 import React, { useCallback, useMemo, useState } from "react";
 import { Check, ChevronDown, Plus } from "lucide-react";
 import { Trans, useTranslation } from "react-i18next";
@@ -33,8 +34,8 @@ const PROVIDER_META: { id: LLMProvider; name: string }[] = [
   { id: "claude", name: "Anthropic" },
   { id: "codex", name: "OpenAI" },
   { id: "cursor", name: "Cursor" },
-  { id: "opencode", name: "OpenCode" },
-];
+  { id: "opencode", name: OPENCODE_LABEL },
+].filter((entry) => isProviderEnabled(entry.id)) as { id: LLMProvider; name: string }[];
 
 const MOD_KEY =
   typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform) ? "⌘" : "Ctrl";
@@ -104,7 +105,7 @@ function getProviderDisplayName(p: LLMProvider) {
   if (p === "claude") return "Claude";
   if (p === "cursor") return "Cursor";
   if (p === "codex") return "Codex";
-  if (p === "opencode") return "OpenCode";
+  if (p === "opencode") return OPENCODE_LABEL;
   return "Claude";
 }
 
@@ -263,7 +264,7 @@ export default function ProviderSelectionEmptyState({
                     })}
                   </p>
                 </div>
-                <Button
+                {!OPENCODE_DEFAULT_MODEL && <Button
                   type="button"
                   variant="ghost"
                   size="sm"
@@ -272,7 +273,7 @@ export default function ProviderSelectionEmptyState({
                 >
                   <Plus className="h-3.5 w-3.5" />
                   {t("providerSelection.addModel", { defaultValue: "Add model" })}
-                </Button>
+                </Button>}
               </div>
               <Command filter={modelSearchFilter}>
                 <CommandInput
@@ -383,7 +384,7 @@ export default function ProviderSelectionEmptyState({
                 opencode: t("providerSelection.readyPrompt.opencode", {
                   model: opencodeModel,
                   defaultValue: "Ready with OpenCode {{model}}",
-                }),
+                }).replace("OpenCode", OPENCODE_LABEL),
               }[provider]
             }
           </p>

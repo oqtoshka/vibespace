@@ -1,3 +1,4 @@
+import { DEFAULT_PROVIDER, OPENCODE_LABEL } from '../../../../constants/providerPolicy';
 import { Folder } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { MainContentStateViewProps } from '../../types/types';
@@ -40,7 +41,7 @@ export default function MainContentStateView({ mode, isMobile, onMenuClick }: Ma
               <Folder className="h-7 w-7 text-muted-foreground" />
             </div>
             <h2 className="mb-2 text-xl font-semibold text-foreground">{t('mainContent.chooseProject')}</h2>
-            <p className="mb-5 text-sm leading-relaxed text-muted-foreground">{t('mainContent.selectProjectDescription')}</p>
+            <p className="mb-5 text-sm leading-relaxed text-muted-foreground">{t('mainContent.selectProjectDescription').replace('Claude', DEFAULT_PROVIDER === 'opencode' ? OPENCODE_LABEL : DEFAULT_PROVIDER === 'codex' ? 'Codex' : DEFAULT_PROVIDER === 'cursor' ? 'Cursor' : 'Claude')}</p>
             <div className="rounded-xl border border-primary/10 bg-primary/5 p-3.5">
               <p className="text-sm text-primary">
                 <strong>{t('mainContent.tip')}:</strong> {isMobile ? t('mainContent.createProjectMobile') : t('mainContent.createProjectDesktop')}

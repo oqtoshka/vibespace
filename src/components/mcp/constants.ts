@@ -1,10 +1,11 @@
+import { OPENCODE_LABEL } from '../../constants/providerPolicy';
 import type { McpFormState, McpProvider, McpScope, McpTransport } from './types';
 
 export const MCP_PROVIDER_NAMES: Record<McpProvider, string> = {
   claude: 'Claude',
   cursor: 'Cursor',
   codex: 'Codex',
-  opencode: 'OpenCode',
+  opencode: OPENCODE_LABEL,
 };
 
 export const MCP_SUPPORTED_SCOPES: Record<McpProvider, McpScope[]> = {

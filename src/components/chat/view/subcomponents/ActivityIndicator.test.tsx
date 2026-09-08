@@ -11,7 +11,7 @@ import ActivityIndicator from './ActivityIndicator';
 // for a static tab on a 144 Hz display. Nothing may animate when idle.
 
 test('Shimmer renders static text when inactive', () => {
-  const html = renderToStaticMarkup(React.createElement(Shimmer, { active: false }, 'Thinking…'));
+  const html = renderToStaticMarkup(React.createElement(Shimmer, { active: false, children: 'Thinking…' }));
   assert.doesNotMatch(html, /animate-shimmer/);
   assert.doesNotMatch(html, /bg-clip-text/);
   assert.match(html, /Thinking…/);
