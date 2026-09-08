@@ -1,3 +1,4 @@
+import WorkspaceControlPanel from '../../../workspace-control/WorkspaceControlPanel';
 import { Settings, ArrowUpCircle, AlertTriangle } from 'lucide-react';
 import type { TFunction } from 'i18next';
 
@@ -88,6 +89,7 @@ export default function SidebarFooter({
         </>
       )}
 
+      <WorkspaceControlPanel />
       {/* Settings */}
       <div className="nav-divider" />
 

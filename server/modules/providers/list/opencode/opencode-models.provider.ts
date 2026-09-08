@@ -687,7 +687,18 @@ const runOpenCodeModelsCommandWithRetry = async (): Promise<string> => {
 export const __testing = { parseOpenCodeSessionModelValue };
 
 export class OpenCodeProviderModels implements IProviderModels {
+  private managedModels(): ProviderModelsDefinition | null {
+    if (!process.env.VS_OPENCODE_MODELS) return null;
+    const parsed = JSON.parse(process.env.VS_OPENCODE_MODELS) as ProviderModelsDefinition;
+    if (!Array.isArray(parsed.OPTIONS) || !parsed.OPTIONS.length || !parsed.OPTIONS.some(option => option.value === parsed.DEFAULT)) {
+      throw new Error('Invalid VS_OPENCODE_MODELS deployment catalog');
+    }
+    return parsed;
+  }
+
   async getSupportedModels(): Promise<ProviderModelsDefinition> {
+    const managed = this.managedModels();
+    if (managed) return managed;
     try {
       const stdout = await runOpenCodeModelsCommandWithRetry();
       const configuredModel = readOpenCodeConfiguredModel();
@@ -721,7 +732,7 @@ export class OpenCodeProviderModels implements IProviderModels {
 
   async getCurrentActiveModel(sessionId?: string): Promise<ProviderCurrentActiveModel> {
     if (!sessionId?.trim()) {
-      return buildDefaultProviderCurrentActiveModel(OPENCODE_PREDEFINED_MODELS);
+      return buildDefaultProviderCurrentActiveModel(this.managedModels() || OPENCODE_PREDEFINED_MODELS);
     }
 
     // OpenCode's `session` table is keyed by its own session id, so the stable
@@ -768,7 +779,7 @@ export class OpenCodeProviderModels implements IProviderModels {
       // Fall through to the curated default when OpenCode session lookup fails.
     }
 
-    return buildDefaultProviderCurrentActiveModel(OPENCODE_PREDEFINED_MODELS);
+    return buildDefaultProviderCurrentActiveModel(this.managedModels() || OPENCODE_PREDEFINED_MODELS);
   }
 
   /**

@@ -29,6 +29,10 @@ export const PROVIDER_MODELS_CACHE_TTL_MS = 3 * 24 * 60 * 60 * 1000;
 export const PROVIDER_MODELS_PROVISIONAL_CACHE_TTL_MS = 60 * 1000;
 const PROVIDER_MODELS_CACHE_VERSION = 2;
 const UNCACHED_PROVIDERS = new Set<LLMProvider>(['claude']);
+const hasManagedModels = (provider: LLMProvider): boolean => provider === 'opencode' && Boolean(process.env.VS_OPENCODE_MODELS);
+const assertModelsMutable = (provider: LLMProvider): void => {
+  if (hasManagedModels(provider)) throw new AppError('Models are managed by the workspace administrator.', { code: 'MANAGED_MODELS', statusCode: 403 });
+};
 
 /** Session-row access the service needs, narrowed so tests can stub it. */
 type ProviderModelsSessionStore = {
@@ -387,7 +391,7 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
     provider: LLMProvider,
     options: ProviderModelsOptions = {},
   ): Promise<ProviderModelsResult> => {
-    if (UNCACHED_PROVIDERS.has(provider)) {
+    if (UNCACHED_PROVIDERS.has(provider) || hasManagedModels(provider)) {
       const pendingRequest = pendingRequests.get(provider);
       if (pendingRequest) {
         return pendingRequest;
@@ -434,6 +438,7 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
 
   const customModelsUnavailable = new Set<LLMProvider>();
   const listCustomModels = (provider: LLMProvider): CustomProviderModelRecord[] => {
+    if (hasManagedModels(provider)) return [];
     try {
       return catalog.listCustomProviderModels(provider);
     } catch (error) {
@@ -499,6 +504,7 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
     provider: LLMProvider,
     input: CustomProviderModelInput,
   ): Promise<{ model: ProviderModelOption; models: ProviderModelsDefinition }> => {
+    assertModelsMutable(provider);
     const { models: predefined } = await getPredefinedProviderModels(provider);
     const normalized = normalizeCustomModelInput(input);
     assertModelIdAvailable(provider, predefined, normalized.id);
@@ -525,6 +531,7 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
     recordId: number,
     input: CustomProviderModelInput,
   ): Promise<{ model: ProviderModelOption; models: ProviderModelsDefinition }> => {
+    assertModelsMutable(provider);
     const { models: predefined } = await getPredefinedProviderModels(provider);
     readCustomModel(provider, recordId);
     const normalized = normalizeCustomModelInput(input);
@@ -558,6 +565,7 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
     provider: LLMProvider,
     recordId: number,
   ): Promise<{ model: ProviderModelOption; models: ProviderModelsDefinition }> => {
+    assertModelsMutable(provider);
     const { models: predefined } = await getPredefinedProviderModels(provider);
     readCustomModel(provider, recordId);
     const removed = catalog.deleteCustomProviderModel(provider, recordId, predefined.DEFAULT);

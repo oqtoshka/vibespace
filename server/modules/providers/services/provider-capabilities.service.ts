@@ -1,3 +1,4 @@
+import { providerPolicy } from './provider-policy.service.js';
 import type { LLMProvider } from '@/shared/types.js';
 
 /**
@@ -88,10 +89,11 @@ const PROVIDER_CAPABILITIES: Record<LLMProvider, ProviderCapabilities> = {
  */
 export const providerCapabilitiesService = {
   getProviderCapabilities(provider: LLMProvider): ProviderCapabilities {
+    providerPolicy.assertEnabled(provider);
     return PROVIDER_CAPABILITIES[provider];
   },
 
   listAllProviderCapabilities(): ProviderCapabilities[] {
-    return Object.values(PROVIDER_CAPABILITIES);
+    return providerPolicy.enabled().map((id) => PROVIDER_CAPABILITIES[id]);
   },
 };

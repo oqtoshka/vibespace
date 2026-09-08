@@ -1,3 +1,4 @@
+import { OPENCODE_LABEL } from '../../../../../constants/providerPolicy';
 import { cn } from '../../../../../lib/utils';
 import LLMProviderLogo from '../../../../llm-provider-logo/LLMProviderLogo';
 import type { AgentProvider, AuthStatus } from '../../../types/types';
@@ -29,7 +30,7 @@ const agentConfig: Record<AgentProvider, AgentConfig> = {
     color: 'gray',
   },
   opencode: {
-    name: 'OpenCode',
+    name: OPENCODE_LABEL,
     color: 'zinc',
   },
 };

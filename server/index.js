@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Load environment variables before other imports execute
 import './load-env.js';
+import { deploymentConfigRouter } from './modules/deployment-config/index.js';
 import { startEventLoopHealthMonitor } from './shared/event-loop-health.js';
 import fs, { promises as fsPromises } from 'fs';
 import path from 'path';
@@ -123,6 +124,7 @@ function readUsageNumber(value) {
 }
 
 const app = express();
+app.use(deploymentConfigRouter);
 const server = http.createServer(app);
 
 // Single WebSocket server that handles chat, shell, and plugin proxy paths.
@@ -2677,6 +2679,12 @@ async function startServer() {
     try {
         // Initialize authentication database
         await initializeDatabase();
+        // Operator-owned initial project registrations are idempotent at boot.
+        for (const projectPath of (process.env.VS_DEFAULT_PROJECTS || '').split(',').filter(Boolean)) {
+          if (!projectsDb.getProjectPath(projectPath)) {
+            projectsDb.createProjectPath(projectPath, projectPath === '/workspace' ? 'My workspace' : projectPath === '/recovered' ? 'Recovered' : 'Shared with me');
+          }
+        }
 
         // Configure Web Push (VAPID keys)
         configureWebPush();

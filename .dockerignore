@@ -1,0 +1,10 @@
+.git
+.env*
+node_modules
+dist
+dist-server*
+database
+scratchpad
+.playwright-mcp
+.tmp
+electron

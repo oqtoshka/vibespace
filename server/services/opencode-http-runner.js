@@ -1,3 +1,4 @@
+import { assertOpenCodeServerModel } from '../modules/providers/index.js';
 import { appendFilesInputTag, buildOpenCodePromptAttachments } from '../shared/image-attachments.js';
 import { createCompleteMessage, createNormalizedMessage, generateMessageId } from '../shared/utils.js';
 import { readOpenCodeTokenUsage } from '../shared/opencode-token-usage.js';
@@ -365,6 +366,17 @@ export async function runOpenCodeHttpTurn(command, options, ws, hooks = {}) {
   const resolvedModel = await providerModelsService.resolveResumeModel('opencode', sessionId, model);
   const variant = typeof effort === 'string' && effort !== 'default' ? effort : undefined;
   const modelRef = toModelRef(resolvedModel, variant);
+  if (modelRef) {
+    const query = new URLSearchParams({ 'location[directory]': workingDir });
+    let catalog = await requestJson(server, `/api/model?${query}`);
+    // A newly opened project builds its own catalog asynchronously.
+    const deadline = Date.now() + 10_000;
+    while (Array.isArray(catalog) && catalog.length === 0 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      catalog = await requestJson(server, `/api/model?${query}`);
+    }
+    assertOpenCodeServerModel(catalog, modelRef);
+  }
   const agent = resolveAgent(permissionMode);
 
   let activeSessionId = sessionId || null;

@@ -1,3 +1,4 @@
+import { OPENCODE_LABEL } from '../../../constants/providerPolicy';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ArrowDownIcon, LockIcon } from 'lucide-react';
@@ -438,7 +439,7 @@ function ChatInterface({
       : provider === 'codex'
         ? t('messageTypes.codex')
         : provider === 'opencode'
-            ? t('messageTypes.opencode', { defaultValue: 'OpenCode' })
+            ? OPENCODE_LABEL
           : t('messageTypes.claude');
 
   if (!selectedProject) {

@@ -1,3 +1,4 @@
+import { WORKSPACE_SERVICES, DEFAULT_PROVIDER, isProviderEnabled } from '../constants/providerPolicy';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { NavigateFunction } from 'react-router-dom';
 
@@ -517,8 +518,9 @@ export function useProjectsState({
 
   // Auto-select the project when there is only one, so the user lands on the new session page
   useEffect(() => {
-    if (!isLoadingProjects && projects.length === 1 && !selectedProject && !sessionId) {
-      setSelectedProject(projects[0]);
+    if (!isLoadingProjects && !selectedProject && !sessionId) {
+      const initial = WORKSPACE_SERVICES ? projects.find(project => project.path === '/workspace') : projects.length === 1 ? projects[0] : null;
+      if (initial) setSelectedProject(initial);
     }
   }, [isLoadingProjects, projects, selectedProject, sessionId]);
 
@@ -773,14 +775,7 @@ export function useProjectsState({
       providerFromStorage = null;
     }
 
-    const normalizedProvider: LLMProvider =
-      providerFromStorage === 'cursor'
-        ? 'cursor'
-        : providerFromStorage === 'codex'
-          ? 'codex'
-          : providerFromStorage === 'opencode'
-            ? 'opencode'
-            : 'claude';
+    const normalizedProvider: LLMProvider = providerFromStorage && isProviderEnabled(providerFromStorage) ? providerFromStorage as LLMProvider : DEFAULT_PROVIDER;
 
     setSelectedSession({
       id: sessionId,
@@ -810,7 +805,7 @@ export function useProjectsState({
     (session: ProjectSession) => {
       setSelectedSession(session);
 
-      const provider = localStorage.getItem('selected-provider') || 'claude';
+      const provider = localStorage.getItem('selected-provider') || DEFAULT_PROVIDER;
       if (provider === 'cursor') {
         sessionStorage.setItem('cursorSessionId', session.id);
       }

@@ -1,3 +1,4 @@
+import { OPENCODE_LABEL } from '../../../../../../constants/providerPolicy';
 import { PillBar, Pill } from '../../../../../../shared/view/ui';
 import LLMProviderLogo from '../../../../../llm-provider-logo/LLMProviderLogo';
 import type { AgentProvider } from '../../../../types/types';
@@ -7,7 +8,7 @@ const AGENT_NAMES: Record<AgentProvider, string> = {
   claude: 'Claude',
   cursor: 'Cursor',
   codex: 'Codex',
-  opencode: 'OpenCode',
+  opencode: OPENCODE_LABEL,
 };
 
 export default function AgentSelectorSection({

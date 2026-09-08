@@ -1,3 +1,4 @@
+import { ENABLED_PROVIDERS, DEFAULT_PROVIDER, OPENCODE_DEFAULT_MODEL } from '../../../constants/providerPolicy';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { authenticatedFetch } from '../../../utils/api';
@@ -21,16 +22,18 @@ const FALLBACK_DEFAULT_MODEL: Record<LLMProvider, string> = {
   claude: 'default',
   cursor: 'gpt-5.3-codex',
   codex: 'gpt-5.4',
-  opencode: 'anthropic/claude-sonnet-4-5',
+  opencode: OPENCODE_DEFAULT_MODEL || 'anthropic/claude-sonnet-4-5',
 };
 
-const PROVIDERS: LLMProvider[] = ['claude', 'cursor', 'codex', 'opencode'];
+const PROVIDERS = ENABLED_PROVIDERS;
 
 const readStoredProvider = (): LLMProvider => {
   const storedProvider = localStorage.getItem('selected-provider');
-  return PROVIDERS.includes(storedProvider as LLMProvider)
+  const selected = PROVIDERS.includes(storedProvider as LLMProvider)
     ? storedProvider as LLMProvider
-    : 'claude';
+    : DEFAULT_PROVIDER;
+  localStorage.setItem('selected-provider', selected);
+  return selected;
 };
 
 /**

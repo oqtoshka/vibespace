@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import '../load-env.js';
+import { WorkspaceControl, createWorkspaceControlRouter } from '../modules/workspace-services/index.js';
+import { deploymentConfigRouter } from '../modules/deployment-config/index.js';
 
 import cors from 'cors';
 import express from 'express';
@@ -77,6 +79,7 @@ export async function startManager(env = process.env) {
   const shareOwners = createShareOwnerIndex({ links: config.links });
 
   const app = express();
+  app.use(deploymentConfigRouter);
   const server = http.createServer(app);
 
   app.use(cors({ exposedHeaders: ['X-Refreshed-Token'], credentials: true }));
@@ -86,7 +89,7 @@ export async function startManager(env = process.env) {
       status: 'ok',
       role: 'manager',
       version: RUNNING_VERSION,
-      workers: backend.listWorkers?.() ?? [],
+      workers: [...config.links.values()].filter((link) => link.enabled).length,
     });
   });
 
@@ -99,6 +102,18 @@ export async function startManager(env = process.env) {
   for (const handler of preAuthHandlers) app.use(handler);
 
   if (resolver.router) app.use('/api/auth', resolver.router);
+
+  if (env.VS_WORKSPACE_SERVICES === 'true') {
+    if (!env.VS_WORKSPACE_CONTROL_DB) throw new Error('VS_WORKSPACE_CONTROL_DB is required');
+    const control = new WorkspaceControl(env.VS_WORKSPACE_CONTROL_DB, config.links);
+    app.use('/api/workspace-control', (req, res, next) => {
+      const identity = resolver.resolveUser(req, requestUrl(req));
+      if (identity.error) return res.status(ERROR_STATUS[identity.error] || 403).json({ error: identity.error });
+      res.locals.workspaceUser = identity.userId;
+      next();
+    }, express.json({ limit: '16kb' }), createWorkspaceControlRouter(control));
+    server.once('close', () => control.close());
+  }
 
   // Everything else that isn't a static asset belongs to a worker.
   app.use(async (req, res, next) => {
@@ -191,6 +206,15 @@ export async function startManager(env = process.env) {
       upgrade: true,
     });
 
+    // Revoke established sockets too; a previously valid JWT cannot keep a
+    // shell alive after unlinking, remapping or expiration of the registry.
+    const authorization = setInterval(() => {
+      const current = config.links.get(identity.userId);
+      if (!current?.enabled || current.upstream !== identity.link.upstream
+          || current.workerToken !== identity.link.workerToken) socket.destroy();
+    }, 1000);
+    authorization.unref();
+    socket.once('close', () => clearInterval(authorization));
     proxyUpgrade(req, socket, head, { entry, headers, backend });
   });
 

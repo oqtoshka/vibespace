@@ -41,6 +41,11 @@ export class OpenCodeProviderAuth implements IProviderAuth {
    */
   async getStatus(): Promise<ProviderAuthStatus> {
     const installed = this.checkInstalled();
+    if (process.env.VS_OPENCODE_MANAGED === 'true') {
+      return { installed, provider: 'opencode', authenticated: installed,
+        email: process.env.VS_OPENCODE_LABEL || 'OpenCode', method: 'managed',
+        error: installed ? undefined : 'Managed agent is unavailable' };
+    }
     const credentials = await this.checkCredentials();
 
     return {

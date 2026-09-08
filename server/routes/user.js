@@ -1,4 +1,5 @@
 import express from 'express';
+import { bootstrapManagedProfile } from '../modules/user/index.js';
 // cross-spawn: drop-in spawn with Windows .cmd/PATHEXT resolution.
 import spawn from 'cross-spawn';
 import { toClientVoiceSettings, userDb, voiceSettingsDb } from '../modules/database/index.js';
@@ -29,6 +30,7 @@ function spawnAsync(command, args, options = {}) {
 router.get('/git-config', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
+    await bootstrapManagedProfile(userId);
     let gitConfig = userDb.getGitConfig(userId);
 
     // If database is empty, try to get from system git config
@@ -132,6 +134,7 @@ router.post('/complete-onboarding', authenticateToken, async (req, res) => {
 router.get('/onboarding-status', authenticateToken, async (req, res) => {
   try {
     const userId = req.user.id;
+    await bootstrapManagedProfile(userId);
     const hasCompleted = userDb.hasCompletedOnboarding(userId);
 
     res.json({
