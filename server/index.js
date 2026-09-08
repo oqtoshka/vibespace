@@ -22,7 +22,7 @@ import { AppError, WORKSPACES_ROOT, getOpenCodeDatabasePath, resolveConfiguredCo
 import { recallContextUsage } from '@/shared/context-usage-cache.js';
 import { buildCodexTokenBudget } from '@/shared/codex-token-usage.js';
 import { getAdditionalFileRoots, validateAccessiblePath, validatePathInProject } from './utils/allowedPaths.js';
-import { buildFileAccessRoots } from '@/modules/file-tree/index.js';
+import { buildFileAccessRoots, fileTreeRoutes } from '@/modules/file-tree/index.js';
 import { closeSessionsWatcher, initializeSessionsWatcher, providerRuntimeService, registerPendingCliSession, registerSessionShredDependencies } from '@/modules/providers/index.js';
 import { getSubagentConversation } from '@/modules/providers/list/claude/claude-sessions.provider.js';
 import { createWebSocketServer } from '@/modules/websocket/index.js';
@@ -263,6 +263,9 @@ app.use('/api', validateApiKey);
 
 // Authentication routes (public)
 app.use('/api/auth', authRoutes);
+
+// File Tree API Routes (protected)
+app.use('/api/file-tree', authenticateToken, fileTreeRoutes);
 
 // Read a background task's output file (Claude Code `run_in_background` writes to
 // <tmp>/claude-<uid>/<project>/<session>/tasks/<id>.output). Scoped hard to that

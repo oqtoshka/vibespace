@@ -528,7 +528,7 @@ export const api = {
   },
 
   createFolder: (folderPath) =>
-    authenticatedFetch('/api/create-folder', {
+    authenticatedFetch('/api/file-tree/create-folder', {
       method: 'POST',
       body: JSON.stringify({ path: folderPath }),
     }),
