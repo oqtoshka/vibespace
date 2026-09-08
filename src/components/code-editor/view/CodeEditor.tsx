@@ -19,6 +19,7 @@ import CodeEditorSurface from './subcomponents/CodeEditorSurface';
 import CodeEditorBinaryFile from './subcomponents/CodeEditorBinaryFile';
 import CodeEditorPdfView from './subcomponents/CodeEditorPdfView';
 import CodeEditorImageView from './subcomponents/CodeEditorImageView';
+import CodeEditorMediaPreview from './subcomponents/CodeEditorMediaPreview';
 import { isImageFile } from '../utils/binaryFile';
 import { detectApiSpecKind } from '../utils/apiSpec';
 
@@ -102,6 +103,8 @@ export default function CodeEditor({
     saveSuccess,
     saveError,
     isBinary,
+    previewKind,
+    fileProjectId,
     handleSave,
     handleDownload,
   } = useCodeEditorDocument({
@@ -249,6 +252,31 @@ export default function CodeEditor({
         isFullscreen={isFullscreen}
         onClose={onClose}
         onToggleFullscreen={() => setIsFullscreen((previous) => !previous)}
+      />
+    );
+  }
+
+  if (isBinary && (previewKind === 'video' || previewKind === 'audio')) {
+    return (
+      <CodeEditorMediaPreview
+        key={`${fileProjectId}:${file.path}`}
+        file={file}
+        kind={previewKind}
+        projectId={fileProjectId}
+        isSidebar={isSidebar}
+        isFullscreen={isFullscreen}
+        onClose={onClose}
+        onToggleFullscreen={() => setIsFullscreen((previous) => !previous)}
+        labels={{
+          loading: t('filePreview.loading'),
+          error: t('filePreview.error'),
+          playbackError: t('filePreview.playbackError', 'Unable to play this file. The format or codec may not be supported by your browser. Download it to open in another player.'),
+          download: t('actions.download'),
+          openInNewTab: t('filePreview.openInNewTab'),
+          fullscreen: t('actions.fullscreen'),
+          exitFullscreen: t('actions.exitFullscreen'),
+          close: t('actions.close'),
+        }}
       />
     );
   }

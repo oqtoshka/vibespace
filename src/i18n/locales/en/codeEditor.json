@@ -38,6 +38,7 @@
     "message": "The file \"{{fileName}}\" cannot be displayed in the text editor because it is a binary file."
   },
   "filePreview": {
+    "playbackError": "Unable to play this file. The format or codec may not be supported by your browser. Download it to open in another player.",
     "loading": "Loading preview...",
     "error": "Unable to display this file.",
     "openInNewTab": "Open in new tab"

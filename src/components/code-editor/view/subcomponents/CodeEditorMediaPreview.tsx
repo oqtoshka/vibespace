@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { Download } from 'lucide-react';
 
 import { authenticatedFetch } from '../../../../utils/api';
 import type { CodeEditorFile } from '../../types/types';
@@ -17,6 +18,8 @@ type CodeEditorMediaPreviewProps = {
   labels: {
     loading: string;
     error: string;
+    playbackError: string;
+    download: string;
     openInNewTab: string;
     fullscreen: string;
     exitFullscreen: string;
@@ -74,7 +77,7 @@ export default function CodeEditorMediaPreview({
         // The content endpoint requires the auth header, so we fetch the bytes
         // ourselves and hand the media element a blob URL instead of a bare src.
         // Fetching a blob (rather than streaming) also lets <video>/<audio> seek.
-        const contentUrl = `/api/file-tree/projects/${projectId}/files/content?path=${encodeURIComponent(file.path)}`;
+        const contentUrl = `/api/projects/${encodeURIComponent(projectId)}/files/content?path=${encodeURIComponent(file.path)}`;
         const response = await authenticatedFetch(contentUrl, { signal: controller.signal });
 
         if (!response.ok) {
@@ -118,13 +121,13 @@ export default function CodeEditorMediaPreview({
         setUrl(objectUrl);
         setLoadedKey(sourceKey);
       } catch (loadError: unknown) {
-        if (loadError instanceof Error && loadError.name === 'AbortError') {
+        if (controller.signal.aborted) {
           return;
         }
         console.error('Error loading preview:', loadError);
         setError(labels.error);
       } finally {
-        setLoading(false);
+        if (!controller.signal.aborted) setLoading(false);
       }
     };
 
@@ -168,7 +171,15 @@ export default function CodeEditorMediaPreview({
         return <iframe src={currentUrl} title={file.name} className="h-full w-full border-0 bg-white" />;
       case 'video':
         return (
-          <video src={currentUrl} controls className="max-h-full max-w-full" autoPlay={false}>
+          <video
+            src={currentUrl}
+            controls
+            playsInline
+            preload="metadata"
+            aria-label={file.name}
+            className="max-h-full max-w-full"
+            onError={() => setError(labels.playbackError)}
+          >
             {labels.error}
           </video>
         );
@@ -176,7 +187,7 @@ export default function CodeEditorMediaPreview({
         return (
           <div className="flex w-full max-w-xl flex-col items-center gap-4 px-6">
             <p className="max-w-full truncate text-sm text-muted-foreground">{file.name}</p>
-            <audio src={currentUrl} controls className="w-full">
+            <audio src={currentUrl} controls preload="metadata" aria-label={file.name} className="w-full" onError={() => setError(labels.playbackError)}>
               {labels.error}
             </audio>
           </div>
@@ -187,14 +198,14 @@ export default function CodeEditorMediaPreview({
   };
 
   const previewBody = (
-    <div className="relative flex h-full w-full flex-col items-center justify-center bg-muted/30 p-2">
+    <div className="relative flex min-h-0 w-full flex-1 flex-col items-center justify-center overflow-hidden bg-muted/30 p-2">
       {loading && (
         <div className="text-sm text-muted-foreground">{labels.loading}</div>
       )}
 
-      {!loading && currentUrl && renderMedia()}
+      {!loading && currentUrl && !error && renderMedia()}
 
-      {!loading && !currentUrl && (
+      {!loading && (!currentUrl || error) && (
         <div className="flex flex-col items-center gap-3 p-8 text-center text-muted-foreground">
           <p className="text-sm">{error || labels.error}</p>
           <p className="break-all text-xs">{file.path}</p>
@@ -205,6 +216,17 @@ export default function CodeEditorMediaPreview({
 
   const headerActions = (
     <div className="flex shrink-0 items-center gap-0.5">
+      {currentUrl && (
+        <a
+          href={currentUrl}
+          download={file.name}
+          className="flex items-center justify-center rounded-md p-1.5 text-gray-600 hover:bg-gray-100 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-white"
+          aria-label={labels.download}
+          title={labels.download}
+        >
+          <Download className="h-4 w-4" />
+        </a>
+      )}
       {canOpenInNewTab && currentUrl && (
         <a
           href={currentUrl}
