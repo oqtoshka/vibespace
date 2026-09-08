@@ -56,6 +56,55 @@ async function withFileTreeServer(
   }
 }
 
+test('workspace browser returns JSON from the File Tree API namespace', async () => {
+  const inputs: Parameters<FileTreeServices['browseWorkspace']>[] = [];
+  const services = createFakeServices({
+    browseWorkspace: async (...input) => {
+      inputs.push(input);
+      return {
+        path: '/workspace',
+        suggestions: [{ path: '/workspace/example', name: 'example', type: 'directory' }],
+      };
+    },
+  });
+
+  await withFileTreeServer(services, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/api/file-tree/browse-filesystem?path=~`);
+
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get('content-type') ?? '', /^application\/json/);
+    assert.deepEqual(await response.json(), {
+      path: '/workspace',
+      suggestions: [{ path: '/workspace/example', name: 'example', type: 'directory' }],
+    });
+  });
+
+  assert.deepEqual(inputs, [['~']]);
+});
+
+test('workspace folder creation forwards the requested path', async () => {
+  const inputs: Parameters<FileTreeServices['createWorkspaceFolder']>[] = [];
+  const services = createFakeServices({
+    createWorkspaceFolder: async (...input) => {
+      inputs.push(input);
+      return { success: true, path: '/workspace/example' };
+    },
+  });
+
+  await withFileTreeServer(services, async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/api/file-tree/create-folder`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ path: '/workspace/example' }),
+    });
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { success: true, path: '/workspace/example' });
+  });
+
+  assert.deepEqual(inputs, [['/workspace/example']]);
+});
+
 test('project files route uses the File Tree API namespace and forwards the project id', async () => {
   const inputs: Parameters<FileTreeServices['listProjectFiles']>[] = [];
   const services = createFakeServices({
