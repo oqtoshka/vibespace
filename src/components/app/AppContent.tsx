@@ -17,6 +17,7 @@ import { useProjectsState } from '../../hooks/useProjectsState';
 import { useWorkspaceTabs } from '../../hooks/useWorkspaceTabs';
 import { useSessionPane, NEW_SESSION_KEY, type SessionView } from '../../hooks/useSessionPane';
 import { dbg } from '../../utils/debugLog';
+import { trackAppViewport } from '../../utils/appViewport';
 import type { WorkspaceApi } from '../main-content/types/types';
 import type { SidebarView } from '../sidebar/types/types';
 import type { AppTab, Project, ProjectSession } from '../../types/app';
@@ -336,25 +337,7 @@ function AppContentInner() {
   // `chat_subscribed` ack carries pending approvals on session open and on
   // reconnect, so no separate request is needed here.
 
-  // Adjust the app container to stay above the virtual keyboard on iOS Safari.
-  // On Chrome for Android the layout viewport already shrinks when the keyboard opens,
-  // so inset-0 adjusts automatically. On iOS the layout viewport stays full-height and
-  // the keyboard overlays it — we use the Visual Viewport API to track keyboard height
-  // and apply it as a CSS variable that shifts the container's bottom edge up.
-  useEffect(() => {
-    const vv = window.visualViewport;
-    if (!vv) return;
-    const update = () => {
-      // Only resize matters — keyboard open/close changes vv.height.
-      // Do NOT listen to scroll: on iOS Safari, scrolling content changes
-      // vv.offsetTop which would make --keyboard-height fluctuate during
-      // normal scrolling, causing the container to bounce up and down.
-      const kb = Math.max(0, window.innerHeight - vv.height);
-      document.documentElement.style.setProperty('--keyboard-height', `${kb}px`);
-    };
-    vv.addEventListener('resize', update);
-    return () => vv.removeEventListener('resize', update);
-  }, []);
+  useEffect(() => trackAppViewport(window, document.documentElement.style), []);
 
   const sidebarProps = {
     ...sidebarSharedProps,
@@ -373,7 +356,7 @@ function AppContentInner() {
   };
 
   return (
-    <div className="fixed inset-0 flex bg-background" style={{ bottom: 'var(--keyboard-height, 0px)' }}>
+    <div className="app-viewport fixed inset-0 flex bg-background">
       {!isMobile ? (
         <div
           ref={desktopSidebar.targetRef}

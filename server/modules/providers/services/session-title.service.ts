@@ -1,6 +1,6 @@
 import { sessionsDb } from '@/modules/database/index.js';
 import { broadcastSessionUpdate } from '@/modules/providers/services/sessions-watcher.service.js';
-import type { AnyRecord, ProviderRunFunction, ProviderRuntimeWriter } from '@/shared/types.js';
+import type { AnyRecord, ProviderRunFunction, ProviderRuntimeWriter } from '@/shared/index.js';
 
 const MAX_INITIAL_MESSAGE_CHARS = 2_000;
 const MAX_TITLE_CHARS = 60;
@@ -86,7 +86,10 @@ async function runInitialTitleGeneration(input: InitialSessionTitleInput): Promi
 
   await input.runQuery(buildInitialTitlePrompt(initialMessage), {
     cwd: input.cwd,
-    model: input.model,
+    // A catalog entry is not proof that the account can run it (for example,
+    // gpt-5.4-mini is rejected by ChatGPT-backed Codex accounts). Prefer the
+    // model already selected for this session over a speculative cheap helper.
+    model: session.model || input.model,
     effort: 'low',
     permissionMode: 'plan',
     ephemeral: true,
