@@ -11,7 +11,7 @@ export const IS_PLATFORM = import.meta.env.VITE_IS_PLATFORM === 'true';
  * per-deployment with the build-time env var `VITE_APP_TITLE`. Falls back to
  * the product name when unset.
  */
-export const APP_TITLE = import.meta.env.VITE_APP_TITLE?.trim() || 'VibeSpace';
+export const APP_TITLE = globalThis.window?.__VIBESPACE_CONFIG__?.title || import.meta.env.VITE_APP_TITLE?.trim() || 'VibeSpace';
 
 /**
  * For empty shell instances where no project is provided,

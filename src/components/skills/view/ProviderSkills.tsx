@@ -1,3 +1,4 @@
+import { OPENCODE_LABEL } from '../../../constants/providerPolicy';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useDropzone } from 'react-dropzone';
 import {
@@ -59,7 +60,7 @@ const PROVIDER_NAMES: Record<SkillsProvider, string> = {
   claude: 'Claude',
   codex: 'Codex',
   cursor: 'Cursor',
-  opencode: 'OpenCode',
+  opencode: OPENCODE_LABEL,
 };
 
 const PROVIDER_SKILL_PATHS: Record<Exclude<SkillsProvider, 'opencode'>, string> = {

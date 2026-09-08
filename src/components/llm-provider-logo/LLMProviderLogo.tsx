@@ -1,3 +1,4 @@
+import { OPENCODE_AVATAR, OPENCODE_LABEL } from '../../constants/providerPolicy';
 import type { LLMProvider } from '../../types/app';
 import ClaudeLogo from './ClaudeLogo';
 import CodexLogo from './CodexLogo';
@@ -22,6 +23,7 @@ export default function LLMProviderLogo({
   }
 
   if (provider === 'opencode') {
+    if (OPENCODE_AVATAR) return <img src={OPENCODE_AVATAR} alt={OPENCODE_LABEL} className={`${className} rounded-full object-cover`} />;
     return <OpenCodeLogo className={className} />;
   }
 

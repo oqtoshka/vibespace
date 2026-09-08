@@ -1,3 +1,4 @@
+import { isProviderEnabled, OPENCODE_LABEL } from '../../../../constants/providerPolicy';
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import {
   ArrowLeft,
@@ -23,8 +24,8 @@ const PROVIDERS: Array<{ id: LLMProvider; label: string }> = [
   { id: 'claude', label: 'Claude' },
   { id: 'codex', label: 'Codex' },
   { id: 'cursor', label: 'Cursor' },
-  { id: 'opencode', label: 'OpenCode' },
-];
+  { id: 'opencode', label: OPENCODE_LABEL },
+].filter((entry) => isProviderEnabled(entry.id)) as { id: LLMProvider; label: string }[];
 
 type ModelLibraryPanelProps = {
   initialProvider: LLMProvider;

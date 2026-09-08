@@ -1,3 +1,4 @@
+import { DEFAULT_PROVIDER, ENABLED_PROVIDERS } from '../../../../../constants/providerPolicy';
 import { useEffect, useMemo, useState } from 'react';
 
 import type { AgentCategory, AgentProvider } from '../../../types/types';
@@ -18,16 +19,16 @@ export default function AgentsSettingsTab({
   onCodexPermissionModeChange,
   projects,
 }: AgentsSettingsTabProps) {
-  const [selectedAgent, setSelectedAgent] = useState<AgentProvider>('claude');
+  const [selectedAgent, setSelectedAgent] = useState<AgentProvider>(DEFAULT_PROVIDER);
   const [selectedCategory, setSelectedCategory] = useState<AgentCategory>('account');
   const visibleCategories = useMemo<AgentCategory[]>(() => (
     selectedAgent === 'opencode'
-      ? ['account', 'permissions', 'mcp', 'context']
+      ? ['account', 'permissions', 'mcp', 'skills', 'context']
       : ['account', 'permissions', 'mcp', 'skills']
   ), [selectedAgent]);
 
   const visibleAgents = useMemo<AgentProvider[]>(() => {
-    return ['claude', 'cursor', 'codex', 'opencode'];
+    return ENABLED_PROVIDERS;
   }, []);
 
   const agentContextById = useMemo<Record<AgentProvider, AgentContext>>(() => ({

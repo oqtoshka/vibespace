@@ -76,10 +76,12 @@ export function persistOpenCodeTurn(turn) {
     // a turn that starts and finishes inside the same millisecond can be read
     // back with the answer above the question. One millisecond of separation is
     // what keeps the pair in the order it happened.
-    const lastInjectedAt = injectedMessages.reduce(
-      (latest, message) => Math.max(latest, Number(message?.createdAt) || 0),
-      created,
-    );
+    let previousInjectedAt = created;
+    const injectedTimes = injectedMessages.map((message) => {
+      previousInjectedAt = Math.max(previousInjectedAt + 1, Number(message?.createdAt) || 0);
+      return previousInjectedAt;
+    });
+    const lastInjectedAt = previousInjectedAt;
     const completed = Math.max(endedAt ?? Date.now(), lastInjectedAt + 1);
     const userMessageId = generateId('msg');
     const assistantId = assistantMessageId ?? generateId('msg');
@@ -115,8 +117,8 @@ export function persistOpenCodeTurn(turn) {
       }));
 
       let parentMessageId = userMessageId;
-      for (const injected of injectedMessages) {
-        const injectedAt = Math.max(Number(injected?.createdAt) || created, created);
+      for (const [index, injected] of injectedMessages.entries()) {
+        const injectedAt = injectedTimes[index];
         const injectedMessageId = generateId('msg');
         insertMessage.run(injectedMessageId, sessionId, injectedAt, injectedAt, JSON.stringify({
           role: 'user',

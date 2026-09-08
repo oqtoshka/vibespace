@@ -1,3 +1,4 @@
+import { ENABLED_PROVIDERS } from '../../constants/providerPolicy';
 import type { LLMProvider } from '../../types/app';
 
 export type ProviderAuthStatus = {
@@ -10,7 +11,7 @@ export type ProviderAuthStatus = {
 
 export type ProviderAuthStatusMap = Record<LLMProvider, ProviderAuthStatus>;
 
-export const CLI_PROVIDERS: LLMProvider[] = ['claude', 'cursor', 'codex', 'opencode'];
+export const CLI_PROVIDERS = ENABLED_PROVIDERS;
 
 export const PROVIDER_AUTH_STATUS_ENDPOINTS: Record<LLMProvider, string> = {
   claude: '/api/providers/claude/auth/status',

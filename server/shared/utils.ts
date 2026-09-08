@@ -89,6 +89,7 @@ export function sessionAvatarUrl(
     return null;
   }
 
+  if (process.env.VS_SESSION_AVATAR_URL) return process.env.VS_SESSION_AVATAR_URL;
   const base = (process.env.MC_AVATAR_PUBLIC_BASE_URL || DEFAULT_AVATAR_BASE_URL).replace(/\/+$/, '');
   return `${base}/${encodeURIComponent(providerSessionId.trim())}`;
 }

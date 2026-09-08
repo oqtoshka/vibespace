@@ -1,3 +1,4 @@
+import { OPENCODE_LABEL } from '../../../../constants/providerPolicy';
 import { useMemo, useState } from 'react';
 import {
   Activity,
@@ -63,7 +64,7 @@ const PROVIDER_LABELS: Record<string, string> = {
   claude: 'Claude',
   cursor: 'Cursor',
   codex: 'Codex',
-  opencode: 'OpenCode',
+  opencode: OPENCODE_LABEL,
 };
 
 const FALLBACK_COMMANDS: CommandEntry[] = [

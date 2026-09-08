@@ -1,3 +1,4 @@
+import { OPENCODE_LABEL } from '../../../../constants/providerPolicy';
 import { useEffect, useRef, useState } from 'react';
 import { Check, Copy, Edit2, ExternalLink, Loader2, Lock, MoreHorizontal, Trash2, X } from 'lucide-react';
 import type { TFunction } from 'i18next';
@@ -42,7 +43,7 @@ const PROVIDER_LABELS: Record<LLMProvider, string> = {
   claude: 'Claude',
   codex: 'Codex',
   cursor: 'Cursor',
-  opencode: 'OpenCode',
+  opencode: OPENCODE_LABEL,
 };
 
 type CopyState = 'loading' | 'idle' | 'copying' | 'copied' | 'error';

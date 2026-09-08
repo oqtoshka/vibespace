@@ -1,4 +1,6 @@
-import type { ReactNode } from 'react';
+import { useEffect, type ReactNode } from 'react';
+import { APP_TITLE } from '../../../constants/config';
+import { OPENCODE_AVATAR } from '../../../constants/providerPolicy';
 
 type AuthScreenLayoutProps = {
   title: string;
@@ -15,6 +17,7 @@ export default function AuthScreenLayout({
   footerText,
   logo,
 }: AuthScreenLayoutProps) {
+  useEffect(() => { document.title = APP_TITLE; }, []);
   return (
     <div className="relative h-screen overflow-y-auto bg-background">
       {/* Ambient, on-brand backdrop that gives the screen depth without
@@ -32,7 +35,7 @@ export default function AuthScreenLayout({
             <div className="mb-5 flex justify-center">
               {logo ?? (
                 <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-gradient-to-br from-primary to-primary/80 shadow-lg shadow-primary/25 ring-1 ring-inset ring-white/20">
-                  <img src="/logo.svg" alt="VibeSpace" className="h-9 w-9" />
+                  <img src={OPENCODE_AVATAR || "/logo.svg"} alt={APP_TITLE} className={OPENCODE_AVATAR ? "h-16 w-16 rounded-2xl object-cover" : "h-9 w-9"} />
                 </div>
               )}
             </div>

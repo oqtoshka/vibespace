@@ -1,3 +1,4 @@
+import { providerPolicy } from './services/provider-policy.service.js';
 import { ClaudeProvider } from '@/modules/providers/list/claude/claude.provider.js';
 import { CodexProvider } from '@/modules/providers/list/codex/codex.provider.js';
 import { CursorProvider } from '@/modules/providers/list/cursor/cursor.provider.js';
@@ -18,10 +19,11 @@ const providers: Record<LLMProvider, IProvider> = {
  */
 export const providerRegistry = {
   listProviders(): IProvider[] {
-    return Object.values(providers);
+    return providerPolicy.enabled().map((id) => providers[id]);
   },
 
   resolveProvider(provider: string): IProvider {
+    providerPolicy.assertEnabled(provider);
     const key = provider as LLMProvider;
     const resolvedProvider = providers[key];
     if (!resolvedProvider) {

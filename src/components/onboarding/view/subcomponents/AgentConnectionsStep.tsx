@@ -1,3 +1,4 @@
+import { OPENCODE_LABEL, isProviderEnabled } from '../../../../constants/providerPolicy';
 import type { LLMProvider } from '../../../../types/app';
 import type { ProviderAuthStatusMap } from '../../../provider-auth/types';
 
@@ -32,7 +33,7 @@ const providerCards = [
   },
   {
     provider: 'opencode' as const,
-    title: 'OpenCode',
+    title: OPENCODE_LABEL,
     connectedClassName: 'bg-zinc-100 dark:bg-zinc-800/50 border-zinc-300 dark:border-zinc-600',
     iconContainerClassName: 'bg-zinc-100 dark:bg-zinc-800',
     loginButtonClassName: 'bg-zinc-800 hover:bg-zinc-900 dark:bg-zinc-700 dark:hover:bg-zinc-600',
@@ -53,7 +54,7 @@ export default function AgentConnectionsStep({
       </div>
 
       <div className="-mr-1 max-h-[38vh] space-y-2 overflow-y-auto pr-1">
-        {providerCards.map((providerCard) => (
+        {providerCards.filter(card => isProviderEnabled(card.provider)).map((providerCard) => (
           <AgentConnectionCard
             key={providerCard.provider}
             provider={providerCard.provider}
