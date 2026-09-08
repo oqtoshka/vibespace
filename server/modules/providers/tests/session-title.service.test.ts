@@ -5,6 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { closeConnection, initializeDatabase, sessionsDb } from '@/modules/database/index.js';
+import { CodexSessionsProvider } from '@/modules/providers/list/codex/codex-sessions.provider.js';
 import {
   __testing,
   generateInitialSessionTitle,
@@ -77,6 +78,54 @@ test('does not overwrite a title the user supplied while the helper was running'
 
     assert.equal(result, null);
     assert.equal(sessionsDb.getSessionById('renamed-session')?.custom_name, 'My Session Name');
+  });
+});
+
+test('uses the recorded session model instead of a catalog-only helper model', { concurrency: false }, async () => {
+  await withDatabase(async (projectPath) => {
+    sessionsDb.createAppSession('supported-model-session', 'codex', projectPath, 'In mc and anthill');
+    sessionsDb.setSessionModel('supported-model-session', 'gpt-5.6-sol');
+    const result = await generateInitialSessionTitle({
+      sessionId: 'supported-model-session',
+      initialMessage: 'In mc and anthill fix the session status display',
+      cwd: projectPath,
+      model: 'gpt-5.4-mini',
+      runQuery: async (_prompt, options, writer) => {
+        assert.equal(options.model, 'gpt-5.6-sol');
+        writer.send({ kind: 'text', content: '{"title":"Session Status Display"}' });
+      },
+      onTitle() {},
+    });
+    assert.equal(result, 'Session Status Display');
+  });
+});
+
+test('generates a title when Codex reasoning contains a draft JSON object before the final reply', { concurrency: false }, async () => {
+  await withDatabase(async (projectPath) => {
+    sessionsDb.createAppSession('reasoning-session', 'codex', projectPath, 'In mc and anthill');
+    const provider = new CodexSessionsProvider();
+    const result = await generateInitialSessionTitle({
+      sessionId: 'reasoning-session',
+      initialMessage: 'In mc and anthill fix the session status display',
+      cwd: projectPath,
+      runQuery: async (_prompt, _options, writer) => {
+        // Shapes emitted by transformCodexItem for app-server item/completed.
+        for (const item of [
+          { type: 'item', itemType: 'reasoning', uuid: 'thinking', message: {
+            role: 'assistant', isReasoning: true,
+            content: 'A possible answer is {"title":"Status Display"}. I should be more specific.',
+          } },
+          { type: 'item', itemType: 'agent_message', uuid: 'answer', message: {
+            role: 'assistant', content: '{"title":"Session Status Display"}',
+          } },
+        ]) {
+          provider.normalizeMessage(item, 'helper-thread').forEach((frame) => writer.send(frame));
+        }
+      },
+      onTitle() {},
+    });
+    assert.equal(result, 'Session Status Display');
+    assert.equal(sessionsDb.getSessionById('reasoning-session')?.name_source, 'ai');
   });
 });
 

@@ -2,12 +2,12 @@ import fsSync from 'node:fs';
 import readline from 'node:readline';
 
 import { sessionsDb } from '@/modules/database/index.js';
-import { buildCodexTokenBudget } from '@/shared/codex-token-usage.js';
-import { createCompactBoundaryMessage, looksLikeCompactSummary } from '@/shared/compaction.js';
-import { extractToolResultImages, parseFilesInputTag, toImageAttachments } from '@/shared/image-attachments.js';
-import type { IProviderSessions } from '@/shared/interfaces.js';
-import type { AnyRecord, FetchHistoryOptions, FetchHistoryResult, NormalizedMessage } from '@/shared/types.js';
-import { createNormalizedMessage, generateMessageId, readObjectRecord, sliceTailPage } from '@/shared/utils.js';
+import type { AnyRecord, FetchHistoryOptions, FetchHistoryResult, IProviderSessions, NormalizedMessage } from '@/shared/index.js';
+import {
+  buildCodexTokenBudget, createCompactBoundaryMessage, createNormalizedMessage,
+  extractToolResultImages, generateMessageId, looksLikeCompactSummary,
+  parseFilesInputTag, readObjectRecord, sliceTailPage, toImageAttachments,
+} from '@/shared/index.js';
 
 const PROVIDER = 'codex';
 
@@ -665,6 +665,7 @@ async function getCodexSessionMessages(
   }
 }
 
+/** The Codex provider uses this adapter for history and normalized runtime events. */
 export class CodexSessionsProvider implements IProviderSessions {
   /**
    * Normalizes a persisted Codex JSONL entry.
@@ -793,7 +794,10 @@ export class CodexSessionsProvider implements IProviderSessions {
       return [];
     }
 
-    if (raw.message?.role || raw.type === 'compact_boundary') {
+    // Live items also carry message.role. Dispatch them by itemType first:
+    // treating a reasoning item as history turns it into ordinary assistant
+    // text, contaminating title/recap JSON with the model's draft answer.
+    if ((raw.type !== 'item' && raw.message?.role) || raw.type === 'compact_boundary') {
       return this.normalizeHistoryEntry(raw, sessionId);
     }
 

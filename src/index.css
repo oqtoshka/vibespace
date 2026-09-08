@@ -182,6 +182,16 @@
     right: var(--safe-area-inset-right);
     bottom: 0;
   }
+
+  .app-viewport.fixed.inset-0 {
+    top: var(--app-viewport-top, 0px);
+    bottom: var(--app-viewport-bottom, 0px);
+  }
+
+  body.pwa-mode .app-viewport.fixed.inset-0 {
+    top: calc(var(--app-viewport-top, 0px) + var(--header-total-padding));
+    bottom: var(--app-viewport-bottom, 0px);
+  }
   
   /* Global transition defaults */
   button, 
@@ -855,6 +865,20 @@
     display: block !important;
     scrollbar-width: thin;
     scrollbar-color: rgba(156, 163, 175, 0.3) transparent;
+  }
+
+  [data-slot="prompt-input-textarea"] {
+    max-height: min(300px, calc(var(--app-viewport-height, 100dvh) * 0.4));
+    /* Geometry must settle with the viewport; animating max-height lets Safari
+       pan to a caret that is still moving while the keyboard is opening. */
+    transition-property: color, background-color, border-color, box-shadow;
+  }
+
+  @media (pointer: coarse) {
+    /* Keep the mention overlay in sync and avoid Safari's focus auto-zoom. */
+    .chat-input-placeholder {
+      font-size: 16px;
+    }
   }
 
   /* Ensure container fits textarea tightly */
