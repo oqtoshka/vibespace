@@ -12,7 +12,6 @@ export function trackAppViewport(target: Window, style: CSSStyleDeclaration) {
     const top = Math.max(0, viewport.offsetTop);
     const height = viewport.height;
     style.setProperty('--app-viewport-top', `${top}px`);
-    style.setProperty('--app-viewport-bottom', `${Math.max(0, target.innerHeight - top - height)}px`);
     style.setProperty('--app-viewport-height', `${height}px`);
   };
   const scheduleUpdate = () => {
@@ -35,7 +34,6 @@ export function trackAppViewport(target: Window, style: CSSStyleDeclaration) {
     target.removeEventListener('pageshow', scheduleUpdate);
     if (frame !== null) target.cancelAnimationFrame(frame);
     style.removeProperty('--app-viewport-top');
-    style.removeProperty('--app-viewport-bottom');
     style.removeProperty('--app-viewport-height');
   };
 }

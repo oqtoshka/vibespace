@@ -328,6 +328,17 @@ export function useChatComposerState({
     { sessionId: string; clientMsgId: string; frame: unknown; attempts: number } | null
   >(null);
   const selectedProjectId = selectedProject?.projectId;
+  const persistDraft = useCallback((value: string) => {
+    if (!selectedProjectId) {
+      return;
+    }
+    const key = `draft_input_${selectedProjectId}`;
+    if (value !== '') {
+      safeLocalStorage.setItem(key, value);
+    } else {
+      safeLocalStorage.removeItem(key);
+    }
+  }, [selectedProjectId]);
 
   const handleBuiltInCommand = useCallback(
     (result: CommandExecutionResult) => {
@@ -739,6 +750,7 @@ export function useChatComposerState({
   const clearComposer = useCallback(() => {
     setInput('');
     inputValueRef.current = '';
+    persistDraft('');
     resetCommandMenuState();
     setAttachedImages([]);
     setUploadingImages(new Map());
@@ -747,10 +759,7 @@ export function useChatComposerState({
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
     }
-    if (selectedProjectId) {
-      safeLocalStorage.removeItem(`draft_input_${selectedProjectId}`);
-    }
-  }, [resetCommandMenuState, selectedProjectId]);
+  }, [persistDraft, resetCommandMenuState]);
 
   // Composer-level model preference for the active provider. Sent with every
   // turn (live send or queued) as an option; the backend resolves the rest.
@@ -1464,8 +1473,9 @@ export function useChatComposerState({
     const next = base ? `${base} ${text}` : text;
     setInput(next);
     inputValueRef.current = next;
+    persistDraft(next);
     if (send) handleSubmitRef.current?.(createFakeSubmitEvent());
-  }, [setInput]);
+  }, [persistDraft, setInput]);
 
   useEffect(() => {
     inputValueRef.current = input;
@@ -1487,12 +1497,8 @@ export function useChatComposerState({
     if (!selectedProjectId) {
       return;
     }
-    if (input !== '') {
-      safeLocalStorage.setItem(`draft_input_${selectedProjectId}`, input);
-    } else {
-      safeLocalStorage.removeItem(`draft_input_${selectedProjectId}`);
-    }
-  }, [input, selectedProjectId]);
+    persistDraft(input);
+  }, [input, persistDraft, selectedProjectId]);
 
   useEffect(() => {
     if (!textareaRef.current) {
@@ -1521,6 +1527,9 @@ export function useChatComposerState({
 
       setInput(newValue);
       inputValueRef.current = newValue;
+      // Save in the input event itself. A process restart can unload the page
+      // before React has a chance to run the persistence effect above.
+      persistDraft(newValue);
       setCursorPosition(cursorPos);
 
       if (!newValue.trim()) {
@@ -1532,7 +1541,7 @@ export function useChatComposerState({
 
       handleCommandInputChange(newValue, cursorPos);
     },
-    [handleCommandInputChange, resetCommandMenuState, setCursorPosition],
+    [handleCommandInputChange, persistDraft, resetCommandMenuState, setCursorPosition],
   );
 
   const handleKeyDown = useCallback(
@@ -1596,13 +1605,14 @@ export function useChatComposerState({
   const handleClearInput = useCallback(() => {
     setInput('');
     inputValueRef.current = '';
+    persistDraft('');
     resetCommandMenuState();
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
       textareaRef.current.focus();
     }
     setIsTextareaExpanded(false);
-  }, [resetCommandMenuState]);
+  }, [persistDraft, resetCommandMenuState]);
 
   const handleAbortSession = useCallback(() => {
     if (!canAbortSession) {
