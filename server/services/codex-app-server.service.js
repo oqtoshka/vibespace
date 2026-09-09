@@ -1,3 +1,4 @@
+import { codexApprovals } from '../modules/codex-approvals/index.js';
 import { createRequire } from 'node:module';
 import { collectAgentEnv } from '../shared/agent-env.js';
 import path from 'node:path';
@@ -156,10 +157,14 @@ export class CodexAppServerClient {
       return;
     }
 
-    // Server-initiated requests must always receive an answer. The previous
-    // non-interactive `codex exec` transport could not show these prompts, so
-    // retain that behavior: deny approvals and cancel interactive questions.
+    // Registered interactive turns wait for a human. Background helpers and
+    // unsupported request classes keep failing closed.
     if (message.id !== undefined && message.method) {
+      const approval = codexApprovals.request(message.params?.threadId, message.method, message.params || {});
+      if (approval) {
+        void approval.then(result => { if (!this.closed) this.#send({ id: message.id, result }); });
+        return;
+      }
       const result = (() => {
         switch (message.method) {
           case 'item/commandExecution/requestApproval':
@@ -167,6 +172,7 @@ export class CodexAppServerClient {
             return { decision: 'decline' };
           case 'item/permissions/requestApproval':
             return { permissions: {} };
+          case 'item/tool/requestUserInput':
           case 'tool/requestUserInput':
             return { answers: {} };
           case 'mcpServer/elicitation/request':

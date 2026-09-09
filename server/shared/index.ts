@@ -9,3 +9,7 @@ export { createNormalizedMessage, generateMessageId, readObjectRecord, sliceTail
 // Native chat shares provider identity and server-validated attachment formatting.
 export type { LLMProvider, AuthenticatedWebSocketRequest } from './types.js';
 export { appendFilesInputTag } from './image-attachments.js';
+
+// Runtime dispatch shares provider contracts through the shared barrel.
+export type { IProvider } from './interfaces.js';
+export type { ProviderModelsDefinition, ProviderPermissionDecision, ProviderRuntimeContext } from './types.js';
