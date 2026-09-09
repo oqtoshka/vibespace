@@ -340,6 +340,7 @@ function createBroadcastRun(appSessionId: string): ChatRun | null {
   };
 
   run.writer = new ChatSessionWriter({
+    broadcast: true,
     connection: broadcast,
     userId: null,
     provider,
