@@ -3,8 +3,10 @@ import { randomUUID } from 'node:crypto';
 import type { WebSocket } from 'ws';
 import { appConfigDb, sessionsDb, userDb } from '@/modules/database/index.js';
 import { sessionsService } from '@/modules/providers/index.js';
+import { nativeModelOptions, setNativeSelection, resolveNativeAttachments } from '@/modules/native-control/index.js';
+import { appendFilesInputTag } from '@/shared/index.js';
 import { voiceService } from '@/modules/voice/index.js';
-import type { AuthenticatedWebSocketRequest } from '@/shared/types.js';
+import type { AuthenticatedWebSocketRequest } from '@/shared/index.js';
 import { handleChatConnection } from './chat-websocket.service.js';
 import { chatRunRegistry } from './chat-run-registry.service.js';
 import { scopeNativeCommand, validNativeCapability } from './native-chat-policy.service.js';
@@ -22,7 +24,7 @@ export function handleNativeChat(ws: WebSocket, request: AuthenticatedWebSocketR
     ws.close(4403, 'Native chat authentication failed'); return;
   }
   const row = sessionsDb.getSessionById(sessionId);
-  if (!row) { ws.close(4404, 'Session no longer exists'); return; }
+  if (!row || row.is_private || row.is_side) { ws.close(4404, 'Session no longer exists'); return; }
   const send = (payload: Record<string, unknown>) => {
     if (ws.readyState === 1 && ws.bufferedAmount < 12 * 1024 * 1024) ws.send(JSON.stringify({ ...payload, sessionId }));
   };
@@ -59,7 +61,7 @@ export function handleNativeChat(ws: WebSocket, request: AuthenticatedWebSocketR
       const data = JSON.parse(raw.toString());
       requestId = typeof data.requestId === 'string' ? data.requestId.slice(0, 100) : undefined;
       const current = sessionsDb.getSessionById(sessionId);
-      if (!current) throw new Error('Session no longer exists');
+      if (!current || current.is_private || current.is_side) throw new Error('Session no longer exists');
       if (data.type === 'native.history') {
         if (historyBusy) throw new Error('History is already loading');
         const limit = Math.min(100, Math.max(1, Number(data.limit) || 50));
@@ -88,15 +90,35 @@ export function handleNativeChat(ws: WebSocket, request: AuthenticatedWebSocketR
         } finally { voiceBusy = false; }
         return;
       }
+      if (data.type === 'native.options' || data.type === 'native.select') {
+        if (data.type === 'native.select') {
+          if (chatRunRegistry.isProcessing(sessionId)) throw new Error('Change the model after the current response finishes');
+          await setNativeSelection(sessionId, data.model, data.effort || '');
+        }
+        const latest = sessionsDb.getSessionById(sessionId)!;
+        send({ kind: 'native.options', requestId, ...await nativeModelOptions(latest.provider as Parameters<typeof nativeModelOptions>[0]), model: latest.model, effort: latest.effort });
+        return;
+      }
       const command = scopeNativeCommand(data, sessionId);
       if (current.isArchived && command.type !== 'chat.subscribe') throw new Error('Session is archived; reopen it in VibeSpace');
       if (command.type === 'chat.permission-response') {
         const pending = dependencies.runtime.getPendingApprovalsForSession(sessionId);
-        if (!pending.some(p => p !== null && typeof p === 'object' && 'requestId' in p && p.requestId === command.requestId)) throw new Error('Permission request is no longer pending in this session');
+        const approval = pending.find(p => p !== null && typeof p === 'object' && 'requestId' in p && p.requestId === command.requestId) as { toolName?: string; input?: { questions?: { question: string }[] } } | undefined;
+        if (!approval) throw new Error('Permission request is no longer pending in this session');
+        if (data.answers !== undefined) {
+          if (approval.toolName !== 'AskUserQuestion' || !data.answers || typeof data.answers !== 'object' || Array.isArray(data.answers)) throw new Error('This permission does not accept question answers');
+          const questions = approval.input?.questions;
+          if (!Array.isArray(questions) || Object.keys(data.answers).some(key => !questions.some(q => q.question === key)) ||
+            Object.values(data.answers).some(value => typeof value !== 'string' || value.length > 4000)) throw new Error('Invalid question answers');
+          command.updatedInput = { ...approval.input, answers: data.answers };
+        }
       }
-      if (command.type === 'chat.send') command.options = {
+      if (command.type === 'chat.send' || command.type === 'chat.queue-add') {
+        if (data.attachments !== undefined) command.content = appendFilesInputTag(String(command.content), resolveNativeAttachments(sessionId, data.attachments));
+        command.options = {
         ...(current.model ? { model: current.model } : {}), ...(current.effort ? { reasoningEffort: current.effort, effort: current.effort } : {}),
       };
+      }
       facade.emit('message', JSON.stringify(command));
     } catch (error) { send({ kind: 'native.error', requestId, error: error instanceof Error ? error.message : 'Native chat failed' }); }
   });

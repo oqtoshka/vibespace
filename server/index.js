@@ -61,6 +61,7 @@ import userRoutes from './routes/user.js';
 import providerRoutes from './modules/providers/provider.routes.js';
 import { voiceRoutes } from '@/modules/voice/index.js';
 import browserUseRoutes from './modules/browser-use/browser-use.routes.js';
+import { nativeControlRoutes } from './modules/native-control/index.js';
 import { assetsRoutes } from './modules/assets/index.js';
 import browserUseMcpRoutes from './modules/browser-use/browser-use-mcp.routes.js';
 import { browserUseService } from './modules/browser-use/browser-use.service.js';
@@ -428,6 +429,7 @@ app.use('/api/projects', authenticateToken, projectModuleRoutes);
 
 // Chat image asset upload/serving (global ~/.vibespace/assets store, protected)
 app.use('/api/assets', authenticateToken, assetsRoutes);
+app.use('/api/native-control', nativeControlRoutes);
 
 // Git API Routes (protected)
 app.use('/api/git', authenticateToken, createGitModule({ queryClaude: queryClaudeSDK, queryCursor: spawnCursor }));
@@ -2740,6 +2742,7 @@ async function startServer() {
                 getSigningSecret: () => appConfigDb.getOrCreateJwtSecret(),
                 sessions: {
                     getById: (sessionId) => sessionsDb.getSessionById(sessionId),
+                    getPermissionMode: (sessionId) => sessionsDb.getSessionPermissionMode(sessionId),
                     createAppSession: (provider, cwd) => sessionsService.createAppSession(provider, cwd),
                     deleteOrArchiveById: (sessionId, options) =>
                         sessionsService.deleteOrArchiveSessionById(sessionId, options),

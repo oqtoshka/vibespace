@@ -13,8 +13,14 @@ export function scopeNativeCommand(data: Record<string, unknown>, sessionId: str
   switch (data.type) {
     case 'chat.subscribe': return { type: data.type, sessions: [{ sessionId, lastSeq: 0 }] };
     case 'chat.abort': return { type: data.type, sessionId };
+    case 'chat.queue-remove':
+      if (typeof data.id !== 'string' || !/^[a-zA-Z0-9_-]{1,100}$/.test(data.id)) throw new Error('Invalid queue item');
+      return { type: data.type, sessionId, id: data.id };
+    case 'chat.queue-add':
+      if (typeof data.id !== 'string' || !/^[a-zA-Z0-9-]{1,100}$/.test(data.id)) throw new Error('Invalid queue item');
+      return { ...scopeNativeCommand({ ...data, type: 'chat.send', clientMsgId: data.id }, sessionId), type: data.type, id: data.id };
     case 'chat.send':
-      if (typeof data.content !== 'string' || !data.content.trim() || data.content.length > 200_000 ||
+      if (typeof data.content !== 'string' || (!data.content.trim() && !(Array.isArray(data.attachments) && data.attachments.length)) || data.content.length > 200_000 ||
           typeof data.clientMsgId !== 'string' || !/^[a-zA-Z0-9-]{1,100}$/.test(data.clientMsgId)) throw new Error('Invalid message');
       return { type: data.type, sessionId, content: data.content, clientMsgId: data.clientMsgId };
     case 'chat.permission-response':
