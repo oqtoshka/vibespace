@@ -120,6 +120,7 @@ const getSessionSelectionKey = (provider: LLMProvider, sessionId: string): strin
 
 export function useChatProviderState({ selectedSession, selectedProject: _selectedProject }: UseChatProviderStateArgs) {
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('default');
+  const permissionSyncRevision = useRef(0);
   /**
    * Whether the NEXT new session starts private (no presence reporting, no
    * notifications, no recap). Decided before the first message and then fixed
@@ -483,7 +484,25 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     const savedMode = [sessionSavedMode, providerSavedMode].find(
       (mode): mode is PermissionMode => Boolean(mode && validModes.includes(mode)),
     );
-    setPermissionMode(savedMode ?? getDefaultPermissionModeForProvider(provider));
+    const revision = ++permissionSyncRevision.current;
+    let cancelled = false;
+    let settingsMode: PermissionMode | undefined;
+    try {
+      const settings = JSON.parse(localStorage.getItem(provider === 'claude' ? 'claude-settings' : provider === 'cursor' ? 'cursor-tools-settings' : 'codex-settings') || '{}');
+      if (provider === 'codex') settingsMode = settings.permissionMode;
+      else if ((provider === 'claude' || provider === 'cursor') && settings.skipPermissions) settingsMode = 'bypassPermissions';
+    } catch { /* Invalid legacy settings do not grant permissions. */ }
+    const defaultMode = [providerSavedMode, settingsMode].find(mode => mode && validModes.includes(mode)) ?? getDefaultPermissionModeForProvider(provider);
+    setPermissionMode(savedMode ?? defaultMode);
+    void authenticatedFetch('/api/settings/chat-permissions', {
+      method: 'PUT', body: JSON.stringify({ provider, sessionId: selectedSession?.id,
+        defaultMode, sessionMode: sessionSavedMode && validModes.includes(sessionSavedMode) ? sessionSavedMode : undefined, onlyIfMissing: true }),
+    }).then(async response => {
+      if (!response.ok) throw new Error('Permission preferences could not be synchronized');
+      const preferences = await response.json();
+      if (!cancelled && revision === permissionSyncRevision.current && validModes.includes(preferences.permissionMode)) setPermissionMode(preferences.permissionMode);
+    }).catch(error => console.warn('[permissions]', error));
+    return () => { cancelled = true; };
   }, [selectedSession?.id, provider, getDefaultPermissionModeForProvider, getPermissionModesForProvider]);
 
   useEffect(() => {
@@ -504,7 +523,11 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
   }, [selectedSession?.id]);
 
   const selectPermissionMode = useCallback((nextMode: PermissionMode) => {
+    permissionSyncRevision.current++;
     setPermissionMode(nextMode);
+    void authenticatedFetch('/api/settings/chat-permissions', {
+      method: 'PUT', body: JSON.stringify({ provider, sessionId: selectedSession?.id, defaultMode: nextMode, sessionMode: selectedSession?.id ? nextMode : undefined }),
+    }).then(response => { if (!response.ok) throw new Error('Permission preferences could not be saved'); }).catch(error => console.warn('[permissions]', error));
 
     // Persist per provider as well as per session: a brand-new chat has no
     // session id yet, and the per-provider key keeps the choice sticky when

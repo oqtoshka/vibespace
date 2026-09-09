@@ -131,11 +131,12 @@ CREATE TABLE IF NOT EXISTS sessions (
     project_path TEXT,
     jsonl_path TEXT,
     worktree_path TEXT,
-    -- Model and reasoning effort this session runs with. Written when the user
-    -- changes either selection and on every send, so reopening a session
-    -- restores its exact runtime configuration instead of provider defaults.
+    -- Model, reasoning effort, and permission mode this session runs with.
+    -- Written on every send so browserless follow-up messages can preserve the
+    -- same runtime configuration instead of falling back to provider defaults.
     model TEXT,
     effort TEXT,
+    permission_mode TEXT,
     isArchived BOOLEAN DEFAULT 0,
     -- 1 while this session only backs a \`/btw\` side question. Such a session is
     -- real and resumable but stays out of the session lists; "branching out"

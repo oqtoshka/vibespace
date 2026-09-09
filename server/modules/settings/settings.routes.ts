@@ -1,4 +1,5 @@
 import express from 'express';
+import { permissionPreferencesService } from '@/modules/providers/index.js';
 
 import type { createSettingsService } from './settings.service.js';
 
@@ -21,6 +22,9 @@ export function createSettingsRouter(
     async (req: express.Request, res: express.Response, next: express.NextFunction) => {
       try { res.json(await operation(req)); } catch (error) { next(error); }
     };
+
+  router.get('/chat-permissions', respond((req) => permissionPreferencesService.get(userId(req), queryString(req.query.provider) ?? '', queryString(req.query.sessionId) ?? undefined)));
+  router.put('/chat-permissions', respond((req) => permissionPreferencesService.update(userId(req), typeof req.body?.provider === 'string' ? req.body.provider : '', typeof req.body?.sessionId === 'string' ? req.body.sessionId : undefined, req.body ?? {})));
 
   router.get('/api-keys', respond((req) => service.listApiKeys(userId(req))));
   router.post('/api-keys', respond((req) => service.createApiKey(userId(req), req.body?.keyName)));

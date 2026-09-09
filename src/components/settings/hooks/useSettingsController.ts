@@ -1,3 +1,4 @@
+import { ENABLED_PROVIDERS } from '../../../constants/providerPolicy';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { useTheme } from '../../../contexts/ThemeContext';
@@ -283,6 +284,18 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
         permissionMode: codexPermissionMode,
         lastUpdated: now,
       }));
+
+      for (const [provider, defaultMode] of [
+        ['claude', claudePermissions.skipPermissions ? 'bypassPermissions' : 'default'],
+        ['cursor', cursorPermissions.skipPermissions ? 'bypassPermissions' : 'default'],
+        ['codex', codexPermissionMode],
+      ]) {
+        if (!ENABLED_PROVIDERS.some(enabled => enabled === provider)) continue;
+        const response = await authenticatedFetch('/api/settings/chat-permissions', {
+          method: 'PUT', body: JSON.stringify({ provider, defaultMode }),
+        });
+        if (!response.ok) throw new Error('Failed to save permission preferences');
+      }
 
       const notificationResponse = await authenticatedFetch('/api/settings/notification-preferences', {
         method: 'PUT',
