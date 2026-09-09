@@ -40,10 +40,11 @@ export async function setNativeSelection(id: string, model: unknown, effort: unk
   if (typeof model !== 'string' || !catalog.options.some(option => option.value === model)) throw new Error('Choose a model from this provider');
   const chosen = catalog.options.find(option => option.value === model);
   if (effort && !chosen?.effort?.values.some(option => option.value === effort)) throw new Error('This model does not support that effort');
-  if (typeof effort !== 'string' || !['', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].includes(effort)) throw new Error('Invalid reasoning effort');
+  if (typeof effort !== 'string' || effort.length > 64) throw new Error('Invalid reasoning effort');
   providerModelsService.setSessionModel(row.provider as LLMProvider, id, model);
-  if (effort) providerModelsService.setSessionEffort(row.provider as LLMProvider, id, effort);
-  return { model, effort: effort || row.effort };
+  const selectedEffort = effort || chosen?.effort?.default || '';
+  sessionsDb.setSessionEffort(id, selectedEffort);
+  return { model, effort: selectedEffort };
 }
 
 /** Native-control router owns the instance catalog; project paths are always resolved
@@ -64,7 +65,7 @@ export const nativeControlService = {
     const settings = input.model ? await nativeModelOptions(input.provider) : null;
     if (input.model && !settings?.options.some(option => option.value === input.model)) throw new Error('Invalid model');
     if (input.effort && !settings?.options.find(option => option.value === input.model)?.effort?.values.some(option => option.value === input.effort)) throw new Error('This model does not support that effort');
-    if (input.effort && !['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'].includes(input.effort)) throw new Error('Invalid effort');
+    if (input.effort !== undefined && (typeof input.effort !== 'string' || input.effort.length > 64)) throw new Error('Invalid effort');
     const digest = createHash('sha256').update(JSON.stringify([input.projectId, input.provider, input.title || '', input.model || '', input.effort || ''])).digest('hex');
     const receiptKey = `native_create:${input.requestId}`;
     const id = getConnection().transaction(() => {
