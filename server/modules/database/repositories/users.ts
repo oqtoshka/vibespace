@@ -37,6 +37,11 @@ type CreateUserResult = {
 // ---------------------------------------------------------------------------
 
 export const userDb = {
+  /** Native single-user chat transport fails closed on ambiguous installations. */
+  getSingleActiveUser(): UserPublicRow | undefined {
+    const rows = getConnection().prepare('SELECT id, username, created_at, last_login FROM users WHERE is_active = 1 LIMIT 2').all() as UserPublicRow[];
+    return rows.length === 1 ? rows[0] : undefined;
+  },
   /** Returns true if at least one user exists in the database. */
   hasUsers(): boolean {
     const db = getConnection();

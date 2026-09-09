@@ -87,7 +87,8 @@ function readTranscriptionPresets(): VoiceTranscriptionPresetConfig[] {
   return presets;
 }
 
-const voiceService = createVoiceService({
+/** Shared by HTTP voice routes and the authenticated native chat transport. */
+export const voiceService = createVoiceService({
   defaults: {
     // The server-controlled URL is intentional: the browser selects only an
     // opaque preset id and can never supply an outbound backend destination.
