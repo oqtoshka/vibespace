@@ -3,9 +3,10 @@ import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm, unlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import test from 'node:test';
+import test, { mock } from 'node:test';
+import { providerModelsService } from '@/modules/providers/index.js';
 import { appConfigDb, closeConnection, getConnection, initializeDatabase, projectsDb, sessionsDb, userDb } from '@/modules/database/index.js';
-import { authenticateNativeControl, nativeControlService, resolveNativeAttachments } from '../native-control.service.js';
+import { authenticateNativeControl, nativeControlService, resolveNativeAttachments, setNativeSelection } from '../native-control.service.js';
 
 test('federation credentials, idempotent creation, registered projects and session-bound files', async () => {
   const previous = process.env.DATABASE_PATH;
@@ -27,6 +28,14 @@ test('federation credentials, idempotent creation, registered projects and sessi
     assert.equal((await nativeControlService.create(input)).sessionId, first.sessionId);
     await assert.rejects(nativeControlService.create({ ...input, title: 'Changed' }), /different content/);
     await assert.rejects(nativeControlService.create({ ...input, requestId: randomUUID(), projectId: '/etc' }), /Project/);
+    const catalog = mock.method(providerModelsService, 'getProviderModels', async () => ({ models: {
+      DEFAULT: 'fixture-model', OPTIONS: [{ value: 'fixture-model', label: 'Fixture', effort: { default: 'low', values: [{ value: 'low' }, { value: 'ultra' }] } }],
+    } }));
+    try {
+      assert.equal((await setNativeSelection(first.sessionId, 'fixture-model', 'ultra')).effort, 'ultra');
+      assert.equal((await setNativeSelection(first.sessionId, 'fixture-model', '')).effort, 'low');
+      await assert.rejects(setNativeSelection(first.sessionId, 'fixture-model', 'made-up'), /does not support/);
+    } finally { catalog.mock.restore(); }
     const second = await nativeControlService.create({ ...input, requestId: randomUUID() });
     const file = await nativeControlService.upload(first.sessionId, '../../note.txt', 'text/plain', Buffer.from('attachment fixture'));
     const [stored] = resolveNativeAttachments(first.sessionId, [file.id]); cleanup.push(stored.path);
