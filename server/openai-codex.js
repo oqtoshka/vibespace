@@ -1,3 +1,4 @@
+import { codexApprovals } from './modules/codex-approvals/index.js';
 /**
  * OpenAI Codex App Server Integration
  * ====================================
@@ -441,6 +442,7 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
   let capturedSessionId = sessionId;
   let terminalFailure = null;
   let unsubscribe = null;
+  let releaseApprovals = null;
   let activeSession = null;
 
   const continueOpenPlan = async (terminalReason) => {
@@ -465,6 +467,7 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
     // installs its own. Withhold the terminal `complete` and recap until
     // the plan closes or the continuation service reaches its bound.
     unsubscribe?.();
+    releaseApprovals?.(); releaseApprovals = null;
     unsubscribe = null;
     activeSession.status = 'completed';
     sendMessage(ws, createNormalizedMessage({
@@ -510,6 +513,8 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
     }
 
     ws.setSessionId?.(capturedSessionId);
+    if (!ephemeral) releaseApprovals = codexApprovals.bind(capturedSessionId, appSessionId || capturedSessionId,
+      event => sendMessage(ws, createNormalizedMessage({ ...event, sessionId: capturedSessionId, provider: 'codex' })));
     if (!sessionId && !ephemeral) {
       sendMessage(ws, createNormalizedMessage({
         kind: 'session_created',
@@ -764,6 +769,7 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
     }
 
   } finally {
+    releaseApprovals?.();
     unsubscribe?.();
     // Update session status
     if (capturedSessionId) {

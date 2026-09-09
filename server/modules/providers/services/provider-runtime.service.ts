@@ -1,7 +1,8 @@
+import { codexApprovals } from '@/modules/codex-approvals/index.js';
 import { providerRegistry } from '@/modules/providers/provider.registry.js';
 import { providerModelsService } from '@/modules/providers/services/provider-models.service.js';
 import { sessionsService } from '@/modules/providers/services/sessions.service.js';
-import type { IProvider } from '@/shared/interfaces.js';
+import type { IProvider } from '@/shared/index.js';
 import type {
   AnyRecord,
   LLMProvider,
@@ -10,7 +11,7 @@ import type {
   ProviderRunFunction,
   ProviderRuntimeContext,
   ProviderRuntimeWriter,
-} from '@/shared/types.js';
+} from '@/shared/index.js';
 
 type ProviderRuntimeServiceDependencies = {
   listProviders(): IProvider[];
@@ -95,15 +96,16 @@ export function createProviderRuntimeService(
     },
 
     resolveToolApproval(requestId: string, decision: ProviderPermissionDecision): void {
+      codexApprovals.resolve(requestId, decision);
       for (const provider of dependencies.listProviders()) {
         provider.runtime.permissions?.resolve(requestId, decision);
       }
     },
 
     getPendingApprovalsForSession(sessionId: string): unknown[] {
-      return dependencies.listProviders().flatMap(
+      return [...codexApprovals.list(sessionId), ...dependencies.listProviders().flatMap(
         (provider) => provider.runtime.permissions?.listPending(sessionId) ?? [],
-      );
+      )];
     },
   };
 }
