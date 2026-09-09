@@ -37,7 +37,19 @@ export function handleNativeChat(ws: WebSocket, request: AuthenticatedWebSocketR
   };
   request.user = { id: user.id, userId: user.id, username: user.username };
   handleChatConnection(facade as unknown as WebSocket, request, dependencies);
-  ws.on('close', () => facade.emit('close'));
+  const runState = () => {
+    const run = chatRunRegistry.getRun(sessionId);
+    return `${run?.startedAt ?? ''}:${run?.status ?? ''}`;
+  };
+  let lastRunState = runState();
+  // An idle native viewer also needs to discover a turn started in the browser.
+  // Consult only the in-memory run registry; history is fetched on changes.
+  const stateTimer = setInterval(() => {
+    const next = runState();
+    if (next !== lastRunState) { lastRunState = next; send({ kind: 'native.session-state' }); }
+  }, 1000);
+  stateTimer.unref();
+  ws.on('close', () => { clearInterval(stateTimer); facade.emit('close'); });
   let historyBusy = false;
   let voiceBusy = false;
   ws.on('message', async raw => {
