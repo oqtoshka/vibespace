@@ -3,6 +3,7 @@ import type { Server as HttpServer } from 'node:http';
 import { WebSocket, WebSocketServer, type VerifyClientCallbackSync } from 'ws';
 
 import { handleChatConnection } from '@/modules/websocket/services/chat-websocket.service.js';
+import { handleNativeChat } from './native-chat.service.js';
 import { verifyWebSocketClient } from '@/modules/websocket/services/websocket-auth.service.js';
 import { handlePluginWsProxy } from '@/modules/websocket/services/plugin-websocket-proxy.service.js';
 import { handleShellConnection } from '@/modules/websocket/services/shell-websocket.service.js';
@@ -95,13 +96,19 @@ export function createWebSocketServer(
     server,
     verifyClient: ((
       info: Parameters<VerifyClientCallbackSync<AuthenticatedWebSocketRequest>>[0]
-    ) => verifyWebSocketClient(info, dependencies.verifyClient)),
+    ) => new URL(info.req.url ?? '/', 'http://localhost').pathname.startsWith('/native-chat/')
+      || verifyWebSocketClient(info, dependencies.verifyClient)),
   });
 
   wss.on('connection', (ws, request) => {
     const stopHeartbeat = attachWebSocketHeartbeat(ws);
 
     const incomingRequest = request as AuthenticatedWebSocketRequest;
+    if (new URL(request.url ?? '/', 'http://localhost').pathname.startsWith('/native-chat/')) {
+      try { handleNativeChat(ws, incomingRequest, dependencies.chat); }
+      catch { ws.close(1011, 'Native chat unavailable'); }
+      return;
+    }
 
     // Auth failures are accepted at handshake (see websocket-auth.service) and
     // closed here with a code the browser exposes, so clients can distinguish
