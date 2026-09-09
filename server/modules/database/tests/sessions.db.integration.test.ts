@@ -84,6 +84,17 @@ test('repository reads normalize SQLite UTC timestamps to ISO strings', async ()
   });
 });
 
+test('session rows preserve the permission mode used by the latest turn', async () => {
+  await withIsolatedDatabase(() => {
+    sessionsDb.createAppSession('session-mode', 'codex', '/workspace/demo-project');
+    assert.equal(sessionsDb.getSessionPermissionMode('session-mode'), null);
+
+    sessionsDb.setSessionPermissionMode('session-mode', 'bypassPermissions');
+
+    assert.equal(sessionsDb.getSessionPermissionMode('session-mode'), 'bypassPermissions');
+  });
+});
+
 test('recent sessions are globally ordered, paginated, and limited to visible conversations', async () => {
   await withIsolatedDatabase(() => {
     const fixtures: Array<Parameters<typeof sessionsDb.createSession>> = [
