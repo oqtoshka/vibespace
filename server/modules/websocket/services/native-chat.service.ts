@@ -58,7 +58,7 @@ export function handleNativeChat(ws: WebSocket, request: AuthenticatedWebSocketR
           const page = await sessionsService.fetchHistory(sessionId, { limit, offset });
           const run = chatRunRegistry.getRun(sessionId);
           send({ kind: 'native.history', requestId, ...page, runId: run?.startedAt ?? null,
-            running: run?.status === 'running', archived: current.isArchived,
+            running: run?.status === 'running', archived: Boolean(current.isArchived),
             replay: run?.status === 'running' ? chatRunRegistry.replayEvents(sessionId, 0) : [] });
         } finally { historyBusy = false; }
         return;
@@ -88,5 +88,5 @@ export function handleNativeChat(ws: WebSocket, request: AuthenticatedWebSocketR
       facade.emit('message', JSON.stringify(command));
     } catch (error) { send({ kind: 'native.error', requestId, error: error instanceof Error ? error.message : 'Native chat failed' }); }
   });
-  send({ kind: 'native.hello', version: 1, epoch, provider: row.provider, archived: row.isArchived, voice: voiceService.getHealth() });
+  send({ kind: 'native.hello', version: 1, epoch, provider: row.provider, archived: Boolean(row.isArchived), voice: voiceService.getHealth() });
 }
