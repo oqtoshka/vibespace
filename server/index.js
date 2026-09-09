@@ -54,6 +54,7 @@ import { taskmasterRoutes } from '@/modules/taskmaster/index.js';
 import { worktreesRoutes } from '@/modules/worktrees/index.js';
 import { commandsRoutes } from '@/modules/commands/index.js';
 import settingsRoutes from './routes/settings.js';
+import { permissionPreferencesRoutes } from './modules/settings/index.js';
 import agentRoutes from './routes/agent.js';
 import projectModuleRoutes from './modules/projects/projects.routes.js';
 import notificationRoutes from './modules/notifications/notifications.routes.js';
@@ -444,6 +445,7 @@ app.use('/api/taskmaster', authenticateToken, taskmasterRoutes);
 app.use('/api/commands', authenticateToken, commandsRoutes);
 
 // Settings API Routes (protected)
+app.use('/api/settings', authenticateToken, permissionPreferencesRoutes);
 app.use('/api/settings', authenticateToken, settingsRoutes);
 
 app.use('/api/notifications', authenticateToken, notificationRoutes);
