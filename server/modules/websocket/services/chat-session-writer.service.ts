@@ -8,6 +8,8 @@ import { createCompleteMessage, readObjectRecord } from '@/shared/utils.js';
 
 type ChatSessionWriterOptions = {
   connection: RealtimeClientConnection;
+  /** Server-initiated runs initially broadcast; first explicit subscriber replaces that fallback. */
+  broadcast?: boolean;
   userId: string | number | null;
   provider: LLMProvider;
   /** Provider-native id when resuming an existing session, otherwise null. */
@@ -53,6 +55,8 @@ export class ChatSessionWriter {
   isWebSocketWriter = true;
 
   private readonly options: ChatSessionWriterOptions;
+  private readonly connections = new Set<RealtimeClientConnection>();
+  private broadcasting: boolean;
   /**
    * The provider-native session id as the runtime knows it. Kept locally
    * (besides the registry) because runtimes read it back via `getSessionId()`
@@ -64,6 +68,8 @@ export class ChatSessionWriter {
   constructor(options: ChatSessionWriterOptions) {
     this.options = options;
     this.ws = options.connection;
+    this.connections.add(options.connection);
+    this.broadcasting = options.broadcast === true;
     this.userId = options.userId;
     this.providerSessionId = options.providerSessionId;
   }
@@ -117,6 +123,11 @@ export class ChatSessionWriter {
   }
 
   updateWebSocket(newConnection: RealtimeClientConnection): void {
+    if (this.broadcasting) { this.connections.clear(); this.broadcasting = false; }
+    for (const connection of this.connections) {
+      if (connection.readyState !== WS_OPEN_STATE) this.connections.delete(connection);
+    }
+    this.connections.add(newConnection);
     this.ws = newConnection;
   }
 
@@ -138,8 +149,10 @@ export class ChatSessionWriter {
   }
 
   private forward(message: NormalizedMessage): void {
-    if (this.ws.readyState === WS_OPEN_STATE) {
-      this.ws.send(JSON.stringify(message));
+    const raw = JSON.stringify(message);
+    for (const connection of this.connections) {
+      if (connection.readyState !== WS_OPEN_STATE) { this.connections.delete(connection); continue; }
+      try { connection.send(raw); } catch { this.connections.delete(connection); }
     }
   }
 }

@@ -222,7 +222,7 @@ test('replayEvents returns only events after the requested seq', async () => {
   });
 });
 
-test('attachConnection reroutes the live stream to a new socket', async () => {
+test('attachConnection keeps browser and native streams live without duplicate delivery', async () => {
   await withIsolatedDatabase(() => {
     sessionsDb.createAppSession('app-run-5', 'opencode', '/workspace/demo');
     const firstConnection = new FakeConnection();
@@ -239,10 +239,14 @@ test('attachConnection reroutes the live stream to a new socket', async () => {
 
     const secondConnection = new FakeConnection();
     assert.equal(chatRunRegistry.attachConnection('app-run-5', secondConnection), true);
+    assert.equal(chatRunRegistry.attachConnection('app-run-5', secondConnection), true);
     run.writer.send({ kind: 'stream_delta', provider: 'opencode', sessionId: 'o', content: 'after' });
 
-    assert.deepEqual(firstConnection.frames.map((frame) => frame.content), ['before']);
+    assert.deepEqual(firstConnection.frames.map((frame) => frame.content), ['before', 'after']);
     assert.deepEqual(secondConnection.frames.map((frame) => frame.content), ['after']);
+    firstConnection.readyState = 3;
+    run.writer.send({ kind: 'stream_delta', provider: 'opencode', sessionId: 'o', content: 'still connected' });
+    assert.deepEqual(secondConnection.frames.map((frame) => frame.content), ['after', 'still connected']);
   });
 });
 
