@@ -319,6 +319,9 @@ function recordSessionPreferences(provider: LLMProvider, sessionId: string, clie
   if (typeof clientOptions.effort === 'string' && clientOptions.effort.trim()) {
     providerModelsService.setSessionEffort(provider, sessionId, clientOptions.effort);
   }
+  if (typeof clientOptions.permissionMode === 'string' && clientOptions.permissionMode.trim()) {
+    sessionsDb.setSessionPermissionMode(sessionId, clientOptions.permissionMode !== 'plan' && clientOptions.toolsSettings?.skipPermissions ? 'bypassPermissions' : clientOptions.permissionMode);
+  }
 }
 
 /**

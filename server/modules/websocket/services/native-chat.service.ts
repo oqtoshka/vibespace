@@ -2,7 +2,7 @@ import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import type { WebSocket } from 'ws';
 import { appConfigDb, sessionsDb, userDb } from '@/modules/database/index.js';
-import { sessionsService } from '@/modules/providers/index.js';
+import { sessionsService, permissionPreferencesService } from '@/modules/providers/index.js';
 import { nativeModelOptions, setNativeSelection, resolveNativeAttachments } from '@/modules/native-control/index.js';
 import { appendFilesInputTag } from '@/shared/index.js';
 import { voiceService } from '@/modules/voice/index.js';
@@ -96,7 +96,7 @@ export function handleNativeChat(ws: WebSocket, request: AuthenticatedWebSocketR
           await setNativeSelection(sessionId, data.model, data.effort || '');
         }
         const latest = sessionsDb.getSessionById(sessionId)!;
-        send({ kind: 'native.options', requestId, ...await nativeModelOptions(latest.provider as Parameters<typeof nativeModelOptions>[0]), model: latest.model, effort: latest.effort });
+        send({ kind: 'native.options', requestId, ...await nativeModelOptions(latest.provider as Parameters<typeof nativeModelOptions>[0]), model: latest.model, effort: latest.effort, ...permissionPreferencesService.get(user.id, latest.provider, sessionId) });
         return;
       }
       const command = scopeNativeCommand(data, sessionId);
@@ -116,6 +116,7 @@ export function handleNativeChat(ws: WebSocket, request: AuthenticatedWebSocketR
       if (command.type === 'chat.send' || command.type === 'chat.queue-add') {
         if (data.attachments !== undefined) command.content = appendFilesInputTag(String(command.content), resolveNativeAttachments(sessionId, data.attachments));
         command.options = {
+        permissionMode: permissionPreferencesService.get(user.id, current.provider, sessionId).permissionMode,
         ...(current.model ? { model: current.model } : {}), ...(current.effort ? { reasoningEffort: current.effort, effort: current.effort } : {}),
       };
       }

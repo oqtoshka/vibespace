@@ -348,6 +348,39 @@ export const sessionsDb = {
     ).run(effort, sessionId);
   },
 
+  /**
+   * Records the permission mode one session last ran with.
+   *
+   * Server-originated messages do not have a browser composer to supply this
+   * option, so integrations read it from the session row to avoid silently
+   * downgrading a resumed turn to the provider default.
+   */
+  setSessionPermissionMode(sessionId: string, permissionMode: string): void {
+    const db = getConnection();
+    db.prepare(
+      `UPDATE sessions
+       SET permission_mode = ?
+       WHERE session_id = ?`
+    ).run(permissionMode, sessionId);
+  },
+
+  /**
+   * Reads the last permission mode without widening the general session row.
+   *
+   * The plugin host uses this narrow accessor for browserless follow-ups. The
+   * generic row shape stays compatible with provider indexers and legacy test
+   * databases that intentionally model only the long-standing columns.
+   */
+  getSessionPermissionMode(sessionId: string): string | null {
+    const db = getConnection();
+    const row = db.prepare(
+      `SELECT permission_mode
+       FROM sessions
+       WHERE session_id = ?`
+    ).get(sessionId) as { permission_mode: string | null } | undefined;
+    return row?.permission_mode ?? null;
+  },
+
   updateSessionCustomName(
     sessionId: string,
     customName: string,

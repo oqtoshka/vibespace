@@ -34,10 +34,11 @@ test('native session isolation, history, stream, permissions and duplicate recei
     sessionsDb.createAppSession('native-other', 'claude', '/tmp/native-chat-fixture');
     const secret = appConfigDb.getOrCreateJwtSecret();
     let calls = 0; let answers = 0;
+    let lastOptions: unknown;
     const dependencies = { runtime: {
       hasRuntime: () => true,
       run: async (_provider: string, _content: string, _options: unknown, writer: { send: (data: unknown) => void }) => {
-        calls++;
+        calls++; lastOptions = _options;
         writer.send({ id: 'delta', kind: 'stream_delta', content: 'Native stream works', sessionId: 'native-one', provider: 'claude', timestamp: new Date().toISOString() });
       },
       abort: async () => true,
@@ -67,7 +68,9 @@ test('native session isolation, history, stream, permissions and duplicate recei
     assert.equal(answers, 0);
     await client.input({ type: 'chat.permission-response', requestId: 'permission-one', allow: true });
     assert.equal(answers, 1);
-    await client.input({ type: 'chat.send', clientMsgId: 'native-send', content: 'hello' });
+    sessionsDb.setSessionPermissionMode('native-one', 'bypassPermissions');
+    await client.input({ type: 'chat.send', clientMsgId: 'native-send', content: 'hello', options: { permissionMode: 'default' } });
+    assert.equal((lastOptions as { permissionMode: string }).permissionMode, 'bypassPermissions');
     assert.equal(calls, 1);
     assert.ok(client.frames.some(f => f.kind === 'send_ack'));
     assert.ok(client.frames.some(f => f.kind === 'stream_delta'));
