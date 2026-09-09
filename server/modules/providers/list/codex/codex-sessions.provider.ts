@@ -349,6 +349,18 @@ async function getCodexSessionMessages(
           });
         }
 
+        // Current Codex emits completed UserMessage items instead of the legacy
+        // user_message event. Read the event, not response_item user context:
+        // the latter also includes injected instructions and compacted history.
+        if (entry.type === 'event_msg' && entry.payload?.type === 'item_completed'
+          && entry.payload.item?.type === 'UserMessage') {
+          const content = extractCodexTextContent(entry.payload.item.content);
+          if (content.trim()) {
+            messages.push({ type: 'user', timestamp: entry.timestamp,
+              message: { role: 'user', content } });
+          }
+        }
+
         if (
           entry.type === 'response_item' &&
           entry.payload?.type === 'message' &&

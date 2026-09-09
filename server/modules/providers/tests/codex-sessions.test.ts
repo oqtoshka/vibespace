@@ -38,6 +38,30 @@ async function withIsolatedDatabase(runTest: () => void | Promise<void>): Promis
   }
 }
 
+test('Codex history reads completed user items once, preserves repeated turns and excludes injected context', { concurrency: false }, async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'codex-modern-history-'));
+  const transcript = path.join(root, 'rollout.jsonl');
+  const entries = [
+    { type: 'event_msg', payload: { type: 'user_message', message: 'Legacy question' } },
+    { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Injected instructions' }] } },
+    ...['turn-1', 'turn-2'].flatMap(turnId => [
+      { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Same question' }] } },
+      { type: 'event_msg', payload: { type: 'item_completed', turn_id: turnId, item: { type: 'UserMessage', content: [{ type: 'text', text: 'Same question' }] } } },
+      { type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Answer' }] } },
+    ]),
+  ];
+  try {
+    await writeFile(transcript, entries.map(e => JSON.stringify(e)).join('\n') + '\n');
+    await withIsolatedDatabase(async () => {
+      const id = sessionsDb.createSession('modern-provider', 'codex', root, 'Modern test', undefined, undefined, transcript);
+      const history = await new CodexSessionsProvider().fetchHistory(id);
+      assert.deepEqual(history.messages.filter(m => m.role === 'user').map(m => m.content),
+        ['Legacy question', 'Same question', 'Same question']);
+      assert.equal(history.messages.filter(m => m.role === 'assistant').length, 2);
+    });
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 /**
  * Writes one Codex rollout transcript. `firstUserMessage` mirrors the
  * `event_msg`/`user_message` payload the runtime records for the prompt the
