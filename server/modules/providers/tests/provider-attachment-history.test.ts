@@ -129,6 +129,21 @@ test('codex history: base64 data URLs pass through as inline data attachments', 
   );
 });
 
+test('codex history: current completed user items retain local and inline images', () => {
+  const dataUrl = 'data:image/png;base64,QUJD';
+  assert.deepEqual(
+    extractCodexUserImages({
+      type: 'UserMessage',
+      content: [
+        { type: 'text', text: 'look' },
+        { type: 'local_image', path: 'C:\\proj\\native-image.png' },
+        { type: 'input_image', image_url: dataUrl },
+      ],
+    }),
+    [{ path: 'C:/proj/native-image.png' }, { data: dataUrl }],
+  );
+});
+
 test('codex history: normalized user entries keep their images', () => {
   const provider = new CodexSessionsProvider();
   const messages = provider.normalizeMessage(
