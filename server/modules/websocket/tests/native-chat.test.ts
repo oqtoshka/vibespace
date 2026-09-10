@@ -4,9 +4,13 @@ import { createHmac } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
-import test from 'node:test';
+import test, { mock } from 'node:test';
+
 import { appConfigDb, closeConnection, initializeDatabase, sessionsDb, userDb } from '@/modules/database/index.js';
+import { providerModelsService } from '@/modules/providers/index.js';
+
 import { connectedClients } from '../services/websocket-state.service.js';
+import { chatRunRegistry } from '../services/chat-run-registry.service.js';
 import { handleNativeChat } from '../services/native-chat.service.js';
 
 class Socket extends EventEmitter {
@@ -16,8 +20,9 @@ class Socket extends EventEmitter {
   code = 0;
   send(raw: string) { this.frames.push(JSON.parse(raw)); }
   close(code: number) { this.code = code; this.readyState = 3; this.emit('close'); }
+  inputNow(value: unknown) { this.emit('message', Buffer.from(JSON.stringify(value))); }
   async input(value: unknown) {
-    for (const handler of this.listeners('message')) await handler(Buffer.from(JSON.stringify(value)));
+    this.inputNow(value);
     await new Promise(resolve => setTimeout(resolve, 20));
   }
 }
@@ -81,6 +86,24 @@ test('native session isolation, history, stream, permissions and duplicate recei
     assert.equal(answers, 0);
     await client.input({ type: 'chat.permission-response', requestId: 'permission-one', allow: true });
     assert.equal(answers, 1);
+    const catalog = mock.method(providerModelsService, 'getProviderModels', async () => ({ models: {
+      DEFAULT: 'fixture-model',
+      OPTIONS: [{ value: 'fixture-model', label: 'Fixture', effort: { default: 'low', values: [{ value: 'low' }] } }],
+    } }));
+    const activeRun = chatRunRegistry.startRun({
+      appSessionId: 'native-one', provider: 'claude', providerSessionId: null,
+      connection: client as never, userId: 1,
+    });
+    assert.ok(activeRun);
+    const errorsBeforeSelection = client.frames.filter(frame => frame.kind === 'native.error').length;
+    client.inputNow({ type: 'native.select', model: 'fixture-model', effort: 'low', permissionMode: 'bypassPermissions' });
+    assert.equal(sessionsDb.getSessionPermissionMode('native-one'), 'bypassPermissions',
+      'a permission selection is saved before a following Stop/send can overtake async model lookup');
+    await new Promise(resolve => setTimeout(resolve, 20));
+    assert.equal(client.frames.filter(frame => frame.kind === 'native.error').length, errorsBeforeSelection);
+    assert.equal(client.frames.filter(frame => frame.kind === 'native.options').at(-1)?.permissionMode, 'bypassPermissions');
+    chatRunRegistry.completeRun('native-one', { exitCode: 0 });
+    catalog.mock.restore();
     sessionsDb.setSessionPermissionMode('native-one', 'bypassPermissions');
     await client.input({
       type: 'chat.send', clientMsgId: 'native-send', content: 'hello',
