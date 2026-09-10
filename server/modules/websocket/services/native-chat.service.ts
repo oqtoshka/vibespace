@@ -4,7 +4,7 @@ import type { WebSocket } from 'ws';
 import { appConfigDb, sessionsDb, userDb } from '@/modules/database/index.js';
 import { sessionsService, permissionPreferencesService } from '@/modules/providers/index.js';
 import { nativeModelOptions, nativePermissionOptions, setNativePermissionSelection, setNativeSelection, resolveNativeAttachments } from '@/modules/native-control/index.js';
-import { appendFilesInputTag } from '@/shared/index.js';
+import { isImageAttachmentDescriptor } from '@/shared/index.js';
 import { voiceService } from '@/modules/voice/index.js';
 import type { AuthenticatedWebSocketRequest } from '@/shared/index.js';
 import { handleChatConnection } from './chat-websocket.service.js';
@@ -116,11 +116,20 @@ export function handleNativeChat(ws: WebSocket, request: AuthenticatedWebSocketR
         }
       }
       if (command.type === 'chat.send' || command.type === 'chat.queue-add') {
-        if (data.attachments !== undefined) command.content = appendFilesInputTag(String(command.content), resolveNativeAttachments(sessionId, data.attachments));
+        // Preserve descriptors until the shared runtime boundary. Flattening
+        // them into <files_input> here discarded MIME information, so a native
+        // PNG reached providers and history as a generic downloadable file.
+        const attachments = data.attachments === undefined
+          ? []
+          : resolveNativeAttachments(sessionId, data.attachments);
         command.options = {
-        permissionMode: permissionPreferencesService.get(user.id, current.provider, sessionId).permissionMode,
-        ...(current.model ? { model: current.model } : {}), ...(current.effort ? { reasoningEffort: current.effort, effort: current.effort } : {}),
-      };
+          attachments,
+          images: attachments.filter(isImageAttachmentDescriptor),
+          files: attachments.filter(attachment => !isImageAttachmentDescriptor(attachment)),
+          permissionMode: permissionPreferencesService.get(user.id, current.provider, sessionId).permissionMode,
+          ...(current.model ? { model: current.model } : {}),
+          ...(current.effort ? { reasoningEffort: current.effort, effort: current.effort } : {}),
+        };
       }
       facade.emit('message', JSON.stringify(command));
     } catch (error) { send({ kind: 'native.error', requestId, error: error instanceof Error ? error.message : 'Native chat failed' }); }
