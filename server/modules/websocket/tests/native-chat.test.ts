@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { createHmac } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { appConfigDb, closeConnection, initializeDatabase, sessionsDb, userDb } from '@/modules/database/index.js';
@@ -32,6 +32,19 @@ test('native session isolation, history, stream, permissions and duplicate recei
     userDb.createUser('native-owner', 'fixture');
     sessionsDb.createAppSession('native-one', 'claude', '/tmp/native-chat-fixture');
     sessionsDb.createAppSession('native-other', 'claude', '/tmp/native-chat-fixture');
+    const imageId = '11111111-1111-4111-8111-111111111111';
+    const fileId = '22222222-2222-4222-8222-222222222222';
+    const assets = path.join(homedir(), '.vibespace', 'assets');
+    const imagePath = path.join(assets, `native-${imageId}-preview.png`);
+    const filePath = path.join(assets, `native-${fileId}-notes.txt`);
+    appConfigDb.set(`native_asset:${imageId}`, JSON.stringify({
+      id: imageId, sessionId: 'native-one', path: imagePath,
+      name: 'preview.png', mimeType: 'image/png', size: 123,
+    }));
+    appConfigDb.set(`native_asset:${fileId}`, JSON.stringify({
+      id: fileId, sessionId: 'native-one', path: filePath,
+      name: 'notes.txt', mimeType: 'text/plain', size: 42,
+    }));
     const secret = appConfigDb.getOrCreateJwtSecret();
     let calls = 0; let answers = 0;
     let lastOptions: unknown;
@@ -69,8 +82,20 @@ test('native session isolation, history, stream, permissions and duplicate recei
     await client.input({ type: 'chat.permission-response', requestId: 'permission-one', allow: true });
     assert.equal(answers, 1);
     sessionsDb.setSessionPermissionMode('native-one', 'bypassPermissions');
-    await client.input({ type: 'chat.send', clientMsgId: 'native-send', content: 'hello', options: { permissionMode: 'default' } });
-    assert.equal((lastOptions as { permissionMode: string }).permissionMode, 'bypassPermissions');
+    await client.input({
+      type: 'chat.send', clientMsgId: 'native-send', content: 'hello',
+      attachments: [imageId, fileId], options: { permissionMode: 'default' },
+    });
+    const runtimeOptions = lastOptions as {
+      permissionMode: string;
+      attachments: Array<{ path: string }>;
+      images: Array<{ path: string }>;
+      files: Array<{ path: string }>;
+    };
+    assert.equal(runtimeOptions.permissionMode, 'bypassPermissions');
+    assert.deepEqual(runtimeOptions.attachments.map(item => item.path), [imagePath, filePath]);
+    assert.deepEqual(runtimeOptions.images.map(item => item.path), [imagePath]);
+    assert.deepEqual(runtimeOptions.files.map(item => item.path), [filePath]);
     assert.equal(calls, 1);
     assert.ok(client.frames.some(f => f.kind === 'send_ack'));
     assert.ok(client.frames.some(f => f.kind === 'stream_delta'));
