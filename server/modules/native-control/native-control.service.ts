@@ -2,13 +2,13 @@ import { createHash, createHmac, timingSafeEqual, randomUUID } from 'node:crypto
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { appConfigDb, getConnection, projectsDb, sessionsDb, userDb } from '@/modules/database/index.js';
-import { providerModelsService, sessionsService } from '@/modules/providers/index.js';
+import { permissionPreferencesService, providerModelsService, sessionsService } from '@/modules/providers/index.js';
 import { ensureImageAssetsDir } from '@/modules/assets/index.js';
 import type { LLMProvider } from '@/shared/index.js';
 
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 const providers = ['claude', 'codex', 'opencode'] as const;
-type CreateInput = { requestId: string; projectId: string; provider: LLMProvider; title?: string; model?: string; effort?: string };
+type CreateInput = { requestId: string; projectId: string; provider: LLMProvider; title?: string; model?: string; effort?: string; permissionMode?: string };
 type Upload = { id: string; sessionId: string; path: string; name: string; mimeType: string; size: number };
 
 /** MC's instance credential is separate from browser JWTs and per-session capabilities.
@@ -32,6 +32,13 @@ export async function nativeModelOptions(provider: LLMProvider) {
   return { provider, options: result.models.OPTIONS, defaultModel: result.models.DEFAULT };
 }
 
+/** Permission choices are resolved on the VibeSpace that will execute the turn. */
+export function nativePermissionOptions(provider: LLMProvider, sessionId?: string) {
+  const user = userDb.getSingleActiveUser();
+  if (!user) throw new Error('Operator is unavailable');
+  return permissionPreferencesService.get(Number(user.id), provider, sessionId);
+}
+
 /** Validates and records a session-local model selection; does not edit global defaults. */
 export async function setNativeSelection(id: string, model: unknown, effort: unknown) {
   const row = session(id);
@@ -45,6 +52,16 @@ export async function setNativeSelection(id: string, model: unknown, effort: unk
   const selectedEffort = effort || chosen?.effort?.default || '';
   sessionsDb.setSessionEffort(id, selectedEffort);
   return { model, effort: selectedEffort };
+}
+
+/** Sets or clears only this conversation's override; provider defaults remain settings-owned. */
+export function setNativePermissionSelection(id: string, mode: unknown) {
+  const row = session(id);
+  if (row.isArchived) throw new Error('Session is archived');
+  if (mode !== null && typeof mode !== 'string') throw new Error('Invalid permission mode');
+  const user = userDb.getSingleActiveUser();
+  if (!user) throw new Error('Operator is unavailable');
+  return permissionPreferencesService.update(Number(user.id), row.provider, id, { sessionMode: mode });
 }
 
 /** Native-control router owns the instance catalog; project paths are always resolved
@@ -66,7 +83,9 @@ export const nativeControlService = {
     if (input.model && !settings?.options.some(option => option.value === input.model)) throw new Error('Invalid model');
     if (input.effort && !settings?.options.find(option => option.value === input.model)?.effort?.values.some(option => option.value === input.effort)) throw new Error('This model does not support that effort');
     if (input.effort !== undefined && (typeof input.effort !== 'string' || input.effort.length > 64)) throw new Error('Invalid effort');
-    const digest = createHash('sha256').update(JSON.stringify([input.projectId, input.provider, input.title || '', input.model || '', input.effort || ''])).digest('hex');
+    const permissions = nativePermissionOptions(input.provider);
+    if (input.permissionMode !== undefined && !permissions.permissionModes.includes(input.permissionMode)) throw new Error('Invalid permission mode');
+    const digest = createHash('sha256').update(JSON.stringify([input.projectId, input.provider, input.title || '', input.model || '', input.effort || '', input.permissionMode ?? null])).digest('hex');
     const receiptKey = `native_create:${input.requestId}`;
     const id = getConnection().transaction(() => {
       const previous = appConfigDb.get(receiptKey);
@@ -78,6 +97,7 @@ export const nativeControlService = {
       const created = sessionsService.createAppSession(input.provider, project.project_path, false, false, input.title);
       if (input.model) providerModelsService.setSessionModel(input.provider, created.sessionId, input.model);
       if (input.effort) providerModelsService.setSessionEffort(input.provider, created.sessionId, input.effort);
+      if (input.permissionMode) sessionsDb.setSessionPermissionMode(created.sessionId, input.permissionMode);
       appConfigDb.set(receiptKey, JSON.stringify({ id: created.sessionId, digest }));
       return created.sessionId;
     })();
