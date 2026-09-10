@@ -1,12 +1,15 @@
 import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
+
 import type { WebSocket } from 'ws';
+
 import { appConfigDb, sessionsDb, userDb } from '@/modules/database/index.js';
 import { sessionsService, permissionPreferencesService } from '@/modules/providers/index.js';
 import { nativeModelOptions, nativePermissionOptions, setNativePermissionSelection, setNativeSelection, resolveNativeAttachments } from '@/modules/native-control/index.js';
 import { isImageAttachmentDescriptor } from '@/shared/index.js';
 import { voiceService } from '@/modules/voice/index.js';
 import type { AuthenticatedWebSocketRequest } from '@/shared/index.js';
+
 import { handleChatConnection } from './chat-websocket.service.js';
 import { chatRunRegistry } from './chat-run-registry.service.js';
 import { scopeNativeCommand, validNativeCapability } from './native-chat-policy.service.js';
@@ -92,9 +95,15 @@ export function handleNativeChat(ws: WebSocket, request: AuthenticatedWebSocketR
       }
       if (data.type === 'native.options' || data.type === 'native.select') {
         if (data.type === 'native.select') {
-          if (chatRunRegistry.isProcessing(sessionId)) throw new Error('Change the model after the current response finishes');
-          await setNativeSelection(sessionId, data.model, data.effort || '');
+          // These values are read when a provider run starts. Persisting a new
+          // selection during the current run therefore changes only the next
+          // turn — exactly what Stop followed by a continuation needs.
+          // Store permissions before the asynchronous model-catalog lookup so
+          // a Stop/send frame arriving directly behind this one cannot start
+          // with the old mode. The two selections are independent validated
+          // settings, so a later model error must not roll the permission back.
           if (data.permissionMode !== undefined) setNativePermissionSelection(sessionId, data.permissionMode);
+          await setNativeSelection(sessionId, data.model, data.effort || '');
         }
         const latest = sessionsDb.getSessionById(sessionId)!;
         const provider = latest.provider as Parameters<typeof nativeModelOptions>[0];
