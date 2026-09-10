@@ -355,7 +355,7 @@ export const sessionsDb = {
    * option, so integrations read it from the session row to avoid silently
    * downgrading a resumed turn to the provider default.
    */
-  setSessionPermissionMode(sessionId: string, permissionMode: string): void {
+  setSessionPermissionMode(sessionId: string, permissionMode: string | null): void {
     const db = getConnection();
     db.prepare(
       `UPDATE sessions

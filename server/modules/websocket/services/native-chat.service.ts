@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import type { WebSocket } from 'ws';
 import { appConfigDb, sessionsDb, userDb } from '@/modules/database/index.js';
 import { sessionsService, permissionPreferencesService } from '@/modules/providers/index.js';
-import { nativeModelOptions, setNativeSelection, resolveNativeAttachments } from '@/modules/native-control/index.js';
+import { nativeModelOptions, nativePermissionOptions, setNativePermissionSelection, setNativeSelection, resolveNativeAttachments } from '@/modules/native-control/index.js';
 import { appendFilesInputTag } from '@/shared/index.js';
 import { voiceService } from '@/modules/voice/index.js';
 import type { AuthenticatedWebSocketRequest } from '@/shared/index.js';
@@ -94,9 +94,11 @@ export function handleNativeChat(ws: WebSocket, request: AuthenticatedWebSocketR
         if (data.type === 'native.select') {
           if (chatRunRegistry.isProcessing(sessionId)) throw new Error('Change the model after the current response finishes');
           await setNativeSelection(sessionId, data.model, data.effort || '');
+          if (data.permissionMode !== undefined) setNativePermissionSelection(sessionId, data.permissionMode);
         }
         const latest = sessionsDb.getSessionById(sessionId)!;
-        send({ kind: 'native.options', requestId, ...await nativeModelOptions(latest.provider as Parameters<typeof nativeModelOptions>[0]), model: latest.model, effort: latest.effort, ...permissionPreferencesService.get(user.id, latest.provider, sessionId) });
+        const provider = latest.provider as Parameters<typeof nativeModelOptions>[0];
+        send({ kind: 'native.options', requestId, ...await nativeModelOptions(provider), model: latest.model, effort: latest.effort, ...nativePermissionOptions(provider, sessionId) });
         return;
       }
       const command = scopeNativeCommand(data, sessionId);
