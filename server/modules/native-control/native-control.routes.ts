@@ -1,5 +1,5 @@
 import express from 'express';
-import { authenticateNativeControl, nativeControlService, nativeModelOptions } from './native-control.service.js';
+import { authenticateNativeControl, nativeControlService, nativeModelOptions, nativePermissionOptions } from './native-control.service.js';
 import type { LLMProvider } from '@/shared/index.js';
 
 const router = express.Router();
@@ -16,7 +16,8 @@ const route = (fn: express.RequestHandler): express.RequestHandler => async (req
 router.get('/catalog', route((_req, res) => { res.json(nativeControlService.catalog()); }));
 router.get('/models/:provider', route(async (req, res) => {
   if (!['claude', 'codex', 'opencode'].includes(String(req.params.provider))) throw new Error('Unknown provider');
-  res.json(await nativeModelOptions(req.params.provider as LLMProvider));
+  const provider = req.params.provider as LLMProvider;
+  res.json({ ...await nativeModelOptions(provider), ...nativePermissionOptions(provider) });
 }));
 router.post('/sessions', route(async (req, res) => { res.json(await nativeControlService.create(req.body)); }));
 router.get('/sessions/:id', route((req, res) => { res.json(nativeControlService.describe(String(req.params.id))); }));

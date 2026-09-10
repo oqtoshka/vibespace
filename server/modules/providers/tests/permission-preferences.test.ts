@@ -21,7 +21,9 @@ test('native permissions inherit defaults, preserve session restrictions and mig
     preferences.update(id, 'codex', 'permission-test', { sessionMode: 'default' });
     assert.equal(preferences.get(id, 'codex', 'permission-test').permissionMode, 'default');
     preferences.update(id, 'codex', 'permission-test', { sessionMode: 'bypassPermissions', defaultMode: 'default', onlyIfMissing: true });
-    assert.deepEqual(preferences.get(id, 'codex', 'permission-test'), { defaultMode: 'bypassPermissions', sessionMode: 'default', permissionMode: 'default' });
+    assert.deepEqual(preferences.get(id, 'codex', 'permission-test'), { permissionModes: ['default', 'acceptEdits', 'bypassPermissions'], defaultMode: 'bypassPermissions', sessionMode: 'default', permissionMode: 'default' });
+    preferences.update(id, 'codex', 'permission-test', { sessionMode: null });
+    assert.equal(preferences.get(id, 'codex', 'permission-test').permissionMode, 'bypassPermissions');
     assert.throws(() => preferences.update(id, 'codex', 'permission-test', { sessionMode: 'invented' }));
     assert.throws(() => preferences.update(id, 'claude', 'permission-test', { sessionMode: 'bypassPermissions' }));
     assert.equal(preferences.get(id + 1, 'codex').defaultMode, 'default');

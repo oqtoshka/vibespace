@@ -6,7 +6,7 @@ import path from 'node:path';
 import test, { mock } from 'node:test';
 import { providerModelsService } from '@/modules/providers/index.js';
 import { appConfigDb, closeConnection, getConnection, initializeDatabase, projectsDb, sessionsDb, userDb } from '@/modules/database/index.js';
-import { authenticateNativeControl, nativeControlService, resolveNativeAttachments, setNativeSelection } from '../native-control.service.js';
+import { authenticateNativeControl, nativeControlService, nativePermissionOptions, resolveNativeAttachments, setNativePermissionSelection, setNativeSelection } from '../native-control.service.js';
 
 test('federation credentials, idempotent creation, registered projects and session-bound files', async () => {
   const previous = process.env.DATABASE_PATH;
@@ -25,6 +25,11 @@ test('federation credentials, idempotent creation, registered projects and sessi
     const projectId = projectsDb.getProjectPaths()[0].project_id;
     const input = { requestId: randomUUID(), projectId, provider: 'codex' as const, title: 'Native fixture' };
     const first = await nativeControlService.create(input);
+    appConfigDb.set(`permission-default:${userDb.getSingleActiveUser()!.id}:codex`, 'bypassPermissions');
+    assert.equal(nativePermissionOptions('codex', first.sessionId).permissionMode, 'bypassPermissions');
+    assert.equal(setNativePermissionSelection(first.sessionId, 'default').permissionMode, 'default');
+    assert.equal(setNativePermissionSelection(first.sessionId, null).permissionMode, 'bypassPermissions');
+    assert.throws(() => setNativePermissionSelection(first.sessionId, 'invented'), /Invalid permission mode/);
     assert.equal((await nativeControlService.create(input)).sessionId, first.sessionId);
     await assert.rejects(nativeControlService.create({ ...input, title: 'Changed' }), /different content/);
     await assert.rejects(nativeControlService.create({ ...input, requestId: randomUUID(), projectId: '/etc' }), /Project/);
@@ -37,6 +42,8 @@ test('federation credentials, idempotent creation, registered projects and sessi
       await assert.rejects(setNativeSelection(first.sessionId, 'fixture-model', 'made-up'), /does not support/);
     } finally { catalog.mock.restore(); }
     const second = await nativeControlService.create({ ...input, requestId: randomUUID() });
+    const restricted = await nativeControlService.create({ ...input, requestId: randomUUID(), permissionMode: 'default' });
+    assert.equal(nativePermissionOptions('codex', restricted.sessionId).sessionMode, 'default');
     const file = await nativeControlService.upload(first.sessionId, '../../note.txt', 'text/plain', Buffer.from('attachment fixture'));
     const [stored] = resolveNativeAttachments(first.sessionId, [file.id]); cleanup.push(stored.path);
     assert.equal(file.name, 'note.txt');
