@@ -4,6 +4,7 @@ import path from 'node:path';
 import { appConfigDb, getConnection, projectsDb, sessionsDb, userDb } from '@/modules/database/index.js';
 import { permissionPreferencesService, providerModelsService, sessionsService } from '@/modules/providers/index.js';
 import { ensureImageAssetsDir } from '@/modules/assets/index.js';
+import { voiceService } from '@/modules/voice/index.js';
 import type { LLMProvider } from '@/shared/index.js';
 
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
@@ -102,6 +103,19 @@ export const nativeControlService = {
       return created.sessionId;
     })();
     return this.describe(id);
+  },
+  async transcribe(bytes: Buffer) {
+    const user = userDb.getSingleActiveUser();
+    if (!user) throw new Error('Operator is unavailable');
+    if (!Buffer.isBuffer(bytes) || bytes.length === 0 || bytes.length > 4 * 1024 * 1024) {
+      throw new Error('Recording must be between 1 byte and 4 MiB');
+    }
+    const result = await voiceService.transcribe({
+      userId: Number(user.id),
+      audio: { bytes, mimeType: 'audio/mp4', fileName: 'recording.m4a' },
+    });
+    if (!result.ok) throw new Error(result.error);
+    return result.value;
   },
   describe(id: string) {
     const row = session(id);

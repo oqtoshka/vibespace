@@ -1,12 +1,16 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm, unlink } from 'node:fs/promises';
+import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test, { mock } from 'node:test';
+import express from 'express';
 import { providerModelsService } from '@/modules/providers/index.js';
+import { voiceService } from '@/modules/voice/index.js';
 import { appConfigDb, closeConnection, getConnection, initializeDatabase, projectsDb, sessionsDb, userDb } from '@/modules/database/index.js';
 import { authenticateNativeControl, nativeControlService, nativePermissionOptions, resolveNativeAttachments, setNativePermissionSelection, setNativeSelection } from '../native-control.service.js';
+import { nativeControlRoutes } from '../index.js';
 
 test('federation credentials, idempotent creation, registered projects and session-bound files', async () => {
   const previous = process.env.DATABASE_PATH;
@@ -21,6 +25,29 @@ test('federation credentials, idempotent creation, registered projects and sessi
     assert.equal(authenticateNativeControl('x'.repeat(40)), true);
     assert.equal(authenticateNativeControl(['x'.repeat(40)]), false);
     assert.equal(authenticateNativeControl('y'.repeat(40)), false);
+    const transcribe = mock.method(voiceService, 'transcribe', async (request: Parameters<typeof voiceService.transcribe>[0]) => ({
+      ok: true as const,
+      value: { text: request.audio.bytes.toString() },
+    }));
+    try {
+      assert.deepEqual(await nativeControlService.transcribe(Buffer.from('spoken fixture')), { text: 'spoken fixture' });
+      assert.equal(transcribe.mock.calls[0].arguments[0].userId, Number(userDb.getSingleActiveUser()!.id));
+      assert.equal(transcribe.mock.calls[0].arguments[0].audio.mimeType, 'audio/mp4');
+      await assert.rejects(nativeControlService.transcribe(Buffer.alloc(0)), /between 1 byte and 4 MiB/);
+    } finally { transcribe.mock.restore(); }
+    const routeTranscribe = mock.method(nativeControlService, 'transcribe', async (bytes: Buffer) => ({ text: bytes.toString() }));
+    const app = express(); app.use('/native', nativeControlRoutes); const server = app.listen(0);
+    try {
+      const port = (server.address() as AddressInfo).port;
+      const response = await fetch(`http://127.0.0.1:${port}/native/transcribe`, { method: 'POST',
+        headers: { 'content-type': 'audio/mp4', 'x-mc-federation-token': 'x'.repeat(40) }, body: Buffer.from('route fixture') });
+      assert.equal(response.status, 200);
+      assert.deepEqual(await response.json(), { text: 'route fixture' });
+      assert.deepEqual(routeTranscribe.mock.calls[0].arguments[0], Buffer.from('route fixture'));
+    } finally {
+      routeTranscribe.mock.restore();
+      await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    }
     projectsDb.createProjectPath(directory, 'Native fixture');
     const projectId = projectsDb.getProjectPaths()[0].project_id;
     const input = { requestId: randomUUID(), projectId, provider: 'codex' as const, title: 'Native fixture' };
