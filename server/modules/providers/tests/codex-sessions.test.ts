@@ -62,6 +62,34 @@ test('Codex history reads completed user items once, preserves repeated turns an
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test('Codex history preserves images on current completed user items, including image-only turns', { concurrency: false }, async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'codex-modern-image-history-'));
+  const transcript = path.join(root, 'rollout.jsonl');
+  const imagePath = path.join(root, 'native-image.png');
+  const entries = [
+    { type: 'event_msg', payload: { type: 'item_completed', item: { type: 'UserMessage', content: [
+      { type: 'text', text: 'Describe this image' }, { type: 'local_image', path: imagePath },
+    ] } } },
+    { type: 'event_msg', payload: { type: 'item_completed', item: { type: 'UserMessage', content: [
+      { type: 'local_image', path: imagePath },
+    ] } } },
+  ];
+  try {
+    await writeFile(transcript, entries.map(entry => JSON.stringify(entry)).join('\n') + '\n');
+    await withIsolatedDatabase(async () => {
+      const id = sessionsDb.createSession('modern-images', 'codex', root, 'Modern images', undefined, undefined, transcript);
+      const history = await new CodexSessionsProvider().fetchHistory(id);
+      assert.deepEqual(history.messages.map(message => ({
+        content: message.content,
+        images: message.images,
+      })), [
+        { content: 'Describe this image', images: [{ path: imagePath }] },
+        { content: '', images: [{ path: imagePath }] },
+      ]);
+    });
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 /**
  * Writes one Codex rollout transcript. `firstUserMessage` mirrors the
  * `event_msg`/`user_message` payload the runtime records for the prompt the
