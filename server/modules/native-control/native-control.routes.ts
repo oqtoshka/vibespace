@@ -19,6 +19,9 @@ router.get('/models/:provider', route(async (req, res) => {
   const provider = req.params.provider as LLMProvider;
   res.json({ ...await nativeModelOptions(provider), ...nativePermissionOptions(provider) });
 }));
+router.post('/transcribe', express.raw({ type: 'audio/mp4', limit: '4mb' }), route(async (req, res) => {
+  res.json(await nativeControlService.transcribe(req.body));
+}));
 router.post('/sessions', route(async (req, res) => { res.json(await nativeControlService.create(req.body)); }));
 router.get('/sessions/:id', route((req, res) => { res.json(nativeControlService.describe(String(req.params.id))); }));
 router.post('/sessions/:id/attachments', express.raw({ type: 'application/octet-stream', limit: '10mb' }), route(async (req, res) => {
