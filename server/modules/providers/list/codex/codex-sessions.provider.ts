@@ -72,11 +72,11 @@ export function extractCodexCompactionSummary(payload: AnyRecord | null | undefi
 }
 
 /**
- * Reads the image attachments Codex records on `user_message` events.
- * Turns sent with `local_image` input items land in `local_images` as file
- * paths (verified against real rollout JSONL); the `images` array can carry
- * base64 data URLs, which are passed through as inline `data` attachments so
- * the UI can preview them without a file lookup.
+ * Reads the image attachments Codex records on user events. Legacy
+ * `user_message` payloads use `local_images` / `images`; current completed
+ * `UserMessage` items keep `local_image` / `input_image` entries inside
+ * `content`. Data URLs pass through as inline attachments so the UI can
+ * preview them without a file lookup.
  *
  * Exported for tests.
  */
@@ -90,6 +90,16 @@ export function extractCodexUserImages(
   const candidates = [
     ...(Array.isArray(payload.local_images) ? payload.local_images : []),
     ...(Array.isArray(payload.images) ? payload.images : []),
+    ...(Array.isArray(payload.content) ? payload.content.flatMap((item: unknown) => {
+      const record = readObjectRecord(item);
+      if (record?.type === 'local_image' && typeof record.path === 'string') {
+        return [record.path];
+      }
+      if (record?.type === 'input_image' && typeof record.image_url === 'string') {
+        return [record.image_url];
+      }
+      return [];
+    }) : []),
   ];
 
   const attachments: Array<{ path?: string; data?: string }> = [];
@@ -355,9 +365,10 @@ async function getCodexSessionMessages(
         if (entry.type === 'event_msg' && entry.payload?.type === 'item_completed'
           && entry.payload.item?.type === 'UserMessage') {
           const content = extractCodexTextContent(entry.payload.item.content);
-          if (content.trim()) {
+          const images = extractCodexUserImages(entry.payload.item as AnyRecord);
+          if (content.trim() || images?.length) {
             messages.push({ type: 'user', timestamp: entry.timestamp,
-              message: { role: 'user', content } });
+              message: { role: 'user', content }, images });
           }
         }
 
