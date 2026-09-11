@@ -18,7 +18,7 @@ class Socket extends EventEmitter {
   bufferedAmount = 0;
   frames: Record<string, unknown>[] = [];
   code = 0;
-  send(raw: string) { this.frames.push(JSON.parse(raw)); }
+  send(raw: string, callback?: (error?: Error) => void) { this.frames.push(JSON.parse(raw)); callback?.(); }
   close(code: number) { this.code = code; this.readyState = 3; this.emit('close'); }
   inputNow(value: unknown) { this.emit('message', Buffer.from(JSON.stringify(value))); }
   async input(value: unknown) {

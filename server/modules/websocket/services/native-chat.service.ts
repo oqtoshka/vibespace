@@ -13,6 +13,7 @@ import type { AuthenticatedWebSocketRequest } from '@/shared/index.js';
 import { handleChatConnection } from './chat-websocket.service.js';
 import { chatRunRegistry } from './chat-run-registry.service.js';
 import { scopeNativeCommand, validNativeCapability } from './native-chat-policy.service.js';
+import { sendNativeHistory } from './native-history-transport.service.js';
 
 const epoch = randomUUID();
 
@@ -74,9 +75,9 @@ export function handleNativeChat(ws: WebSocket, request: AuthenticatedWebSocketR
         try {
           const page = await sessionsService.fetchHistory(sessionId, { limit, offset });
           const run = chatRunRegistry.getRun(sessionId);
-          send({ kind: 'native.history', requestId, ...page, runId: run?.startedAt ?? null,
+          await sendNativeHistory(ws, { kind: 'native.history', sessionId, requestId, ...page, runId: run?.startedAt ?? null,
             running: run?.status === 'running', archived: Boolean(current.isArchived),
-            replay: run?.status === 'running' ? chatRunRegistry.replayEvents(sessionId, 0) : [] });
+            replay: run?.status === 'running' ? chatRunRegistry.replayEvents(sessionId, 0) : [] }, data.chunked === true);
         } finally { historyBusy = false; }
         return;
       }
