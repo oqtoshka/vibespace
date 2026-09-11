@@ -157,7 +157,7 @@ Costs and risks, stated plainly:
   don't cargo-cult the injection where a direct import is clearer.
 - **Deploy path changes.** `promote-dist-server` (dist-server.next → promote)
   and the new `bin` location touch the launchd deploy on this Mac, the
-  private registry package, and `oqtopus/openclaw`'s Dockerfile. Small, but a
+  published package, and `oqtopus/openclaw`'s Dockerfile. Small, but a
   release-day item, not a merge-day one.
 - **The Claude runtime is the one semantic collision.** Upstream's
   background-agent keepalive holds CLI input open after a turn; our idle
