@@ -17,12 +17,15 @@ export function scopeNativeCommand(data: Record<string, unknown>, sessionId: str
       if (typeof data.id !== 'string' || !/^[a-zA-Z0-9_-]{1,100}$/.test(data.id)) throw new Error('Invalid queue item');
       return { type: data.type, sessionId, id: data.id };
     case 'chat.queue-add':
+      if (data.rewind !== undefined) throw new Error('Cannot queue a rewind');
       if (typeof data.id !== 'string' || !/^[a-zA-Z0-9-]{1,100}$/.test(data.id)) throw new Error('Invalid queue item');
       return { ...scopeNativeCommand({ ...data, type: 'chat.send', clientMsgId: data.id }, sessionId), type: data.type, id: data.id };
     case 'chat.send':
       if (typeof data.content !== 'string' || (!data.content.trim() && !(Array.isArray(data.attachments) && data.attachments.length)) || data.content.length > 200_000 ||
           typeof data.clientMsgId !== 'string' || !/^[a-zA-Z0-9-]{1,100}$/.test(data.clientMsgId)) throw new Error('Invalid message');
-      return { type: data.type, sessionId, content: data.content, clientMsgId: data.clientMsgId };
+      if (data.rewind !== undefined && (typeof data.rewind !== 'string' || !/^[a-zA-Z0-9_-]{1,200}$/.test(data.rewind))) throw new Error('Invalid rewind anchor');
+      return { type: data.type, sessionId, content: data.content, clientMsgId: data.clientMsgId,
+        ...(data.rewind === undefined ? {} : { rewind: data.rewind }) };
     case 'chat.permission-response':
       if (typeof data.requestId !== 'string' || typeof data.allow !== 'boolean') throw new Error('Invalid permission answer');
       return { type: data.type, requestId: data.requestId, allow: data.allow, message: typeof data.message === 'string' ? data.message.slice(0, 4000) : undefined };
