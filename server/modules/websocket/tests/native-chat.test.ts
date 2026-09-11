@@ -18,7 +18,7 @@ class Socket extends EventEmitter {
   bufferedAmount = 0;
   frames: Record<string, unknown>[] = [];
   code = 0;
-  send(raw: string) { this.frames.push(JSON.parse(raw)); }
+  send(raw: string, callback?: (error?: Error) => void) { this.frames.push(JSON.parse(raw)); callback?.(); }
   close(code: number) { this.code = code; this.readyState = 3; this.emit('close'); }
   inputNow(value: unknown) { this.emit('message', Buffer.from(JSON.stringify(value))); }
   async input(value: unknown) {
@@ -73,6 +73,7 @@ test('native session isolation, history, stream, permissions and duplicate recei
     assert.equal(open('native-other').code, 4403);
     const client = open('native-one');
     assert.equal(client.frames[0]?.kind, 'native.hello');
+    assert.equal(client.frames[0]?.rewind, true);
     await client.input({ type: 'native.history', requestId: 'history' });
     assert.deepEqual(client.frames.find(f => f.kind === 'native.history')?.messages, []);
     for (const socket of connectedClients) {
@@ -95,6 +96,9 @@ test('native session isolation, history, stream, permissions and duplicate recei
       connection: client as never, userId: 1,
     });
     assert.ok(activeRun);
+    await client.input({ type: 'chat.send', clientMsgId: 'busy-edit', content: 'edit', rewind: 'user-2' });
+    assert.equal(calls, 0);
+    assert.ok(client.frames.some(f => f.kind === 'native.error' && String(f.error).includes('Stop')));
     const errorsBeforeSelection = client.frames.filter(frame => frame.kind === 'native.error').length;
     client.inputNow({ type: 'native.select', model: 'fixture-model', effort: 'low', permissionMode: 'bypassPermissions' });
     assert.equal(sessionsDb.getSessionPermissionMode('native-one'), 'bypassPermissions',
@@ -106,15 +110,17 @@ test('native session isolation, history, stream, permissions and duplicate recei
     catalog.mock.restore();
     sessionsDb.setSessionPermissionMode('native-one', 'bypassPermissions');
     await client.input({
-      type: 'chat.send', clientMsgId: 'native-send', content: 'hello',
+      type: 'chat.send', clientMsgId: 'native-send', content: 'hello', rewind: 'user-2',
       attachments: [imageId, fileId], options: { permissionMode: 'default' },
     });
     const runtimeOptions = lastOptions as {
+      rewind: string;
       permissionMode: string;
       attachments: Array<{ path: string }>;
       images: Array<{ path: string }>;
       files: Array<{ path: string }>;
     };
+    assert.equal(runtimeOptions.rewind, 'user-2');
     assert.equal(runtimeOptions.permissionMode, 'bypassPermissions');
     assert.deepEqual(runtimeOptions.attachments.map(item => item.path), [imagePath, filePath]);
     assert.deepEqual(runtimeOptions.images.map(item => item.path), [imagePath]);
