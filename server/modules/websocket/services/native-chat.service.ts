@@ -125,6 +125,10 @@ export function handleNativeChat(ws: WebSocket, request: AuthenticatedWebSocketR
         }
       }
       if (command.type === 'chat.send' || command.type === 'chat.queue-add') {
+        if (command.rewind !== undefined) {
+          if (!['claude', 'opencode'].includes(current.provider)) throw new Error('This provider does not support rewind');
+          if (chatRunRegistry.isProcessing(sessionId) || chatRunRegistry.getQueueForClient(sessionId).length) throw new Error('Stop the response and clear the queue before editing');
+        }
         // Preserve descriptors until the shared runtime boundary. Flattening
         // them into <files_input> here discarded MIME information, so a native
         // PNG reached providers and history as a generic downloadable file.
@@ -132,6 +136,7 @@ export function handleNativeChat(ws: WebSocket, request: AuthenticatedWebSocketR
           ? []
           : resolveNativeAttachments(sessionId, data.attachments);
         command.options = {
+          ...(command.rewind === undefined ? {} : { rewind: command.rewind }),
           attachments,
           images: attachments.filter(isImageAttachmentDescriptor),
           files: attachments.filter(attachment => !isImageAttachmentDescriptor(attachment)),
@@ -143,5 +148,5 @@ export function handleNativeChat(ws: WebSocket, request: AuthenticatedWebSocketR
       facade.emit('message', JSON.stringify(command));
     } catch (error) { send({ kind: 'native.error', requestId, error: error instanceof Error ? error.message : 'Native chat failed' }); }
   });
-  send({ kind: 'native.hello', version: 1, epoch, provider: row.provider, archived: Boolean(row.isArchived), voice: voiceService.getHealth() });
+  send({ kind: 'native.hello', version: 1, epoch, provider: row.provider, rewind: ['claude', 'opencode'].includes(row.provider), archived: Boolean(row.isArchived), voice: voiceService.getHealth() });
 }
