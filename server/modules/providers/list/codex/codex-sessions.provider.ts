@@ -381,6 +381,9 @@ async function getCodexSessionMessages(
           if (textContent.trim()) {
             messages.push({
               type: 'assistant',
+              // The persisted and live copies share the provider item ID, but their
+              // timestamps can differ by milliseconds. Native replay needs identity.
+              uuid: entry.payload.id,
               timestamp: entry.timestamp,
               message: {
                 role: 'assistant',
