@@ -48,6 +48,14 @@ test('invalid replies do not advance coverage; invented and assistant-only evide
   const batch = topicBatch([row('a', 'Build tags'), { ...row('b', 'Run tests'), role: 'assistant' }], memory, 2);
   assert.equal(mergeTopicResponse('broken', memory, batch), null);
   assert.equal(mergeTopicResponse('{"recap":"ok"}', memory, batch), null);
-  const next = mergeTopicResponse(reply([topic('Invented', 'a', 'not present'), topic('Tests', 'b', 'Run tests')], ['bogus']), memory, batch)!;
+  const next = mergeTopicResponse(reply([topic('Invented', 'missing', 'not present'), topic('Tests', 'b', 'Run tests')], ['bogus']), memory, batch)!;
   assert.equal(next, null, 'invalid evidence cannot skip uncovered history');
+});
+
+test('paraphrased evidence uses the actual user excerpt and short IDs resolve to source IDs', () => {
+  const memory = readTopicMemory();
+  const batch = topicBatch([row('original-uuid', 'Please preserve the original request')], memory, 1);
+  const next = mergeTopicResponse(reply([topic('Session origin', 'u1', 'Keep original intent')]), memory, batch)!;
+  assert.equal(next.topics[0].firstMessageId, 'original-uuid');
+  assert.equal(next.topics[0].firstQuote, 'Please preserve the original request');
 });
