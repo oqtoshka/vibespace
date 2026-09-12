@@ -162,3 +162,7 @@ electron/*.tar.gz
 # Local-only scratch and backups (may contain hostnames, tokens, env dumps)
 scratchpad/
 .env.bak*
+
+# Machine-local release installer. Owned and copied in by the infrastructure
+# Ansible role; it names this host's LaunchAgent and hostname.
+/scripts/release/install-local.mjs
