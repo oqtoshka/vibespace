@@ -449,6 +449,7 @@ const addSessionRecap = (db: Database): void => {
   const columnNames = getTableInfo(db, 'sessions').map((column) => column.name);
   addColumnToTableIfNotExists(db, 'sessions', columnNames, 'recap', 'TEXT');
   addColumnToTableIfNotExists(db, 'sessions', columnNames, 'recap_message_count', 'INTEGER');
+  addColumnToTableIfNotExists(db, 'sessions', columnNames, 'topic_memory', 'TEXT');
 };
 
 /**

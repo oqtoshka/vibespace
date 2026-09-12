@@ -8,9 +8,9 @@ import { projectsDb, sessionsDb } from '@/modules/database/index.js';
 import { publishSessionMetadataChange } from '@/modules/plugins/index.js';
 import { sessionSynchronizerService } from '@/modules/providers/services/session-synchronizer.service.js';
 import { WS_OPEN_STATE, connectedClients } from '@/modules/websocket/index.js';
-import type { LLMProvider } from '@/shared/types.js';
+import type { LLMProvider } from '@/shared/index.js';
 import { generateDisplayName } from '@/modules/projects/index.js';
-import { sessionAvatarUrl } from '@/shared/utils.js';
+import { sessionAvatarUrl } from '@/shared/index.js';
 
 type WatcherEventType = 'add' | 'change';
 
@@ -171,6 +171,7 @@ async function buildSessionUpsertedEvent(updatedProviderSessionId: string): Prom
     transcriptPath: row.jsonl_path,
     title: row.custom_name || '',
     recap: row.recap || '',
+    topicMemory: row.topic_memory,
     isPrivate: Boolean(row.is_private),
   });
 
@@ -190,6 +191,7 @@ async function buildSessionUpsertedEvent(updatedProviderSessionId: string): Prom
       // The longer background-generated description, shown in the session pane
       // header. Empty until the first recap for this session has been written.
       recap: row.recap || '',
+    topicMemory: row.topic_memory,
       messageCount: 0,
       lastActivity: row.updated_at ?? row.created_at ?? new Date().toISOString(),
       isPrivate: Boolean(row.is_private),

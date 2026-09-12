@@ -29,6 +29,7 @@ import { sessionsDb } from '@/modules/database/index.js';
 import type { AnyRecord, ProviderRunFunction } from '@/shared/index.js';
 
 import { sessionsService } from './sessions.service.js';
+import { readTopicMemory, topicBatch, topicInstructions, mergeTopicResponse } from './session-topics.service.js';
 
 /**
  * Quiet period before summarising. Long enough that a normal back-and-forth
@@ -284,7 +285,7 @@ function parseRecapResponse(text: string) {
 }
 
 /**
- * Runs the summarising call and stores the result.
+ * Runs the summarising call and stores the result. Used by the background scheduler and historical backfill CLI.
  *
  * @param {Object} params
  * @param {string} params.sessionId - Runtime session id (app or provider id).
@@ -307,7 +308,7 @@ function parseRecapResponse(text: string) {
  *   validates it against the frontend-supported locale list and falls back to
  *   English, preventing arbitrary client text from entering the helper prompt.
  */
-async function generateRecap({
+export async function generateSessionRecap({
   sessionId,
   cwd,
   runQuery,
@@ -330,14 +331,37 @@ async function generateRecap({
 
   // A transcript file when the provider keeps one per session, the indexed
   // history when it keeps a shared store instead (OpenCode).
-  const { messages, total } = useIndexedHistory || !session.jsonl_path
-    ? await readIndexedTranscriptTail(session.session_id, fetchHistory)
-    : await readTranscriptTail(session.jsonl_path);
-  // One exchange is not yet a session worth describing.
+  const source = useIndexedHistory || !session.jsonl_path ? 'indexed' : 'claude';
+  // Provider totals can exclude tool results while pagination includes them. Count the actual
+  // normalized history, never infer oldest-message offsets from the UI's display count.
+  let historyRows: AnyRecord[];
+  let tail: { messages: RecapMessage[]; total: number };
+  if (source === 'indexed') {
+    const history = await (fetchHistory ?? ((id, options) => sessionsService.fetchHistory(id, options)))(
+      session.session_id, { limit: 1_000_000, offset: 0 });
+    historyRows = history.messages;
+    tail = await readIndexedTranscriptTail(session.session_id, async () => history);
+  } else {
+    const content = await fs.readFile(session.jsonl_path!, 'utf8');
+    historyRows = content.split(/\r?\n/).flatMap(line => {
+      try { const row = JSON.parse(line); return row.type === 'user' || row.type === 'assistant' ? [row] : []; }
+      catch { return []; }
+    });
+    tail = await readTranscriptTail(session.jsonl_path!);
+  }
+  const { messages, total } = tail;
   if (messages.length < 2) return;
-
-  // Nothing new since the last recap — the debounce fired on an idle session.
-  if (session.recap && session.recap_message_count === total) return;
+  const historyTotal = historyRows.length;
+  const memory = readTopicMemory(session.topic_memory);
+  if (memory.source !== source || memory.cursor > historyTotal) {
+    memory.cursor = 0; memory.charOffset = 0; memory.source = source;
+  }
+  if (session.recap && session.recap_message_count === total && memory.cursor >= historyTotal) return;
+  const rows = historyRows.slice(memory.cursor);
+  const batch = topicBatch(rows, memory, historyTotal);
+  const topicPrompt = topicInstructions(memory, batch);
+  // Historical tools/progress consume no topic budget. The separate tail above still gives
+  // the recap current assistant outcomes, while cumulative subjects follow actual user asks.
 
   let responseText = '';
   const writer = {
@@ -367,7 +391,7 @@ async function generateRecap({
   // run the default pass fallbackModel: null and get the provider's own.
   const helperModel = model || fallbackModel || undefined;
 
-  await runQuery(buildRecapPrompt(messages, locale), {
+  await runQuery(buildRecapPrompt(messages, locale) + '\n\n' + topicPrompt, {
     cwd,
     model: helperModel,
     permissionMode: 'bypassPermissions',
@@ -392,6 +416,16 @@ async function generateRecap({
   // The app session id is the row key; the runtime may know the session by its
   // provider id, so resolve back to the row we actually read.
   const rowId = session.session_id;
+  const current = sessionsDb.getSessionById(rowId);
+  if (!current || current.is_private) return;
+  const updatedMemory = mergeTopicResponse(responseText, memory, batch);
+  if (!updatedMemory && /"topics"\s*:/.test(responseText)) {
+    throw new Error('Topic update rejected: invalid structure or source quote; coverage retained');
+  }
+  let more = false;
+  if (updatedMemory && sessionsDb.updateSessionTopicMemory(rowId, session.topic_memory, JSON.stringify(updatedMemory))) {
+    more = updatedMemory.cursor < historyTotal || updatedMemory.charOffset > 0;
+  }
 
   if (result.recap) {
     sessionsDb.updateSessionRecap(rowId, result.recap, total);
@@ -408,6 +442,7 @@ async function generateRecap({
     title: result.title || null,
     recap: result.recap || null,
   });
+  return more;
 }
 
 /**
@@ -435,7 +470,8 @@ export function scheduleSessionRecap(input: RecapInput) {
     if (!latest) return;
     inFlightRecaps.add(sessionId);
     nextRefreshAt.set(sessionId, Date.now() + 60_000);
-    void generateRecap(latest)
+    void generateSessionRecap(latest)
+      .then(more => { if (more && !latestRecaps.has(sessionId)) latestRecaps.set(sessionId, latest); })
       .catch((error: unknown) => {
         console.warn(`[recap] ${sessionId} failed:`, error instanceof Error ? error.message : error);
       })
@@ -465,5 +501,5 @@ export const __testing = {
   readIndexedTranscriptTail,
   parseRecapResponse,
   buildRecapPrompt,
-  generateRecap,
+  generateRecap: generateSessionRecap,
 };

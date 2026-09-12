@@ -22,4 +22,4 @@ export { assertOpenCodeServerModel } from './services/opencode-server-model.serv
 
 export { permissionPreferencesService } from './services/permission-preferences.service.js';
 
-export { scheduleSessionRecap, cancelSessionRecap } from './services/session-recap.service.js';
+export { scheduleSessionRecap, cancelSessionRecap, generateSessionRecap } from './services/session-recap.service.js';
