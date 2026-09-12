@@ -68,7 +68,7 @@ export function topicInstructions(memory: Memory, batch: Batch): string {
     `ORIGINAL ASK: ${memory.origin || batch.messages.find(m => m.role === 'user')?.text.slice(0, 2000) || '(not yet available)'}`,
     `SAVED TOPICS: ${JSON.stringify(memory.topics.map(t => ({ id: t.id, label: t.label, summary: t.summary })))}`,
     `SAVED KINDS: ${JSON.stringify(memory.kinds)}`,
-    `NEW CONVERSATION (chronological): ${JSON.stringify(batch.messages)}`,
+    `NEW CONVERSATION (chronological): ${JSON.stringify(batch.messages.map((m, i) => ({ id: `u${i + 1}`, role: m.role, text: m.text })))}`,
   ].join('\n');
 }
 
@@ -82,10 +82,15 @@ export function mergeTopicResponse(raw: string, memory: Memory, batch: Batch): M
   for (const update of response.topics.slice(0, 12)) {
     if (!update || typeof update.label !== 'string' || typeof update.summary !== 'string'
       || typeof update.quote !== 'string' || !update.quote.trim()) return null;
-    // Small helpers sometimes capitalize the start of an excerpt; preserve the original spelling.
-    const evidence = batch.messages.find(m => m.role === 'user' && m.id === update.messageId
-      && m.text.toLocaleLowerCase().includes(update.quote.toLocaleLowerCase()));
+    // Short batch-local IDs are easier for small helpers to cite faithfully than provider UUIDs.
+    const evidence = batch.messages.find((m, i) => m.role === 'user'
+      && (m.id === update.messageId || `u${i + 1}` === update.messageId));
     if (!evidence) return null;
+    const quoteAt = evidence.text.toLocaleLowerCase().indexOf(update.quote.toLocaleLowerCase());
+    // Never store a paraphrase as a quotation. When the helper paraphrases, show the real
+    // source message excerpt instead; the referenced USER message must still exist in this batch.
+    const quote = quoteAt >= 0 ? evidence.text.slice(quoteAt, quoteAt + Math.min(300, update.quote.length))
+      : evidence.text.slice(0, 300);
     const label = update.label.trim().slice(0, 48);
     if (!label) return null;
     const existing = topics.find(t => t.id === update.id) ?? topics.find(t => key(t.label) === key(label));
@@ -95,7 +100,7 @@ export function mergeTopicResponse(raw: string, memory: Memory, batch: Batch): M
       existing.lastSeen = batch.cursor;
     } else {
       topics.push({ id: randomUUID(), label, summary: update.summary.trim().slice(0, 240),
-        firstMessageId: evidence.id, firstQuote: evidence.text.slice(evidence.text.toLocaleLowerCase().indexOf(update.quote.toLocaleLowerCase())).slice(0, Math.min(300, update.quote.length)), lastSeen: batch.cursor });
+        firstMessageId: evidence.id, firstQuote: quote, lastSeen: batch.cursor });
     }
   }
   for (const merge of Array.isArray(response.merges) ? response.merges.slice(0, 12) : []) {
