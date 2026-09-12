@@ -29,7 +29,7 @@ test('historical pages retain beginning and middle; restart resumes committed co
         calls++;
         const batch = JSON.parse(prompt.split('NEW CONVERSATION (chronological): ')[1]);
         writer.send({ kind: 'text', content: JSON.stringify({ title: 'Topics', recap: 'Current work', kinds: ['research'],
-          topics: batch.filter((m: { id: string }) => ['m-0', 'm-85', 'm-180'].includes(m.id)).map((m: { id: string; text: string }) =>
+          topics: batch.filter((m: { text: string }) => ['Subject 0', 'Subject 85', 'Subject 180'].includes(m.text)).map((m: { id: string; text: string }) =>
             ({ label: m.text, summary: m.text, messageId: m.id, quote: m.text })) }) });
       },
     };
