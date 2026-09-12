@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 /** Resume historical topics without starting foreground sessions. Build the server before running. */
+import '../dist-server/server/load-env.js';
 import fs from 'node:fs';
 import { initializeDatabase, sessionsDb, getConnection } from '../dist-server/server/modules/database/index.js';
 import { generateSessionRecap } from '../dist-server/server/modules/providers/index.js';
