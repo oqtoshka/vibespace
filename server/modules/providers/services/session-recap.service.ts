@@ -13,27 +13,29 @@
  *
  * DEBOUNCED, NOT PER-TURN. A run is often a burst of short turns; summarising
  * each one would spend a call per turn to describe a conversation that has
- * barely moved. Scheduling restarts the timer, so a burst costs one call once
- * the session goes quiet. The transcript size the last recap described is
+ * barely moved. Scheduling coalesces progress without moving the deadline, so even
+ * a long-running session receives a recap before its turn finishes. The transcript size the last recap described is
  * recorded, so an idle session is never re-summarised for nothing.
  *
  * BEST EFFORT THROUGHOUT. Every failure path is a warning: a session without a
  * recap shows its title, which is what it did before this existed. Nothing here
- * may fail a turn or block one — the generation runs after the turn is over and
+ * may fail a turn or block one — generation runs alongside the turn and
  * its result is delivered whenever it arrives.
  */
 
 import { promises as fs } from 'fs';
 
-import { sessionsDb } from '../modules/database/repositories/sessions.db.js';
-import { sessionsService } from '../modules/providers/services/sessions.service.js';
+import { sessionsDb } from '@/modules/database/index.js';
+import type { AnyRecord, ProviderRunFunction } from '@/shared/index.js';
+
+import { sessionsService } from './sessions.service.js';
 
 /**
  * Quiet period before summarising. Long enough that a normal back-and-forth
  * settles into one call, short enough that the header is current by the time
  * the user looks away and back.
  */
-const RECAP_DEBOUNCE_MS = parseInt(process.env.VS_RECAP_DEBOUNCE_MS, 10) || 15000;
+const RECAP_DEBOUNCE_MS = parseInt(process.env.VS_RECAP_DEBOUNCE_MS || '', 10) || 15000;
 
 /** Transcript lines fed to the model — the tail is what the recap is about. */
 const RECAP_TRANSCRIPT_LINES = 40;
@@ -57,7 +59,7 @@ const MAX_RECAP_CHARS = 400;
 const DEFAULT_RECAP_MODEL = 'haiku';
 
 /** UI locales supported by the frontend, mapped to prompt-safe names. */
-const RECAP_LANGUAGE_NAMES = {
+const RECAP_LANGUAGE_NAMES: Record<string, string> = {
   en: 'English',
   fr: 'French',
   es: 'Spanish',
@@ -71,11 +73,27 @@ const RECAP_LANGUAGE_NAMES = {
   it: 'Italian',
 };
 
-/** sessionId -> pending debounce timer. */
-const pendingRecaps = new Map();
+type RecapMessage = { role: string; text: string };
+type RecapInput = {
+  sessionId: string;
+  cwd: string;
+  runQuery: ProviderRunFunction;
+  model?: string;
+  fallbackModel?: string | null;
+  onRecap?: (result: { sessionId: string; title: string | null; recap: string | null }) => void;
+  useIndexedHistory?: boolean;
+  fetchHistory?: (id: string, options: { limit: number; offset: number }) => Promise<{ messages: AnyRecord[]; total?: number }>;
+  locale?: string;
+};
+/** Fixed deadlines and the latest inputs to include at each deadline. */
+const pendingRecaps = new Map<string, ReturnType<typeof setTimeout>>();
+const latestRecaps = new Map<string, RecapInput>();
 
 /** sessionId -> true while a generation is in flight, so bursts don't stack. */
-const inFlightRecaps = new Set();
+const inFlightRecaps = new Set<string>();
+// Progress can arrive many times a minute. The first recap is quick; later
+// refreshes are limited to one helper per minute, even during an active turn.
+const nextRefreshAt = new Map<string, number>();
 
 /**
  * Pulls the readable tail out of a Claude JSONL transcript.
@@ -88,7 +106,7 @@ const inFlightRecaps = new Set();
  * @param {string} jsonlPath
  * @returns {Promise<{messages: Array<{role: string, text: string}>, total: number}>}
  */
-async function readTranscriptTail(jsonlPath) {
+async function readTranscriptTail(jsonlPath: string) {
   let content;
   try {
     content = await fs.readFile(jsonlPath, 'utf8');
@@ -118,8 +136,8 @@ async function readTranscriptTail(jsonlPath) {
         : [];
 
     const text = blocks
-      .filter((block) => block?.type === 'text' && typeof block.text === 'string')
-      .map((block) => block.text)
+      .filter((block: AnyRecord) => block?.type === 'text' && typeof block.text === 'string')
+      .map((block: AnyRecord) => block.text)
       .join('\n')
       .trim();
 
@@ -156,8 +174,8 @@ async function readTranscriptTail(jsonlPath) {
  * @returns {Promise<{messages: Array<{role: string, text: string}>, total: number}>}
  */
 async function readIndexedTranscriptTail(
-  sessionId,
-  fetchHistory = (id, options) => sessionsService.fetchHistory(id, options),
+  sessionId: string,
+  fetchHistory: NonNullable<RecapInput['fetchHistory']> = (id, options) => sessionsService.fetchHistory(id, options),
 ) {
   let history;
   try {
@@ -191,7 +209,7 @@ async function readIndexedTranscriptTail(
   };
 }
 
-function resolveRecapLanguage(locale) {
+function resolveRecapLanguage(locale: string) {
   if (typeof locale !== 'string') return RECAP_LANGUAGE_NAMES.en;
 
   const exactLocale = Object.keys(RECAP_LANGUAGE_NAMES).find(
@@ -203,7 +221,7 @@ function resolveRecapLanguage(locale) {
   return RECAP_LANGUAGE_NAMES[baseLocale] ?? RECAP_LANGUAGE_NAMES.en;
 }
 
-function buildRecapPrompt(messages, locale = 'en') {
+function buildRecapPrompt(messages: RecapMessage[], locale = 'en') {
   const transcript = messages
     .map((message) => `${message.role === 'user' ? 'User' : 'Assistant'}: ${message.text}`)
     .join('\n\n')
@@ -241,7 +259,7 @@ function buildRecapPrompt(messages, locale = 'en') {
  * Small models sometimes wrap it in a fence or a sentence even when told not
  * to, and re-running costs another call, so accept the object wherever it is.
  */
-function parseRecapResponse(text) {
+function parseRecapResponse(text: string) {
   if (typeof text !== 'string' || !text.trim()) return null;
 
   const start = text.indexOf('{');
@@ -299,7 +317,7 @@ async function generateRecap({
   useIndexedHistory = false,
   fetchHistory,
   locale = 'en',
-}) {
+}: RecapInput) {
   const session = sessionsDb.getSessionById(sessionId)
     ?? sessionsDb.getSessionByProviderSessionId(sessionId);
   if (!session) return;
@@ -326,9 +344,9 @@ async function generateRecap({
     // The helper run has no user behind it, so nothing it does may raise a
     // notification.
     userId: null,
-    send: (data) => {
+    send: (data: unknown) => {
       try {
-        const parsed = typeof data === 'string' ? JSON.parse(data) : data;
+        const parsed = (typeof data === 'string' ? JSON.parse(data) : data) as AnyRecord;
         // Whole assistant messages (Claude) and streamed fragments (OpenCode)
         // are the same text arriving under two kinds; no runtime emits both
         // for the same content, so accumulating both cannot double-count.
@@ -356,6 +374,7 @@ async function generateRecap({
     // Nothing to do but read the text it was handed.
     toolsSettings: { disallowedTools: ['Bash', 'Edit', 'Write', 'Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch', 'Task'] },
     ephemeral: true,
+    effort: 'low',
   }, writer);
 
   const result = parseRecapResponse(responseText);
@@ -392,68 +411,52 @@ async function generateRecap({
 }
 
 /**
- * Queues a recap for a session that has just finished a turn.
+ * Queues a recap after progress or turn completion.
  *
- * Restarts the quiet period on each call, so a burst of turns produces one
- * call once the burst ends. Safe to call on every turn completion.
+ * Coalesces calls until the fixed deadline. Safe on progress and completion.
  *
- * @param {Object} params - See {@link generateRecap}.
+ * Consumed by the provider runtimes through the providers barrel. A fixed
+ * deadline prevents frequent progress messages from postponing the first recap.
  */
-export function scheduleSessionRecap({
-  sessionId,
-  cwd,
-  runQuery,
-  model,
-  fallbackModel = DEFAULT_RECAP_MODEL,
-  onRecap,
-  useIndexedHistory = false,
-  fetchHistory,
-  locale = 'en',
-}) {
-  if (!sessionId || !cwd || typeof runQuery !== 'function') return;
-
-  const existing = pendingRecaps.get(sessionId);
-  if (existing) clearTimeout(existing);
+export function scheduleSessionRecap(input: RecapInput) {
+  const { cwd, runQuery } = input;
+  if (!input.sessionId || !cwd || typeof runQuery !== 'function') return;
+  // Progress uses the app id; a terminal event may carry the provider id.
+  // They must share one deadline and one in-flight helper.
+  const sessionId = (sessionsDb.getSessionById(input.sessionId)
+    ?? sessionsDb.getSessionByProviderSessionId(input.sessionId))?.session_id ?? input.sessionId;
+  latestRecaps.set(sessionId, { ...input, sessionId });
+  if (pendingRecaps.has(sessionId) || inFlightRecaps.has(sessionId)) return;
 
   const timer = setTimeout(() => {
     pendingRecaps.delete(sessionId);
-    // A generation already running will not see the newest turns, but the turn
-    // that arrived during it schedules another pass, so nothing is lost.
-    if (inFlightRecaps.has(sessionId)) return;
-
+    const latest = latestRecaps.get(sessionId);
+    latestRecaps.delete(sessionId);
+    if (!latest) return;
     inFlightRecaps.add(sessionId);
-    generateRecap({
-      sessionId,
-      cwd,
-      runQuery,
-      model,
-      fallbackModel,
-      onRecap,
-      useIndexedHistory,
-      fetchHistory,
-      locale,
-    })
-      .catch((error) => {
-        console.warn(`[recap] ${sessionId} failed:`, error?.message || error);
+    nextRefreshAt.set(sessionId, Date.now() + 60_000);
+    void generateRecap(latest)
+      .catch((error: unknown) => {
+        console.warn(`[recap] ${sessionId} failed:`, error instanceof Error ? error.message : error);
       })
       .finally(() => {
         inFlightRecaps.delete(sessionId);
+        // Progress arriving during generation must get a subsequent pass.
+        const next = latestRecaps.get(sessionId);
+        if (next) scheduleSessionRecap(next);
       });
-  }, RECAP_DEBOUNCE_MS);
-
-  // Node keeps the process alive for pending timers; a queued recap is not a
-  // reason to hold a shutdown open.
+  }, Math.max(RECAP_DEBOUNCE_MS, (nextRefreshAt.get(sessionId) ?? 0) - Date.now()));
   timer.unref?.();
   pendingRecaps.set(sessionId, timer);
 }
 
-/** Drops any queued recap for a session (ended, deleted). */
-export function cancelSessionRecap(sessionId) {
+/** Provider teardown cancels queued work, including a follow-up during a helper run. */
+export function cancelSessionRecap(sessionId: string) {
   const existing = pendingRecaps.get(sessionId);
-  if (existing) {
-    clearTimeout(existing);
-    pendingRecaps.delete(sessionId);
-  }
+  if (existing) clearTimeout(existing);
+  pendingRecaps.delete(sessionId);
+  latestRecaps.delete(sessionId);
+  nextRefreshAt.delete(sessionId);
 }
 
 /** Test seam. */

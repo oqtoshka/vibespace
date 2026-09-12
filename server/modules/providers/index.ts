@@ -21,3 +21,5 @@ export { providerPolicy } from './services/provider-policy.service.js';
 export { assertOpenCodeServerModel } from './services/opencode-server-model.service.js';
 
 export { permissionPreferencesService } from './services/permission-preferences.service.js';
+
+export { scheduleSessionRecap, cancelSessionRecap } from './services/session-recap.service.js';

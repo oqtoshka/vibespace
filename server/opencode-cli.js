@@ -14,7 +14,7 @@ import { sessionsService } from './modules/providers/services/sessions.service.j
 import { providerModelsService } from './modules/providers/services/provider-models.service.js';
 import { notifyRunFailed, notifyRunStopped } from './modules/notifications/index.js';
 import { planTaskContinuation } from './services/task-continuation.js';
-import { scheduleSessionRecap } from './services/session-recap.service.js';
+import { scheduleSessionRecap } from './modules/providers/index.js';
 import { broadcastSessionUpdate } from './modules/providers/index.js';
 import { createCompleteMessage, createNormalizedMessage, flattenPromptForWindowsShell, getOpenCodeHelperWorkspace, isDatabaseLockedError, stripAnsi } from './shared/utils.js';
 

@@ -35,7 +35,7 @@ import { providerAuthService } from './modules/providers/services/provider-auth.
 import { createCompleteMessage, createNormalizedMessage, resolveConfiguredContextWindow } from './shared/utils.js';
 import { rememberContextUsage } from './shared/context-usage-cache.js';
 import { readOpenClaudeTasks } from './shared/claude-task-ledger.js';
-import { scheduleSessionRecap } from './services/session-recap.service.js';
+import { scheduleSessionRecap } from './modules/providers/index.js';
 import { recordSessionActivity, recordSessionEnd, recordPendingInteraction } from './services/session-restore.service.js';
 import { scheduleRateLimitWake, cancelRateLimitWake, isRateLimitWakePending } from './services/rate-limit-wake.service.js';
 import { broadcastSessionUpdate } from './modules/providers/index.js';
