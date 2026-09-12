@@ -24,10 +24,9 @@ import { createProviderRuntimeContext, normalizeRuntimeOptions } from './shared/
 import { getCodexAppServer } from './services/codex-app-server.service.js';
 import { notifyRunFailed, notifyRunStopped } from './modules/notifications/index.js';
 import { cancelRateLimitWake, scheduleRateLimitWake } from './services/rate-limit-wake.service.js';
-import { scheduleSessionRecap } from './services/session-recap.service.js';
 import { recordSessionActivity, recordSessionEnd } from './services/session-restore.service.js';
 import { planTaskContinuation } from './services/task-continuation.js';
-import { broadcastSessionUpdate, generateInitialSessionTitle } from './modules/providers/index.js';
+import { broadcastSessionUpdate, generateInitialSessionTitle, scheduleSessionRecap } from './modules/providers/index.js';
 import { buildCodexTokenBudget, readLatestCodexTokenBudget } from './shared/codex-token-usage.js';
 import { toCodexAppServerSandboxPolicy } from './shared/codex-sandbox-policy.js';
 import { createCompleteMessage, createNormalizedMessage } from './shared/utils.js';
@@ -410,20 +409,17 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
   // `on-request` is the closest supported interactive policy.
   const appServerApprovalPolicy = approvalPolicy === 'on-failure' ? 'on-request' : approvalPolicy;
   const catalog = await runtime.getProviderModels();
-  const titleModel = catalog.OPTIONS.some((option) => option.value === 'gpt-5.4-mini')
-    ? 'gpt-5.4-mini'
-    : resolvedModel;
 
   // A short AI title only needs the first user message. Start that isolated
   // helper beside the real turn instead of waiting minutes for the turn to
-  // finish before the fuller recap job is even scheduled. Prefer the installed
-  // mini model for latency, but never assume a catalog contains it.
+  // finish. Use the selected session model; catalog presence does not mean
+  // the account is entitled to run a separate mini model.
   if (!ephemeral) {
     void generateInitialSessionTitle({
       sessionId: appSessionId || sessionId,
       initialMessage: command,
       cwd: workingDirectory,
-      model: titleModel,
+      model: resolvedModel,
       runQuery: (prompt, helperOptions, writer) => queryCodex(prompt, {
         ...helperOptions,
         permissionMode: 'plan',
@@ -612,6 +608,15 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
 
       if (method === 'item/completed') {
         captureCodexTurnSummary(activeSession, params.item);
+        if (!ephemeral && params.item?.type === 'agentMessage' && params.item.text?.trim()) {
+          queueCodexRecap({
+            sessionId: appSessionId || capturedSessionId,
+            cwd: workingDirectory,
+            model: resolvedModel,
+            locale: options.locale,
+            ws,
+          });
+        }
         const transformed = transformCodexItem(params.item);
         if (!transformed) {
           return;
