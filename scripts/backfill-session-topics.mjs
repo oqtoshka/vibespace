@@ -25,7 +25,7 @@ async function processSession({ session_id: sessionId }) {
     let more;
     do {
       more = await generateSessionRecap({ sessionId, cwd: row.project_path && fs.existsSync(row.project_path) ? row.project_path : process.cwd(),
-        locale, model, fallbackModel: null, useIndexedHistory: row.provider !== 'claude',
+        locale, model, fallbackModel: null, useIndexedHistory: row.provider !== 'claude', topicBatchChars: 50000,
         runQuery: (prompt, options, writer) => queryCodex(prompt, { ...options, permissionMode: 'default', ephemeral: true }, writer),
       });
       const memory = JSON.parse(sessionsDb.getSessionById(sessionId)?.topic_memory || 'null');
