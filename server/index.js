@@ -29,7 +29,7 @@ import { createWebSocketServer } from '@/modules/websocket/index.js';
 import { chatRunRegistry } from '@/modules/websocket/services/chat-run-registry.service.js';
 import { registerChatDependenciesAtBoot, serverAbortRun, serverEnqueueMessage } from '@/modules/websocket/index.js';
 import { forgetRateLimitWake, startRateLimitWakeLoop } from '@/services/rate-limit-wake.service.js';
-import { cancelSessionRecap } from '@/services/session-recap.service.js';
+import { cancelSessionRecap } from '@/modules/providers/index.js';
 import { forgetSession as forgetRestoreEntry, restoreInterruptedSessions } from '@/services/session-restore.service.js';
 
 import { getConnectableHost } from '../shared/networkHosts.js';

@@ -9,7 +9,7 @@ import {
   initializeDatabase,
   sessionsDb,
 } from '../../modules/database/index.js';
-import { __testing } from '../session-recap.service.js';
+import { __testing } from '../../modules/providers/services/session-recap.service.js';
 
 const {
   readTranscriptTail,
