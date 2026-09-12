@@ -90,6 +90,31 @@ test('Codex history preserves images on current completed user items, including 
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test('Codex assistant history retains live item identity across reads and repeated text', { concurrency: false }, async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'codex-assistant-identity-'));
+  const transcript = path.join(root, 'rollout.jsonl');
+  const text = 'Checking the avatar pipeline.\n';
+  const entries = ['msg-first', 'msg-repeat'].map(id => ({
+    type: 'response_item', timestamp: '2026-09-12T17:41:58.887Z',
+    payload: { type: 'message', id, role: 'assistant', content: [{ type: 'output_text', text }] },
+  }));
+  try {
+    await writeFile(transcript, entries.map(entry => JSON.stringify(entry)).join('\n') + '\n');
+    await withIsolatedDatabase(async () => {
+      const id = sessionsDb.createSession('assistant-identity', 'codex', root, 'Identity test', undefined, undefined, transcript);
+      const provider = new CodexSessionsProvider();
+      const live = provider.normalizeMessage({ type: 'item', itemType: 'agent_message', uuid: 'msg-first',
+        timestamp: '2026-09-12T17:41:58.888Z', message: { role: 'assistant', content: text } }, id)[0];
+      for (let read = 0; read < 2; read += 1) {
+        const history = await provider.fetchHistory(id);
+        assert.deepEqual(history.messages.map(message => message.id), ['msg-first', 'msg-repeat']);
+        assert.equal(history.messages[0].id, live.id);
+        assert.notEqual(history.messages[0].timestamp, live.timestamp);
+      }
+    });
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 /**
  * Writes one Codex rollout transcript. `firstUserMessage` mirrors the
  * `event_msg`/`user_message` payload the runtime records for the prompt the
