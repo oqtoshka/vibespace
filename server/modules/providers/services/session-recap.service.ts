@@ -83,6 +83,7 @@ type RecapInput = {
   fallbackModel?: string | null;
   onRecap?: (result: { sessionId: string; title: string | null; recap: string | null }) => void;
   useIndexedHistory?: boolean;
+  topicBatchChars?: number;
   fetchHistory?: (id: string, options: { limit: number; offset: number }) => Promise<{ messages: AnyRecord[]; total?: number }>;
   locale?: string;
 };
@@ -316,6 +317,7 @@ export async function generateSessionRecap({
   fallbackModel = DEFAULT_RECAP_MODEL,
   onRecap,
   useIndexedHistory = false,
+  topicBatchChars,
   fetchHistory,
   locale = 'en',
 }: RecapInput) {
@@ -358,7 +360,7 @@ export async function generateSessionRecap({
   }
   if (session.recap && session.recap_message_count === total && memory.cursor >= historyTotal) return;
   const rows = historyRows.slice(memory.cursor);
-  const batch = topicBatch(rows, memory, historyTotal);
+  const batch = topicBatch(rows, memory, historyTotal, topicBatchChars);
   const topicPrompt = topicInstructions(memory, batch);
   // Historical tools/progress consume no topic budget. The separate tail above still gives
   // the recap current assistant outcomes, while cumulative subjects follow actual user asks.

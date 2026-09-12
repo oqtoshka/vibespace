@@ -6,6 +6,20 @@ const row = (id: string, content: string) => ({ id, kind: 'text', role: 'user', 
 const reply = (topics: unknown[], kinds = ['feature'], merges: unknown[] = []) => JSON.stringify({ topics, kinds, merges });
 const topic = (label: string, messageId: string, quote: string, id?: string) => ({ label, summary: label, messageId, quote, id });
 
+test('historical batches can read larger bounded chunks without changing live defaults', () => {
+  const rows = [row('long', 'x'.repeat(75000))];
+  const memory = readTopicMemory();
+  assert.equal(topicBatch(rows, memory, 1).charOffset, 10000);
+  const first = topicBatch(rows, memory, 1, 50000);
+  assert.equal(first.charOffset, 50000);
+  const last = topicBatch(rows, { ...memory, ...first }, 1, 50000);
+  assert.equal(last.messages[0].text.length, 25000);
+  assert.equal(last.cursor, 1);
+  assert.equal(last.charOffset, 0);
+  assert.equal(topicBatch(rows, memory, 1, 999999).charOffset, 50000);
+  assert.equal(topicBatch(rows, memory, 1, NaN).charOffset, 10000);
+});
+
 test('oldest subjects survive drift and synonyms preserve earliest evidence', () => {
   const first = readTopicMemory();
   const b1 = topicBatch([row('a', 'Build session tags')], first, 1);

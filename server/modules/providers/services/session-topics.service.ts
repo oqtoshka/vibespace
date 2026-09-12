@@ -33,8 +33,8 @@ function readable(raw: AnyRecord, position: number): Message | null {
 }
 
 /** Recap uses this to consume an oldest-first page without losing long-message suffixes. */
-export function topicBatch(rows: AnyRecord[], memory: Memory, total: number): Batch {
-  let budget = 10000;
+export function topicBatch(rows: AnyRecord[], memory: Memory, total: number, maxChars = 10000): Batch {
+  let budget = Number.isFinite(maxChars) ? Math.max(1000, Math.min(50000, Math.floor(maxChars))) : 10000;
   let cursor = memory.cursor;
   let charOffset = memory.charOffset;
   const messages: Message[] = [];
