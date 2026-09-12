@@ -13,3 +13,8 @@ export { appendFilesInputTag, isImageAttachmentDescriptor } from './image-attach
 // Runtime dispatch shares provider contracts through the shared barrel.
 export type { IProvider } from './interfaces.js';
 export type { ProviderModelsDefinition, ProviderPermissionDecision, ProviderRuntimeContext } from './types.js';
+
+// Database session identity normalization.
+export { normalizeProjectPath } from './utils.js';
+export type { SessionNameSource } from './utils.js';
+export { sessionAvatarUrl } from './utils.js';

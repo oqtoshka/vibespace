@@ -6,6 +6,7 @@ export type SessionMetadataChange = {
   transcriptPath: string | null;
   title: string;
   recap: string;
+  topicMemory?: string | null;
   isPrivate: boolean;
 };
 
@@ -39,6 +40,7 @@ export function publishSessionMetadataChange(change: SessionMetadataChange): voi
     change.transcriptPath,
     change.title,
     change.recap,
+    change.topicMemory,
     change.isPrivate,
   ]);
   if (lastPublishedMetadata.get(change.sessionId) === signature) return;

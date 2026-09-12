@@ -1,7 +1,7 @@
 import { getConnection } from '@/modules/database/connection.js';
 import { projectsDb } from '@/modules/database/repositories/projects.db.js';
-import type { SessionNameSource } from '@/shared/utils.js';
-import { normalizeProjectPath } from '@/shared/utils.js';
+import type { SessionNameSource } from '@/shared/index.js';
+import { normalizeProjectPath } from '@/shared/index.js';
 
 type SessionRow = {
   session_id: string;
@@ -13,6 +13,7 @@ type SessionRow = {
   name_source: string | null;
   recap: string | null;
   recap_message_count: number | null;
+  topic_memory: string | null;
   /** Model this session runs with; NULL until the app records one for it. */
   model: string | null;
   /** Reasoning effort this session runs with; NULL until the app records one. */
@@ -30,7 +31,7 @@ type RecentSessionsPage = {
 };
 
 const SESSION_ROW_COLUMNS =
-  'session_id, provider, provider_session_id, project_path, jsonl_path, custom_name, name_source, recap, recap_message_count, model, effort, isArchived, is_side, is_private, created_at, updated_at';
+  'session_id, provider, provider_session_id, project_path, jsonl_path, custom_name, name_source, recap, recap_message_count, topic_memory, model, effort, isArchived, is_side, is_private, created_at, updated_at';
 
 /**
  * SQL predicate: a transcript sync must not rename an app-created session.
@@ -408,6 +409,13 @@ export const sessionsDb = {
        SET recap = ?, recap_message_count = ?
        WHERE session_id = ? OR provider_session_id = ?`
     ).run(recap, messageCount, sessionId, sessionId);
+  },
+
+  /** Providers commit topic coverage with compare-and-swap; deleted/private rows stay untouched. */
+  updateSessionTopicMemory(sessionId: string, previous: string | null, memory: string): boolean {
+    return getConnection().prepare(`UPDATE sessions SET topic_memory = ?
+      WHERE session_id = ? AND is_private = 0 AND topic_memory IS ?`)
+      .run(memory, sessionId, previous).changes === 1;
   },
 
   getSessionById(sessionId: string): SessionRow | null {

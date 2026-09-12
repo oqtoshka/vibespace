@@ -26,14 +26,16 @@ test('progress cannot starve recaps or lose the refresh arriving during generati
   let finish: () => void = () => {};
   const input = {
     sessionId: 'live', cwd: directory, useIndexedHistory: true,
-    fetchHistory: async () => ({ total: count, messages: [
-      { kind: 'text', role: 'user', content: 'Fix live recaps' },
-      { kind: 'text', role: 'assistant', content: `Progress ${count}` },
-    ] }),
+    fetchHistory: async (_id: string, options: { limit: number; offset: number }) => {
+      const messages = Array.from({ length: count }, (_, i) => ({ id: `m-${i}`, kind: 'text',
+        role: i === 0 ? 'user' : 'assistant', content: i === 0 ? 'Fix live recaps' : `Progress ${i}` }));
+      const end = Math.max(0, count - options.offset);
+      return { total: count, messages: messages.slice(Math.max(0, end - options.limit), end) };
+    },
     runQuery: async (_prompt: string, _options: unknown, writer: { send: (data: unknown) => void }) => {
       calls++;
       await new Promise<void>(resolve => { finish = resolve; });
-      writer.send({ kind: 'text', content: JSON.stringify({ title: 'Live Recaps', recap: `Recap ${calls}` }) });
+      writer.send({ kind: 'text', content: JSON.stringify({ title: 'Live Recaps', recap: `Recap ${calls}`, topics: [], kinds: [] }) });
     },
   };
   try {
