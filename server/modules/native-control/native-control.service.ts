@@ -50,6 +50,10 @@ export async function setNativeSelection(id: string, model: unknown, effort: unk
   if (effort && !chosen?.effort?.values.some(option => option.value === effort)) throw new Error('This model does not support that effort');
   if (typeof effort !== 'string' || effort.length > 64) throw new Error('Invalid reasoning effort');
   providerModelsService.setSessionModel(row.provider as LLMProvider, id, model);
+  // The change file outranks the row when a session resumes or starts a turn, so
+  // a pick recorded only on the row lost to any older override from the web picker:
+  // the phone showed Opus while every turn ran on the stale Fable pick.
+  await providerModelsService.changeActiveModel(row.provider as LLMProvider, { sessionId: id, model });
   const selectedEffort = effort || chosen?.effort?.default || '';
   sessionsDb.setSessionEffort(id, selectedEffort);
   return { model, effort: selectedEffort };

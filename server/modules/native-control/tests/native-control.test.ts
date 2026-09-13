@@ -63,11 +63,13 @@ test('federation credentials, idempotent creation, registered projects and sessi
     const catalog = mock.method(providerModelsService, 'getProviderModels', async () => ({ models: {
       DEFAULT: 'fixture-model', OPTIONS: [{ value: 'fixture-model', label: 'Fixture', effort: { default: 'low', values: [{ value: 'low' }, { value: 'ultra' }] } }],
     } }));
+    const change = mock.method(providerModelsService, 'changeActiveModel', async () => ({}) as never);
     try {
       assert.equal((await setNativeSelection(first.sessionId, 'fixture-model', 'ultra')).effort, 'ultra');
+      assert.deepEqual(change.mock.calls[0].arguments, ['codex', { sessionId: first.sessionId, model: 'fixture-model' }]);
       assert.equal((await setNativeSelection(first.sessionId, 'fixture-model', '')).effort, 'low');
       await assert.rejects(setNativeSelection(first.sessionId, 'fixture-model', 'made-up'), /does not support/);
-    } finally { catalog.mock.restore(); }
+    } finally { catalog.mock.restore(); change.mock.restore(); }
     const second = await nativeControlService.create({ ...input, requestId: randomUUID() });
     const restricted = await nativeControlService.create({ ...input, requestId: randomUUID(), permissionMode: 'default' });
     assert.equal(nativePermissionOptions('codex', restricted.sessionId).sessionMode, 'default');
