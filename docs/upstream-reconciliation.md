@@ -295,3 +295,9 @@ the foreground model. Claude and OpenCode routing is unchanged.
 Verification: 746 backend tests pass, including an app-server integration check
 that keeps a foreground Astra turn running while both ephemeral helpers use Luna
 at low effort. Build, typecheck and lint pass (existing lint warnings remain).
+
+Release verification: 1.38.71 is running on both the macOS and Linux deployments.
+Real Luna helper calls on both hosts generated a recap and two cumulative topics
+with exact original quotes; each covered all four fixture messages and preserved
+the foreground model as Astra. The macOS installed helper modules match the
+tested compiled build byte-for-byte. The Linux deployment pipeline passed.
