@@ -17,6 +17,7 @@ export { registerSessionShredDependencies, sessionShredService } from './service
 export type { ShredReport, ShredRoots } from './services/session-shred.service.js';
 
 export { providerPolicy } from './services/provider-policy.service.js';
+export { rewindCodexTurn } from './services/codex-rewind.service.js';
 
 export { assertOpenCodeServerModel } from './services/opencode-server-model.service.js';
 

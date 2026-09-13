@@ -127,7 +127,7 @@ export function handleNativeChat(ws: WebSocket, request: AuthenticatedWebSocketR
       }
       if (command.type === 'chat.send' || command.type === 'chat.queue-add') {
         if (command.rewind !== undefined) {
-          if (!['claude', 'opencode'].includes(current.provider)) throw new Error('This provider does not support rewind');
+          if (!['claude', 'opencode', 'codex'].includes(current.provider)) throw new Error('This provider does not support rewind');
           if (chatRunRegistry.isProcessing(sessionId) || chatRunRegistry.getQueueForClient(sessionId).length) throw new Error('Stop the response and clear the queue before editing');
         }
         // Preserve descriptors until the shared runtime boundary. Flattening
@@ -149,5 +149,5 @@ export function handleNativeChat(ws: WebSocket, request: AuthenticatedWebSocketR
       facade.emit('message', JSON.stringify(command));
     } catch (error) { send({ kind: 'native.error', requestId, error: error instanceof Error ? error.message : 'Native chat failed' }); }
   });
-  send({ kind: 'native.hello', version: 1, epoch, provider: row.provider, rewind: ['claude', 'opencode'].includes(row.provider), archived: Boolean(row.isArchived), voice: voiceService.getHealth() });
+  send({ kind: 'native.hello', version: 1, epoch, provider: row.provider, rewind: ['claude', 'opencode', 'codex'].includes(row.provider), archived: Boolean(row.isArchived), voice: voiceService.getHealth() });
 }
