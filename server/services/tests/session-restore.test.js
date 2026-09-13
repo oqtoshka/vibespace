@@ -198,3 +198,30 @@ test('an interactive prompt answered in-process leaves no re-ask rider', async (
   assert.equal(calls.length, 1);
   assert.doesNotMatch(calls[0].prompt, /AskUserQuestion/);
 });
+
+test('an idle OpenCode session is judged by its own todo list, not by Claude task files', async () => {
+  const { default: Database } = await import('better-sqlite3');
+  const home = path.join(tmp, 'opencode-home');
+  const dataDir = path.join(home, '.local', 'share', 'opencode');
+  await fs.mkdir(dataDir, { recursive: true });
+  const db = new Database(path.join(dataDir, 'opencode.db'));
+  db.exec(`
+    CREATE TABLE todo (session_id text, content text, status text, priority text, position integer, time_created integer, time_updated integer);
+    CREATE TABLE part (id text, message_id text, session_id text, time_created integer, time_updated integer, data text);
+  `);
+  db.prepare('INSERT INTO todo VALUES (?, ?, ?, ?, 0, 0, 0)').run('ses_open', 'still to do', 'pending', 'high');
+  db.close();
+
+  const originalHomedir = os.homedir;
+  os.homedir = () => home;
+  try {
+    await recordSessionActivity({ provider: 'opencode', sessionId: 'ses_open', cwd: '/proj', turnActive: false });
+    await recordSessionActivity({ provider: 'opencode', sessionId: 'ses_clear', cwd: '/proj', turnActive: false });
+    const calls = [];
+    assert.deepEqual(await restoreInterruptedSessions({ opencode: spawnRecorder(calls) }), ['ses_open']);
+    assert.equal(calls.length, 1);
+  } finally {
+    os.homedir = originalHomedir;
+    await fs.rm(home, { recursive: true, force: true });
+  }
+});
