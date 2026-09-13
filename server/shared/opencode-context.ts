@@ -9,6 +9,7 @@ import Database from 'better-sqlite3';
 import { createNormalizedMessage, getOpenCodeDatabasePath } from '@/shared/utils.js';
 import { rememberContextUsage } from '@/shared/context-usage-cache.js';
 import { probeOpenAIContextWindow, resolveApiKey } from '@/shared/openai-context-probe.js';
+import type { ProbedContextWindow } from '@/shared/openai-context-probe.js';
 import type { ContextUsage } from '@/shared/types.js';
 
 /**
@@ -341,7 +342,7 @@ const PROBE_TTL_MS = 5 * 60 * 1000;
 /** A server that would not answer is retried sooner, but not on every turn. */
 const PROBE_FAILURE_TTL_MS = 60 * 1000;
 
-const probeCache = new Map<string, { readAt: number; context: number | null }>();
+const probeCache = new Map<string, { readAt: number; window: ProbedContextWindow | null }>();
 
 /**
  * Whether to follow the serving stack's own answer about the window.
@@ -360,24 +361,25 @@ function isWindowTrackingEnabled(): boolean {
  * What the serving stack says this model's window is, cached so a gauge costs
  * one HTTP GET per five minutes rather than one per turn.
  */
-async function resolveProviderReportedWindow(modelId: string): Promise<number | null> {
+async function resolveProviderReportedWindow(modelId: string): Promise<ProbedContextWindow | null> {
   if (!isWindowTrackingEnabled()) return null;
 
   const endpoint = readModelEndpointFromConfig(modelId);
   if (!endpoint) return null;
 
   const cached = probeCache.get(modelId);
-  const ttl = cached?.context === null ? PROBE_FAILURE_TTL_MS : PROBE_TTL_MS;
-  if (cached && Date.now() - cached.readAt < ttl) return cached.context;
+  const ttl = cached?.window === null ? PROBE_FAILURE_TTL_MS : PROBE_TTL_MS;
+  if (cached && Date.now() - cached.readAt < ttl) return cached.window;
 
   const probed = await probeOpenAIContextWindow(endpoint);
-  probeCache.set(modelId, { readAt: Date.now(), context: probed?.context ?? null });
+  probeCache.set(modelId, { readAt: Date.now(), window: probed });
 
   if (probed) {
-    console.log(`[opencode context] ${modelId} reports a ${probed.context.toLocaleString()} token window (${probed.via})`);
+    const range = probed.upTo > probed.context ? `–${probed.upTo.toLocaleString()}` : '';
+    console.log(`[opencode context] ${modelId} reports a ${probed.context.toLocaleString()}${range} token window (${probed.via})`);
   }
 
-  return probed?.context ?? null;
+  return probed;
 }
 
 function runOpenCodeModels(): Promise<string> {
@@ -460,14 +462,21 @@ export async function resolveOpenCodeModelLimit(modelId: string | null | undefin
   if (fromConfig) {
     const reported = await resolveProviderReportedWindow(modelId);
     if (!reported) return fromConfig;
-    if (reported === fromConfig.context) return { ...fromConfig, source: 'provider' };
+    // A config inside the reported range is not contradicted by it. Rewriting
+    // it to the low end would reserve the output twice on a proxy that already
+    // subtracted it — and fight whatever wrote the config on every probe.
+    if (fromConfig.context >= reported.context && fromConfig.context <= reported.upTo) {
+      return { ...fromConfig, source: 'provider' };
+    }
 
     console.log(
       `[opencode context] correcting ${modelId} window `
-      + `${fromConfig.context.toLocaleString()} -> ${reported.toLocaleString()} in ${getOpenCodeConfigPath()}`,
+      + `${fromConfig.context.toLocaleString()} -> ${reported.context.toLocaleString()} in ${getOpenCodeConfigPath()}`,
     );
-    const corrected = await writeOpenCodeModelContextLimit(modelId, reported);
-    return corrected ? { ...corrected, source: 'provider' } : { ...fromConfig, context: reported, source: 'provider' };
+    const corrected = await writeOpenCodeModelContextLimit(modelId, reported.context);
+    return corrected
+      ? { ...corrected, source: 'provider' }
+      : { ...fromConfig, context: reported.context, source: 'provider' };
   }
 
   const fresh = modelLimitCache && Date.now() - modelLimitCache.readAt < MODEL_LIMIT_TTL_MS;

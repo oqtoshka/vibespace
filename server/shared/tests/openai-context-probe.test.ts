@@ -46,6 +46,7 @@ test('vLLM\'s own max_model_len is the answer when the engine is reachable', asy
   await withServer({ '/v1/models': vllmModels('local', 139_264) }, async (baseURL, seen) => {
     const probed = await probeOpenAIContextWindow({ baseURL, modelKey: 'local' });
     assert.equal(probed?.context, 139_264);
+    assert.equal(probed?.upTo, 139_264);
     // One hop. The model list answered, so /model/info is never asked.
     assert.deepEqual(seen, ['/v1/models']);
   });
@@ -60,6 +61,9 @@ test('a proxy that republishes a limit is believed without a second hop', async 
   await withServer(routes, async (baseURL, seen) => {
     const probed = await probeOpenAIContextWindow({ baseURL, modelKey: 'gpt-4o-mini' });
     assert.equal(probed?.context, 128_000);
+    // Whether 128k already makes room for the output is the publisher's call,
+    // so the answer is a range, not a single number.
+    assert.equal(probed?.upTo, 128_000 + 16_384);
     assert.deepEqual(seen, ['/v1/models']);
   });
 });
