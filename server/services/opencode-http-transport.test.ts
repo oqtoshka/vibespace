@@ -48,16 +48,25 @@ test('the completed text event is not forwarded a second time', () => {
   }), []);
 });
 
-test('reasoning is streamed as thinking', () => {
-  const [message] = render('session.next.reasoning.delta', {
+// Clients treat a thinking row as a complete block — web upserts it by id — so
+// forwarding deltas rendered only the last word of the reasoning.
+test('reasoning is sent whole when its block ends, not per delta', () => {
+  assert.deepEqual(render('session.next.reasoning.delta', {
     sessionID: SESSION_ID,
     assistantMessageID: 'msg_1',
     reasoningID: 'reasoning-0',
-    delta: 'weighing it up',
+    delta: 'could',
+  }), []);
+
+  const [message] = render('session.next.reasoning.ended', {
+    sessionID: SESSION_ID,
+    assistantMessageID: 'msg_1',
+    reasoningID: 'reasoning-0',
+    text: 'I could weigh it up',
   });
 
   assert.equal(message?.kind, 'thinking');
-  assert.equal(message?.content, 'weighing it up');
+  assert.equal(message?.content, 'I could weigh it up');
 });
 
 // Only the call event names the tool; the result events carry the id alone, so

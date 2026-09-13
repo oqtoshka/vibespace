@@ -143,13 +143,17 @@ export function translateEvent(type, properties, toolNames) {
         part: { text: properties.delta },
       };
 
-    case 'session.next.reasoning.delta':
+    case 'session.next.reasoning.ended':
+      // The whole block, once. Unlike text, a thinking row is a finished block
+      // to every client: web upserts it by id (so deltas left only the last
+      // word) and the native app appends a row per event. Every other provider
+      // already sends reasoning complete.
       return {
         type: 'reasoning',
         sessionID,
         timestamp,
         id: `${properties.assistantMessageID}:${properties.reasoningID}`,
-        part: { text: properties.delta },
+        part: { text: properties.text },
       };
 
     case 'session.next.tool.called': {
