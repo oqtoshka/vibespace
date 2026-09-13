@@ -484,7 +484,7 @@ test('ephemeral OpenCode helpers are tagged for host plugin contributors', async
         : `.COM;.EXE;.BAT;.CMD${previousPathExt ? `;${previousPathExt}` : ''}`;
     }
 
-    await spawnOpenCode('summarise this', { cwd: tempRoot, ephemeral: true }, writer);
+    await spawnOpenCode('summarise this', { cwd: tempRoot, ephemeral: true }, writer, runtimeContext);
 
     const capture = JSON.parse(await readFile(argsCapturePath, 'utf8'));
     assert.equal(capture.optOut, '1');
@@ -582,7 +582,7 @@ async function withLockingOpenCode(lockedAttempts, assertions, { splitWrites = f
 
     let runError = null;
     try {
-      await spawnOpenCode('Hi', { cwd: tempRoot }, writer);
+      await spawnOpenCode('Hi', { cwd: tempRoot }, writer, runtimeContext);
     } catch (error) {
       runError = error;
     }

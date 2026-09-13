@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -44,6 +44,27 @@ const createEphemeralCachePath = (): string => path.join(
   os.tmpdir(),
   `provider-model-cache-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}.json`,
 );
+
+test('test runtimes never persist provider fixtures in the default user cache', async (t) => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'provider-model-test-home-'));
+  t.mock.method(os, 'homedir', () => tempRoot);
+  try {
+    const service = createProviderModelsService({
+      resolveProvider: (provider) => ({
+        models: {
+          getSupportedModels: async () => createModels('homelab/only-real-model'),
+          getCurrentActiveModel: async () => createCurrentActiveModel('homelab/only-real-model'),
+          changeActiveModel: async (input) => createSessionActiveModelChange(provider, input),
+        },
+      }),
+    });
+    const result = await service.getProviderModels('opencode', { bypassCache: true });
+    assert.equal(result.models.DEFAULT, 'homelab/only-real-model');
+    assert.deepEqual(await readdir(tempRoot), []);
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
 
 test('provider models service delegates to the resolved provider model adapter', async () => {
   const calls: LLMProvider[] = [];
