@@ -69,6 +69,8 @@ export interface ChatMessage {
   isCompactSummary?: boolean;
   /** Renders as a "context compacted here" divider instead of a bubble. */
   isCompactBoundary?: boolean;
+  /** Runtime notice (e.g. a model fallback) rendered as a warning strip. */
+  isNotice?: boolean;
   compaction?: CompactionInfo;
   isSubagentContainer?: boolean;
   subagentState?: {
