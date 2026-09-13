@@ -239,7 +239,11 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
   )(provider);
   const catalog = dependencies.catalog ?? providerModelsDb;
   const sessions = dependencies.sessions ?? sessionsDb;
-  const cachePath = dependencies.cachePath ?? getProviderModelsCachePath();
+  // Tests can invoke the real runtime with a fake provider executable. Keep
+  // those catalogs in memory unless the test explicitly supplies its own
+  // cache file; otherwise fixtures overwrite the user's production catalog.
+  const cachePath = dependencies.cachePath
+    ?? (process.env.NODE_TEST_CONTEXT ? null : getProviderModelsCachePath());
   const activeModelChangesPath = dependencies.activeModelChangesPath;
   const now = dependencies.now ?? (() => Date.now());
   const memoryCache = new Map<LLMProvider, ProviderModelsCacheEntry>();
@@ -288,7 +292,7 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
   };
 
   const loadPersistedCache = async (): Promise<void> => {
-    if (persistedCacheLoaded) {
+    if (persistedCacheLoaded || !cachePath) {
       return;
     }
 
@@ -313,6 +317,7 @@ export const createProviderModelsService = (dependencies: ProviderModelsServiceD
   };
 
   const persistCache = async (): Promise<void> => {
+    if (!cachePath) return;
     try {
       await writeProviderModelsCacheFile(cachePath, memoryCache, now());
     } catch (error) {
