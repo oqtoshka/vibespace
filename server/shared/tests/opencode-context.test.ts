@@ -302,6 +302,45 @@ test('an input ceiling the user chose is left alone', async () => {
   });
 });
 
+test('a proxy that publishes input and output apart does not shrink the window to the input', async () => {
+  // llm.example.com: a 32k llama.cpp published as 24,576 input + 8,192 output.
+  // Taking 24,576 as the window reserved the output twice — OpenCode compacted
+  // at 16k of 32k — and fought the script that writes 32,768 on every probe.
+  const server = http.createServer((_req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({
+      data: [{ id: 'local', max_input_tokens: 24_576, max_output_tokens: 8_192 }],
+    }));
+  });
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address() as { port: number };
+  const baseURL = `http://127.0.0.1:${port}/v1`;
+
+  try {
+    await withConfig(engineConfig(baseURL, 32_768), async (configPath) => {
+      clearOpenCodeModelLimitCache();
+
+      const limit = await resolveOpenCodeModelLimit('homelab/local');
+      assert.equal(limit?.context, 32_768);
+      assert.equal(limit?.source, 'provider');
+      assert.equal(resolveCompactionThreshold(limit!, defaults), 24_576);
+
+      const written = JSON.parse(await readFile(configPath, 'utf8'));
+      assert.equal(written.provider.homelab.models.local.limit.context, 32_768);
+    });
+
+    // Outside the range it is still corrected, and to the safe end of it.
+    await withConfig(engineConfig(baseURL, 65_536), async (configPath) => {
+      clearOpenCodeModelLimitCache();
+
+      assert.equal((await resolveOpenCodeModelLimit('homelab/local'))?.context, 24_576);
+      const written = JSON.parse(await readFile(configPath, 'utf8'));
+      assert.equal(written.provider.homelab.models.local.limit.context, 24_576);
+    });
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
+
 test('a config value stands when the server will not answer', async () => {
   await withConfig(engineConfig('http://127.0.0.1:1/v1', 65_536), async (configPath) => {
     clearOpenCodeModelLimitCache();

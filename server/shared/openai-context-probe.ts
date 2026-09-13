@@ -16,6 +16,17 @@ const PROBE_TIMEOUT_MS = 4_000;
 
 export type ProbedContextWindow = {
   context: number;
+  /**
+   * The largest window the answer is still consistent with, when it is not exact.
+   *
+   * A proxy's `max_input_tokens` sits next to a separate `max_output_tokens`,
+   * and publishers disagree on whether the input figure already makes room for
+   * the output: LiteLLM's catalog publishes the whole window there, while a
+   * self-hosted stack may publish the window minus output (llm.example.com does,
+   * 24,576 + 8,192 for a 32k llama.cpp). Either reading is honest, so the
+   * probe only narrows it to a range; `context` is its safe low end.
+   */
+  upTo: number;
   /** Which endpoint answered. Carried for logs; nothing branches on it. */
   via: string;
 };
@@ -68,10 +79,15 @@ async function getJson(url: string, apiKey: string | null): Promise<unknown | nu
  * the length the weights were trained at, not the length being served, and a
  * llama.cpp started with a smaller `-c` would report a window it will refuse.
  */
-function readWindow(entry: Record<string, unknown>): number | null {
-  return readPositive(entry.max_model_len)
-    ?? readPositive(entry.max_input_tokens)
-    ?? readPositive(entry.context_length);
+function readWindow(entry: Record<string, unknown>): { context: number; upTo: number } | null {
+  const exact = readPositive(entry.max_model_len);
+  if (exact) return { context: exact, upTo: exact };
+
+  const input = readPositive(entry.max_input_tokens);
+  if (input) return { context: input, upTo: input + (readPositive(entry.max_output_tokens) ?? 0) };
+
+  const declared = readPositive(entry.context_length);
+  return declared ? { context: declared, upTo: declared } : null;
 }
 
 async function readFromModelList(
@@ -86,8 +102,8 @@ async function readFromModelList(
   for (const raw of data) {
     const entry = asRecord(raw);
     if (!entry || entry.id !== modelKey) continue;
-    const context = readWindow(entry);
-    if (context) return { context, via: url };
+    const window = readWindow(entry);
+    if (window) return { ...window, via: url };
     // The model is there but says nothing about its window — a proxy stripped
     // it. Keep going in case a second entry for the same id carries more.
   }
@@ -120,8 +136,11 @@ async function readViaLiteLLM(
     const entry = asRecord(raw);
     if (!entry || entry.model_name !== modelKey) continue;
 
-    const declared = readPositive(asRecord(entry.model_info)?.max_input_tokens);
-    if (declared) return { context: declared, via: url };
+    const declared = readWindow({
+      max_input_tokens: asRecord(entry.model_info)?.max_input_tokens,
+      max_output_tokens: asRecord(entry.model_info)?.max_output_tokens,
+    });
+    if (declared) return { ...declared, via: url };
 
     const upstream = asRecord(entry.litellm_params)?.api_base;
     if (typeof upstream !== 'string' || !upstream.trim()) continue;
