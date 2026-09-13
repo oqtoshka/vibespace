@@ -182,6 +182,7 @@
       "loadAll": "Cargar todos los mensajes",
       "loadingAll": "Cargando todos los mensajes...",
       "allLoaded": "Todos los mensajes cargados",
+      "latestLoaded": "Se cargaron los últimos {{count}} mensajes; desplázate hacia arriba para ver los anteriores",
       "perfWarning": "Todos los mensajes cargados — el desplazamiento puede ser más lento. Haz clic en \"Ir al final\" para recuperar el rendimiento."
     }
   },

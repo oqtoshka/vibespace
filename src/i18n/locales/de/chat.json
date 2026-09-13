@@ -164,6 +164,7 @@
       "loadAll": "Alle Nachrichten laden",
       "loadingAll": "Alle Nachrichten werden geladen...",
       "allLoaded": "Alle Nachrichten geladen",
+      "latestLoaded": "Die neuesten {{count}} Nachrichten geladen — nach oben scrollen für ältere",
       "perfWarning": "Alle Nachrichten geladen – Scrollen kann langsamer sein. Klick auf 'Nach unten scrollen', um die Leistung wiederherzustellen."
     }
   },

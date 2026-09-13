@@ -131,6 +131,7 @@ function ChatInterface({
     allMessagesLoaded,
     isLoadingAllMessages,
     loadAllJustFinished,
+    loadAllLatestCount,
     showLoadAllOverlay,
     createDiff,
     scrollContainerRef,
@@ -525,6 +526,7 @@ function ChatInterface({
           allMessagesLoaded={allMessagesLoaded}
           isLoadingAllMessages={isLoadingAllMessages}
           loadAllJustFinished={loadAllJustFinished}
+          loadAllLatestCount={loadAllLatestCount}
           showLoadAllOverlay={showLoadAllOverlay}
           createDiff={createDiff}
           onFileOpen={onFileOpen}

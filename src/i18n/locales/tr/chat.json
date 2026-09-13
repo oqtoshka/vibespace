@@ -164,6 +164,7 @@
       "loadAll": "Tüm mesajları yükle",
       "loadingAll": "Tüm mesajlar yükleniyor...",
       "allLoaded": "Tüm mesajlar yüklendi",
+      "latestLoaded": "En son {{count}} mesaj yüklendi — daha eskileri için yukarı kaydırın",
       "perfWarning": "Tüm mesajlar yüklendi — kaydırma yavaşlayabilir. Performansı geri getirmek için \"En alta git\"e tıkla."
     }
   },
