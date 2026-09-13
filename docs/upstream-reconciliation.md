@@ -283,3 +283,15 @@ sessions after the restart ✅, activity sort / running-sessions ✅.
 - An aborted turn can leave a tool grandchild behind (an orphaned `sleep`
   reparented to init): abort kills the CLI process, not its whole process
   group. Same before the merge.
+
+## Codex metadata cost tier — 1.38.71
+
+Codex initial titles and background recaps (including cumulative topics) use
+`gpt-5.6-luna` at `low` reasoning effort independently of the foreground model.
+The title service honors the explicit helper model before the model stored on the
+session. Failed helper calls retain the previous metadata; they do not retry on
+the foreground model. Claude and OpenCode routing is unchanged.
+
+Verification: 746 backend tests pass, including an app-server integration check
+that keeps a foreground Astra turn running while both ephemeral helpers use Luna
+at low effort. Build, typecheck and lint pass (existing lint warnings remain).

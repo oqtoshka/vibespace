@@ -14,7 +14,7 @@ type InitialSessionTitleInput = {
   cwd: string;
   /** Provider-owned helper runner; it must create an ephemeral conversation. */
   runQuery: ProviderRunFunction;
-  /** Provider model known to be available for the current conversation. */
+  /** Explicit provider-selected helper model, independent of the foreground model. */
   model?: string;
   /** Test seam; production broadcasts the changed session to every client. */
   onTitle?: (sessionId: string, title: string) => void;
@@ -86,10 +86,8 @@ async function runInitialTitleGeneration(input: InitialSessionTitleInput): Promi
 
   await input.runQuery(buildInitialTitlePrompt(initialMessage), {
     cwd: input.cwd,
-    // A catalog entry is not proof that the account can run it (for example,
-    // gpt-5.4-mini is rejected by ChatGPT-backed Codex accounts). Prefer the
-    // model already selected for this session over a speculative cheap helper.
-    model: session.model || input.model,
+    // Honor the provider's helper budget even when the session records a larger model.
+    model: input.model || session.model,
     effort: 'low',
     permissionMode: 'plan',
     ephemeral: true,
