@@ -17,8 +17,12 @@ import path from 'node:path';
  *                  "arguments": "{\"plan\":[{\"step\":\"…\",\"status\":\"pending\"}]}" } }
  * `arguments` is a JSON *string*. Older code-mode builds encoded the same call
  * as a `custom_tool_call` named `update_plan`. Current code mode wraps tools in
- * an `exec` call whose input contains `tools.update_plan({...})`; all three
- * forms are accepted.
+ * an `exec` call whose input contains `tools.update_plan({...})`.
+ *
+ * Since 0.153 Codex has no plan tool of its own; the same tool is served by an
+ * MCP server (`mcp__mc__update_plan` inside `exec`), and each call is also
+ * recorded structurally as an `event_msg` `item_completed` `McpToolCall` with
+ * object `arguments`. All of these forms are accepted.
  */
 
 // A plan set at the start of a long session can sit megabytes behind the end
@@ -33,11 +37,11 @@ const TAIL_BYTES = 512 * 1024;
  * strings and then hand the result to JSON.parse.
  */
 function extractWrappedPlanArguments(source) {
-  const marker = 'tools.update_plan';
-  const markerIndex = source.lastIndexOf(marker);
-  if (markerIndex < 0) return null;
+  const markers = [...source.matchAll(/tools\.(?:mcp__[A-Za-z0-9_-]+__)?update_plan\b/g)];
+  const marker = markers.at(-1);
+  if (!marker) return null;
 
-  const callStart = source.indexOf('(', markerIndex + marker.length);
+  const callStart = source.indexOf('(', marker.index + marker[0].length);
   if (callStart < 0) return null;
 
   let objectStart = callStart + 1;
@@ -130,9 +134,19 @@ function jsonFromCodeModeObject(source) {
   return result;
 }
 
+/** The plan tool, whichever server serves it: `update_plan` or `mcp__mc__update_plan`. */
+function isPlanTool(name) {
+  return typeof name === 'string' && (name === 'update_plan' || /^mcp__.+__update_plan$/.test(name));
+}
+
 function planFromPayload(payload) {
+  if (payload?.type === 'item_completed') {
+    const item = payload.item;
+    const plan = item?.type === 'McpToolCall' && isPlanTool(item.tool) ? item.arguments?.plan : null;
+    return Array.isArray(plan) ? plan : null;
+  }
   let raw = null;
-  if (payload?.name === 'update_plan') {
+  if (isPlanTool(payload?.name)) {
     raw = payload.arguments ?? payload.input;
   } else if (payload?.type === 'custom_tool_call' && payload.name === 'exec') {
     raw = extractWrappedPlanArguments(payload.input || '');
