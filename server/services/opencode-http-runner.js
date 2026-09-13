@@ -9,6 +9,7 @@ import { sessionsService } from '../modules/providers/services/sessions.service.
 import { notifyRunFailed, notifyRunStopped } from './notification-orchestrator.js';
 import { persistOpenCodeTurn } from './opencode-history-writer.js';
 import { ensureOpenCodeServer } from './opencode-server.service.js';
+import { recordSessionActivity, recordSessionEnd } from './session-restore.service.js';
 
 /**
  * Runs one OpenCode turn over the HTTP server instead of `opencode run`.
@@ -464,6 +465,21 @@ export async function runOpenCodeHttpTurn(command, options, ws, hooks = {}) {
   }
 
   ws.setSessionId?.(activeSessionId);
+  // Registered for restore-on-boot like Claude and Codex: a restart kills the
+  // server child mid-turn, and without an entry nothing ever resumes the work.
+  const recordActivity = (turnActive) => {
+    if (options.ephemeral) return;
+    recordSessionActivity({
+      provider: 'opencode',
+      sessionId: activeSessionId,
+      cwd: workingDir,
+      permissionMode,
+      userId: ws?.userId || null,
+      private: Boolean(options.private),
+      turnActive,
+    }).catch(() => {});
+  };
+  recordActivity(true);
   if (!sessionId) {
     ws.send(createNormalizedMessage({
       kind: 'session_created',
@@ -751,7 +767,16 @@ export async function runOpenCodeHttpTurn(command, options, ws, hooks = {}) {
     tokens: lastStepTokens,
   });
 
-  if (outcome.ok && !options.ephemeral && await onContinue?.({ sessionId: activeSessionId, cwd: workingDir })) {
+  if (handle.aborted) {
+    if (!options.ephemeral) recordSessionEnd(activeSessionId).catch(() => {});
+  } else {
+    recordActivity(false);
+  }
+
+  // A failed turn continues too, as Codex does: an error mid-task (a dropped
+  // transport, a busy model) is exactly where open work gets stranded. A run
+  // the user stopped does not; the planner's stall limit bounds the rest.
+  if (!handle.aborted && !options.ephemeral && await onContinue?.({ sessionId: activeSessionId, cwd: workingDir })) {
     return;
   }
 

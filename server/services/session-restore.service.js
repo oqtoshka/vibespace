@@ -18,6 +18,7 @@ import path from 'path';
 
 import { readOpenClaudeTasks } from '../shared/claude-task-ledger.js';
 import { readCodexPlanState } from '../shared/codex-plan-ledger.js';
+import { readOpenCodeTaskState } from '../shared/opencode-todo-ledger.js';
 import { getDataDir } from '../shared/utils.js';
 
 import { isRateLimitWakePending, loadRateLimitWakes } from './rate-limit-wake.service.js';
@@ -213,9 +214,15 @@ export async function restoreInterruptedSessions(spawn, hooks = {}) {
     }
     let openTasks = [];
     try {
-      openTasks = entry.provider === 'codex'
-        ? readCodexPlanState(entry.sessionId).open
-        : await readOpenClaudeTasks(entry.sessionId);
+      // Each provider's own ledger: Claude's task files would read empty for
+      // anyone else and drop a session that still has work.
+      if (entry.provider === 'codex') {
+        openTasks = readCodexPlanState(entry.sessionId).open;
+      } else if (entry.provider === 'opencode') {
+        openTasks = readOpenCodeTaskState(entry.sessionId).open;
+      } else {
+        openTasks = await readOpenClaudeTasks(entry.sessionId);
+      }
     } catch { /* unreadable ledger counts as empty */ }
     if (!entry.turnActive && openTasks.length === 0) {
       // It was idling with nothing declared — the reaper would have ended it

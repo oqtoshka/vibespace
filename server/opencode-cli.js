@@ -552,7 +552,8 @@ async function spawnOpenCode(command, options = {}, ws, context = undefined) {
           // seeing one running turn; the nested run emits its own terminal
           // messages (and queues the recap) when the chain actually ends.
           // Bounds and bail-outs live in planTaskContinuation.
-          if (code === 0 && !completeSent && !opencodeProcess.aborted && !options.ephemeral) {
+          // Failed runs included, as on the server transport.
+          if (!completeSent && !opencodeProcess.aborted && !options.ephemeral) {
             const continuation = planTaskContinuation({
               provider: 'opencode',
               sessionId: finalSessionId,
