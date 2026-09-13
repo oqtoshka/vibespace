@@ -24,6 +24,15 @@ import { AppError, sessionAvatarUrl } from '@/shared/utils.js';
  */
 const PROVIDER_SESSION_SWEEP_MS = 5_000;
 
+/**
+ * Most messages one history read may return when the caller asked for no
+ * limit ("Load all", jumping to a search hit). Codex rollouts reach hundreds of
+ * megabytes; the whole normalized history of a 237 MB one serialized to a
+ * 62 MB response the browser then had to parse. A capped read still reports
+ * `hasMore` and the real `total`, so the client keeps paging older rows.
+ */
+const UNBOUNDED_HISTORY_READ_CAP = 2_000;
+
 type CreateAppSessionResult = {
   sessionId: string;
   provider: LLMProvider;
@@ -544,7 +553,8 @@ export const sessionsService = {
    * session metadata in the database. The provider adapter receives the
    * provider-native session id (the one written into transcripts on disk),
    * and every returned message is remapped back to the app session id so
-   * provider ids never reach the frontend.
+   * provider ids never reach the frontend. A missing limit returns at most the
+   * newest `UNBOUNDED_HISTORY_READ_CAP` messages, never the whole transcript.
    */
   async fetchHistory(
     sessionId: string,
@@ -572,7 +582,7 @@ export const sessionsService = {
 
     const provider = session.provider as LLMProvider;
     const result = await providerRegistry.resolveProvider(provider).sessions.fetchHistory(sessionId, {
-      limit: options.limit ?? null,
+      limit: options.limit ?? UNBOUNDED_HISTORY_READ_CAP,
       offset: options.offset ?? 0,
       projectPath: session.project_path ?? '',
       providerSessionId: session.provider_session_id,

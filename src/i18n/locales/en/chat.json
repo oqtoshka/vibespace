@@ -215,6 +215,7 @@
       "loadAll": "Load all messages",
       "loadingAll": "Loading all messages...",
       "allLoaded": "All messages loaded",
+      "latestLoaded": "Loaded the latest {{count}} messages — scroll up for older ones",
       "perfWarning": "All messages loaded — scrolling may be slower. Click \"Scroll to bottom\" to restore performance."
     }
   },

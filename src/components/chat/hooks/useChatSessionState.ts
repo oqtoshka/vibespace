@@ -239,6 +239,9 @@ export function useChatSessionState({
   const [allMessagesLoaded, setAllMessagesLoaded] = useState(false);
   const [isLoadingAllMessages, setIsLoadingAllMessages] = useState(false);
   const [loadAllJustFinished, setLoadAllJustFinished] = useState(false);
+  // Set when "Load all" came back capped by the server: how many of the newest
+  // messages arrived. The older ones are still reachable by scrolling up.
+  const [loadAllLatestCount, setLoadAllLatestCount] = useState<number | null>(null);
   const [showLoadAllOverlay, setShowLoadAllOverlay] = useState(false);
   const [viewHiddenCount, setViewHiddenCount] = useState(0);
 
@@ -276,6 +279,8 @@ export function useChatSessionState({
   const lastScrollTopRef = useRef(0);
   const loadAllFinishedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const loadAllOverlayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // A capped "Load all" must not offer itself again: it would fetch the same page.
+  const loadAllCappedRef = useRef(false);
   const lastLoadedSessionKeyRef = useRef<string | null>(null);
   /**
    * Tracks the last processed value from `useProjectsState.newSessionTrigger`.
@@ -326,6 +331,8 @@ export function useChatSessionState({
     allMessagesLoadedRef.current = false;
     setIsLoadingAllMessages(false);
     setLoadAllJustFinished(false);
+    setLoadAllLatestCount(null);
+    loadAllCappedRef.current = false;
     setShowLoadAllOverlay(false);
     setViewHiddenCount(0);
     setSearchTarget(null);
@@ -737,7 +744,7 @@ export function useChatSessionState({
     const scrolledNearTop = container.scrollTop < 100;
 
     // "Load all" prompt: appear (with fade-in) when the user reaches the top
-    if (scrolledNearTop && hasMoreMessages && !allMessagesLoadedRef.current) {
+    if (scrolledNearTop && hasMoreMessages && !allMessagesLoadedRef.current && !loadAllCappedRef.current) {
       if (!wasNearTopRef.current) {
         wasNearTopRef.current = true;
         if (loadAllOverlayTimerRef.current) clearTimeout(loadAllOverlayTimerRef.current);
@@ -956,6 +963,8 @@ export function useChatSessionState({
     allMessagesLoadedRef.current = false;
     setIsLoadingAllMessages(false);
     setLoadAllJustFinished(false);
+    setLoadAllLatestCount(null);
+    loadAllCappedRef.current = false;
     setShowLoadAllOverlay(false);
     setViewHiddenCount(0);
     wasNearTopRef.current = false;
@@ -1128,12 +1137,14 @@ export function useChatSessionState({
               ),
             });
             if (slot) {
-              setHasMoreMessages(false);
+              // The server caps an unlimited read at the newest messages; a
+              // match older than that stays reachable by scrolling up.
+              setHasMoreMessages(slot.hasMore);
               setTotalMessages(slot.total);
               messagesOffsetRef.current = slot.offset;
               setVisibleMessageCount(Infinity);
-              setAllMessagesLoaded(true);
-              allMessagesLoadedRef.current = true;
+              setAllMessagesLoaded(!slot.hasMore);
+              allMessagesLoadedRef.current = !slot.hasMore;
               await new Promise(resolve => setTimeout(resolve, 300));
             } else if (!isActiveRef.current) {
               setSearchTarget(target);
@@ -1323,11 +1334,17 @@ export function useChatSessionState({
           ? container.scrollHeight - container.scrollTop
           : null;
 
-        setHasMoreMessages(false);
+        // The server returns at most the newest 2000 messages for an unlimited
+        // read. When it stopped short, keep paging older rows on scroll and say
+        // so instead of claiming everything is loaded.
+        setHasMoreMessages(slot.hasMore);
         setTotalMessages(slot.total);
         messagesOffsetRef.current = slot.offset;
         setVisibleMessageCount(Infinity);
-        setAllMessagesLoaded(true);
+        setAllMessagesLoaded(!slot.hasMore);
+        allMessagesLoadedRef.current = !slot.hasMore;
+        loadAllCappedRef.current = slot.hasMore;
+        setLoadAllLatestCount(slot.hasMore ? slot.serverMessages.length : null);
 
         setLoadAllJustFinished(true);
         if (loadAllFinishedTimerRef.current) clearTimeout(loadAllFinishedTimerRef.current);
@@ -1385,6 +1402,7 @@ export function useChatSessionState({
     allMessagesLoaded,
     isLoadingAllMessages,
     loadAllJustFinished,
+    loadAllLatestCount,
     showLoadAllOverlay,
     createDiff,
     scrollContainerRef,

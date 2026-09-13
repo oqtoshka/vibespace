@@ -17,6 +17,8 @@ interface LoadAllMessagesOverlayProps {
   showLoadAllOverlay: boolean;
   isLoadingAllMessages: boolean;
   loadAllJustFinished: boolean;
+  /** Set when the server capped the read: only this many newest messages arrived. */
+  loadAllLatestCount: number | null;
   totalMessages: number;
   onLoadAllMessages: () => void;
 }
@@ -25,6 +27,7 @@ export default function LoadAllMessagesOverlay({
   showLoadAllOverlay,
   isLoadingAllMessages,
   loadAllJustFinished,
+  loadAllLatestCount,
   totalMessages,
   onLoadAllMessages,
 }: LoadAllMessagesOverlayProps) {
@@ -48,7 +51,11 @@ export default function LoadAllMessagesOverlay({
           <svg className="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" />
           </svg>
-          <span>{t('session.messages.allLoaded')}</span>
+          <span>
+            {loadAllLatestCount !== null
+              ? t('session.messages.latestLoaded', { count: loadAllLatestCount })
+              : t('session.messages.allLoaded')}
+          </span>
         </div>
       ) : (
         <button

@@ -164,6 +164,7 @@
       "loadAll": "Carica tutti i messaggi",
       "loadingAll": "Caricamento di tutti i messaggi...",
       "allLoaded": "Tutti i messaggi caricati",
+      "latestLoaded": "Caricati gli ultimi {{count}} messaggi — scorri verso l'alto per quelli precedenti",
       "perfWarning": "Tutti i messaggi caricati — lo scorrimento potrebbe essere più lento. Clicca \"Scorri in basso\" per ripristinare le prestazioni."
     }
   },

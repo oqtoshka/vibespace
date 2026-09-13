@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -156,4 +156,39 @@ test('recent sessions map project metadata and preserve database pagination', { 
       hasMore: true,
     });
   });
+});
+
+test('history read without a limit returns only the newest 2000 messages and keeps paging', { concurrency: false }, async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'sessions-service-history-cap-'));
+  const transcript = path.join(root, 'rollout.jsonl');
+  // 1,300 turns of user + assistant = 2,600 normalized messages.
+  const entries = Array.from({ length: 1_300 }, (_, turn) => [
+    { type: 'event_msg', payload: { type: 'user_message', message: `Question ${turn}` } },
+    { type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: `Answer ${turn}` }] } },
+  ]).flat();
+
+  try {
+    await writeFile(transcript, entries.map(entry => JSON.stringify(entry)).join('\n') + '\n');
+    await withIsolatedDatabase(async () => {
+      const id = sessionsDb.createSession('history-cap', 'codex', root, 'History cap', undefined, undefined, transcript);
+
+      const unbounded = await sessionsService.fetchHistory(id);
+      assert.equal(unbounded.messages.length, 2_000);
+      assert.equal(unbounded.total, 2_600);
+      assert.equal(unbounded.hasMore, true);
+      assert.equal(unbounded.limit, 2_000);
+      assert.equal(unbounded.messages.at(-1)?.content, 'Answer 1299');
+
+      // The client continues from where the capped read stopped.
+      const older = await sessionsService.fetchHistory(id, { limit: 20, offset: unbounded.messages.length });
+      assert.equal(older.messages.length, 20);
+      assert.equal(older.messages.at(-1)?.content, 'Answer 299');
+
+      const page = await sessionsService.fetchHistory(id, { limit: 20, offset: 0 });
+      assert.equal(page.messages.length, 20);
+      assert.equal(page.hasMore, true);
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

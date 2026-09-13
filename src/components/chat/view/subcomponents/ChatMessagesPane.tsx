@@ -67,6 +67,7 @@ interface ChatMessagesPaneProps {
   allMessagesLoaded: boolean;
   isLoadingAllMessages: boolean;
   loadAllJustFinished: boolean;
+  loadAllLatestCount: number | null;
   showLoadAllOverlay: boolean;
   createDiff: any;
   onFileOpen?: (filePath: string, diffInfo?: unknown) => void;
@@ -122,6 +123,7 @@ function ChatMessagesPane({
   allMessagesLoaded,
   isLoadingAllMessages,
   loadAllJustFinished,
+  loadAllLatestCount,
   showLoadAllOverlay,
   createDiff,
   onFileOpen,
@@ -289,6 +291,7 @@ function ChatMessagesPane({
             showLoadAllOverlay={showLoadAllOverlay}
             isLoadingAllMessages={isLoadingAllMessages}
             loadAllJustFinished={loadAllJustFinished}
+            loadAllLatestCount={loadAllLatestCount}
             totalMessages={totalMessages}
             onLoadAllMessages={loadAllMessages}
           />
