@@ -697,11 +697,22 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
       `[Codex] turn terminal: session=${capturedSessionId} status=${terminalStatus} `
         + `aborted=${Boolean(runAborted)} failure=${Boolean(terminalFailure)}`
     );
-    if (!runAborted && !usageLimitFailure
+    const policyBlocked = ['misalignmentPolicyViolation', 'misalignment_policy_violation'].includes(
+      terminalFailure?.codexErrorInfo || terminalFailure?.codex_error_info,
+    ) || /blocked by our safety systems/i.test(terminalFailure?.message || '');
+    if (!runAborted && !usageLimitFailure && !policyBlocked
       && await continueOpenPlan(`terminal status ${terminalStatus}`)) {
       return;
     }
     if (terminalFailure && !usageLimitFailure && !runAborted) {
+      // A failed turn is a resolved RPC, not a thrown exception. Preserve its
+      // explanation for every chat client before the terminal lifecycle event.
+      sendMessage(ws, createNormalizedMessage({
+        kind: 'error',
+        content: terminalFailure.message || 'Codex turn failed',
+        sessionId: capturedSessionId || sessionId || null,
+        provider: 'codex',
+      }));
       notifyRunFailed({
         userId: ws?.userId || null,
         provider: 'codex',
