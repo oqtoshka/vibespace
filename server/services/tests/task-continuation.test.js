@@ -126,6 +126,45 @@ test('the codex reader takes the newest plan, in every encoding, and filters to 
   assert.deepEqual(readCodexPlanState('sid-unknown', root), { open: [], activity: 0 });
 });
 
+// Codex 0.153 dropped its own plan tool; the MCP server that replaces it shows
+// up as `tools.mcp__mc__update_plan` inside exec, plus a structured McpToolCall.
+test('the codex reader follows the plan tool when an MCP server serves it', () => {
+  const root = path.join(tmp, 'codex-sessions-mcp');
+  writeRollout(root, 'sid-mcp-exec', [
+    planCall([{ step: 'old world', status: 'pending' }]),
+    {
+      type: 'response_item',
+      payload: {
+        type: 'custom_tool_call',
+        name: 'exec',
+        input: 'text(await tools.mcp__mc__update_plan({plan:[{step:"exec done",status:"completed"},{step:"exec open",status:"in_progress"}]}))',
+      },
+    },
+  ]);
+  assert.deepEqual(readCodexPlanState('sid-mcp-exec', root).open, [
+    { id: '2', subject: 'exec open', status: 'in_progress' },
+  ]);
+
+  writeRollout(root, 'sid-mcp-item', [
+    planCall([{ step: 'old world', status: 'pending' }]),
+    {
+      type: 'event_msg',
+      payload: {
+        type: 'item_completed',
+        item: {
+          type: 'McpToolCall',
+          server: 'mc',
+          tool: 'update_plan',
+          arguments: { plan: [{ step: 'item open', status: 'pending' }, { step: 'item done', status: 'completed' }] },
+        },
+      },
+    },
+  ]);
+  assert.deepEqual(readCodexPlanState('sid-mcp-item', root).open, [
+    { id: '1', subject: 'item open', status: 'pending' },
+  ]);
+});
+
 test('a codex session with no plan, or an all-closed plan, reads as nothing open', () => {
   const root = path.join(tmp, 'codex-sessions-2');
   writeRollout(root, 'sid-noplan', [
