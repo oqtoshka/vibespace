@@ -170,6 +170,16 @@ export function persistOpenCodeTurn(turn) {
             status: tool.isError ? 'error' : 'completed',
             input: tool.input ?? {},
             ...(tool.isError ? { error: tool.output } : { output: tool.output }),
+            // Full file parts, as `opencode run` stores them, so the CLI
+            // parses the row when it continues the session.
+            ...(tool.attachments ? {
+              attachments: tool.attachments.map((attachment) => ({
+                id: generateId('prt'),
+                sessionID: sessionId,
+                messageID: assistantId,
+                ...attachment,
+              })),
+            } : {}),
           },
         }));
       }
