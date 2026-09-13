@@ -127,7 +127,7 @@ function flattenToolContent(content, structured) {
  *
  * Exported for tests only.
  */
-export function translateEvent(type, properties, toolNames) {
+export function translateEvent(type, properties, toolCalls) {
   const sessionID = properties.sessionID;
   const timestamp = properties.timestamp;
 
@@ -157,9 +157,11 @@ export function translateEvent(type, properties, toolNames) {
       };
 
     case 'session.next.tool.called': {
-      // The name arrives with the call and is absent from the result events,
-      // so it is kept per callID for the completion to reuse.
-      toolNames.set(properties.callID, properties.tool);
+      // The name and input arrive with the call and are absent from the result
+      // events, so they are kept per callID for the completion to reuse.
+      // Clients upsert a tool row by id: a completion without the input would
+      // replace the call and render its input as `{}`.
+      toolCalls.set(properties.callID, { name: properties.tool, input: properties.input ?? {} });
       return {
         type: 'tool_use',
         sessionID,
@@ -180,10 +182,11 @@ export function translateEvent(type, properties, toolNames) {
         timestamp,
         id: properties.callID,
         part: {
-          tool: toolNames.get(properties.callID) ?? 'Tool',
+          tool: toolCalls.get(properties.callID)?.name ?? 'Tool',
           callID: properties.callID,
           state: {
             status: 'completed',
+            input: toolCalls.get(properties.callID)?.input ?? {},
             output: flattenToolContent(properties.content, properties.structured),
           },
         },
@@ -196,10 +199,11 @@ export function translateEvent(type, properties, toolNames) {
         timestamp,
         id: properties.callID,
         part: {
-          tool: toolNames.get(properties.callID) ?? 'Tool',
+          tool: toolCalls.get(properties.callID)?.name ?? 'Tool',
           callID: properties.callID,
           state: {
             status: 'error',
+            input: toolCalls.get(properties.callID)?.input ?? {},
             error: properties.error ?? flattenToolContent(properties.content, properties.structured),
           },
         },
@@ -449,7 +453,7 @@ export async function runOpenCodeHttpTurn(command, options, ws, hooks = {}) {
   }
 
   const abortController = new AbortController();
-  const toolNames = new Map();
+  const toolCalls = new Map();
   // The turn is transcribed as it streams so it can be written to opencode.db
   // at the end: the server keeps its own copy and shares none of it.
   const transcript = { text: '', tools: [], assistantMessageId: null, startedAt: Date.now() };
@@ -596,7 +600,7 @@ export async function runOpenCodeHttpTurn(command, options, ws, hooks = {}) {
       return;
     }
 
-    const translated = translateEvent(type, properties, toolNames);
+    const translated = translateEvent(type, properties, toolCalls);
     if (translated) {
       for (const message of sessionsService.normalizeMessage('opencode', translated, activeSessionId)) {
         ws.send(message);
@@ -612,8 +616,8 @@ export async function runOpenCodeHttpTurn(command, options, ws, hooks = {}) {
     if (type === 'session.next.tool.success' || type === 'session.next.tool.failed') {
       transcript.tools.push({
         callId: properties.callID,
-        name: toolNames.get(properties.callID) ?? 'Tool',
-        input: properties.input,
+        name: toolCalls.get(properties.callID)?.name ?? 'Tool',
+        input: toolCalls.get(properties.callID)?.input,
         output: properties.error ?? flattenToolContent(properties.content, properties.structured),
         isError: type === 'session.next.tool.failed',
       });

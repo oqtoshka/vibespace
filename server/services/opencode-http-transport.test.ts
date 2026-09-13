@@ -15,9 +15,11 @@ import { __testing, toModelRef, toTokenBudget, translateEvent } from './opencode
 
 const SESSION_ID = 'ses_test';
 
+type ToolCalls = Map<string, { name: string; input: unknown }>;
+
 /** Runs an event through the translator and the normalizer, as the runner does. */
-const render = (type: string, properties: Record<string, unknown>, toolNames = new Map<string, string>()) => {
-  const translated = translateEvent(type, properties, toolNames);
+const render = (type: string, properties: Record<string, unknown>, toolCalls: ToolCalls = new Map()) => {
+  const translated = translateEvent(type, properties, toolCalls);
   return translated ? sessionsService.normalizeMessage('opencode', translated, SESSION_ID) : [];
 };
 
@@ -69,17 +71,18 @@ test('reasoning is sent whole when its block ends, not per delta', () => {
   assert.equal(message?.content, 'I could weigh it up');
 });
 
-// Only the call event names the tool; the result events carry the id alone, so
-// the name has to be remembered or every finished tool renders as "Tool".
-test('a tool result is named from the call that started it', () => {
-  const toolNames = new Map<string, string>();
+// Only the call event carries the tool's name and input; the result events carry
+// the id alone. Clients upsert the row by that id, so a completion that forgot
+// them rendered every finished tool as "Tool" with an input of `{}`.
+test('a tool result keeps the name and input of the call that started it', () => {
+  const toolCalls: ToolCalls = new Map();
 
   const [called] = render('session.next.tool.called', {
     sessionID: SESSION_ID,
     callID: 'call_1',
     tool: 'bash',
     input: { command: 'echo hi' },
-  }, toolNames);
+  }, toolCalls);
   assert.equal(called?.toolName, 'bash');
   assert.deepEqual(called?.toolInput, { command: 'echo hi' });
   assert.equal(called?.toolResult, undefined, 'a running tool has no result yet');
@@ -89,21 +92,23 @@ test('a tool result is named from the call that started it', () => {
     callID: 'call_1',
     content: [{ type: 'text', text: 'hi' }],
     structured: { exit: 0 },
-  }, toolNames);
+  }, toolCalls);
   assert.equal(succeeded?.toolName, 'bash');
+  assert.deepEqual(succeeded?.toolInput, { command: 'echo hi' });
   assert.equal(succeeded?.toolResult?.content, 'hi');
   assert.equal(succeeded?.toolResult?.isError, false);
 });
 
 test('a failed tool is reported as an error result', () => {
-  const toolNames = new Map<string, string>([['call_1', 'bash']]);
+  const toolCalls: ToolCalls = new Map([['call_1', { name: 'bash', input: { command: 'nope' } }]]);
   const [message] = render('session.next.tool.failed', {
     sessionID: SESSION_ID,
     callID: 'call_1',
     error: 'command not found',
-  }, toolNames);
+  }, toolCalls);
 
   assert.equal(message?.toolName, 'bash');
+  assert.deepEqual(message?.toolInput, { command: 'nope' });
   assert.equal(message?.toolResult?.isError, true);
 });
 
@@ -113,9 +118,9 @@ test('the end of a step closes the stream', () => {
 });
 
 test('events with no counterpart in the CLI output are dropped', () => {
-  const toolNames = new Map<string, string>();
+  const toolCalls: ToolCalls = new Map();
   for (const type of ['session.next.tool.input.delta', 'session.next.model.switched', 'session.updated']) {
-    assert.equal(translateEvent(type, { sessionID: SESSION_ID }, toolNames), null, type);
+    assert.equal(translateEvent(type, { sessionID: SESSION_ID }, toolCalls), null, type);
   }
 });
 
