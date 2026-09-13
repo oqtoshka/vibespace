@@ -31,6 +31,10 @@ import { buildCodexTokenBudget, readLatestCodexTokenBudget } from './shared/code
 import { toCodexAppServerSandboxPolicy } from './shared/codex-sandbox-policy.js';
 import { createCompleteMessage, createNormalizedMessage } from './shared/utils.js';
 
+// Background metadata has a fixed cost tier, independent of the foreground model.
+// If Luna is unavailable, helpers keep the previous metadata; never fall back to Astra.
+const CODEX_METADATA_MODEL = 'gpt-5.6-luna';
+
 const activeCodexSessions = new Map();
 
 // Latest account-wide rate-limit snapshot from the app-server
@@ -336,7 +340,7 @@ function captureCodexTurnSummary(session, item) {
  * history the UI renders. Its helper turn is ephemeral at the app-server level
  * and therefore never creates a rollout file or a junk sidebar session.
  */
-function queueCodexRecap({ sessionId, cwd, model, locale, ws }) {
+function queueCodexRecap({ sessionId, cwd, locale, ws }) {
   if (!sessionId || !cwd) {
     return;
   }
@@ -344,12 +348,9 @@ function queueCodexRecap({ sessionId, cwd, model, locale, ws }) {
   scheduleSessionRecap({
     sessionId,
     cwd,
-    model,
+    model: CODEX_METADATA_MODEL,
     locale,
-    // A turn that resolved no model leaves the choice to Codex. The recap
-    // service's own default is a Claude alias, which the Codex app-server
-    // cannot serve: the helper turn then fails with no output at all and the
-    // recap silently never appears.
+    // A failed cheap helper must not retry through the foreground model.
     fallbackModel: null,
     useIndexedHistory: true,
     runQuery: (prompt, helperOptions, writer) => queryCodex(prompt, {
@@ -412,14 +413,13 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
 
   // A short AI title only needs the first user message. Start that isolated
   // helper beside the real turn instead of waiting minutes for the turn to
-  // finish. Use the selected session model; catalog presence does not mean
-  // the account is entitled to run a separate mini model.
+  // finish. Titles use the same inexpensive model as recaps and cumulative topics.
   if (!ephemeral) {
     void generateInitialSessionTitle({
       sessionId: appSessionId || sessionId,
       initialMessage: command,
       cwd: workingDirectory,
-      model: resolvedModel,
+      model: CODEX_METADATA_MODEL,
       runQuery: (prompt, helperOptions, writer) => queryCodex(prompt, {
         ...helperOptions,
         permissionMode: 'plan',
@@ -621,7 +621,6 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
           queueCodexRecap({
             sessionId: appSessionId || capturedSessionId,
             cwd: workingDirectory,
-            model: resolvedModel,
             locale: options.locale,
             ws,
           });
@@ -750,7 +749,6 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
         queueCodexRecap({
           sessionId: capturedSessionId || sessionId || null,
           cwd: workingDirectory,
-          model: resolvedModel,
           locale: options.locale,
           ws,
         });

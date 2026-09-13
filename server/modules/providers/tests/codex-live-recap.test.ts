@@ -15,7 +15,7 @@ const { queryCodex, injectCodexMessage } = await import('../../../openai-codex.j
 // eslint-disable-next-line boundaries/no-unknown -- Shut down the legacy runtime's real test transport.
 const { stopCodexAppServer } = await import('../../../services/codex-app-server.service.js');
 
-test('Codex generates title and recap while the first turn is still running, using its selected model', async () => {
+test('Codex generates title and recap while the first turn is still running, using Luna while the main turn stays on Astra', async () => {
   const executable = path.join(directory, 'codex');
   const capture = path.join(directory, 'requests.jsonl');
   await writeFile(executable, `#!/usr/bin/env node
@@ -62,11 +62,11 @@ rl.on('line', line => {
   let completed = false;
   try {
     const running = queryCodex('Fix live recap updates', {
-      sessionId: 'live', cwd: directory, model: 'gpt-5.6-sol', permissionMode: 'plan',
+      sessionId: 'live', cwd: directory, model: 'gpt-6-astra', permissionMode: 'plan',
     }, { send() {}, setSessionId() {} }, {
       resolveProviderSessionId: () => 'live',
-      resolveResumeModel: async () => 'gpt-5.6-sol',
-      getProviderModels: async () => ({ DEFAULT: 'gpt-5.6-sol', OPTIONS: [{ value: 'gpt-5.4-mini', label: 'Mini' }, { value: 'gpt-5.6-sol', label: 'Sol' }] }),
+      resolveResumeModel: async () => 'gpt-6-astra',
+      getProviderModels: async () => ({ DEFAULT: 'gpt-6-astra', OPTIONS: [{ value: 'gpt-5.4-mini', label: 'Mini' }, { value: 'gpt-6-astra', label: 'Sol' }] }),
       normalizeMessage: () => [], isProviderInstalled: async () => true,
     }).then(() => { completed = true; });
     const deadline = Date.now() + 10_000;
@@ -79,7 +79,11 @@ rl.on('line', line => {
     const helpers = requests.filter(req => req.method === 'thread/start');
     assert.ok(helpers.length >= 2, 'both the title and recap helpers ran');
     assert.ok(helpers.every(req => req.params.ephemeral === true));
-    assert.ok(helpers.every(req => req.params.model === 'gpt-5.6-sol'), 'a mini catalog entry must not override the selected model');
+    assert.ok(helpers.every(req => req.params.model === 'gpt-5.6-luna'), 'all title and recap helpers use the cheap model');
+    const turns = requests.filter(req => req.method === 'turn/start');
+    assert.ok(turns.some(req => req.params.threadId === 'live' && req.params.model === 'gpt-6-astra'));
+    assert.ok(turns.filter(req => req.params.threadId !== 'live').every(req =>
+      req.params.model === 'gpt-5.6-luna' && req.params.effort === 'low'));
     await injectCodexMessage('live', 'Finish now.', { cwd: directory });
     await running;
   } finally {

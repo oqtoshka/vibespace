@@ -81,22 +81,23 @@ test('does not overwrite a title the user supplied while the helper was running'
   });
 });
 
-test('uses the recorded session model instead of a catalog-only helper model', { concurrency: false }, async () => {
+test('honors an explicit cheap helper model without changing the session model', { concurrency: false }, async () => {
   await withDatabase(async (projectPath) => {
     sessionsDb.createAppSession('supported-model-session', 'codex', projectPath, 'In mc and anthill');
-    sessionsDb.setSessionModel('supported-model-session', 'gpt-5.6-sol');
+    sessionsDb.setSessionModel('supported-model-session', 'gpt-6-astra');
     const result = await generateInitialSessionTitle({
       sessionId: 'supported-model-session',
       initialMessage: 'In mc and anthill fix the session status display',
       cwd: projectPath,
-      model: 'gpt-5.4-mini',
+      model: 'gpt-5.6-luna',
       runQuery: async (_prompt, options, writer) => {
-        assert.equal(options.model, 'gpt-5.6-sol');
+        assert.equal(options.model, 'gpt-5.6-luna');
         writer.send({ kind: 'text', content: '{"title":"Session Status Display"}' });
       },
       onTitle() {},
     });
     assert.equal(result, 'Session Status Display');
+    assert.equal(sessionsDb.getSessionById('supported-model-session')?.model, 'gpt-6-astra');
   });
 });
 
