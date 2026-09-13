@@ -125,6 +125,25 @@ async function waitForModelCatalog(baseUrl, authorization, deadline) {
   throw new Error('OpenCode server started but never published a model catalog');
 }
 
+/**
+ * Makes the server load its configured plugins.
+ *
+ * OpenCode (measured on 1.18.18) loads plugins only when it boots a project
+ * instance, and only the v1 routes boot one: a server driven purely through
+ * `/api/*`, as this app drives it, never loads a single plugin, so their
+ * hooks and subscriptions stay silent however many turns run. One v1 request
+ * boots the instance for the server's own workspace. A failure here costs the
+ * plugins, not the chat, so it is never fatal.
+ */
+async function loadPlugins(baseUrl, authorization) {
+  try {
+    const response = await fetch(`${baseUrl}/path`, { headers: { Authorization: authorization } });
+    await response.body?.cancel();
+  } catch {
+    // Plugins are an extra; the server works without them.
+  }
+}
+
 function installExitHooks() {
   if (exitHooksInstalled) {
     return;
@@ -206,6 +225,7 @@ function bootServer(slot) {
         slot.serverProcess = child;
         installExitHooks();
         void waitForModelCatalog(baseUrl, authorization, Date.now() + BOOT_TIMEOUT_MS)
+          .then(() => loadPlugins(baseUrl, authorization))
           .then(() => settle(resolve, { baseUrl, authorization }))
           .catch((error) => {
             child.kill('SIGTERM');
