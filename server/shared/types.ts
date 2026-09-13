@@ -241,7 +241,8 @@ export type MessageKind =
   | 'session_created'
   | 'interactive_prompt'
   | 'task_notification'
-  | 'compact_boundary';
+  | 'compact_boundary'
+  | 'notice';
 
 /**
  * Event kinds added by the chat gateway layer on top of provider message kinds.

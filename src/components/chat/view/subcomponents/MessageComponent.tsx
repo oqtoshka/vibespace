@@ -197,6 +197,20 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
     );
   }
 
+  // Runtime notice — not a turn by either side, so no avatar or bubble.
+  if (message.isNotice) {
+    return (
+      <div className="px-3 sm:px-0" data-message-timestamp={message.timestamp || undefined}>
+        <div role="note" className="flex items-start gap-2 rounded-md border-l-2 border-amber-500 bg-amber-500/10 px-3 py-2 text-amber-900 dark:text-amber-200">
+          <span aria-hidden className="mt-px flex-shrink-0 text-sm">⚠</span>
+          <Markdown className="prose prose-sm min-w-0 max-w-none text-sm text-inherit dark:prose-invert [&_a]:text-inherit" onFileOpen={onFileOpen} projectId={selectedProject?.projectId} projectPath={selectedProject?.fullPath}>
+            {String(message.content || '')}
+          </Markdown>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div
       ref={messageRef}

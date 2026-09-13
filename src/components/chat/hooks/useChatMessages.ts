@@ -311,6 +311,20 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
         break;
       }
 
+      // Something the runtime did to the session that the reader would not
+      // otherwise see — e.g. a safeguard refusal that moved it to another model.
+      case 'notice':
+        if (msg.content?.trim()) {
+          converted.push({
+            type: 'system',
+            content: msg.content,
+            timestamp: msg.timestamp,
+            isNotice: true,
+            ...sharedMetadata,
+          });
+        }
+        break;
+
       case 'stream_delta':
         if (msg.content) {
           converted.push({

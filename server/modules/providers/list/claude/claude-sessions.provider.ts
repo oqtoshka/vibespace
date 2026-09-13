@@ -526,6 +526,40 @@ function stripAnsiFormatting(text: string): string {
   return text.replace(/\u001B\[[0-9;?]*[ -/]*[@-~]/g, '');
 }
 
+const MODEL_REFUSAL_SUBTYPES = new Set(['model_refusal_fallback', 'model_refusal_no_fallback']);
+
+/**
+ * Reader-facing text for a model-refusal row. `model_refusal_fallback` carries
+ * the CLI's own explanation ("…Switched to Opus 4.8"); `model_refusal_no_fallback`
+ * carries none, so it is assembled from the refusal fields. Either way the
+ * model change is spelled out, since that is what the reader cannot see.
+ */
+function buildModelRefusalNotice(raw: AnyRecord): string {
+  const read = (camel: string, snake: string): string => {
+    const value = raw[camel] ?? raw[snake];
+    return typeof value === 'string' ? value.trim() : '';
+  };
+  const originalModel = read('originalModel', 'original_model') || 'The model';
+  const fallbackModel = read('fallbackModel', 'fallback_model');
+  const category = read('apiRefusalCategory', 'api_refusal_category');
+  const explanation = read('apiRefusalExplanation', 'api_refusal_explanation');
+  const cliText = typeof raw.content === 'string' ? raw.content.trim() : '';
+
+  if (raw.subtype === 'model_refusal_fallback') {
+    const lines = [cliText || `${originalModel}'s safeguards flagged this message. Switched to ${fallbackModel || 'a fallback model'}.`];
+    if (fallbackModel && read('scope', 'scope') === 'session') {
+      lines.push(`The rest of this session runs on \`${fallbackModel}\`.`);
+    }
+    return lines.join('\n\n');
+  }
+
+  const lines = [`${originalModel}'s safeguards blocked this request${category ? ` (\`${category}\`)` : ''}; no fallback model was tried.`];
+  if (explanation) {
+    lines.push(explanation);
+  }
+  return lines.join('\n\n');
+}
+
 export class ClaudeSessionsProvider implements IProviderSessions {
   /**
    * Normalizes one Claude JSONL entry or live SDK stream event into the shared
@@ -571,6 +605,21 @@ export class ClaudeSessionsProvider implements IProviderSessions {
         provider: PROVIDER,
         kind: 'error',
         content,
+      })];
+    }
+
+    // A model's safeguards blocked the request. The CLI either retries on a
+    // fallback model for the rest of the session or gives up, and records
+    // either outcome only as a `system` row — so without this branch the
+    // session silently continues on a different model, or silently stops.
+    if (raw.type === 'system' && MODEL_REFUSAL_SUBTYPES.has(raw.subtype)) {
+      return [createNormalizedMessage({
+        id: raw.uuid || generateMessageId('claude'),
+        sessionId,
+        timestamp: raw.timestamp || new Date().toISOString(),
+        provider: PROVIDER,
+        kind: 'notice',
+        content: buildModelRefusalNotice(raw),
       })];
     }
 

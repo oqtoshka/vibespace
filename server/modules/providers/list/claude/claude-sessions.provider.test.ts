@@ -279,6 +279,52 @@ test('rewindHistory returns ok:false for an unknown message uuid', async () => {
 });
 
 /**
+ * Model refusals. The CLI records a safeguard refusal only as a `system` row;
+ * dropped, the session silently continues on another model (or stops) with
+ * nothing in the chat to say why.
+ */
+test('normalizeMessage turns a model_refusal_fallback row into a notice naming the new model', () => {
+  const provider = new ClaudeSessionsProvider();
+  const [message] = provider.normalizeMessage({
+    type: 'system',
+    subtype: 'model_refusal_fallback',
+    uuid: 'rf1',
+    timestamp: '2026-01-01T00:00:00.000Z',
+    level: 'warning',
+    content: "Opus 5's safeguards flagged this message. Switched to Opus 4.8.\n\nDetails: `[cyber]`",
+    scope: 'session',
+    originalModel: 'claude-opus-5',
+    fallbackModel: 'claude-opus-4-8',
+    apiRefusalCategory: 'cyber',
+  }, SESSION);
+
+  assert.equal(message.kind, 'notice');
+  assert.equal(message.id, 'rf1');
+  assert.match(String(message.content), /Switched to Opus 4\.8/);
+  assert.match(String(message.content), /rest of this session runs on `claude-opus-4-8`/);
+});
+
+test('normalizeMessage builds a notice for a model_refusal_no_fallback row with empty content', () => {
+  const provider = new ClaudeSessionsProvider();
+  const [message] = provider.normalizeMessage({
+    type: 'system',
+    subtype: 'model_refusal_no_fallback',
+    uuid: 'rf2',
+    timestamp: '2026-01-01T00:00:00.000Z',
+    content: '',
+    originalModel: 'claude-fable-5',
+    apiRefusalCategory: 'reasoning_extraction',
+    apiRefusalExplanation: 'This request was blocked.',
+  }, SESSION);
+
+  assert.equal(message.kind, 'notice');
+  assert.equal(
+    message.content,
+    "claude-fable-5's safeguards blocked this request (`reasoning_extraction`); no fallback model was tried.\n\nThis request was blocked.",
+  );
+});
+
+/**
  * Compaction boundaries.
  *
  * The live SDK stream and the JSONL transcript describe the same seam with

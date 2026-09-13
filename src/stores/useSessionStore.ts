@@ -41,7 +41,8 @@ export type MessageKind =
   | 'session_created'
   | 'interactive_prompt'
   | 'task_notification'
-  | 'compact_boundary';
+  | 'compact_boundary'
+  | 'notice';
 
 /**
  * Context-window occupancy reported by the live provider runtime (mirrors
