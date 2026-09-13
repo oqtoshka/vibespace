@@ -446,6 +446,65 @@ test('OpenCode sessions provider strips <images_input> from user turns and expos
   }
 });
 
+test('OpenCode history restores a read image from session_message when the part lost it', { concurrency: false }, async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'opencode-read-image-'));
+  const workspacePath = path.join(tempRoot, 'workspace');
+  await mkdir(workspacePath, { recursive: true });
+  const restoreHomeDir = patchHomeDir(tempRoot);
+  const dataUrl = 'data:image/jpeg;base64,/9j/4AAQ';
+
+  try {
+    await createOpenCodeDatabase(tempRoot, workspacePath);
+    const db = new Database(path.join(tempRoot, '.local', 'share', 'opencode', 'opencode.db'));
+    try {
+      // What the history writer stored before it kept attachments: the text only.
+      db.prepare('UPDATE part SET data = ? WHERE id = ?').run(JSON.stringify({
+        type: 'tool',
+        tool: 'read',
+        callID: 'tool-call-1',
+        state: { status: 'completed', input: { path: '/tmp/out.jpg' }, output: 'Image read successfully' },
+      }), 'part-tool');
+      db.exec(`
+        CREATE TABLE session_message (
+          id TEXT PRIMARY KEY,
+          session_id TEXT NOT NULL,
+          type TEXT NOT NULL,
+          seq INTEGER NOT NULL,
+          time_created INTEGER NOT NULL,
+          time_updated INTEGER NOT NULL,
+          data TEXT NOT NULL
+        );
+      `);
+      db.prepare(`
+        INSERT INTO session_message (id, session_id, type, seq, time_created, time_updated, data)
+        VALUES (?, ?, 'assistant', 1, 0, 0, ?)
+      `).run('message-assistant', 'open-session-1', JSON.stringify({
+        content: [{
+          type: 'tool',
+          id: 'tool-call-1',
+          name: 'read',
+          state: {
+            status: 'completed',
+            content: [
+              { type: 'text', text: 'Image read successfully' },
+              { type: 'file', uri: dataUrl, mime: 'image/jpeg', name: '/tmp/out.jpg' },
+            ],
+          },
+        }],
+      }));
+    } finally {
+      db.close();
+    }
+
+    const history = await new OpenCodeSessionsProvider().fetchHistory('open-session-1');
+    const read = history.messages.find((message) => message.toolName === 'read');
+    assert.deepEqual((read?.toolResult as { images?: unknown } | undefined)?.images, [{ data: dataUrl }]);
+  } finally {
+    restoreHomeDir();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test('OpenCode sessions provider normalizes quoted live text and skips user echoes', () => {
   const provider = new OpenCodeSessionsProvider();
   const normalized = provider.normalizeMessage({

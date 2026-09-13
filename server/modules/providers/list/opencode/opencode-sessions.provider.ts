@@ -189,7 +189,9 @@ const buildToolUseMessage = (part: AnyRecord, meta: ToolMessageMeta): Normalized
   if (hasResult) {
     const isError = status === 'error' || (!status && error !== undefined);
     const resultValue = isError ? error ?? output : output ?? error;
-    const images = extractToolResultImages(resultValue);
+    // An image a tool read reaches the model as a file attachment; the output
+    // beside it only says "Image read successfully".
+    const images = extractToolResultImages([resultValue, state.attachments ?? part.attachments]);
     message.toolResult = {
       content: formatToolContent(resultValue),
       isError,
@@ -198,6 +200,62 @@ const buildToolUseMessage = (part: AnyRecord, meta: ToolMessageMeta): Normalized
   }
 
   return message;
+};
+
+/**
+ * Puts back images that tool parts written before attachments were persisted
+ * lost, reading them from OpenCode's own `session_message` copy of the turn.
+ *
+ * Only tool results that came back imageless with an "Image read successfully"
+ * line are looked up, so a session that never read an image costs no query.
+ * The table is newer than `part`; a store without it just keeps the text.
+ */
+const restoreReadImages = (
+  db: Database.Database,
+  providerSessionId: string,
+  messages: NormalizedMessage[],
+): void => {
+  const missing = new Map<string, NormalizedMessage>();
+  for (const message of messages) {
+    const result = message.toolResult as AnyRecord | undefined;
+    if (
+      message.kind === 'tool_use'
+      && typeof message.toolId === 'string'
+      && result
+      && !result.images
+      && result.content === 'Image read successfully'
+    ) {
+      missing.set(message.toolId, message);
+    }
+  }
+  if (missing.size === 0) {
+    return;
+  }
+
+  let rows: { data: string }[];
+  try {
+    rows = db.prepare(`
+      SELECT data FROM session_message
+      WHERE session_id = ? AND type = 'assistant' AND data LIKE '%data:image/%'
+    `).all(providerSessionId) as { data: string }[];
+  } catch {
+    return;
+  }
+
+  for (const row of rows) {
+    const content = readJsonRecord(row.data)?.content;
+    if (!Array.isArray(content)) {
+      continue;
+    }
+    for (const entry of content) {
+      const record = readObjectRecord(entry);
+      const message = record?.type === 'tool' && typeof record.id === 'string' ? missing.get(record.id) : undefined;
+      const images = message ? extractToolResultImages(readObjectRecord(record?.state)?.content) : undefined;
+      if (message && images) {
+        message.toolResult = { ...(message.toolResult as AnyRecord), images };
+      }
+    }
+  }
 };
 
 const hasUserRole = (value: unknown): boolean => {
@@ -463,6 +521,7 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
       const normalizedLimit = limit === null ? null : Math.max(0, limit);
       const total = normalized.length;
       const { page, hasMore } = sliceTailPage(normalized, normalizedLimit, normalizedOffset);
+      restoreReadImages(db, providerSessionId, page);
 
       return {
         messages: page,

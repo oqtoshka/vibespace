@@ -99,6 +99,23 @@ test('a tool result keeps the name and input of the call that started it', () =>
   assert.equal(succeeded?.toolResult?.isError, false);
 });
 
+test('an image a tool read is shown, not just announced', () => {
+  const toolCalls: ToolCalls = new Map([['call_1', { name: 'read', input: { path: '/tmp/dot.png' } }]]);
+  const dataUrl = 'data:image/png;base64,iVBORw0KGgo=';
+  const [message] = render('session.next.tool.success', {
+    sessionID: SESSION_ID,
+    callID: 'call_1',
+    content: [
+      { type: 'text', text: 'Image read successfully' },
+      { type: 'file', uri: dataUrl, mime: 'image/png', name: '/tmp/dot.png' },
+    ],
+    structured: { encoding: 'base64', mime: 'image/png', content: 'iVBORw0KGgo=' },
+  }, toolCalls);
+
+  assert.equal(message?.toolResult?.content, 'Image read successfully');
+  assert.deepEqual(message?.toolResult?.images, [{ data: dataUrl }]);
+});
+
 test('a failed tool is reported as an error result', () => {
   const toolCalls: ToolCalls = new Map([['call_1', { name: 'bash', input: { command: 'nope' } }]]);
   const [message] = render('session.next.tool.failed', {
@@ -251,13 +268,28 @@ test('a turn run over the server is written back as readable history', async () 
       }],
       assistantMessageId: 'msg_assistant',
       text: 'Blue',
-      tools: [{ callId: 'call_1', name: 'bash', input: { command: 'ls' }, output: 'dot.png' }],
+      tools: [
+        { callId: 'call_1', name: 'bash', input: { command: 'ls' }, output: 'dot.png' },
+        {
+          callId: 'call_2',
+          name: 'read',
+          input: { path: 'dot.png' },
+          output: 'Image read successfully',
+          attachments: [{ type: 'file', mime: 'image/png', url: 'data:image/png;base64,iVBORw0KGgo=' }],
+        },
+      ],
       tokens: { input: 3000, output: 2, reasoning: 0, cache: { read: 0, write: 0 } },
     });
 
     const history = await new OpenCodeSessionsProvider().fetchHistory(SESSION_ID, {});
     const kinds = history.messages.map((message) => message.kind);
     assert.ok(kinds.includes('tool_use'), 'the tool call belongs in the transcript');
+    const read = history.messages.find((message) => message.toolName === 'read');
+    assert.deepEqual(
+      (read?.toolResult as { images?: unknown } | undefined)?.images,
+      [{ data: 'data:image/png;base64,iVBORw0KGgo=' }],
+      'an image a tool read still renders after a reload',
+    );
 
     const [prompt] = history.messages;
     assert.equal(prompt.content, 'What colour is this image?', 'the attachment block is stripped back out');

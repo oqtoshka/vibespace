@@ -119,6 +119,24 @@ function flattenToolContent(content, structured) {
 }
 
 /**
+ * Picks the inline images out of a tool result's content list, in the
+ * `attachments` shape `opencode run` stores on a tool part.
+ *
+ * The 1.18 `read` tool hands an image to the model as a `file` entry and
+ * leaves only "Image read successfully" as text, so flattening the content
+ * alone showed the user a line saying an image exists and never the image.
+ */
+function toolAttachments(content) {
+  if (!Array.isArray(content)) {
+    return undefined;
+  }
+  const attachments = content
+    .filter((entry) => entry?.type === 'file' && typeof entry.uri === 'string' && entry.uri.startsWith('data:image/'))
+    .map((entry) => ({ type: 'file', mime: entry.mime, url: entry.uri, ...(entry.name ? { filename: entry.name } : {}) }));
+  return attachments.length > 0 ? attachments : undefined;
+}
+
+/**
  * Translates one server event into the `run --format json` shapes the OpenCode
  * normalizer already understands, so both transports render identically.
  *
@@ -175,7 +193,8 @@ export function translateEvent(type, properties, toolCalls) {
       };
     }
 
-    case 'session.next.tool.success':
+    case 'session.next.tool.success': {
+      const attachments = toolAttachments(properties.content);
       return {
         type: 'tool_use',
         sessionID,
@@ -188,9 +207,11 @@ export function translateEvent(type, properties, toolCalls) {
             status: 'completed',
             input: toolCalls.get(properties.callID)?.input ?? {},
             output: flattenToolContent(properties.content, properties.structured),
+            ...(attachments ? { attachments } : {}),
           },
         },
       };
+    }
 
     case 'session.next.tool.failed':
       return {
@@ -619,6 +640,7 @@ export async function runOpenCodeHttpTurn(command, options, ws, hooks = {}) {
         name: toolCalls.get(properties.callID)?.name ?? 'Tool',
         input: toolCalls.get(properties.callID)?.input,
         output: properties.error ?? flattenToolContent(properties.content, properties.structured),
+        attachments: toolAttachments(properties.content),
         isError: type === 'session.next.tool.failed',
       });
     }
