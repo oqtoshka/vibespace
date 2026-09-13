@@ -328,3 +328,32 @@ test('Codex history preserves wrapped exec tool calls and results', { concurrenc
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
+
+test('Codex edit anchors survive reload and rollback hides discarded turns and images', { concurrency: false }, async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'codex-rewind-history-'));
+  const transcript = path.join(root, 'rollout.jsonl');
+  const turn = (id: string, text: string) => [
+    { type: 'event_msg', payload: { type: 'task_started', turn_id: id } },
+    { type: 'event_msg', payload: { type: 'item_completed', turn_id: id, item: { type: 'UserMessage', content: [{ type: 'text', text }, { type: 'local_image', path: '/tmp/old.png' }] } } },
+    { type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: `Reply ${text}` }] } },
+  ];
+  try {
+    await withIsolatedDatabase(async () => {
+      const id = sessionsDb.createSession('rewind-provider', 'codex', root, 'Rewind test', undefined, undefined, transcript);
+      const entries = [...turn('one', 'Keep'), ...turn('two', 'Discard'), ...turn('three', 'Later')];
+      await writeFile(transcript, entries.map(e => JSON.stringify(e)).join('\n'));
+      const provider = new CodexSessionsProvider();
+      const before = await provider.fetchHistory(id);
+      assert.deepEqual(before.messages.filter(m => m.role === 'user').map(m => m.uuid), ['codex-turn-one', 'codex-turn-two', 'codex-turn-three']);
+      entries.push({ type: 'event_msg', payload: { type: 'thread_rolled_back', num_turns: 2 } } as any);
+      entries.push(...turn('four', 'Replacement'));
+      await writeFile(transcript, entries.map(e => JSON.stringify(e)).join('\n'));
+      const after = await provider.fetchHistory(id);
+      assert.deepEqual(after.messages.map(m => m.content), ['Keep', 'Reply Keep', 'Replacement', 'Reply Replacement']);
+      assert.deepEqual(after.messages.filter(m => m.role === 'user').map(m => m.uuid), ['codex-turn-one', 'codex-turn-four']);
+      entries.push({ type: 'event_msg', payload: { type: 'thread_rolled_back', num_turns: 2 } } as any);
+      await writeFile(transcript, entries.map(e => JSON.stringify(e)).join('\n'));
+      assert.equal((await provider.fetchHistory(id)).messages.length, 0);
+    });
+  } finally { await rm(root, { recursive: true, force: true }); }
+});

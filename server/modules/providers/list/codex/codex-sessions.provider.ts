@@ -295,6 +295,9 @@ async function getCodexSessionMessages(
 
     const messages: AnyRecord[] = [];
     let tokenUsage: AnyRecord | null = null;
+    let currentTurn: string | undefined;
+    let userSeen = false;
+    const turnStarts: Array<{ id: string; offset: number; tokenUsage: AnyRecord | null }> = [];
     const ignoredToolCallIds = new Set<string>();
     const execToolCallIds = new Set<string>();
     const execCallByCellId = new Map<string, string>();
@@ -316,6 +319,27 @@ async function getCodexSessionMessages(
 
       try {
         const entry = JSON.parse(line) as AnyRecord;
+        if (entry.type === 'event_msg' && entry.payload?.type === 'thread_rolled_back') {
+          const count = entry.payload.num_turns;
+          if (Number.isInteger(count) && count > 0 && turnStarts.length) {
+            const index = Math.max(0, turnStarts.length - count);
+            const boundary = turnStarts[index];
+            messages.splice(boundary.offset);
+            tokenUsage = boundary.tokenUsage;
+            turnStarts.splice(index);
+            currentTurn = undefined; userSeen = false;
+            ignoredToolCallIds.clear(); execToolCallIds.clear(); execCallByCellId.clear();
+            waitCallToExecCall.clear(); pendingExecOutput.clear(); completedExecCalls.clear();
+            subagentsByCallId.clear(); subagentsByPath.clear();
+          }
+          continue;
+        }
+        const eventTurn = entry.type === 'event_msg' ? entry.payload?.turn_id : undefined;
+        if (eventTurn && eventTurn !== currentTurn &&
+          (entry.payload.type === 'task_started' || entry.payload.item?.type === 'UserMessage')) {
+          currentTurn = eventTurn; userSeen = false;
+          turnStarts.push({ id: eventTurn, offset: messages.length, tokenUsage });
+        }
         if (entry.type === 'event_msg' && entry.payload?.type === 'token_count' && entry.payload?.info) {
           tokenUsage = buildCodexTokenBudget(entry.payload.info);
         }
@@ -350,6 +374,7 @@ async function getCodexSessionMessages(
         if (entry.type === 'event_msg' && isVisibleCodexUserMessage(entry.payload as AnyRecord)) {
           messages.push({
             type: 'user',
+            uuid: !userSeen && currentTurn ? `codex-turn-${currentTurn}` : undefined,
             timestamp: entry.timestamp,
             message: {
               role: 'user',
@@ -357,6 +382,7 @@ async function getCodexSessionMessages(
             },
             images: extractCodexUserImages(entry.payload as AnyRecord),
           });
+          userSeen = true;
         }
 
         // Current Codex emits completed UserMessage items instead of the legacy
@@ -368,7 +394,9 @@ async function getCodexSessionMessages(
           const images = extractCodexUserImages(entry.payload.item as AnyRecord);
           if (content.trim() || images?.length) {
             messages.push({ type: 'user', timestamp: entry.timestamp,
+              uuid: !userSeen && currentTurn ? `codex-turn-${currentTurn}` : undefined,
               message: { role: 'user', content }, images });
+            userSeen = true;
           }
         }
 
@@ -752,6 +780,7 @@ export class CodexSessionsProvider implements IProviderSessions {
         provider: PROVIDER,
         kind: 'text',
         role: 'user',
+        uuid: raw.uuid,
         content: parsedFiles.text,
         images: rawImages,
         files,

@@ -26,7 +26,7 @@ import { notifyRunFailed, notifyRunStopped } from './modules/notifications/index
 import { cancelRateLimitWake, scheduleRateLimitWake } from './services/rate-limit-wake.service.js';
 import { recordSessionActivity, recordSessionEnd } from './services/session-restore.service.js';
 import { planTaskContinuation } from './services/task-continuation.js';
-import { broadcastSessionUpdate, generateInitialSessionTitle, scheduleSessionRecap } from './modules/providers/index.js';
+import { broadcastSessionUpdate, generateInitialSessionTitle, scheduleSessionRecap, rewindCodexTurn } from './modules/providers/index.js';
 import { buildCodexTokenBudget, readLatestCodexTokenBudget } from './shared/codex-token-usage.js';
 import { toCodexAppServerSandboxPolicy } from './shared/codex-sandbox-policy.js';
 import { createCompleteMessage, createNormalizedMessage } from './shared/utils.js';
@@ -477,6 +477,7 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
       sessionId: capturedSessionId,
       images: undefined,
       files: undefined,
+      rewind: undefined,
     }, ws);
     return true;
   };
@@ -506,6 +507,14 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
     capturedSessionId = threadResponse?.thread?.id || sessionId || null;
     if (!capturedSessionId) {
       throw new Error('Codex app-server did not return a thread id');
+    }
+
+    if (options.rewind) {
+      if (!sessionId || ephemeral) throw new Error('Editing requires an existing conversation.');
+      await rewindCodexTurn((method, params) => appServer.request(method, params), capturedSessionId, options.rewind);
+      options = { ...options, rewind: undefined };
+      // The UI must replace its snapshot immediately, including if the new turn fails.
+      sendMessage(ws, { kind: 'native.session-state', sessionId: capturedSessionId, provider: 'codex' });
     }
 
     ws.setSessionId?.(capturedSessionId);

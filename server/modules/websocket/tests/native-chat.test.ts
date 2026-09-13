@@ -37,6 +37,7 @@ test('native session isolation, history, stream, permissions and duplicate recei
     userDb.createUser('native-owner', 'fixture');
     sessionsDb.createAppSession('native-one', 'claude', '/tmp/native-chat-fixture');
     sessionsDb.createAppSession('native-other', 'claude', '/tmp/native-chat-fixture');
+    sessionsDb.createAppSession('native-codex', 'codex', '/tmp/native-chat-fixture');
     const imageId = '11111111-1111-4111-8111-111111111111';
     const fileId = '22222222-2222-4222-8222-222222222222';
     const assets = path.join(homedir(), '.vibespace', 'assets');
@@ -71,6 +72,7 @@ test('native session isolation, history, stream, permissions and duplicate recei
       return socket;
     };
     assert.equal(open('native-other').code, 4403);
+    assert.equal(open('native-codex', 'native-codex').frames[0]?.rewind, true);
     const client = open('native-one');
     assert.equal(client.frames[0]?.kind, 'native.hello');
     assert.equal(client.frames[0]?.rewind, true);
