@@ -1,6 +1,6 @@
 import { codexApprovals } from '../modules/codex-approvals/index.js';
 import { createRequire } from 'node:module';
-import { collectAgentEnv } from '../shared/agent-env.js';
+import { buildAgentEnv, collectAgentEnv } from '../shared/agent-env.js';
 import path from 'node:path';
 import readline from 'node:readline';
 
@@ -48,10 +48,11 @@ function rpcError(message) {
 export class CodexAppServerClient {
   /**
    * @param {{ env?: NodeJS.ProcessEnv }} [options] - `env` replaces the
-   *   process environment for the child; the default is `process.env` itself,
-   *   untouched, which is what every ordinary session has always run under.
+   *   process environment for the child; the default is the host env with
+   *   VibeSpace's own server configuration filtered out (see buildAgentEnv) —
+   *   every command Codex runs inherits it.
    */
-  constructor({ env = process.env } = {}) {
+  constructor({ env = buildAgentEnv() } = {}) {
     const resolved = resolveCodexCommand();
     this.child = crossSpawn(
       resolved.command,
@@ -245,18 +246,15 @@ export class CodexAppServerClient {
  * share the ordinary server. It gets a second one, spawned with whatever host
  * plugins contribute for the private variant (see collectAgentEnv), and every
  * private session shares that. The ordinary variant is exactly the single
- * server that existed before privacy did: same command, same `process.env`.
+ * server that existed before privacy did: same command, the filtered host env.
  */
 const VARIANTS = {
-  shared: { env: () => undefined },
+  shared: { env: () => buildAgentEnv() },
   // Read at spawn time, not at load: the host env can change after import
   // (tests set the capture path late), contributors register during boot, and
   // `process.env` is copied anyway.
   private: {
-    env: () => ({
-      ...process.env,
-      ...collectAgentEnv({ provider: 'codex', scope: 'server', private: true }),
-    }),
+    env: () => buildAgentEnv(collectAgentEnv({ provider: 'codex', scope: 'server', private: true })),
   },
 };
 
@@ -279,8 +277,7 @@ export async function getCodexAppServer(options = {}) {
     return existing.promise;
   }
 
-  const env = VARIANTS[variant].env();
-  const candidate = env ? new CodexAppServerClient({ env }) : new CodexAppServerClient();
+  const candidate = new CodexAppServerClient({ env: VARIANTS[variant].env() });
   const entry = { instance: candidate, promise: null };
   entry.promise = candidate.ready.then(() => candidate).catch((error) => {
     if (clients.get(variant) === entry) {

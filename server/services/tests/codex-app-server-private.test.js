@@ -28,6 +28,7 @@ const readline = require('node:readline');
 fs.appendFileSync(process.env.VIBESPACE_CODEX_CAPTURE, JSON.stringify({
   pid: process.pid,
   optOut: process.env.VS_TEST_OPT_OUT ?? null,
+  jwt: process.env.JWT_SECRET ?? null,
   path: process.env.PATH,
 }) + '\\n');
 const rl = readline.createInterface({ input: process.stdin });
@@ -48,12 +49,14 @@ test('a private session gets its own app-server carrying the private-variant env
   const previousPath = process.env.VIBESPACE_CODEX_PATH;
   const previousCapture = process.env.VIBESPACE_CODEX_CAPTURE;
   const previousOptOut = process.env.VS_TEST_OPT_OUT;
+  const previousJwt = process.env.JWT_SECRET;
 
   try {
     await createFakeCodex(executable);
     process.env.VIBESPACE_CODEX_PATH = executable;
     process.env.VIBESPACE_CODEX_CAPTURE = capturePath;
     delete process.env.VS_TEST_OPT_OUT;
+    process.env.JWT_SECRET = 'server-only-signing-key';
 
     const shared = await getCodexAppServer();
     const privateServer = await getCodexAppServer({ private: true });
@@ -70,6 +73,8 @@ test('a private session gets its own app-server carrying the private-variant env
     assert.deepEqual(spawns.map((spawn) => spawn.optOut), [null, '1']);
     // The gate rides on the host env rather than replacing it.
     assert.equal(spawns[1].path, process.env.PATH);
+    // Every command Codex runs inherits the app-server's env: no server secrets.
+    assert.deepEqual(spawns.map((spawn) => spawn.jwt), [null, null]);
   } finally {
     stopCodexAppServer();
     if (previousPath === undefined) delete process.env.VIBESPACE_CODEX_PATH;
@@ -77,6 +82,8 @@ test('a private session gets its own app-server carrying the private-variant env
     if (previousCapture === undefined) delete process.env.VIBESPACE_CODEX_CAPTURE;
     else process.env.VIBESPACE_CODEX_CAPTURE = previousCapture;
     if (previousOptOut !== undefined) process.env.VS_TEST_OPT_OUT = previousOptOut;
+    if (previousJwt === undefined) delete process.env.JWT_SECRET;
+    else process.env.JWT_SECRET = previousJwt;
     await rm(tempRoot, { recursive: true, force: true });
   }
 });

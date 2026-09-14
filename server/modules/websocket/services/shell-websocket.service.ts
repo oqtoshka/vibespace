@@ -6,6 +6,7 @@ import path from 'node:path';
 import pty, { type IPty } from 'node-pty';
 import { WebSocket, type RawData } from 'ws';
 
+import { buildAgentEnv } from '@/shared/agent-env.js';
 import { parseIncomingJsonObject } from '@/shared/utils.js';
 
 type ShellIncomingMessage = {
@@ -450,13 +451,14 @@ export function handleShellConnection(
           cols: termCols,
           rows: termRows,
           cwd: resolvedProjectPath,
-          env: {
-            ...process.env,
+          // The terminal hosts agent CLIs and whatever they run, so it gets
+          // the filtered env, never VibeSpace's own secrets.
+          env: buildAgentEnv({
             [prioritizedPath.key]: prioritizedPath.value,
             TERM: 'xterm-256color',
             COLORTERM: 'truecolor',
             FORCE_COLOR: '3',
-          },
+          }),
         });
 
         // A session-backed shell with nothing to resume lets the CLI allocate
