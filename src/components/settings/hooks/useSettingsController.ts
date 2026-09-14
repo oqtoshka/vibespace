@@ -47,6 +47,11 @@ type CodexSettingsStorage = {
   permissionMode?: CodexPermissionMode;
 };
 
+type ChatPermissionPreferencesResponse = {
+  defaultMode?: unknown;
+  permissionMode?: unknown;
+};
+
 type NotificationPreferencesResponse = {
   success?: boolean;
   preferences?: NotificationPreferencesState;
@@ -212,6 +217,23 @@ export function useSettingsController({ isOpen, initialTab }: UseSettingsControl
         {},
       );
       setCodexPermissionMode(toCodexPermissionMode(savedCodexSettings.permissionMode));
+
+      // The workspace preference is authoritative. Reading only localStorage meant
+      // an older browser value could overwrite a newer server default on the next
+      // Settings save (notably reverting Codex bypassPermissions to default).
+      try {
+        const permissionResponse = await authenticatedFetch('/api/settings/chat-permissions?provider=codex');
+        if (permissionResponse.ok) {
+          const permissionData = await toResponseJson<ChatPermissionPreferencesResponse>(permissionResponse);
+          const permissionMode = toCodexPermissionMode(
+            permissionData.defaultMode ?? permissionData.permissionMode,
+          );
+          setCodexPermissionMode(permissionMode);
+          localStorage.setItem('codex-settings', JSON.stringify({ permissionMode }));
+        }
+      } catch {
+        // Offline settings retain the last local value and can be retried later.
+      }
 
       try {
         const notificationResponse = await authenticatedFetch('/api/settings/notification-preferences');
