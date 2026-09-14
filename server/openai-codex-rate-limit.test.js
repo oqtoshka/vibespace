@@ -7,7 +7,13 @@ import test from 'node:test';
 const tmp = await mkdtemp(path.join(os.tmpdir(), 'codex-rate-limit-'));
 process.env.DATABASE_PATH = path.join(tmp, 'data', 'auth.db');
 
-const { queryCodex, isCodexUsageLimitError, pickCodexLimitReset, __resetCodexRateLimits } = await import('./openai-codex.js');
+const {
+  queryCodex,
+  isCodexUsageLimitError,
+  classifyCodexTransientFailure,
+  pickCodexLimitReset,
+  __resetCodexRateLimits,
+} = await import('./openai-codex.js');
 const { stopCodexAppServer } = await import('./services/codex-app-server.service.js');
 const {
   isRateLimitWakePending,
@@ -22,7 +28,14 @@ const {
  * `codexErrorInfo: 'usageLimitExceeded'`, and answers
  * `account/rateLimits/read` with the full snapshot.
  */
-async function createFakeCodex(scriptPath, { resetsAt, announceBeforeFail }) {
+async function createFakeCodex(scriptPath, {
+  resetsAt,
+  announceBeforeFail,
+  failure = {
+    message: "You've hit your usage limit. Try again in 1 hour 30 minutes.",
+    codexErrorInfo: 'usageLimitExceeded',
+  },
+}) {
   await writeFile(scriptPath, `#!/usr/bin/env node
 const fs = require('node:fs');
 const readline = require('node:readline');
@@ -69,10 +82,7 @@ rl.on('line', (line) => {
           id: turnId,
           status: 'failed',
           items: [],
-          error: {
-            message: "You've hit your usage limit. Try again in 1 hour 30 minutes.",
-            codexErrorInfo: 'usageLimitExceeded',
-          },
+          error: ${JSON.stringify(failure)},
         },
       } });
       break;
@@ -124,6 +134,24 @@ test('isCodexUsageLimitError recognizes the app-server error shapes', () => {
   assert.equal(isCodexUsageLimitError({ message: 'sandbox denied', codexErrorInfo: 'sandboxError' }), false);
   assert.equal(isCodexUsageLimitError(new Error('Codex turn failed')), false);
   assert.equal(isCodexUsageLimitError(null), false);
+});
+
+test('classifyCodexTransientFailure picks out provider outages, not refused requests', () => {
+  assert.deepEqual(classifyCodexTransientFailure({ codexErrorInfo: 'serverOverloaded' }), { limitType: 'serverOverloaded' });
+  assert.deepEqual(classifyCodexTransientFailure({ codex_error_info: 'server_overloaded' }), { limitType: 'serverOverloaded' });
+  assert.deepEqual(classifyCodexTransientFailure({ codexErrorInfo: 'internalServerError' }), { limitType: 'internalServerError' });
+  assert.deepEqual(
+    classifyCodexTransientFailure({ codexErrorInfo: { responseStreamDisconnected: { httpStatusCode: null } } }),
+    { limitType: 'responseStreamDisconnected' },
+  );
+  assert.deepEqual(
+    classifyCodexTransientFailure({ codexErrorInfo: { httpConnectionFailed: { httpStatusCode: 503 } } }),
+    { limitType: 'httpConnectionFailed_503' },
+  );
+  assert.equal(classifyCodexTransientFailure({ codexErrorInfo: { httpConnectionFailed: { httpStatusCode: 401 } } }), null);
+  assert.equal(classifyCodexTransientFailure({ codexErrorInfo: 'badRequest' }), null);
+  assert.equal(classifyCodexTransientFailure({ codexErrorInfo: 'contextWindowExceeded' }), null);
+  assert.equal(classifyCodexTransientFailure(new Error('Codex turn failed')), null);
 });
 
 test('pickCodexLimitReset gates on the latest exhausted window', () => {
@@ -191,5 +219,36 @@ test('without a prior snapshot the runner asks account/rateLimits/read for the r
     const requests = (await readFile(capturePath, 'utf8')).trim().split('\n').map((l) => JSON.parse(l));
     assert.equal(requests.filter((r) => r.method === 'turn/start').length, 1);
     assert.equal(requests.some((r) => r.method === 'account/rateLimits/read'), true, 'the snapshot was fetched on demand');
+  });
+});
+
+test('a Codex turn that fails on an overloaded model schedules a backed-off retry instead of continuing', async () => {
+  const resetsAt = Math.floor(Date.now() / 1000) + 5400;
+  await withFakeCodex({
+    resetsAt,
+    announceBeforeFail: false,
+    failure: { message: 'Selected model is at capacity. Please try a different model.', codexErrorInfo: 'serverOverloaded' },
+  }, async ({ tempRoot, capturePath }) => {
+    const writer = makeWriter();
+    await queryCodex('Do the thing', {
+      cwd: tempRoot,
+      sessionId: 'codex-limited-1',
+      model: 'gpt-5.4',
+      permissionMode: 'bypassPermissions',
+      rateLimitWakeAttempts: 2,
+    }, writer);
+
+    assert.equal(isRateLimitWakePending('codex-limited-1'), true);
+    const wake = getRateLimitWake('codex-limited-1');
+    assert.equal(wake.recoveryKind, 'provider-unavailable');
+    assert.equal(wake.limitType, 'serverOverloaded');
+    assert.equal(wake.attempts, 3, 'a retried turn keeps counting attempts');
+
+    const error = writer.messages.find((m) => m.kind === 'error');
+    assert.match(error?.content || '', /at capacity[\s\S]*retry this turn automatically/);
+    assert.ok(writer.messages.some((m) => m.kind === 'complete'));
+    const requests = (await readFile(capturePath, 'utf8')).trim().split('\n').map((l) => JSON.parse(l));
+    assert.equal(requests.filter((r) => r.method === 'turn/start').length, 1);
+    assert.equal(requests.some((r) => r.method === 'account/rateLimits/read'), false);
   });
 });
