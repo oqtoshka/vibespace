@@ -172,6 +172,7 @@ export default tseslint.config(
             "server/shared/claude-task-ledger.ts",
             "server/shared/codex-plan-ledger.js",
             "server/shared/waiting-on-user.ts",
+            "server/shared/opencode-failure.ts",
           ], // classify shared utility files so modules can depend on them explicitly
           mode: "file",
         },
