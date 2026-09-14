@@ -157,6 +157,56 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 `;
 
+/**
+ * Persistent lexical session index. The ordinary table tracks the source
+ * fingerprint for incremental rebuilds. Searchable text is compressed in the
+ * document table and indexed by a contentless FTS5 table, so SQLite does not
+ * keep a second uncompressed copy of every transcript and tool result.
+ *
+ * User and project ids are deliberately copied onto every document. Search
+ * always supplies the active user id, so a future multi-user database cannot
+ * accidentally turn this local index into a cross-tenant side channel.
+ */
+export const SESSION_SEARCH_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS session_search_state (
+    session_id TEXT PRIMARY KEY NOT NULL,
+    source_fingerprint TEXT NOT NULL,
+    indexed_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS session_search_documents (
+    rowid INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    session_id TEXT NOT NULL,
+    project_id TEXT,
+    project_path TEXT,
+    provider TEXT NOT NULL,
+    archived INTEGER NOT NULL,
+    occurred_at TEXT,
+    message_id TEXT,
+    role TEXT,
+    kind TEXT NOT NULL,
+    display_title TEXT NOT NULL,
+    display_summary TEXT NOT NULL,
+    model TEXT,
+    effort TEXT,
+    compressed_content BLOB NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_session_search_documents_session ON session_search_documents(session_id);
+CREATE INDEX IF NOT EXISTS idx_session_search_documents_filters
+    ON session_search_documents(user_id, archived, provider, project_id, occurred_at);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS session_search_fts USING fts5(
+    title,
+    summary,
+    content,
+    content = '',
+    contentless_delete = 1,
+    detail = column,
+    tokenize = 'unicode61 remove_diacritics 2'
+);
+`;
+
 export const LAST_SCANNED_AT_SQL = `
 CREATE TABLE IF NOT EXISTS scan_state (
   id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -253,6 +303,8 @@ ${SESSIONS_TABLE_SCHEMA_SQL}
 CREATE INDEX IF NOT EXISTS idx_session_ids_lookup ON sessions(session_id);
 -- NOTE: This index is created in migrations after sessions is rebuilt to include project_path.
 -- Creating it here can fail on upgraded installs where the legacy sessions table has no project_path.
+
+${SESSION_SEARCH_SCHEMA_SQL}
 
 ${LAST_SCANNED_AT_SQL}
 

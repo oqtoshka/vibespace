@@ -506,6 +506,15 @@ export const sessionsDb = {
     return normalizeSessionRows(rows);
   },
 
+  /** Session search backfill owns archive filtering, so it needs every row. */
+  getAllSessionsIncludingArchived(): SessionRow[] {
+    const db = getConnection();
+    const rows = db
+      .prepare(`SELECT ${SESSION_ROW_COLUMNS} FROM sessions`)
+      .all() as SessionRow[];
+    return normalizeSessionRows(rows);
+  },
+
   /**
    * Returns one globally ordered page of visible conversations.
    *

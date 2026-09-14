@@ -8,7 +8,7 @@ import test from 'node:test';
 
 import express, { type NextFunction, type Request, type Response } from 'express';
 
-import { closeConnection, initializeDatabase, sessionsDb } from '@/modules/database/index.js';
+import { closeConnection, initializeDatabase, sessionsDb, userDb } from '@/modules/database/index.js';
 import providerRouter from '@/modules/providers/provider.routes.js';
 import { AppError } from '@/shared/utils.js';
 
@@ -22,6 +22,7 @@ async function withProviderServer(
   process.env.DATABASE_PATH = path.join(tempDirectory, 'auth.db');
   await writeFile(process.env.DATABASE_PATH, '');
   await initializeDatabase();
+  userDb.createUser('provider-route-test', 'unused');
 
   const app = express().use(express.json()).use('/api/providers', providerRouter);
   app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {

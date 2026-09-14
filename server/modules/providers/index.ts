@@ -12,6 +12,8 @@ export { initializeSessionsWatcher } from './services/sessions-watcher.service.j
 export { closeSessionsWatcher } from './services/sessions-watcher.service.js';
 export { broadcastSessionUpdate } from './services/sessions-watcher.service.js';
 export { sessionsService } from './services/sessions.service.js';
+// Native Control reuses the browser's indexed conversation search contract.
+export { sessionConversationsSearchService } from './services/session-conversations-search.service.js';
 export { generateInitialSessionTitle } from './services/session-title.service.js';
 export { registerSessionShredDependencies, sessionShredService } from './services/session-shred.service.js';
 export type { ShredReport, ShredRoots } from './services/session-shred.service.js';
