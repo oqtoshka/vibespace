@@ -8,6 +8,8 @@ import {
 } from './shared/image-attachments.js';
 import { createProviderRuntimeContext, normalizeRuntimeOptions } from './shared/provider-runtime-context.js';
 import { notifyRunFailed, notifyRunStopped } from './modules/notifications/index.js';
+import { recordSessionActivity, recordSessionEnd } from './services/session-restore.service.js';
+import { planTaskContinuation } from './services/task-continuation.js';
 import { createCompleteMessage, createNormalizedMessage, flattenPromptForWindowsShell } from './shared/utils.js';
 
 // cross-spawn resolves .cmd shims/PATHEXT on Windows and delegates to
@@ -15,6 +17,10 @@ import { createCompleteMessage, createNormalizedMessage, flattenPromptForWindows
 const spawnFunction = crossSpawn;
 
 let activeCursorProcesses = new Map(); // Track active processes by session ID
+
+// How long a CLI may linger between its `result` line and exiting before the
+// run is reported complete anyway.
+const RESULT_CLOSE_GRACE_MS = 10_000;
 
 const WORKSPACE_TRUST_PATTERNS = [
   /workspace trust required/i,
@@ -78,6 +84,10 @@ async function spawnCursor(command, options = {}, ws, context = undefined) {
     // per run. Cursor surfaces completion twice (the `result` JSON line and
     // the process close), so the first emission wins.
     let completeSent = false;
+    // Exit code the `result` line reported. Its `complete` waits for the close,
+    // where a continuation turn may still take the run over.
+    let resultExitCode = null;
+    let resultCompleteTimer = null;
 
     // Use tools settings passed from frontend, or defaults
     const settings = toolsSettings || {
@@ -130,6 +140,21 @@ async function spawnCursor(command, options = {}, ws, context = undefined) {
     // Store process reference for potential abort — keyed by the app session
     // id when the caller supplied one, so abort-by-app-id always works.
     const processKey = sessionId || Date.now().toString();
+
+    // Registered for restore-on-boot like the other providers: a restart kills
+    // the CLI mid-turn, and without an entry nothing resumes the work.
+    const recordActivity = (turnActive) => {
+      if (options.ephemeral || !capturedSessionId) return;
+      recordSessionActivity({
+        provider: 'cursor',
+        sessionId: capturedSessionId,
+        cwd: workingDir,
+        permissionMode: options.permissionMode,
+        userId: ws?.userId || null,
+        private: Boolean(options.private),
+        turnActive,
+      }).catch(() => {});
+    };
 
     const settleOnce = (callback) => {
       if (settled) {
@@ -227,6 +252,7 @@ async function spawnCursor(command, options = {}, ws, context = undefined) {
                   if (ws.setSessionId && typeof ws.setSessionId === 'function') {
                     ws.setSessionId(capturedSessionId);
                   }
+                  recordActivity(true);
 
                   // Send session-created event only once for sessions with nothing to resume
                   if (!providerSessionId && !sessionCreatedSent) {
@@ -252,15 +278,22 @@ async function spawnCursor(command, options = {}, ws, context = undefined) {
               break;
 
             case 'result': {
-              // Session complete — terminal lifecycle event for this run
-              if (!completeSent) {
-                completeSent = true;
-                ws.send(createCompleteMessage({
-                  provider: 'cursor',
-                  sessionId: capturedSessionId || sessionId || null,
-                  exitCode: response.subtype === 'success' ? 0 : 1,
-                }));
-              }
+              // Session complete. The terminal `complete` is sent on close, which
+              // may first roll into a task continuation; a CLI that lingers after
+              // its result still completes on time.
+              resultExitCode = response.subtype === 'success' ? 0 : 1;
+              clearTimeout(resultCompleteTimer);
+              resultCompleteTimer = setTimeout(() => {
+                if (!completeSent && !cursorProcess.aborted) {
+                  completeSent = true;
+                  ws.send(createCompleteMessage({
+                    provider: 'cursor',
+                    sessionId: capturedSessionId || sessionId || null,
+                    exitCode: resultExitCode,
+                  }));
+                }
+              }, RESULT_CLOSE_GRACE_MS);
+              resultCompleteTimer.unref?.();
               break;
             }
 
@@ -329,11 +362,50 @@ async function spawnCursor(command, options = {}, ws, context = undefined) {
           return;
         }
 
-        // Terminal complete — unless the `result` line already sent it, or the
-        // run was aborted (abort-session sent the aborted complete).
+        clearTimeout(resultCompleteTimer);
+        if (cursorProcess.aborted) {
+          if (!options.ephemeral && capturedSessionId) recordSessionEnd(capturedSessionId).catch(() => {});
+        } else {
+          recordActivity(false);
+        }
+
+        // Open TodoWrite items roll the run into a continuation turn, as for
+        // OpenCode and Codex: no terminal messages here, the nested run sends
+        // its own when the chain ends. Failed turns included; a stopped run and
+        // helper one-shots never. Bounds live in planTaskContinuation.
+        if (!completeSent && !cursorProcess.aborted && !options.ephemeral && capturedSessionId) {
+          const continuation = planTaskContinuation({
+            provider: 'cursor',
+            sessionId: capturedSessionId,
+            cwd: workingDir,
+            userId: ws?.userId || null,
+            sessionName: sessionSummary,
+          });
+          if (continuation) {
+            ws.send(createNormalizedMessage({
+              kind: 'status',
+              text: 'Resuming — open tasks remain',
+              sessionId: capturedSessionId,
+              provider: 'cursor',
+            }));
+            spawnCursor(continuation, {
+              ...options,
+              sessionId: capturedSessionId,
+              providerSessionId: capturedSessionId,
+              images: undefined,
+              files: undefined,
+            }, ws).then(resolve, reject);
+            settled = true;
+            return;
+          }
+        }
+
+        // Terminal complete — unless it already went out, or the run was
+        // aborted (abort-session sent the aborted complete).
+        const exitCode = resultExitCode ?? code;
         if (!completeSent && !cursorProcess.aborted) {
           completeSent = true;
-          ws.send(createCompleteMessage({ provider: 'cursor', sessionId: finalSessionId, exitCode: code }));
+          ws.send(createCompleteMessage({ provider: 'cursor', sessionId: finalSessionId, exitCode }));
         }
 
         if (code === 0) {
