@@ -2,6 +2,8 @@ import fsSync from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+import { isWaitingOnUserSubject } from './waiting-on-user.js';
+
 /**
  * Reader for Codex's plan ledger. Codex has no per-task store on disk: the
  * plan lives in the session's rollout transcript as `update_plan` tool calls,
@@ -250,10 +252,12 @@ export function readCodexPlanState(sessionId, root = codexSessionsRoot()) {
   plan.forEach((step, index) => {
     const status = step?.status;
     if (status !== 'pending' && status !== 'in_progress') return;
+    const subject = typeof step.step === 'string' && step.step ? step.step : '(untitled)';
     open.push({
       id: String(index + 1),
-      subject: typeof step.step === 'string' && step.step ? step.step : '(untitled)',
+      subject,
       status,
+      waitingOnUser: isWaitingOnUserSubject(subject),
     });
   });
   return { open, activity: countToolCalls(text) };

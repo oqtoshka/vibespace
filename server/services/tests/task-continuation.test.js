@@ -52,8 +52,8 @@ test('the opencode reader returns open todos in order plus a tool-activity count
 
   const state = readOpenCodeTaskState('ses_1', dbPath);
   assert.deepEqual(state.open, [
-    { id: '1', subject: 'first open', status: 'in_progress' },
-    { id: '2', subject: 'second open', status: 'pending' },
+    { id: '1', subject: 'first open', status: 'in_progress', waitingOnUser: false },
+    { id: '2', subject: 'second open', status: 'pending', waitingOnUser: false },
   ]);
   assert.equal(state.activity, 1, 'only this session\'s tool parts count');
 
@@ -117,8 +117,8 @@ test('the codex reader takes the newest plan, in every encoding, and filters to 
 
   const state = readCodexPlanState('sid-plan', root);
   assert.deepEqual(state.open, [
-    { id: '2', subject: 'wrapped active', status: 'in_progress' },
-    { id: '3', subject: 'wrapped next', status: 'pending' },
+    { id: '2', subject: 'wrapped active', status: 'in_progress', waitingOnUser: false },
+    { id: '3', subject: 'wrapped next', status: 'pending', waitingOnUser: false },
   ]);
   assert.ok(state.activity >= 2, 'tool calls in the window are counted');
 
@@ -142,7 +142,7 @@ test('the codex reader follows the plan tool when an MCP server serves it', () =
     },
   ]);
   assert.deepEqual(readCodexPlanState('sid-mcp-exec', root).open, [
-    { id: '2', subject: 'exec open', status: 'in_progress' },
+    { id: '2', subject: 'exec open', status: 'in_progress', waitingOnUser: false },
   ]);
 
   writeRollout(root, 'sid-mcp-item', [
@@ -161,7 +161,7 @@ test('the codex reader follows the plan tool when an MCP server serves it', () =
     },
   ]);
   assert.deepEqual(readCodexPlanState('sid-mcp-item', root).open, [
-    { id: '1', subject: 'item open', status: 'pending' },
+    { id: '1', subject: 'item open', status: 'pending', waitingOnUser: false },
   ]);
 });
 
@@ -182,7 +182,7 @@ test('a codex session with no plan, or an all-closed plan, reads as nothing open
 
 test('the planner nudges while the ledger is open and stops when it closes', () => {
   __clearTaskContinuationState();
-  let ledger = { open: [{ id: '1', subject: 'ship it', status: 'pending' }], activity: 0 };
+  let ledger = { open: [{ id: '1', subject: 'ship it', status: 'pending', waitingOnUser: false }], activity: 0 };
   __setTaskLedgerReader('opencode', () => ledger);
   try {
     const prompt = planTaskContinuation({ provider: 'opencode', sessionId: 'ses_plan' });
@@ -199,7 +199,7 @@ test('the planner nudges while the ledger is open and stops when it closes', () 
 
 test('two no-progress nudges give up; activity resets the stall but not the budget', () => {
   __clearTaskContinuationState();
-  const open = [{ id: '1', subject: 'stuck', status: 'pending' }];
+  const open = [{ id: '1', subject: 'stuck', status: 'pending', waitingOnUser: false }];
 
   // No progress: unchanged ledger, unchanged activity → 2 nudges then null.
   let calls = 0;
@@ -220,6 +220,46 @@ test('two no-progress nudges give up; activity resets the stall but not the budg
   } finally {
     __setTaskLedgerReader('codex', null);
   }
+});
+
+test('items parked on the user are not nudged, and a fully parked ledger stands down quietly', () => {
+  __clearTaskContinuationState();
+  let ledger = {
+    open: [
+      { id: '1', subject: '[waiting on user] pick a pricing tier', status: 'pending', waitingOnUser: true },
+      { id: '2', subject: 'write the migration', status: 'in_progress', waitingOnUser: false },
+    ],
+    activity: 0,
+  };
+  __setTaskLedgerReader('codex', () => ledger);
+  try {
+    const prompt = planTaskContinuation({ provider: 'codex', sessionId: 'sid_parked' });
+    assert.ok(prompt.includes('write the migration'));
+    assert.ok(!prompt.includes('pick a pricing tier'), 'a parked item is not pressed');
+    assert.ok(prompt.includes('[waiting on user]'), 'the nudge teaches the marker');
+
+    ledger = { open: [ledger.open[0]], activity: 0 };
+    assert.equal(planTaskContinuation({ provider: 'codex', sessionId: 'sid_parked' }), null);
+    // Standing down is not a stall: a later actionable item starts a fresh budget.
+    ledger = { open: [{ id: '3', subject: 'new work', status: 'pending', waitingOnUser: false }], activity: 0 };
+    assert.ok(planTaskContinuation({ provider: 'codex', sessionId: 'sid_parked' }));
+  } finally {
+    __setTaskLedgerReader('codex', null);
+  }
+});
+
+test('both readers recognise the waiting-on-user prefix', () => {
+  const { dbPath, db } = makeOpenCodeDb('opencode-parked.db');
+  db.prepare('INSERT INTO todo VALUES (?, ?, ?, ?, ?, 0, 0)').run('ses_p', '[Waiting on the user] approve deploy', 'pending', 'high', 0);
+  db.close();
+  assert.equal(readOpenCodeTaskState('ses_p', dbPath).open[0].waitingOnUser, true);
+
+  const root = path.join(tmp, 'codex-sessions-parked');
+  writeRollout(root, 'sid-parked', [planCall([
+    { step: '[waiting on user] confirm the schema', status: 'pending' },
+    { step: 'not waiting on user yet', status: 'pending' },
+  ])]);
+  assert.deepEqual(readCodexPlanState('sid-parked', root).open.map((t) => t.waitingOnUser), [true, false]);
 });
 
 test('unknown providers and missing session ids are ignored', () => {

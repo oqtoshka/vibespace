@@ -1,5 +1,6 @@
 import { readCodexPlanState } from '../shared/codex-plan-ledger.js';
 import { readOpenCodeTaskState } from '../shared/opencode-todo-ledger.js';
+import { WAITING_ON_USER_MARKER } from '../shared/waiting-on-user.js';
 
 import { notifyRunFailed } from './notification-orchestrator.js';
 
@@ -17,6 +18,10 @@ import { notifyRunFailed } from './notification-orchestrator.js';
  * session, and two consecutive nudges that run no tools and leave the ledger
  * untouched give up early — both bail-outs notify through the ordinary
  * run-failed channel. VIBESPACE_TASK_NUDGE=0 disables the mechanism.
+ *
+ * Items parked on the user (subject prefixed `[waiting on user]`, see
+ * shared/waiting-on-user.js) are not nudged: when nothing else is open the
+ * loop stands down quietly, and the items stay open for the user to answer.
  */
 
 const TASK_NUDGE_MAX = parseInt(process.env.VIBESPACE_TASK_NUDGE_MAX, 10) || 5;
@@ -40,8 +45,9 @@ function buildOpenTasksNudge(open, { listName, closeHow }) {
     'Continue working through them now. If an item is already done, mark it completed via '
       + `${closeHow}. If it is no longer relevant, re-scope or remove it and say why. If an item `
       + "cannot proceed because it needs the user's answer, decision, or review, it is NOT done — "
-      + 'never mark it completed to satisfy this check. Leave it open, state what you are waiting '
-      + 'for, and end the turn.',
+      + 'never mark it completed to satisfy this check. Keep its status open, prefix its text with '
+      + `"${WAITING_ON_USER_MARKER} " via ${closeHow}, state what you are waiting for, and end the turn. `
+      + 'Items marked that way are not nudged again; drop the prefix once the user has answered.',
   ].join('\n');
 }
 
@@ -62,8 +68,16 @@ export function planTaskContinuation({ provider, sessionId, userId = null, sessi
     return null;
   }
 
+  const actionable = open.filter((t) => !t.waitingOnUser);
+  if (actionable.length === 0) {
+    console.log(`[${provider} tasks] session ${sessionId}: all ${open.length} open item(s) are waiting on the user — standing down`);
+    states.delete(key);
+    return null;
+  }
+
   const state = states.get(key) || { count: 0, stalls: 0, fingerprint: null, activity: 0 };
-  const fingerprint = open.map((t) => `${t.id}:${t.status}`).join(',');
+  // The subject is part of the fingerprint: parking an item is progress.
+  const fingerprint = open.map((t) => `${t.id}:${t.status}:${t.subject}`).join(',');
   if (state.count > 0 && fingerprint === state.fingerprint && activity === state.activity) {
     state.stalls += 1;
   } else {
@@ -71,15 +85,15 @@ export function planTaskContinuation({ provider, sessionId, userId = null, sessi
   }
 
   if (state.count >= TASK_NUDGE_MAX || state.stalls >= 2) {
-    const subjects = open.map((t) => t.subject).join('; ');
+    const subjects = actionable.map((t) => t.subject).join('; ');
     const why = state.stalls >= 2 ? 'no progress across two nudges' : `nudge budget (${TASK_NUDGE_MAX}) exhausted`;
-    console.log(`[${provider} tasks] session ${sessionId}: giving up (${why}) with ${open.length} open task(s): ${subjects}`);
+    console.log(`[${provider} tasks] session ${sessionId}: giving up (${why}) with ${actionable.length} open task(s): ${subjects}`);
     notifyRunFailed({
       userId,
       provider,
       sessionId,
       sessionName,
-      error: `Turn ended with ${open.length} open task(s) — ${why}: ${subjects}`,
+      error: `Turn ended with ${actionable.length} open task(s) — ${why}: ${subjects}`,
     });
     states.delete(key);
     return null;
@@ -89,8 +103,8 @@ export function planTaskContinuation({ provider, sessionId, userId = null, sessi
   state.fingerprint = fingerprint;
   state.activity = activity;
   states.set(key, state);
-  console.log(`[${provider} tasks] session ${sessionId}: turn ended with ${open.length} open task(s) — continuing (${state.count}/${TASK_NUDGE_MAX})`);
-  return buildOpenTasksNudge(open, ledger);
+  console.log(`[${provider} tasks] session ${sessionId}: turn ended with ${actionable.length} open task(s) — continuing (${state.count}/${TASK_NUDGE_MAX})`);
+  return buildOpenTasksNudge(actionable, ledger);
 }
 
 /** Test seams. */

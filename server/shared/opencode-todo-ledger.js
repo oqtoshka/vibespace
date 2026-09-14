@@ -3,6 +3,7 @@ import fsSync from 'node:fs';
 import Database from 'better-sqlite3';
 
 import { getOpenCodeDatabasePath } from './utils.js';
+import { isWaitingOnUserSubject } from './waiting-on-user.js';
 
 /**
  * Reader for OpenCode's todo ledger: the `todo` table in opencode.db, keyed by
@@ -32,6 +33,7 @@ export function readOpenCodeTaskState(sessionId, dbPath = getOpenCodeDatabasePat
       id: String(row.position),
       subject: row.content,
       status: row.status,
+      waitingOnUser: isWaitingOnUserSubject(row.content),
     }));
     const activity = db.prepare(`
       SELECT COUNT(*) AS n FROM part
