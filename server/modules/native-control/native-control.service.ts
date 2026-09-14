@@ -14,7 +14,7 @@ type CreateInput = { requestId: string; projectId: string; provider: LLMProvider
 type Upload = { id: string; sessionId: string; path: string; name: string; mimeType: string; size: number };
 
 /** MC's instance credential is separate from browser JWTs and per-session capabilities.
- * Consumed by the native-control router; never returned to a phone or an agent. */
+ * Consumed by native-control and native-workspace routers; never returned to a phone or an agent. */
 export function authenticateNativeControl(supplied: unknown): boolean {
   const expected = appConfigDb.get('mc_federation_token');
   if (!expected || expected.length < 32 || typeof supplied !== 'string' || !userDb.getSingleActiveUser()) return false;
@@ -119,8 +119,8 @@ export const nativeControlService = {
   async transcribe(bytes: Buffer) {
     const user = userDb.getSingleActiveUser();
     if (!user) throw new Error('Operator is unavailable');
-    if (!Buffer.isBuffer(bytes) || bytes.length === 0 || bytes.length > 4 * 1024 * 1024) {
-      throw new Error('Recording must be between 1 byte and 4 MiB');
+    if (!Buffer.isBuffer(bytes) || bytes.length === 0 || bytes.length > 8 * 1024 * 1024) {
+      throw new Error('Recording must be between 1 byte and 8 MiB');
     }
     const result = await voiceService.transcribe({
       userId: Number(user.id),

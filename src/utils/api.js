@@ -149,7 +149,14 @@ export const storeAuthToken = (token) => {
 };
 
 // Utility function for authenticated API calls
+// Installed only by the bundled native file viewer. Ordinary VibeSpace retains
+// its browser authentication path; no browser token is passed to the native app.
+/** @type {null | ((url: string, options: RequestInit) => Promise<Response>)} */
+let nativeViewerTransport = null;
+/** @param {(url: string, options: RequestInit) => Promise<Response>} transport */
+export const setNativeViewerTransport = (transport) => { nativeViewerTransport = transport; };
 export const authenticatedFetch = (url, options = {}) => {
+  if (nativeViewerTransport) return nativeViewerTransport(url, options);
   const token = getStoredAuthToken();
 
   const defaultHeaders = {};

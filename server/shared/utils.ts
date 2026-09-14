@@ -1,3 +1,5 @@
+import zlib from 'node:zlib';
+import { run as renderDbml } from '@softwaretechnik/dbml-renderer';
 import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import {
@@ -1548,3 +1550,144 @@ export function findApplicationRoot(startDirectory: string): string {
     ? path.dirname(parentDirectory)
     : parentDirectory;
 }
+
+//----------------- SHARED DIAGRAM PREVIEW RENDERING ------------
+const MAX_INCLUDE_DEPTH = 20;
+
+function encode6bit(b: number) {
+  if (b < 10) return String.fromCharCode(48 + b);
+  b -= 10;
+  if (b < 26) return String.fromCharCode(65 + b);
+  b -= 26;
+  if (b < 26) return String.fromCharCode(97 + b);
+  b -= 26;
+  if (b === 0) return '-';
+  if (b === 1) return '_';
+  return '?';
+}
+
+function append3bytes(b1: number, b2: number, b3: number) {
+  const c1 = b1 >> 2;
+  const c2 = ((b1 & 0x3) << 4) | (b2 >> 4);
+  const c3 = ((b2 & 0xF) << 2) | (b3 >> 6);
+  const c4 = b3 & 0x3F;
+  return encode6bit(c1 & 0x3F) + encode6bit(c2 & 0x3F) + encode6bit(c3 & 0x3F) + encode6bit(c4 & 0x3F);
+}
+
+/** PlantUML base64 variant over arbitrary bytes. */
+function encodePlantUmlBytes(bytes: Uint8Array) {
+  let result = '';
+  for (let i = 0; i < bytes.length; i += 3) {
+    if (i + 2 === bytes.length) {
+      result += append3bytes(bytes[i], bytes[i + 1], 0);
+    } else if (i + 1 === bytes.length) {
+      result += append3bytes(bytes[i], 0, 0);
+    } else {
+      result += append3bytes(bytes[i], bytes[i + 1], bytes[i + 2]);
+    }
+  }
+  return result;
+}
+
+/** The legacy preview endpoint and native-workspace service use this pure
+ * encoder for the configured PlantUML server. It performs no I/O; callers must
+ * resolve and authorize local includes before encoding. */
+export function encodePlantUmlSource(source: string) {
+  const deflated = zlib.deflateRawSync(Buffer.from(source, 'utf8'), { level: 9 });
+  return encodePlantUmlBytes(deflated);
+}
+
+// Matches `!include`, `!include_once`, `!include_many`, `!includesub` with a
+// path argument. Built-in spec like `!theme name` or `!include <std/...>` (angle
+// brackets = stdlib) are left untouched — those resolve on the server itself.
+const INCLUDE_RE = /^(\s*)!(include(?:_once|_many|sub)?)\s+(.+?)\s*$/i;
+
+function isLocalIncludeTarget(target: string) {
+  const trimmed = target.trim();
+  if (!trimmed) return false;
+  // <...> is a stdlib import resolved by the PlantUML server.
+  if (trimmed.startsWith('<')) return false;
+  // URLs are fetched by the server.
+  if (/^https?:\/\//i.test(trimmed)) return false;
+  return true;
+}
+
+/**
+ * Recursively inlines local `!include` directives in `source`. Each include is
+ * resolved relative to `baseDir` and must stay within `projectRoot`. A path can
+ * carry a `!subpart`/index suffix (`file.puml!id`) — we strip it and inline the
+ * whole file (good enough for preview). Missing/forbidden includes are replaced
+ * with a comment so the rest of the diagram still renders.
+ *
+ * @param {string} source
+ * @param {string} baseDir - directory the includes resolve against
+ * @param {string} projectRoot
+ * @param {Set<string>} seen - absolute paths already inlined (cycle guard)
+ * @param {number} depth
+ * @returns {Promise<string>}
+ */
+export async function inlinePlantUmlIncludes(source: string, baseDir: string, projectRoot: string, seen = new Set<string>(), depth = 0): Promise<string> {
+  if (depth > MAX_INCLUDE_DEPTH) {
+    return source;
+  }
+  const normalizedRoot = path.resolve(projectRoot) + path.sep;
+  const lines = source.split(/\r?\n/);
+  const out = [];
+
+  for (const line of lines) {
+    const match = line.match(INCLUDE_RE);
+    if (!match) {
+      out.push(line);
+      continue;
+    }
+
+    const rawTarget = match[3];
+    if (!isLocalIncludeTarget(rawTarget)) {
+      out.push(line);
+      continue;
+    }
+
+    // Strip an optional `!subpart`/`!index` suffix and surrounding quotes.
+    const targetPath = rawTarget.replace(/!.*$/, '').replace(/^["']|["']$/g, '').trim();
+    const resolved = path.isAbsolute(targetPath)
+      ? path.resolve(targetPath)
+      : path.resolve(baseDir, targetPath);
+
+    if (!resolved.startsWith(normalizedRoot)) {
+      out.push(`' [include skipped — outside project: ${targetPath}]`);
+      continue;
+    }
+    if (seen.has(resolved)) {
+      // Already inlined; PlantUML's include_once semantics — skip silently.
+      continue;
+    }
+
+    try {
+      const included = await readFile(resolved, 'utf8');
+      seen.add(resolved);
+      const nested = await inlinePlantUmlIncludes(
+        included,
+        path.dirname(resolved),
+        projectRoot,
+        seen,
+        depth + 1,
+      );
+      // Drop the included file's own @startuml/@enduml wrappers so the combined
+      // document stays a single diagram.
+      const body = nested
+        .split(/\r?\n/)
+        .filter((l) => !/^\s*@(start|end)uml\b/i.test(l))
+        .join('\n');
+      out.push(body);
+    } catch {
+      out.push(`' [include not found: ${targetPath}]`);
+    }
+  }
+
+  return out.join('\n');
+}
+
+/** Legacy preview routes and native-workspace use this synchronous DBML-to-SVG
+ * renderer. It performs no project reads; callers supply authorized source and
+ * must catch parse errors before returning a preview response. */
+export function renderDbmlToSvg(source: string): string { return renderDbml(source, 'svg'); }
