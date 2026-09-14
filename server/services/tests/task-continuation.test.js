@@ -12,6 +12,7 @@ process.env.VIBESPACE_TASK_NUDGE_MAX = '3';
 const { planTaskContinuation, __clearTaskContinuationState, __setTaskLedgerReader } = await import('../task-continuation.js');
 const { readOpenCodeTaskState } = await import('../../shared/opencode-todo-ledger.js');
 const { readCodexPlanState, findCodexRolloutPath } = await import('../../shared/codex-plan-ledger.js');
+const { readCursorTaskState } = await import('../../shared/cursor-todo-ledger.js');
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'vibespace-task-continuation-'));
 
@@ -174,6 +175,66 @@ test('a codex session with no plan, or an all-closed plan, reads as nothing open
 
   writeRollout(root, 'sid-closed', [planCall([{ step: 'all done', status: 'completed' }])]);
   assert.deepEqual(readCodexPlanState('sid-closed', root).open, []);
+});
+
+// --------------------------------------------------------------------------
+// Cursor ledger reader — against a store.db in cursor-agent's blob layout.
+// --------------------------------------------------------------------------
+
+const varint = (n) => {
+  const bytes = [];
+  do {
+    let byte = n % 128;
+    n = Math.floor(n / 128);
+    if (n > 0) byte |= 0x80;
+    bytes.push(byte);
+  } while (n > 0);
+  return Buffer.from(bytes);
+};
+const lengthDelimited = (field, value) => Buffer.concat([varint(field * 8 + 2), varint(value.length), value]);
+const varintField = (field, value) => Buffer.concat([varint(field * 8), varint(value)]);
+
+test('the cursor reader walks the latest root blob to its open TodoWrite items', async () => {
+  const { default: crypto } = await import('node:crypto');
+  const home = path.join(tmp, 'cursor-home');
+  const cwd = path.join(tmp, 'cursor-project');
+  fs.mkdirSync(cwd, { recursive: true });
+  const hash = crypto.createHash('md5').update(fs.realpathSync(cwd)).digest('hex');
+  const dir = path.join(home, '.cursor', 'chats', hash, 'cursor-session-1');
+  fs.mkdirSync(dir, { recursive: true });
+  const db = new Database(path.join(dir, 'store.db'));
+  db.exec('CREATE TABLE blobs (id TEXT PRIMARY KEY, data BLOB); CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);');
+  const put = (data) => {
+    const id = crypto.createHash('sha256').update(data).digest();
+    db.prepare('INSERT INTO blobs VALUES (?, ?)').run(id.toString('hex'), data);
+    return id;
+  };
+  const todo = (id, content, status) => put(Buffer.concat([
+    lengthDelimited(1, Buffer.from(id)), lengthDelimited(2, Buffer.from(content)), varintField(3, status),
+    varintField(4, 1789362313899),
+  ]));
+  const todos = [
+    todo('a', 'finished', 3),
+    todo('b', 'in flight', 2),
+    todo('c', '[waiting on user] pick one', 1),
+    todo('d', 'dropped', 4),
+  ];
+  const root = put(Buffer.concat([lengthDelimited(1, Buffer.from('[]')), ...todos.map((id) => lengthDelimited(3, id))]));
+  put(Buffer.from('{"role":"tool","content":[]}'));
+  put(Buffer.from('{"role":"assistant","content":[]}'));
+  const meta = Buffer.from(JSON.stringify({ agentId: 'cursor-session-1', latestRootBlobId: root.toString('hex') })).toString('hex');
+  db.prepare("INSERT INTO meta VALUES ('0', ?)").run(meta);
+  db.close();
+
+  assert.deepEqual(readCursorTaskState('cursor-session-1', cwd, home), {
+    open: [
+      { id: '2', subject: 'in flight', status: 'in_progress', waitingOnUser: false },
+      { id: '3', subject: '[waiting on user] pick one', status: 'pending', waitingOnUser: true },
+    ],
+    activity: 1,
+  });
+  assert.deepEqual(readCursorTaskState('cursor-session-1', path.join(tmp, 'elsewhere'), home), { open: [], activity: 0 });
+  assert.deepEqual(readCursorTaskState('../escape', cwd, home), { open: [], activity: 0 });
 });
 
 // --------------------------------------------------------------------------

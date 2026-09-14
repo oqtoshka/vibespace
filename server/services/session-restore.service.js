@@ -19,6 +19,7 @@ import path from 'path';
 import { readOpenClaudeTasks } from '../shared/claude-task-ledger.js';
 import { readCodexPlanState } from '../shared/codex-plan-ledger.js';
 import { readOpenCodeTaskState } from '../shared/opencode-todo-ledger.js';
+import { readCursorTaskState } from '../shared/cursor-todo-ledger.js';
 import { getDataDir } from '../shared/utils.js';
 
 import { isRateLimitWakePending, loadRateLimitWakes } from './rate-limit-wake.service.js';
@@ -220,6 +221,8 @@ export async function restoreInterruptedSessions(spawn, hooks = {}) {
         openTasks = readCodexPlanState(entry.sessionId).open;
       } else if (entry.provider === 'opencode') {
         openTasks = readOpenCodeTaskState(entry.sessionId).open;
+      } else if (entry.provider === 'cursor') {
+        openTasks = readCursorTaskState(entry.sessionId, entry.cwd).open;
       } else {
         openTasks = await readOpenClaudeTasks(entry.sessionId);
       }

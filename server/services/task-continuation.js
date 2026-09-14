@@ -1,11 +1,12 @@
 import { readCodexPlanState } from '../shared/codex-plan-ledger.js';
+import { readCursorTaskState } from '../shared/cursor-todo-ledger.js';
 import { readOpenCodeTaskState } from '../shared/opencode-todo-ledger.js';
 import { WAITING_ON_USER_MARKER } from '../shared/waiting-on-user.js';
 
 import { notifyRunFailed } from './notification-orchestrator.js';
 
 /**
- * Task-ledger continuation for the per-turn providers (OpenCode, Codex).
+ * Task-ledger continuation for the per-turn providers (OpenCode, Codex, Cursor).
  *
  * The Claude runner keeps a persistent subprocess, so its equivalent lives in
  * claude-sdk.js as an idle-reaper gate. OpenCode and Codex run one process per
@@ -27,9 +28,11 @@ import { notifyRunFailed } from './notification-orchestrator.js';
 const TASK_NUDGE_MAX = parseInt(process.env.VIBESPACE_TASK_NUDGE_MAX, 10) || 5;
 const TASK_NUDGE_ENABLED = !['0', 'false', 'off'].includes((process.env.VIBESPACE_TASK_NUDGE || '').trim().toLowerCase());
 
+// Readers take (sessionId, { cwd }); Cursor's store is filed under its cwd.
 const LEDGERS = {
-  opencode: { read: readOpenCodeTaskState, listName: 'todo list', closeHow: 'todowrite' },
-  codex: { read: readCodexPlanState, listName: 'plan', closeHow: 'update_plan' },
+  opencode: { read: (sessionId) => readOpenCodeTaskState(sessionId), listName: 'todo list', closeHow: 'todowrite' },
+  codex: { read: (sessionId) => readCodexPlanState(sessionId), listName: 'plan', closeHow: 'update_plan' },
+  cursor: { read: (sessionId, { cwd } = {}) => readCursorTaskState(sessionId, cwd), listName: 'todo list', closeHow: 'TodoWrite' },
 };
 
 // `${provider}:${sessionId}` -> { count, stalls, fingerprint, activity }.
@@ -57,11 +60,11 @@ function buildOpenTasksNudge(open, { listName, closeHow }) {
  * (no open items), the mechanism is off, or nudging has stopped helping — the
  * give-up paths notify the user before returning null.
  */
-export function planTaskContinuation({ provider, sessionId, userId = null, sessionName = null }) {
+export function planTaskContinuation({ provider, sessionId, cwd = null, userId = null, sessionName = null }) {
   const ledger = LEDGERS[provider];
   if (!TASK_NUDGE_ENABLED || !ledger || !sessionId) return null;
 
-  const { open, activity } = ledger.read(sessionId);
+  const { open, activity } = ledger.read(sessionId, { cwd });
   const key = `${provider}:${sessionId}`;
   if (open.length === 0) {
     states.delete(key);
@@ -112,7 +115,7 @@ export function __clearTaskContinuationState() {
   states.clear();
 }
 
-const defaultReaders = { opencode: LEDGERS.opencode.read, codex: LEDGERS.codex.read };
+const defaultReaders = Object.fromEntries(Object.entries(LEDGERS).map(([name, ledger]) => [name, ledger.read]));
 export function __setTaskLedgerReader(provider, read) {
   LEDGERS[provider].read = read || defaultReaders[provider];
 }
