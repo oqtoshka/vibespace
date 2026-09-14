@@ -311,3 +311,17 @@ export const WebSocketProvider = ({ children }: { children: React.ReactNode }) =
 };
 
 export default WebSocketContext;
+
+/** The embedded read-only viewer receives file changes from the native workspace
+ * poller, without starting a chat socket or mounting browser authentication. */
+export function NativePreviewEventsProvider({ children }: { children: React.ReactNode }) {
+  const value = useMemo<WebSocketContextType>(() => ({
+    ws: null, isConnected: false, latestMessage: null, sendMessage: () => {},
+    subscribe: listener => {
+      const handler = (event: Event) => listener((event as CustomEvent<ServerEvent>).detail);
+      window.addEventListener('native-preview-event', handler);
+      return () => window.removeEventListener('native-preview-event', handler);
+    },
+  }), []);
+  return <WebSocketContext.Provider value={value}>{children}</WebSocketContext.Provider>;
+}

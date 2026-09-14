@@ -46,8 +46,7 @@ import {
 import { spawnCursor } from './cursor-cli.js';
 import { injectCodexMessage } from './openai-codex.js';
 import { injectOpenCodeMessage } from './opencode-cli.js';
-import { encodePlantUmlSource, inlinePlantUmlIncludes } from './utils/plantuml.js';
-import { renderDbmlToSvg } from './utils/dbml.js';
+import { encodePlantUmlSource, inlinePlantUmlIncludes, renderDbmlToSvg } from './shared/index.js';
 import { createGitModule } from '@/modules/git/index.js';
 import authRoutes from './routes/auth.js';
 import { taskmasterRoutes } from '@/modules/taskmaster/index.js';
@@ -62,6 +61,7 @@ import userRoutes from './routes/user.js';
 import providerRoutes from './modules/providers/provider.routes.js';
 import { voiceRoutes } from '@/modules/voice/index.js';
 import browserUseRoutes from './modules/browser-use/browser-use.routes.js';
+import { nativeWorkspaceRoutes } from './modules/native-workspace/index.js';
 import { nativeControlRoutes } from './modules/native-control/index.js';
 import { assetsRoutes } from './modules/assets/index.js';
 import browserUseMcpRoutes from './modules/browser-use/browser-use-mcp.routes.js';
@@ -431,6 +431,7 @@ app.use('/api/projects', authenticateToken, projectModuleRoutes);
 // Chat image asset upload/serving (global ~/.vibespace/assets store, protected)
 app.use('/api/assets', authenticateToken, assetsRoutes);
 app.use('/api/native-control', nativeControlRoutes);
+app.use('/api/native-workspace', nativeWorkspaceRoutes);
 
 // Git API Routes (protected)
 app.use('/api/git', authenticateToken, createGitModule({ queryClaude: queryClaudeSDK, queryCursor: spawnCursor }));
