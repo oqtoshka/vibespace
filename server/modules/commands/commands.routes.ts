@@ -260,9 +260,10 @@ const builtInHandlers = {
     },
   }),
 
-  // Provider-native commands: forwarded verbatim as the next prompt (the
-  // Claude CLI/SDK executes them itself); listed here only so the command
-  // menu knows about them.
+  // Provider-native commands: forwarded verbatim as the next runtime input.
+  // The active provider adapter decides whether that means a CLI command or a
+  // dedicated API operation; this route also makes the command menu aware of
+  // them.
   "/compact": async (args) => ({
     type: "builtin",
     action: "passthrough",

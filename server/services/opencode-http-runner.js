@@ -2,6 +2,7 @@ import { assertOpenCodeServerModel } from '../modules/providers/index.js';
 import { appendFilesInputTag, buildOpenCodePromptAttachments } from '../shared/image-attachments.js';
 import { classifyOpenCodeFailure } from '../shared/opencode-failure.js';
 import { createCompleteMessage, createNormalizedMessage, generateMessageId } from '../shared/utils.js';
+import { createCompactBoundaryMessage } from '../shared/compaction.js';
 import { readOpenCodeTokenUsage } from '../shared/opencode-token-usage.js';
 import { sendOpenCodeContextUsage } from '../shared/opencode-context.js';
 import { providerModelsService } from '../modules/providers/services/provider-models.service.js';
@@ -105,6 +106,95 @@ export function toModelRef(model, variant) {
     id: model.slice(separator + 1),
   };
   return variant ? { ...ref, variant } : ref;
+}
+
+/**
+ * Compacts an existing OpenCode conversation through the legacy session API.
+ *
+ * Called by the OpenCode runtime adapter when VibeSpace receives `/compact`.
+ * OpenCode 1.18's durable `/api/session/:id/compact` route is published but
+ * deliberately returns OperationUnavailable. The legacy summarize route is
+ * the implementation used by OpenCode's own `/compact` command, and it writes
+ * the summary flag that the VibeSpace history provider already understands.
+ */
+export async function runOpenCodeCompaction(options, ws) {
+  const { sessionId, projectPath, cwd, model, sessionSummary } = options;
+  const workingDir = cwd || projectPath || process.cwd();
+
+  if (!sessionId) {
+    const error = new Error('OpenCode can only compact a conversation after its first completed message.');
+    ws.send(createNormalizedMessage({
+      kind: 'error',
+      content: error.message,
+      sessionId: null,
+      provider: 'opencode',
+    }));
+    ws.send(createCompleteMessage({ provider: 'opencode', sessionId: null, exitCode: 1 }));
+    throw error;
+  }
+
+  // The runtime resolves the model against the app session before entering
+  // here; using the provider-native id with providerModelsService would miss
+  // the app row that stores the session's selection.
+  const resolvedModel = model;
+  const modelRef = toModelRef(resolvedModel);
+  if (!modelRef) {
+    const error = new Error('OpenCode could not resolve the session model needed to compact this conversation.');
+    ws.send(createNormalizedMessage({
+      kind: 'error',
+      content: error.message,
+      sessionId,
+      provider: 'opencode',
+    }));
+    ws.send(createCompleteMessage({ provider: 'opencode', sessionId, exitCode: 1 }));
+    throw error;
+  }
+
+  try {
+    const server = await ensureOpenCodeServer({ private: Boolean(options.private) });
+    const query = new URLSearchParams({ directory: workingDir });
+    await requestJson(server, `/session/${encodeURIComponent(sessionId)}/summarize?${query}`, {
+      method: 'POST',
+      body: JSON.stringify({
+        providerID: modelRef.providerID,
+        modelID: modelRef.id,
+        auto: false,
+      }),
+    });
+
+    ws.setSessionId?.(sessionId);
+    ws.send(createCompactBoundaryMessage({
+      sessionId,
+      provider: 'opencode',
+      trigger: 'manual',
+    }));
+    void sendOpenCodeContextUsage({ ws, sessionId, modelId: resolvedModel });
+    ws.send(createCompleteMessage({ provider: 'opencode', sessionId, exitCode: 0 }));
+    notifyRunStopped({
+      userId: ws?.userId || null,
+      provider: 'opencode',
+      sessionId,
+      sessionName: sessionSummary,
+      stopReason: 'completed',
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    ws.send(createNormalizedMessage({
+      kind: 'error',
+      content: message,
+      sessionId,
+      provider: 'opencode',
+    }));
+    ws.send(createCompleteMessage({ provider: 'opencode', sessionId, exitCode: 1 }));
+    notifyRunFailed({
+      userId: ws?.userId || null,
+      provider: 'opencode',
+      sessionId,
+      sessionName: sessionSummary,
+      error: message,
+    });
+    throw error;
+  }
 }
 
 /** Flattens a tool result's content list into the string the UI renders. */

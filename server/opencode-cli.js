@@ -8,8 +8,8 @@ import { appendFilesInputTag, appendImagesInputTag, normalizeAttachmentDescripto
 import { createProviderRuntimeContext, normalizeRuntimeOptions } from './shared/provider-runtime-context.js';
 import { readOpenCodeTokenUsage } from './shared/opencode-token-usage.js';
 import { buildAgentEnv, collectAgentEnv } from './shared/agent-env.js';
-import { sendOpenCodeContextUsage } from './shared/opencode-context.js';
-import { runOpenCodeHttpTurn } from './services/opencode-http-runner.js';
+import { hasOpenCodeCompactSummary, sendOpenCodeContextUsage } from './shared/opencode-context.js';
+import { runOpenCodeCompaction, runOpenCodeHttpTurn } from './services/opencode-http-runner.js';
 import { sessionsService } from './modules/providers/services/sessions.service.js';
 import { providerModelsService } from './modules/providers/services/provider-models.service.js';
 import { notifyRunFailed, notifyRunStopped } from './modules/notifications/index.js';
@@ -35,6 +35,13 @@ const OPEN_CODE_DATABASE_LOCKED_RETRY_DELAY_MS = 1_000;
 const spawnFunction = crossSpawn;
 
 const activeOpenCodeProcesses = new Map();
+// Covers the brief interval after `/compact` succeeds but before its summary
+// row is visible to a separate readonly SQLite connection.
+const compactedOpenCodeSessions = new Set();
+
+function isOpenCodeCompactCommand(command) {
+  return typeof command === 'string' && /^\s*\/compact\s*$/i.test(command);
+}
 
 /**
  * Maps the UI permission mode onto OpenCode's non-interactive controls.
@@ -214,6 +221,20 @@ async function spawnOpenCode(command, options = {}, ws, context = undefined) {
     if (appSessionId) activeOpenCodeProcesses.delete(appSessionId);
   };
 
+  if (isOpenCodeCompactCommand(command)) {
+    let resolvedModel = await runtime.resolveResumeModel(
+      appSessionId || options.sessionId,
+      options.model,
+      { resuming: true },
+    );
+    if (!resolvedModel) {
+      resolvedModel = (await runtime.getProviderModels())?.DEFAULT || undefined;
+    }
+    await runOpenCodeCompaction({ ...options, model: resolvedModel }, ws);
+    if (options.sessionId) compactedOpenCodeSessions.add(options.sessionId);
+    return;
+  }
+
   // Rewind / edit-and-resend: truncate this session's history at the edited
   // message before resuming, so `opencode run --session <id>` continues in-place
   // from that point. If nothing resumable precedes the edit, run as a new session.
@@ -230,13 +251,20 @@ async function spawnOpenCode(command, options = {}, ws, context = undefined) {
     options = { ...options, rewind: undefined };
   }
 
-  // Images are the one thing `opencode run` cannot carry: its read tool returns
-  // them inside a tool *result*, which an OpenAI-compatible transport flattens
-  // to text, and `--file` labels every attachment text/plain (upstream
-  // anomalyco/opencode#16723). The HTTP server takes an image as a part of the
-  // user message, which is the shape vision models actually read — so a turn
-  // with an image goes that way and every other turn stays on the CLI.
-  if (options.enableMidTurnInjection || normalizeImageDescriptors(options.images).length > 0) {
+  // Images normally need the HTTP transport: `opencode run` cannot carry their
+  // bytes faithfully (upstream anomalyco/opencode#16723). A compacted session
+  // is the exception. OpenCode 1.18's new server engine cannot compact yet, so
+  // resuming it there would silently restore the stale pre-compaction context;
+  // preserving the compacted memory takes priority and keeps the session on
+  // the legacy CLI transport that produced the summary.
+  const hasCompactedContext = options.sessionId && (
+    compactedOpenCodeSessions.has(options.sessionId)
+    || hasOpenCodeCompactSummary(options.sessionId)
+  );
+  if (!hasCompactedContext && (
+    options.enableMidTurnInjection
+    || normalizeImageDescriptors(options.images).length > 0
+  )) {
     return runOpenCodeHttpTurn(command, options, ws, {
       registerHandle,
       releaseHandle,

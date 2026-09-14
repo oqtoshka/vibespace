@@ -5,10 +5,13 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
+import Database from 'better-sqlite3';
+
 import {
   clearOpenCodeModelLimitCache,
   describeOpenCodeCompaction,
   getOpenCodeConfigPath,
+  hasOpenCodeCompactSummary,
   parseOpenCodeModelLimits,
   readOpenCodeDefaultModel,
   readContextOccupancy,
@@ -90,6 +93,37 @@ test('occupancy is one turn, not the session total', () => {
   // A reported total wins: it is the runtime's own number.
   assert.equal(readContextOccupancy({ total: 41_000, input: 30_000, output: 500 }), 41_000);
   assert.equal(readContextOccupancy(null), 0);
+});
+
+test('a summary-flagged OpenCode message keeps the session on the compacted transport', async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'opencode-compact-marker-'));
+  const originalHomedir = os.homedir;
+  os.homedir = () => directory;
+  let db: Database.Database | null = null;
+
+  try {
+    const databasePath = path.join(directory, '.local', 'share', 'opencode', 'opencode.db');
+    await mkdir(path.dirname(databasePath), { recursive: true });
+    db = new Database(databasePath);
+    db.exec(`
+      CREATE TABLE message (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        data TEXT NOT NULL
+      )
+    `);
+    const insert = db.prepare('INSERT INTO message (id, session_id, data) VALUES (?, ?, ?)');
+    insert.run('ordinary', 'session-1', JSON.stringify({ role: 'assistant', summary: false }));
+
+    assert.equal(hasOpenCodeCompactSummary('session-1'), false);
+    insert.run('summary', 'session-1', JSON.stringify({ role: 'assistant', summary: true }));
+    assert.equal(hasOpenCodeCompactSummary('session-1'), true);
+    assert.equal(hasOpenCodeCompactSummary('another-session'), false);
+  } finally {
+    db?.close();
+    os.homedir = originalHomedir;
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test('the model catalog is read for its limits', () => {

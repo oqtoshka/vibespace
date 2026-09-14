@@ -407,7 +407,8 @@ export function useChatComposerState({
 
         case 'passthrough': {
           // Provider-native command (e.g. /compact): send it verbatim as the
-          // next prompt — the provider CLI executes it itself.
+          // next runtime input. The provider adapter chooses the native
+          // command/API mechanism.
           const prompt = typeof data?.prompt === 'string' ? data.prompt : '';
           if (prompt) {
             void runSubmitRef.current?.(prompt, []);
