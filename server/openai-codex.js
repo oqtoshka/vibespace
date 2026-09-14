@@ -679,6 +679,10 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
           limitType,
           limitText,
           permissionMode,
+          // Without these every re-hit counts as attempt 1: the tick drops the
+          // entry before it resumes, so backoff never grows and the cap never trips.
+          messageId: options.rateLimitWakeMessageId ?? null,
+          priorAttempts: options.rateLimitWakeAttempts ?? 0,
         });
       }
     }

@@ -162,6 +162,40 @@ test('Claude HTTP 529 retries every five minutes forever with one stable supervi
   }
 });
 
+test('an unavailable OpenCode provider retries on a short, growing, capped cadence', async () => {
+  const now = Date.now();
+  const text = 'Provider request failed with HTTP 503: GPU is assigned to another workload';
+  let entry = await scheduleRateLimitWake({
+    provider: 'opencode',
+    providerSessionId: 'ses_gpu_busy',
+    recoveryKind: 'provider-unavailable',
+    limitType: 'http_503',
+    limitText: text,
+    now,
+  });
+  assert.equal(entry.resumeAt, now + 5 * 60_000, 'first retry after five minutes, not the usage-limit half hour');
+  const prompt = buildRateLimitWakePrompt(entry, now);
+  assert.match(prompt, /model provider was unavailable/);
+  assert.doesNotMatch(prompt, /usage limit/);
+
+  entry = await scheduleRateLimitWake({
+    provider: 'opencode',
+    providerSessionId: 'ses_gpu_busy',
+    recoveryKind: 'provider-unavailable',
+    limitText: text,
+    messageId: entry.messageId,
+    priorAttempts: 1,
+    now,
+  });
+  assert.equal(entry.attempts, 2);
+  assert.equal(entry.resumeAt, now + 10 * 60_000);
+
+  // The attempt budget (3 in this process) still applies.
+  entry = await scheduleRateLimitWake({ provider: 'opencode', providerSessionId: 'ses_gpu_busy', recoveryKind: 'provider-unavailable', priorAttempts: 2, now });
+  assert.ok(entry);
+  assert.equal(await scheduleRateLimitWake({ provider: 'opencode', providerSessionId: 'ses_gpu_busy', recoveryKind: 'provider-unavailable', priorAttempts: 3, now }), null);
+});
+
 test('the tick starts due wakes through the injected starter, consuming the entry', async () => {
   const now = Date.now();
   const started = [];

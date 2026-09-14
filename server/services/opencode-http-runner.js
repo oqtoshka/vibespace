@@ -1,5 +1,6 @@
 import { assertOpenCodeServerModel } from '../modules/providers/index.js';
 import { appendFilesInputTag, buildOpenCodePromptAttachments } from '../shared/image-attachments.js';
+import { classifyOpenCodeFailure } from '../shared/opencode-failure.js';
 import { createCompleteMessage, createNormalizedMessage, generateMessageId } from '../shared/utils.js';
 import { readOpenCodeTokenUsage } from '../shared/opencode-token-usage.js';
 import { sendOpenCodeContextUsage } from '../shared/opencode-context.js';
@@ -9,6 +10,7 @@ import { sessionsService } from '../modules/providers/services/sessions.service.
 import { notifyRunFailed, notifyRunStopped } from './notification-orchestrator.js';
 import { persistOpenCodeTurn } from './opencode-history-writer.js';
 import { ensureOpenCodeServer } from './opencode-server.service.js';
+import { cancelRateLimitWake, scheduleRateLimitWake } from './rate-limit-wake.service.js';
 import { recordSessionActivity, recordSessionEnd } from './session-restore.service.js';
 
 /**
@@ -465,6 +467,8 @@ export async function runOpenCodeHttpTurn(command, options, ws, hooks = {}) {
   }
 
   ws.setSessionId?.(activeSessionId);
+  // A new turn owns the session: any wake still pending for it is moot.
+  if (!options.ephemeral) cancelRateLimitWake(activeSessionId).catch(() => {});
   // Registered for restore-on-boot like Claude and Codex: a restart kills the
   // server child mid-turn, and without an entry nothing ever resumes the work.
   const recordActivity = (turnActive) => {
@@ -627,13 +631,16 @@ export async function runOpenCodeHttpTurn(command, options, ws, hooks = {}) {
         ?? properties.error?.message
         ?? properties.message
         ?? 'OpenCode reported an error';
+      // Only a provider failure reported by OpenCode itself is waited out; a
+      // server or stream failure on VibeSpace's side of the wire is not.
+      const wake = options.ephemeral ? null : classifyOpenCodeFailure(String(message));
       ws.send(createNormalizedMessage({
         kind: 'error',
-        content: String(message),
+        content: wake ? `${message}\n\nThe model provider is unavailable — VibeSpace will retry this turn automatically.` : String(message),
         sessionId: activeSessionId,
         provider: 'opencode',
       }));
-      finish({ ok: false, error: String(message) });
+      finish({ ok: false, error: String(message), wake });
       return;
     }
 
@@ -773,10 +780,38 @@ export async function runOpenCodeHttpTurn(command, options, ws, hooks = {}) {
     recordActivity(false);
   }
 
+  // A rate limit or an unavailable provider is waited out durably, like Claude's
+  // 529 and Codex's usage limit: OpenCode has already retried for about a second
+  // and given up. The wake owns the session from here, so no continuation (it
+  // would re-hit the same failure at once) and no run-failed ping.
+  if (!outcome.ok && outcome.wake && !handle.aborted && !options.ephemeral) {
+    const scheduled = await scheduleRateLimitWake({
+      provider: 'opencode',
+      providerSessionId: activeSessionId,
+      userId: ws?.userId || null,
+      sessionName: sessionSummary,
+      limitType: outcome.wake.limitType,
+      limitText: outcome.error,
+      permissionMode,
+      recoveryKind: outcome.wake.recoveryKind,
+      messageId: options.rateLimitWakeMessageId ?? null,
+      priorAttempts: options.rateLimitWakeAttempts ?? 0,
+    }).catch((error) => {
+      console.warn('[OpenCode] Could not schedule a provider wake:', error?.message || error);
+      return null;
+    });
+    if (scheduled) {
+      ws.send(createCompleteMessage({ provider: 'opencode', sessionId: activeSessionId, exitCode: 1 }));
+      return;
+    }
+  }
+
   // A failed turn continues too, as Codex does: an error mid-task (a dropped
   // transport, a busy model) is exactly where open work gets stranded. A run
   // the user stopped does not; the planner's stall limit bounds the rest.
-  if (!handle.aborted && !options.ephemeral && await onContinue?.({ sessionId: activeSessionId, cwd: workingDir })) {
+  // A wake-worthy failure whose wake was refused (budget spent) is not retried
+  // here either: an immediate continuation would only hit the same wall.
+  if (!outcome.wake && !handle.aborted && !options.ephemeral && await onContinue?.({ sessionId: activeSessionId, cwd: workingDir })) {
     return;
   }
 

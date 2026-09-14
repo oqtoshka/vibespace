@@ -47,6 +47,11 @@ const WAKE_RETRY_MAX_MS = 4 * 60 * 60 * 1000;
 // a fixed, deliberately quiet cadence avoids both a hot loop and a backoff that
 // eventually leaves unfinished work parked for half a day.
 const CLAUDE_529_RETRY_MS = parseInt(process.env.VIBESPACE_CLAUDE_529_RETRY_MS, 10) || 5 * 60 * 1000;
+// A busy or unreachable upstream (a shared GPU, a 502 from the gateway) gives no
+// reset time, and it frees up on the scale of minutes, not of a usage window:
+// the usage-limit backoff's 30 minutes would leave the work parked for hours.
+const PROVIDER_UNAVAILABLE_RETRY_MS = parseInt(process.env.VIBESPACE_PROVIDER_UNAVAILABLE_RETRY_MS, 10) || 5 * 60 * 1000;
+const PROVIDER_UNAVAILABLE_RETRY_MAX_MS = 60 * 60 * 1000;
 // A wake that hits the limit again is re-scheduled; stop after this many.
 const WAKE_MAX_ATTEMPTS = parseInt(process.env.VIBESPACE_RATE_LIMIT_WAKE_MAX_ATTEMPTS, 10) || 12;
 // Sanity bound on how far out a reset may be (weekly limits are the longest
@@ -236,6 +241,15 @@ export function buildRateLimitWakePrompt(entry, now = Date.now()) {
   }
   const quoted = entry.limitText ? ` ("${String(entry.limitText).replace(/\s+/g, ' ').trim().slice(0, 200)}" at the end of this transcript)` : '';
   const attempt = entry.attempts > 1 ? ` This is automatic resume attempt ${entry.attempts}.` : '';
+  if (entry.recoveryKind === 'provider-unavailable') {
+    return [
+      `[session supervisor] Your previous turn did not fail on its own and the user did not stop you: the ${label} model provider was unavailable${quoted}.`,
+      `This is an automatic retry (${formatWhen(now)}) of that same unfinished work, not a new request from the user.${attempt}`,
+      'Re-read the tail of your own transcript and your task ledger first, re-verify anything you had only half-confirmed when the provider dropped, then continue where you left off.',
+      'If the provider is still unavailable, VibeSpace schedules another retry by itself; do not create a separate task or message for it.',
+      `<!-- vibespace-retry:${entry.messageId || entry.providerSessionId} -->`,
+    ].join(' ');
+  }
   return [
     `[session supervisor] Your previous turn did not fail and the user did not stop you: it was cut off by the ${label} usage limit${quoted}.`,
     `That limit has reset now (${formatWhen(now)}), so this is an automatic resume.${attempt}`,
@@ -280,7 +294,9 @@ export async function scheduleRateLimitWake({
       provider,
       sessionId: providerSessionId,
       sessionName,
-      error: `Usage limit still in force after ${prev.attempts} automatic resume attempt(s) — giving up`,
+      error: recoveryKind === 'provider-unavailable'
+        ? `Model provider still unavailable after ${prev.attempts} automatic retry attempt(s) — giving up`
+        : `Usage limit still in force after ${prev.attempts} automatic resume attempt(s) — giving up`,
     }));
     return null;
   }
@@ -294,6 +310,9 @@ export async function scheduleRateLimitWake({
   } else if (known !== null) {
     resumeAt = Math.max(known, now) + WAKE_GRACE_MS;
     source = 'provider';
+  } else if (recoveryKind === 'provider-unavailable') {
+    resumeAt = now + Math.min(PROVIDER_UNAVAILABLE_RETRY_MS * 2 ** (attempts - 1), PROVIDER_UNAVAILABLE_RETRY_MAX_MS);
+    source = 'provider-unavailable-backoff';
   } else {
     const delay = Math.min(WAKE_RETRY_MS * 2 ** (attempts - 1), WAKE_RETRY_MAX_MS);
     resumeAt = now + delay;
