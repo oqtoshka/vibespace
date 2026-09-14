@@ -13,6 +13,7 @@ import CustomRenderPreview from './CustomRenderPreview';
 import ApiSpecPreview from './ApiSpecPreview';
 
 type CodeEditorSurfaceProps = {
+  readOnly?: boolean;
   content: string;
   onChange: (value: string) => void;
   previewMode: boolean;
@@ -34,6 +35,7 @@ type CodeEditorSurfaceProps = {
 };
 
 export default function CodeEditorSurface({
+  readOnly = false,
   content,
   onChange,
   previewMode,
@@ -101,6 +103,8 @@ export default function CodeEditorSurface({
 
   return (
     <CodeMirror
+      editable={!readOnly}
+      readOnly={readOnly}
       value={content}
       onChange={onChange}
       extensions={extensions}
