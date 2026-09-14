@@ -111,8 +111,8 @@ export const nativeControlService = {
   async transcribe(bytes: Buffer) {
     const user = userDb.getSingleActiveUser();
     if (!user) throw new Error('Operator is unavailable');
-    if (!Buffer.isBuffer(bytes) || bytes.length === 0 || bytes.length > 4 * 1024 * 1024) {
-      throw new Error('Recording must be between 1 byte and 4 MiB');
+    if (!Buffer.isBuffer(bytes) || bytes.length === 0 || bytes.length > 8 * 1024 * 1024) {
+      throw new Error('Recording must be between 1 byte and 8 MiB');
     }
     const result = await voiceService.transcribe({
       userId: Number(user.id),

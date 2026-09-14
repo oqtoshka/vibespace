@@ -33,9 +33,11 @@ test('federation credentials, idempotent creation, registered projects and sessi
       assert.deepEqual(await nativeControlService.transcribe(Buffer.from('spoken fixture')), { text: 'spoken fixture' });
       assert.equal(transcribe.mock.calls[0].arguments[0].userId, Number(userDb.getSingleActiveUser()!.id));
       assert.equal(transcribe.mock.calls[0].arguments[0].audio.mimeType, 'audio/mp4');
-      await assert.rejects(nativeControlService.transcribe(Buffer.alloc(0)), /between 1 byte and 4 MiB/);
+      await assert.rejects(nativeControlService.transcribe(Buffer.alloc(0)), /between 1 byte and 8 MiB/);
+      await nativeControlService.transcribe(Buffer.alloc(6 * 1024 * 1024));
+      await assert.rejects(nativeControlService.transcribe(Buffer.alloc(8 * 1024 * 1024 + 1)), /between 1 byte and 8 MiB/);
     } finally { transcribe.mock.restore(); }
-    const routeTranscribe = mock.method(nativeControlService, 'transcribe', async (bytes: Buffer) => ({ text: bytes.toString() }));
+    const routeTranscribe = mock.method(nativeControlService, 'transcribe', async (bytes: Buffer) => ({ text: bytes.length > 1000 ? 'large recording' : bytes.toString() }));
     const app = express(); app.use('/native', nativeControlRoutes); const server = app.listen(0);
     try {
       const port = (server.address() as AddressInfo).port;
@@ -44,6 +46,9 @@ test('federation credentials, idempotent creation, registered projects and sessi
       assert.equal(response.status, 200);
       assert.deepEqual(await response.json(), { text: 'route fixture' });
       assert.deepEqual(routeTranscribe.mock.calls[0].arguments[0], Buffer.from('route fixture'));
+      const large = await fetch(`http://127.0.0.1:${port}/native/transcribe`, { method: 'POST', headers: { 'content-type': 'audio/mp4', 'x-mc-federation-token': 'x'.repeat(40) }, body: Buffer.alloc(6 * 1024 * 1024) });
+      assert.equal(large.status, 200); await large.arrayBuffer();
+      assert.equal(routeTranscribe.mock.calls.at(-1)!.arguments[0].length, 6 * 1024 * 1024);
     } finally {
       routeTranscribe.mock.restore();
       await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
