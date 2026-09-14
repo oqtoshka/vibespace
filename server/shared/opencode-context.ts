@@ -586,6 +586,40 @@ export function readLatestOpenCodeTurnTokens(sessionId: string | null | undefine
 }
 
 /**
+ * Whether an OpenCode session has ever been compacted into a summary.
+ *
+ * The OpenCode runtime adapter uses this to keep compacted sessions on the
+ * legacy CLI transport. OpenCode 1.18 exposes compaction only through its
+ * legacy session API; its newer durable `/api/session` engine still reports
+ * the compact operation as unavailable and would otherwise resume the stale,
+ * pre-compaction context after the next VibeSpace server restart.
+ */
+export function hasOpenCodeCompactSummary(sessionId: string | null | undefined): boolean {
+  const dbPath = getOpenCodeDatabasePath();
+  if (!sessionId || !fsSync.existsSync(dbPath)) return false;
+
+  let db: InstanceType<typeof Database> | null = null;
+  try {
+    db = new Database(dbPath, { readonly: true, fileMustExist: true });
+    const row = db.prepare(`
+      SELECT 1
+      FROM message
+      WHERE session_id = ?
+        AND json_extract(data, '$.summary') = 1
+      LIMIT 1
+    `).get(sessionId);
+    return Boolean(row);
+  } catch {
+    // A missing legacy table (or a database briefly held by OpenCode) means
+    // there is no reliable compaction signal yet. The in-process runtime also
+    // remembers successful manual compactions, covering the lock window.
+    return false;
+  } finally {
+    db?.close();
+  }
+}
+
+/**
  * Builds the gauge reading for one OpenCode turn.
  *
  * `autoCompactThreshold` is an absolute token count, matching what the Claude
