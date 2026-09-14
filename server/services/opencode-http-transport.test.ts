@@ -9,6 +9,7 @@ import Database from 'better-sqlite3';
 import { OpenCodeSessionsProvider } from '../modules/providers/list/opencode/opencode-sessions.provider.js';
 import { sessionsService } from '../modules/providers/services/sessions.service.js';
 import { buildOpenCodePromptAttachments } from '../shared/image-attachments.js';
+import { hasOpenCodeCompactSummary } from '../shared/opencode-context.js';
 
 import { persistOpenCodeTurn } from './opencode-history-writer.js';
 import { __testing, toModelRef, toTokenBudget, translateEvent } from './opencode-http-runner.js';
@@ -69,6 +70,22 @@ test('reasoning is sent whole when its block ends, not per delta', () => {
 
   assert.equal(message?.kind, 'thinking');
   assert.equal(message?.content, 'I could weigh it up');
+});
+
+test('automatic compaction is surfaced as a boundary with its summary', () => {
+  const [message] = render('session.next.compaction.ended', {
+    sessionID: SESSION_ID,
+    messageID: 'compact-auto-1',
+    reason: 'auto',
+    text: 'The image investigation is still active.',
+    recent: 'User asked about the centre pixel.',
+    timestamp: Date.now(),
+  });
+
+  assert.equal(message?.kind, 'compact_boundary');
+  assert.equal(message?.id, 'compact-auto-1');
+  assert.equal(message?.compaction?.trigger, 'auto');
+  assert.equal(message?.compaction?.summary, 'The image investigation is still active.');
 });
 
 // Only the call event carries the tool's name and input; the result events carry
@@ -268,6 +285,13 @@ test('a turn run over the server is written back as readable history', async () 
       }],
       assistantMessageId: 'msg_assistant',
       text: 'Blue',
+      compactions: [{
+        id: 'compact-auto-1',
+        trigger: 'auto',
+        summary: 'The image investigation is still active.',
+        recent: 'User asked about the centre pixel.',
+        timestamp: Date.now() + 2,
+      }],
       tools: [
         { callId: 'call_1', name: 'bash', input: { command: 'ls' }, output: 'dot.png' },
         {
@@ -302,6 +326,16 @@ test('a turn run over the server is written back as readable history', async () 
 
     const reply = history.messages.find((message) => message.kind === 'text' && message.content === 'Blue');
     assert.ok(reply, 'the answer must survive the reload');
+
+    const compaction = history.messages.find((message) => message.kind === 'compact_boundary');
+    assert.equal(compaction?.id, 'compact-auto-1');
+    assert.equal(compaction?.compaction?.trigger, 'auto');
+    assert.equal(compaction?.compaction?.summary, 'The image investigation is still active.');
+    assert.equal(
+      hasOpenCodeCompactSummary(SESSION_ID),
+      false,
+      'server-owned auto compaction must not switch the next turn to the legacy CLI transport',
+    );
   } finally {
     (os as unknown as { homedir: () => string }).homedir = originalHomedir;
     await rm(tempRoot, { recursive: true, force: true });
