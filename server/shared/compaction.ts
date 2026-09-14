@@ -23,6 +23,17 @@ import type { CompactionInfo, LLMProvider, NormalizedMessage } from './types.js'
 import { createNormalizedMessage, generateMessageId } from './utils.js';
 
 /**
+ * Extra assistant-message field used by the OpenCode HTTP history writer and
+ * history provider to preserve durable-server compaction seams in opencode.db.
+ *
+ * It deliberately differs from OpenCode's legacy `summary: true` marker: that
+ * flag means the legacy CLI owns the compacted context, while this metadata is
+ * only a transcript projection of a compaction already owned by the durable
+ * server. Conflating them would switch the next turn to a stale transport.
+ */
+export const VIBESPACE_OPENCODE_COMPACTIONS_FIELD = 'vibespaceCompactions';
+
+/**
  * Preamble the runtimes wrap a summary in before replaying it as a prompt.
  *
  * This is the fallback for rows that carry no structural flag — an older
