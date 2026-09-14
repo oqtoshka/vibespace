@@ -187,6 +187,11 @@ test('history read without a limit returns only the newest 2000 messages and kee
       const page = await sessionsService.fetchHistory(id, { limit: 20, offset: 0 });
       assert.equal(page.messages.length, 20);
       assert.equal(page.hasMore, true);
+
+      const indexHistory = await sessionsService.fetchFullHistoryForIndex(id);
+      assert.equal(indexHistory.length, 2_600);
+      assert.equal(indexHistory[0]?.content, 'Question 0');
+      assert.equal(indexHistory.at(-1)?.content, 'Answer 1299');
     });
   } finally {
     await rm(root, { recursive: true, force: true });

@@ -7,6 +7,8 @@ import { rgPath } from '@vscode/ripgrep';
 
 import { projectsDb, sessionsDb } from '@/modules/database/index.js';
 
+import { sessionSearchIndexService } from './session-search-index.service.js';
+
 type AnyRecord = Record<string, any>;
 type SearchableProvider = 'claude' | 'codex';
 
@@ -1306,16 +1308,64 @@ export async function searchConversations(
  * centralized in one place.
  */
 export const sessionConversationsSearchService = {
+  /** Native-control and Commander use the same indexed engine as the browser. */
+  async searchPage(input: Parameters<typeof sessionSearchIndexService.search>[0]) {
+    return sessionSearchIndexService.search(input);
+  },
+
   /**
-   * Streams progress updates while the search scans provider session logs.
+   * Preserves the browser's SSE contract while using the shared persistent
+   * index. This keeps one ranking/filter implementation for every client.
    */
   async search(input: SearchSessionConversationsInput): Promise<void> {
-    await searchConversations(
-      input.query,
-      input.limit,
-      input.onProgress ?? null,
-      input.signal ?? null,
-      input.onTitleResults ?? null,
-    );
+    if (input.signal?.aborted) return;
+    const page = await sessionSearchIndexService.search({
+      query: input.query,
+      limit: input.limit,
+      archived: 'active',
+    });
+    if (input.signal?.aborted) return;
+    const titleResults = page.results
+      .filter(result => result.matchedField === 'title')
+      .map(result => ({
+        sessionId: result.sessionId,
+        provider: result.provider,
+        projectId: result.projectId,
+        projectDisplayName: result.projectPath ? path.basename(result.projectPath) : 'Unknown Project',
+        sessionTitle: result.title,
+        lastActivity: result.occurredAt,
+      }));
+    input.onTitleResults?.(titleResults);
+
+    const buckets = new Map<string, ProjectConversationResult>();
+    for (const result of page.results.filter(item => item.matchedField !== 'title')) {
+      const key = result.projectId ?? result.projectPath ?? UNKNOWN_PROJECT_KEY;
+      if (!buckets.has(key)) {
+        buckets.set(key, {
+          projectId: result.projectId,
+          projectName: result.projectPath ?? UNKNOWN_PROJECT_KEY,
+          projectDisplayName: result.projectPath ? path.basename(result.projectPath) : 'Unknown Project',
+          sessions: [],
+        });
+      }
+      const bucket = buckets.get(key) as ProjectConversationResult;
+      let session = bucket.sessions.find(item => item.sessionId === result.sessionId);
+      if (!session) {
+        session = { sessionId: result.sessionId, provider: result.provider as SearchableProvider,
+          sessionSummary: result.title, matches: [] };
+        bucket.sessions.push(session);
+      }
+      session.matches.push({
+        role: result.role ?? '', snippet: result.snippet, highlights: result.highlights,
+        timestamp: result.occurredAt, provider: result.provider as SearchableProvider,
+        messageUuid: result.messageId,
+      });
+    }
+    let scannedProjects = 0;
+    for (const projectResult of buckets.values()) {
+      scannedProjects += 1;
+      input.onProgress?.({ projectResult, totalMatches: page.total,
+        scannedProjects, totalProjects: buckets.size });
+    }
   },
 };

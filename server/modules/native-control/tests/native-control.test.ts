@@ -5,10 +5,13 @@ import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test, { mock } from 'node:test';
+
 import express from 'express';
+
 import { providerModelsService } from '@/modules/providers/index.js';
 import { voiceService } from '@/modules/voice/index.js';
 import { appConfigDb, closeConnection, getConnection, initializeDatabase, projectsDb, sessionsDb, userDb } from '@/modules/database/index.js';
+
 import { authenticateNativeControl, nativeControlService, nativePermissionOptions, resolveNativeAttachments, setNativePermissionSelection, setNativeSelection } from '../native-control.service.js';
 import { nativeControlRoutes } from '../index.js';
 
@@ -36,6 +39,7 @@ test('federation credentials, idempotent creation, registered projects and sessi
       await assert.rejects(nativeControlService.transcribe(Buffer.alloc(0)), /between 1 byte and 4 MiB/);
     } finally { transcribe.mock.restore(); }
     const routeTranscribe = mock.method(nativeControlService, 'transcribe', async (bytes: Buffer) => ({ text: bytes.toString() }));
+    const routeSearch = mock.method(nativeControlService, 'search', async (input: unknown) => ({ input, results: [] }));
     const app = express(); app.use('/native', nativeControlRoutes); const server = app.listen(0);
     try {
       const port = (server.address() as AddressInfo).port;
@@ -44,14 +48,29 @@ test('federation credentials, idempotent creation, registered projects and sessi
       assert.equal(response.status, 200);
       assert.deepEqual(await response.json(), { text: 'route fixture' });
       assert.deepEqual(routeTranscribe.mock.calls[0].arguments[0], Buffer.from('route fixture'));
+      const searchResponse = await fetch(`http://127.0.0.1:${port}/native/search/sessions?q=legacy&archived=all&matchType=phrase&limit=7`, {
+        headers: { 'x-mc-federation-token': 'x'.repeat(40) },
+      });
+      assert.equal(searchResponse.status, 200);
+      assert.deepEqual(routeSearch.mock.calls[0].arguments[0], {
+        query: 'legacy', projectId: undefined, provider: undefined, archived: 'all',
+        from: undefined, to: undefined, matchType: 'phrase', limit: 7, cursor: undefined,
+      });
+      const refused = await fetch(`http://127.0.0.1:${port}/native/search/sessions?q=legacy`, {
+        headers: { 'x-mc-federation-token': 'y'.repeat(40) },
+      });
+      assert.equal(refused.status, 403);
     } finally {
-      routeTranscribe.mock.restore();
+      routeTranscribe.mock.restore(); routeSearch.mock.restore();
       await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
     }
     projectsDb.createProjectPath(directory, 'Native fixture');
     const projectId = projectsDb.getProjectPaths()[0].project_id;
     const input = { requestId: randomUUID(), projectId, provider: 'codex' as const, title: 'Native fixture' };
     const first = await nativeControlService.create(input);
+    assert.equal(first.model, 'gpt-5.6-sol');
+    assert.equal(first.effort, 'high');
+    assert.equal(first.permissionMode, 'bypassPermissions');
     appConfigDb.set(`permission-default:${userDb.getSingleActiveUser()!.id}:codex`, 'bypassPermissions');
     assert.equal(nativePermissionOptions('codex', first.sessionId).permissionMode, 'bypassPermissions');
     assert.equal(setNativePermissionSelection(first.sessionId, 'default').permissionMode, 'default');
@@ -60,6 +79,8 @@ test('federation credentials, idempotent creation, registered projects and sessi
     assert.equal((await nativeControlService.create(input)).sessionId, first.sessionId);
     await assert.rejects(nativeControlService.create({ ...input, title: 'Changed' }), /different content/);
     await assert.rejects(nativeControlService.create({ ...input, requestId: randomUUID(), projectId: '/etc' }), /Project/);
+    await assert.rejects(nativeControlService.create({ ...input, requestId: randomUUID(), model: 'invented' }), /model/i);
+    await assert.rejects(nativeControlService.create({ ...input, requestId: randomUUID(), permissionMode: 'invented' }), /permission/i);
     const catalog = mock.method(providerModelsService, 'getProviderModels', async () => ({ models: {
       DEFAULT: 'fixture-model', OPTIONS: [{ value: 'fixture-model', label: 'Fixture', effort: { default: 'low', values: [{ value: 'low' }, { value: 'ultra' }] } }],
     } }));

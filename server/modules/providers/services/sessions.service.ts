@@ -598,6 +598,34 @@ export const sessionsService = {
   },
 
   /**
+   * Loads the complete normalized transcript for the persistent search index.
+   *
+   * This is intentionally separate from fetchHistory(): browser reads stay
+   * capped at 2,000 messages, while an index rebuild must see older content.
+   * Calling the provider once also avoids reparsing a large JSONL file for
+   * every paginated history window during backfill.
+   */
+  async fetchFullHistoryForIndex(sessionId: string): Promise<NormalizedMessage[]> {
+    const session = sessionsDb.getSessionById(sessionId);
+    if (!session) {
+      throw new AppError(`Session "${sessionId}" was not found.`, {
+        code: 'SESSION_NOT_FOUND',
+        statusCode: 404,
+      });
+    }
+    if (!session.provider_session_id) return [];
+
+    const provider = session.provider as LLMProvider;
+    const result = await providerRegistry.resolveProvider(provider).sessions.fetchHistory(sessionId, {
+      limit: null,
+      offset: 0,
+      projectPath: session.project_path ?? '',
+      providerSessionId: session.provider_session_id,
+    });
+    return result.messages.map(message => ({ ...message, sessionId }));
+  },
+
+  /**
    * Rewinds (truncates) a session's persisted transcript at the given message so
    * the conversation can be resumed in-place from that point with edited content.
    * Resolves the provider from the indexed session metadata and delegates to its

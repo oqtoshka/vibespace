@@ -1,8 +1,9 @@
 import { createHash, createHmac, timingSafeEqual, randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+
 import { appConfigDb, getConnection, projectsDb, sessionsDb, userDb } from '@/modules/database/index.js';
-import { permissionPreferencesService, providerModelsService, sessionsService } from '@/modules/providers/index.js';
+import { permissionPreferencesService, providerModelsService, sessionConversationsSearchService, sessionsService } from '@/modules/providers/index.js';
 import { ensureImageAssetsDir } from '@/modules/assets/index.js';
 import { voiceService } from '@/modules/voice/index.js';
 import type { LLMProvider } from '@/shared/index.js';
@@ -84,13 +85,17 @@ export const nativeControlService = {
     const project = projectsDb.getProjectById(input.projectId);
     if (!project || project.isArchived) throw new Error('Project is unavailable');
     if (input.title !== undefined && (typeof input.title !== 'string' || input.title.length > 1000)) throw new Error('Invalid title');
-    const settings = input.model ? await nativeModelOptions(input.provider) : null;
-    if (input.model && !settings?.options.some(option => option.value === input.model)) throw new Error('Invalid model');
-    if (input.effort && !settings?.options.find(option => option.value === input.model)?.effort?.values.some(option => option.value === input.effort)) throw new Error('This model does not support that effort');
+    const settings = await nativeModelOptions(input.provider);
+    const model = input.model ?? settings.defaultModel;
+    if (!settings.options.some(option => option.value === model)) throw new Error('Invalid model');
+    const selectedModel = settings.options.find(option => option.value === model);
+    const effort = input.effort ?? selectedModel?.effort?.default ?? '';
+    if (effort && !selectedModel?.effort?.values.some(option => option.value === effort)) throw new Error('This model does not support that effort');
     if (input.effort !== undefined && (typeof input.effort !== 'string' || input.effort.length > 64)) throw new Error('Invalid effort');
     const permissions = nativePermissionOptions(input.provider);
-    if (input.permissionMode !== undefined && !permissions.permissionModes.includes(input.permissionMode)) throw new Error('Invalid permission mode');
-    const digest = createHash('sha256').update(JSON.stringify([input.projectId, input.provider, input.title || '', input.model || '', input.effort || '', input.permissionMode ?? null])).digest('hex');
+    const permissionMode = input.permissionMode ?? permissions.permissionMode;
+    if (!permissions.permissionModes.includes(permissionMode)) throw new Error('Invalid permission mode');
+    const digest = createHash('sha256').update(JSON.stringify([input.projectId, input.provider, input.title || '', model, effort, permissionMode])).digest('hex');
     const receiptKey = `native_create:${input.requestId}`;
     const id = getConnection().transaction(() => {
       const previous = appConfigDb.get(receiptKey);
@@ -100,13 +105,16 @@ export const nativeControlService = {
         session(receipt.id); return receipt.id as string;
       }
       const created = sessionsService.createAppSession(input.provider, project.project_path, false, false, input.title);
-      if (input.model) providerModelsService.setSessionModel(input.provider, created.sessionId, input.model);
-      if (input.effort) providerModelsService.setSessionEffort(input.provider, created.sessionId, input.effort);
-      if (input.permissionMode) sessionsDb.setSessionPermissionMode(created.sessionId, input.permissionMode);
+      providerModelsService.setSessionModel(input.provider, created.sessionId, model);
+      providerModelsService.setSessionEffort(input.provider, created.sessionId, effort);
+      sessionsDb.setSessionPermissionMode(created.sessionId, permissionMode);
       appConfigDb.set(receiptKey, JSON.stringify({ id: created.sessionId, digest }));
       return created.sessionId;
     })();
     return this.describe(id);
+  },
+  async search(input: Parameters<typeof sessionConversationsSearchService.searchPage>[0]) {
+    return sessionConversationsSearchService.searchPage(input);
   },
   async transcribe(bytes: Buffer) {
     const user = userDb.getSingleActiveUser();
@@ -126,7 +134,8 @@ export const nativeControlService = {
     const capability = createHmac('sha256', appConfigDb.getOrCreateJwtSecret())
       .update(`mission-control:vibespace-session:v1:${id}`).digest('base64url');
     return { sessionId: id, provider: row.provider, title: row.custom_name, projectPath: row.project_path,
-      model: row.model, effort: row.effort, archived: Boolean(row.isArchived), capability };
+      model: row.model, effort: row.effort, permissionMode: sessionsDb.getSessionPermissionMode(id),
+      archived: Boolean(row.isArchived), capability };
   },
   async upload(id: string, name: string, mimeType: string, bytes: Buffer) {
     const row = session(id);

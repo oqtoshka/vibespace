@@ -1,5 +1,6 @@
-import { providerPolicy } from './provider-policy.service.js';
 import type { LLMProvider } from '@/shared/types.js';
+
+import { providerPolicy } from './provider-policy.service.js';
 
 /**
  * Static, backend-owned description of what one provider integration supports.
@@ -60,7 +61,10 @@ const PROVIDER_CAPABILITIES: Record<LLMProvider, ProviderCapabilities> = {
   codex: {
     provider: 'codex',
     permissionModes: ['default', 'acceptEdits', 'bypassPermissions'],
-    defaultPermissionMode: 'default',
+    // VibeSpace is a trusted operator workspace. Codex sessions therefore
+    // inherit the same non-interactive policy as the local CLI unless a
+    // session explicitly selects a narrower mode.
+    defaultPermissionMode: 'bypassPermissions',
     supportsImages: true,
     supportsFiles: true,
     supportsAbort: true,

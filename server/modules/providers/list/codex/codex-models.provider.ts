@@ -42,7 +42,7 @@ export const CODEX_PREDEFINED_MODELS: ProviderModelsDefinition = {
       label: 'GPT-5.6 Sol',
       description: 'Latest frontier agentic coding model.',
       effort: {
-        default: 'low',
+        default: 'high',
         values: [
           { value: 'low' },
           { value: 'medium' },

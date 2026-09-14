@@ -1,6 +1,8 @@
 import express from 'express';
-import { authenticateNativeControl, nativeControlService, nativeModelOptions, nativePermissionOptions } from './native-control.service.js';
+
 import type { LLMProvider } from '@/shared/index.js';
+
+import { authenticateNativeControl, nativeControlService, nativeModelOptions, nativePermissionOptions } from './native-control.service.js';
 
 const router = express.Router();
 router.use((req, res, next) => {
@@ -13,6 +15,7 @@ const route = (fn: express.RequestHandler): express.RequestHandler => async (req
   try { await fn(req, res, next); }
   catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Native control failed' }); }
 };
+const one = (value: unknown): string | undefined => typeof value === 'string' ? value : undefined;
 router.get('/catalog', route((_req, res) => { res.json(nativeControlService.catalog()); }));
 router.get('/models/:provider', route(async (req, res) => {
   if (!['claude', 'codex', 'opencode'].includes(String(req.params.provider))) throw new Error('Unknown provider');
@@ -23,6 +26,21 @@ router.post('/transcribe', express.raw({ type: 'audio/mp4', limit: '4mb' }), rou
   res.json(await nativeControlService.transcribe(req.body));
 }));
 router.post('/sessions', route(async (req, res) => { res.json(await nativeControlService.create(req.body)); }));
+router.get('/search/sessions', route(async (req, res) => {
+  const rawLimit = one(req.query.limit);
+  const limit = rawLimit === undefined ? undefined : Number(rawLimit);
+  res.json(await nativeControlService.search({
+    query: one(req.query.q) ?? '',
+    projectId: one(req.query.projectId),
+    provider: one(req.query.provider),
+    archived: one(req.query.archived) as 'all' | 'active' | 'archived' | undefined,
+    from: one(req.query.from),
+    to: one(req.query.to),
+    matchType: one(req.query.matchType) as 'all' | 'phrase' | 'prefix' | 'title' | 'content' | undefined,
+    limit,
+    cursor: one(req.query.cursor),
+  }));
+}));
 router.get('/sessions/:id', route((req, res) => { res.json(nativeControlService.describe(String(req.params.id))); }));
 router.post('/sessions/:id/attachments', express.raw({ type: 'application/octet-stream', limit: '10mb' }), route(async (req, res) => {
   res.json(await nativeControlService.upload(String(req.params.id), decodeURIComponent(String(req.headers['x-file-name'] || 'file')),
