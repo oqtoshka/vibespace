@@ -2,7 +2,10 @@ import fsSync from 'node:fs';
 
 import Database from 'better-sqlite3';
 
-import { createCompactBoundaryMessage } from '@/shared/compaction.js';
+import {
+  createCompactBoundaryMessage,
+  VIBESPACE_OPENCODE_COMPACTIONS_FIELD,
+} from '@/shared/compaction.js';
 import { extractToolResultImages, parseFilesInputTag, parseImagesInputTag } from '@/shared/image-attachments.js';
 import type { IProviderSessions } from '@/shared/interfaces.js';
 import type { AnyRecord, FetchHistoryOptions, FetchHistoryResult, NormalizedMessage, RewindResult } from '@/shared/types.js';
@@ -444,6 +447,17 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
       })];
     }
 
+    if (type === 'compact_boundary') {
+      return [createCompactBoundaryMessage({
+        id: baseId,
+        sessionId: eventSessionId,
+        timestamp,
+        provider: PROVIDER,
+        trigger: raw.trigger === 'manual' ? 'manual' : 'auto',
+        summary: readOptionalString(raw.summary),
+      })];
+    }
+
     if (type === 'tool_use') {
       return [buildToolUseMessage(part, {
         id: baseId,
@@ -545,12 +559,35 @@ export class OpenCodeSessionsProvider implements IProviderSessions {
     const emittedMessageErrors = new Set<string>();
     const compactSummaries = collectOpenCodeCompactSummaries(rows);
     const emittedCompactBoundaries = new Set<string>();
+    const emittedPersistedCompactions = new Set<string>();
 
     for (const row of rows) {
       const timestamp = normalizeProviderTimestamp(row.part_time_created ?? row.message_time_created);
       const baseId = `${row.message_id}_${row.part_id ?? normalized.length}`;
       const messageInfo = readJsonRecord(row.message_data);
       const messageRole = readOptionalString(messageInfo?.role);
+
+      if (!emittedPersistedCompactions.has(row.message_id)) {
+        emittedPersistedCompactions.add(row.message_id);
+        const persistedCompactions = messageInfo?.[VIBESPACE_OPENCODE_COMPACTIONS_FIELD];
+        if (Array.isArray(persistedCompactions)) {
+          for (const rawCompaction of persistedCompactions) {
+            const compaction = readObjectRecord(rawCompaction);
+            if (!compaction) {
+              continue;
+            }
+
+            normalized.push(createCompactBoundaryMessage({
+              id: readOptionalString(compaction.id) ?? generateMessageId('opencode_compact'),
+              sessionId,
+              timestamp: normalizeProviderTimestamp(compaction.timestamp ?? row.message_time_created),
+              provider: PROVIDER,
+              trigger: compaction.trigger === 'manual' ? 'manual' : 'auto',
+              summary: readOptionalString(compaction.summary),
+            }));
+          }
+        }
+      }
 
       // The message OpenCode compacted the conversation into. It reads like an
       // assistant answer but is really a context reset, so it collapses to one

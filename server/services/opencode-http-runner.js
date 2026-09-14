@@ -267,6 +267,16 @@ export function translateEvent(type, properties, toolCalls) {
         part: { text: properties.text },
       };
 
+    case 'session.next.compaction.ended':
+      return {
+        type: 'compact_boundary',
+        sessionID,
+        timestamp,
+        id: properties.messageID,
+        trigger: properties.reason,
+        summary: properties.text,
+      };
+
     case 'session.next.tool.called': {
       // The name and input arrive with the call and are absent from the result
       // events, so they are kept per callID for the completion to reuse.
@@ -587,7 +597,13 @@ export async function runOpenCodeHttpTurn(command, options, ws, hooks = {}) {
   const toolCalls = new Map();
   // The turn is transcribed as it streams so it can be written to opencode.db
   // at the end: the server keeps its own copy and shares none of it.
-  const transcript = { text: '', tools: [], assistantMessageId: null, startedAt: Date.now() };
+  const transcript = {
+    text: '',
+    tools: [],
+    compactions: [],
+    assistantMessageId: null,
+    startedAt: Date.now(),
+  };
   const injectedMessages = [];
   let resolveInitialAdmission;
   const initialAdmission = new Promise((resolve) => {
@@ -716,6 +732,38 @@ export async function runOpenCodeHttpTurn(command, options, ws, hooks = {}) {
       turnLooksDone = false;
     }
 
+    if (type === 'session.next.compaction.started') {
+      turnLooksDone = false;
+      ws.send(createNormalizedMessage({
+        kind: 'status',
+        text: 'Compacting conversation',
+        canInterrupt: true,
+        sessionId: activeSessionId,
+        provider: 'opencode',
+      }));
+      return;
+    }
+
+    if (type === 'session.next.compaction.delta') {
+      turnLooksDone = false;
+      return;
+    }
+
+    if (type === 'session.next.compaction.ended') {
+      transcript.compactions.push({
+        id: properties.messageID,
+        trigger: properties.reason,
+        summary: properties.text,
+        recent: properties.recent,
+        timestamp: properties.timestamp,
+      });
+      ws.send(createNormalizedMessage({
+        kind: 'status',
+        sessionId: activeSessionId,
+        provider: 'opencode',
+      }));
+    }
+
     if (type === 'session.error' || type === 'session.next.step.failed') {
       const message = properties.error?.data?.message
         ?? properties.error?.message
@@ -834,6 +882,7 @@ export async function runOpenCodeHttpTurn(command, options, ws, hooks = {}) {
     assistantMessageId: transcript.assistantMessageId,
     text: transcript.text,
     tools: transcript.tools,
+    compactions: transcript.compactions,
     tokens: lastStepTokens,
     finish: outcome.ok ? 'stop' : 'error',
     startedAt: transcript.startedAt,
