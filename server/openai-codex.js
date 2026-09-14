@@ -59,10 +59,43 @@ export function __resetCodexRateLimits() {
 export function isCodexUsageLimitError(error) {
   if (!error) return false;
   const info = error.codexErrorInfo;
-  if (info === 'usageLimitExceeded') return true;
+  if (info === 'usageLimitExceeded' || info === 'rateLimitExceeded') return true;
   if (info && typeof info === 'object' && 'usageLimitExceeded' in info) return true;
   const message = String(error.message || '');
   return /usage limit|rate limit|hit your limit/i.test(message);
+}
+
+const CODEX_UNAVAILABLE_INFO = new Set(['serverOverloaded', 'internalServerError']);
+const CODEX_UNAVAILABLE_TRANSPORT_INFO = [
+  'httpConnectionFailed',
+  'responseStreamConnectionFailed',
+  'responseStreamDisconnected',
+  'responseTooManyFailedAttempts',
+];
+
+/**
+ * Whether a failed turn died on the provider rather than on the work: the
+ * model at capacity, a 5xx, a dropped stream. Resuming straight away lands in
+ * the same outage and burns the task-continuation budget in seconds, so these
+ * go to the wake service's backoff instead. Returns `{ limitType }` or null.
+ *
+ * A transport variant carrying a 4xx other than 408 is a request the provider
+ * refused, which no amount of waiting fixes.
+ */
+export function classifyCodexTransientFailure(error) {
+  const info = error?.codexErrorInfo ?? error?.codex_error_info;
+  if (typeof info === 'string') {
+    // Rollouts spell the same enum in snake_case.
+    const camel = info.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
+    return CODEX_UNAVAILABLE_INFO.has(camel) ? { limitType: camel } : null;
+  }
+  if (!info || typeof info !== 'object') return null;
+  const variant = CODEX_UNAVAILABLE_TRANSPORT_INFO.find((key) => key in info);
+  if (!variant) return null;
+  const status = info[variant]?.httpStatusCode;
+  if (!Number.isInteger(status)) return { limitType: variant };
+  if (status >= 400 && status < 500 && status !== 408) return null;
+  return { limitType: `${variant}_${status}` };
 }
 
 /**
@@ -663,9 +696,25 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
 
     const completedTurn = await completion;
     let usageLimitFailure = false;
+    let providerRetryScheduled = false;
     if (completedTurn?.status !== 'completed' && activeSession.status !== 'aborted') {
       terminalFailure = completedTurn.error || new Error('Codex turn failed');
       usageLimitFailure = !ephemeral && isCodexUsageLimitError(terminalFailure);
+      const transient = !ephemeral && !usageLimitFailure ? classifyCodexTransientFailure(terminalFailure) : null;
+      if (transient) {
+        providerRetryScheduled = Boolean(await scheduleRateLimitWake({
+          provider: 'codex',
+          providerSessionId: capturedSessionId,
+          userId: ws?.userId || null,
+          sessionName: sessionSummary,
+          limitType: transient.limitType,
+          limitText: terminalFailure.message || null,
+          permissionMode,
+          recoveryKind: 'provider-unavailable',
+          messageId: options.rateLimitWakeMessageId ?? null,
+          priorAttempts: options.rateLimitWakeAttempts ?? 0,
+        }));
+      }
       if (usageLimitFailure) {
         // Not a failure the user can act on — the work resumes by itself once
         // the limit resets. The wake service sends the "paused" ping.
@@ -712,19 +761,24 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
     const policyBlocked = ['misalignmentPolicyViolation', 'misalignment_policy_violation'].includes(
       terminalFailure?.codexErrorInfo || terminalFailure?.codex_error_info,
     ) || /blocked by our safety systems/i.test(terminalFailure?.message || '');
-    if (!runAborted && !usageLimitFailure && !policyBlocked
+    if (!runAborted && !usageLimitFailure && !providerRetryScheduled && !policyBlocked
       && await continueOpenPlan(`terminal status ${terminalStatus}`)) {
       return;
     }
     if (terminalFailure && !usageLimitFailure && !runAborted) {
       // A failed turn is a resolved RPC, not a thrown exception. Preserve its
       // explanation for every chat client before the terminal lifecycle event.
+      const failureText = terminalFailure.message || 'Codex turn failed';
       sendMessage(ws, createNormalizedMessage({
         kind: 'error',
-        content: terminalFailure.message || 'Codex turn failed',
+        content: providerRetryScheduled
+          ? `${failureText}\n\nVibeSpace will retry this turn automatically.`
+          : failureText,
         sessionId: capturedSessionId || sessionId || null,
         provider: 'codex',
       }));
+    }
+    if (terminalFailure && !usageLimitFailure && !providerRetryScheduled && !runAborted) {
       notifyRunFailed({
         userId: ws?.userId || null,
         provider: 'codex',
