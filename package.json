@@ -1,6 +1,6 @@
 {
   "name": "@vibespace-ai/vibespace",
-  "version": "1.38.71",
+  "version": "1.38.72",
   "productName": "VibeSpace",
   "description": "A web-based UI for Claude Code CLI",
   "type": "module",
@@ -53,7 +53,8 @@
     "prepublishOnly": "npm run build",
     "postinstall": "node scripts/fix-node-pty.js",
     "prepare": "husky",
-    "update:platform": "./update-platform.sh"
+    "update:platform": "./update-platform.sh",
+    "build:native-viewer": "vite build --config vite.native.config.ts"
   },
   "build": {
     "appId": "ai.vibespace.desktop",

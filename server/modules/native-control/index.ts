@@ -2,3 +2,6 @@
 export { default as nativeControlRoutes } from './native-control.routes.js';
 // WebSocket chat consumes catalog selection and session-bound attachment resolution.
 export { nativeModelOptions, nativePermissionOptions, setNativePermissionSelection, setNativeSelection, resolveNativeAttachments } from './native-control.service.js';
+
+// Native workspace reuses the private federation authentication boundary.
+export { authenticateNativeControl } from './native-control.service.js';

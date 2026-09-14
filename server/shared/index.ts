@@ -18,3 +18,6 @@ export type { ProviderModelsDefinition, ProviderPermissionDecision, ProviderRunt
 export { normalizeProjectPath } from './utils.js';
 export type { SessionNameSource } from './utils.js';
 export { sessionAvatarUrl } from './utils.js';
+
+// Legacy and native-workspace diagram previews share source encoding/rendering.
+export { encodePlantUmlSource, inlinePlantUmlIncludes, renderDbmlToSvg } from './utils.js';
