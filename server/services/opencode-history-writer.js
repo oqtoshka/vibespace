@@ -4,6 +4,7 @@ import fsSync from 'node:fs';
 import Database from 'better-sqlite3';
 
 import { appendImagesInputTag } from '../shared/image-attachments.js';
+import { VIBESPACE_OPENCODE_COMPACTIONS_FIELD } from '../shared/compaction.js';
 import { getOpenCodeDatabasePath } from '../shared/utils.js';
 
 /**
@@ -54,6 +55,7 @@ export function persistOpenCodeTurn(turn) {
     assistantMessageId,
     text,
     tools = [],
+    compactions = [],
     tokens,
     finish = 'stop',
     startedAt,
@@ -91,6 +93,15 @@ export function persistOpenCodeTurn(turn) {
       + Number(usage.reasoning || 0)
       + Number(usage.cache?.read || 0)
       + Number(usage.cache?.write || 0);
+    const persistedCompactions = compactions
+      .filter((entry) => entry && typeof entry === 'object')
+      .map((entry) => ({
+        id: typeof entry.id === 'string' ? entry.id : generateId('cmp'),
+        trigger: entry.trigger === 'manual' ? 'manual' : 'auto',
+        summary: typeof entry.summary === 'string' ? entry.summary : '',
+        recent: typeof entry.recent === 'string' ? entry.recent : '',
+        timestamp: Number.isFinite(Number(entry.timestamp)) ? Number(entry.timestamp) : completed,
+      }));
 
     const insertMessage = db.prepare(
       'INSERT INTO message (id, session_id, time_created, time_updated, data) VALUES (?, ?, ?, ?, ?)',
@@ -152,6 +163,9 @@ export function persistOpenCodeTurn(turn) {
         providerID: providerId,
         time: { created, completed },
         finish,
+        ...(persistedCompactions.length > 0
+          ? { [VIBESPACE_OPENCODE_COMPACTIONS_FIELD]: persistedCompactions }
+          : {}),
       }));
 
       let partTime = completed;
