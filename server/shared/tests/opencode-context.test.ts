@@ -303,7 +303,7 @@ test('an input ceiling the user chose is left alone', async () => {
 });
 
 test('a proxy that publishes input and output apart does not shrink the window to the input', async () => {
-  // llm.example.com: a 32k llama.cpp published as 24,576 input + 8,192 output.
+  // A LiteLLM proxy over a 32k llama.cpp, published as 24,576 input + 8,192 output.
   // Taking 24,576 as the window reserved the output twice — OpenCode compacted
   // at 16k of 32k — and fought the script that writes 32,768 on every probe.
   const server = http.createServer((_req, res) => {

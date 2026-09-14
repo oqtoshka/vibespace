@@ -73,13 +73,13 @@ type NormalizedMessageInput =
     timestamp?: string | null;
   } & Record<string, unknown>;
 
-const DEFAULT_AVATAR_BASE_URL = 'https://mc.example.com/avatars';
-
 /**
  * The projects, providers, and websocket modules use this to expose one
  * consistent Mission Control image URL. Mission Control keys avatars by the
  * provider-native CLI session id, not by VibeSpace's stable app-facing id.
  * Private sessions never report there and deliberately have no avatar URL.
+ * Without `MC_AVATAR_PUBLIC_BASE_URL` (or `VS_SESSION_AVATAR_URL`) there is no
+ * Mission Control to point at, so no session gets an avatar.
  */
 export function sessionAvatarUrl(
   providerSessionId: string | null | undefined,
@@ -90,7 +90,8 @@ export function sessionAvatarUrl(
   }
 
   if (process.env.VS_SESSION_AVATAR_URL) return process.env.VS_SESSION_AVATAR_URL;
-  const base = (process.env.MC_AVATAR_PUBLIC_BASE_URL || DEFAULT_AVATAR_BASE_URL).replace(/\/+$/, '');
+  const base = process.env.MC_AVATAR_PUBLIC_BASE_URL?.trim().replace(/\/+$/, '');
+  if (!base) return null;
   return `${base}/${encodeURIComponent(providerSessionId.trim())}`;
 }
 
