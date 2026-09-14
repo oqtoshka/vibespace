@@ -5,6 +5,7 @@ import { promisify } from 'util';
 
 import { parse as parseShellCommand } from 'shell-quote';
 
+import { buildAgentEnv } from '../shared/agent-env.js';
 import { parseFrontMatter } from '../shared/frontmatter.js';
 
 const execFileAsync = promisify(execFile);
@@ -285,7 +286,7 @@ export async function processBashCommands(content, options = {}) {
           timeout,
           maxBuffer: 1024 * 1024, // 1MB max output
           shell: false, // IMPORTANT: No shell interpretation
-          env: { ...process.env, PATH: process.env.PATH } // Inherit PATH for finding commands
+          env: buildAgentEnv() // Inherits PATH; VibeSpace's own server config stays out
         }
       );
 

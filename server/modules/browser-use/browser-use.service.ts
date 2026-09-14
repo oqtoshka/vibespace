@@ -9,6 +9,7 @@ import spawn from 'cross-spawn';
 
 import { appConfigDb } from '@/modules/database/index.js';
 import { providerMcpService } from '@/modules/providers/index.js';
+import { buildAgentEnv } from '@/shared/agent-env.js';
 import { getModuleDirectory } from '@/shared/utils.js';
 
 import { getBrowserUseRuntime } from './browser-use-runtime.js';
@@ -245,7 +246,8 @@ function runCommand(command: string, args: string[]): Promise<void> {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd: process.cwd(),
-      env: process.env,
+      // Package installs run lifecycle scripts.
+      env: buildAgentEnv(),
       shell: false,
       stdio: ['ignore', 'pipe', 'pipe'],
     });

@@ -6,6 +6,7 @@ import Database from 'better-sqlite3';
 import crossSpawn from 'cross-spawn';
 
 import { sessionsDb } from '@/modules/database/index.js';
+import { buildAgentEnv } from '@/shared/agent-env.js';
 import type { IProviderModels } from '@/shared/interfaces.js';
 import type {
   ProviderChangeActiveModelInput,
@@ -599,7 +600,8 @@ export const readOpenCodeConfiguredModel = (): string | null => {
 const runOpenCodeModelsCommand = (): Promise<string> => new Promise((resolve, reject) => {
   const openCodeProcess = spawnFunction('opencode', ['models', '--verbose'], {
     cwd: process.cwd(),
-    env: { ...process.env },
+    // `opencode models` loads plugins, which are arbitrary code.
+    env: buildAgentEnv(),
   });
 
   let stdout = '';

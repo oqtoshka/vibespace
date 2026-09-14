@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { collectAgentEnv } from '../shared/agent-env.js';
+import { buildAgentEnv, collectAgentEnv } from '../shared/agent-env.js';
 import { mkdirSync } from 'node:fs';
 import net from 'node:net';
 import os from 'node:os';
@@ -181,14 +181,14 @@ function bootServer(slot) {
       const child = crossSpawn('opencode', ['serve', '--port', String(port), '--hostname', '127.0.0.1'], {
         cwd: workspace,
         stdio: ['ignore', 'pipe', 'pipe'],
-        env: {
-          ...process.env,
+        // Filtered: every tool shell OpenCode runs inherits this server's env.
+        env: buildAgentEnv({
           ...slot.extraEnv(),
           ...(process.env.VS_OPENCODE_SERVER_CONFIG_DIR
             ? { OPENCODE_CONFIG_DIR: process.env.VS_OPENCODE_SERVER_CONFIG_DIR }
             : {}),
           OPENCODE_SERVER_PASSWORD: password,
-        },
+        }),
       });
 
       let settled = false;

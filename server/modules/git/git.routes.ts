@@ -3,6 +3,7 @@ import path from 'path';
 
 import express from 'express';
 
+import { buildAgentEnv } from '@/shared/agent-env.js';
 import type { ProviderRunFunction } from '@/shared/types.js';
 import { AppError } from '@/shared/utils.js';
 
@@ -30,7 +31,9 @@ const COMMIT_DIFF_CHARACTER_LIMIT = 500_000;
 
 function spawnAsync(command, args, options = {}) {
   return new Promise((resolve, reject) => {
+    // Commits and checkouts run the repository's own hooks: arbitrary code.
     const child = spawn(command, args, {
+      env: buildAgentEnv(),
       ...options,
       shell: false,
     });

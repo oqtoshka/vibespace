@@ -1,6 +1,7 @@
 // cross-spawn: drop-in spawn with Windows .cmd/PATHEXT resolution (same choice as routes/git.js).
 import spawn from 'cross-spawn';
 
+import { buildAgentEnv } from '@/shared/agent-env.js';
 import type { GitCommandResult, GitCommandRunner, WorktreePorcelainEntry } from '@/shared/types.js';
 import { AppError, normalizeProjectPath } from '@/shared/utils.js';
 
@@ -11,7 +12,8 @@ import { AppError, normalizeProjectPath } from '@/shared/utils.js';
  */
 export function runGitCommand(args: string[], cwd: string): Promise<GitCommandResult> {
   return new Promise((resolve, reject) => {
-    const child = spawn('git', args, { cwd, shell: false });
+    // Checkouts run the repository's hooks, so VibeSpace's own config stays out.
+    const child = spawn('git', args, { cwd, env: buildAgentEnv(), shell: false });
 
     let stdout = '';
     let stderr = '';
