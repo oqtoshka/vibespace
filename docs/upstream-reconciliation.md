@@ -175,7 +175,7 @@ cherry-pick is a manual relocation, forever, and the gap only widens.
 
 **Phase 0 — fence the personal integrations (done in this change).** Mission
 Control and Anthill now live in a host-module plugin
-(`~/projects/ai/vibespace-homelab-plugin`, symlinked into
+(a private repo, symlinked into
 `~/.claude-code-ui/plugins/`), reached through a narrow `PluginHost` API in
 `server/modules/plugins`. Core keeps only a generic `collectAgentEnv`
 contributor hook for private/ephemeral spawns. Less to carry through the port,
@@ -260,7 +260,7 @@ and names the model it used. Regression test in
 
 Provider-agnostic surface: file share + `/render` + HTML preview ✅, per-file
 `files.watch` push (preview auto-refresh, ~1 s) ✅, both worktree listings ✅,
-plugin host loads `homelab-integrations` ✅, boot session-restore resumed three
+plugin host loads the private integrations plugin ✅, boot session-restore resumed three
 sessions after the restart ✅, activity sort / running-sessions ✅.
 
 ### Not exercised, and why

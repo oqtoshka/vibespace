@@ -22,8 +22,8 @@ export type ProbedContextWindow = {
    * A proxy's `max_input_tokens` sits next to a separate `max_output_tokens`,
    * and publishers disagree on whether the input figure already makes room for
    * the output: LiteLLM's catalog publishes the whole window there, while a
-   * self-hosted stack may publish the window minus output (llm.example.com does,
-   * 24,576 + 8,192 for a 32k llama.cpp). Either reading is honest, so the
+   * self-hosted stack may publish the window minus output (a LiteLLM proxy in
+   * front of llama.cpp does, 24,576 + 8,192 for a 32k llama.cpp). Either reading is honest, so the
    * probe only narrows it to a range; `context` is its safe low end.
    */
   upTo: number;
