@@ -210,6 +210,7 @@ test('an idle OpenCode session is judged by its own todo list, not by Claude tas
     CREATE TABLE part (id text, message_id text, session_id text, time_created integer, time_updated integer, data text);
   `);
   db.prepare('INSERT INTO todo VALUES (?, ?, ?, ?, 0, 0, 0)').run('ses_open', 'still to do', 'pending', 'high');
+  db.prepare('INSERT INTO todo VALUES (?, ?, ?, ?, 0, 0, 0)').run('ses_parked', '[waiting on user] pick a name', 'pending', 'high');
   db.close();
 
   const originalHomedir = os.homedir;
@@ -217,6 +218,8 @@ test('an idle OpenCode session is judged by its own todo list, not by Claude tas
   try {
     await recordSessionActivity({ provider: 'opencode', sessionId: 'ses_open', cwd: '/proj', turnActive: false });
     await recordSessionActivity({ provider: 'opencode', sessionId: 'ses_clear', cwd: '/proj', turnActive: false });
+    // Parked on the user: waking it would only press it to close that item.
+    await recordSessionActivity({ provider: 'opencode', sessionId: 'ses_parked', cwd: '/proj', turnActive: false });
     const calls = [];
     assert.deepEqual(await restoreInterruptedSessions({ opencode: spawnRecorder(calls) }), ['ses_open']);
     assert.equal(calls.length, 1);
