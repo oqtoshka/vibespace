@@ -161,6 +161,11 @@ test('an unanswered prompt for an ordinary tool never resolves into a deny', asy
 
     resolveToolApproval(request.requestId, { allow: true });
     assert.equal((await captured.decision).behavior, 'allow');
+    // An answer from one client must retire the prompt on every other client.
+    assert.ok(
+      writer.messages.some((m) => m.kind === 'permission_cancelled' && m.requestId === request.requestId && m.reason === 'resolved'),
+      'a settled prompt is announced so other clients drop its card',
+    );
     release();
   } finally {
     await abortClaudeSDKSession(sessionId).catch(() => {});

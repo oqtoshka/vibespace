@@ -86,6 +86,8 @@ test('federation credentials, idempotent creation, registered projects and sessi
     await assert.rejects(nativeControlService.create({ ...input, title: 'Changed' }), /different content/);
     await assert.rejects(nativeControlService.create({ ...input, requestId: randomUUID(), projectId: '/etc' }), /Project/);
     await assert.rejects(nativeControlService.create({ ...input, requestId: randomUUID(), model: 'invented' }), /model/i);
+    // The phone sends its "Default" choice as an empty string.
+    assert.equal((await nativeControlService.create({ ...input, requestId: randomUUID(), model: '' })).model, 'gpt-5.6-sol');
     await assert.rejects(nativeControlService.create({ ...input, requestId: randomUUID(), permissionMode: 'invented' }), /permission/i);
     const catalog = mock.method(providerModelsService, 'getProviderModels', async () => ({ models: {
       DEFAULT: 'fixture-model', OPTIONS: [{ value: 'fixture-model', label: 'Fixture', effort: { default: 'low', values: [{ value: 'low' }, { value: 'ultra' }] } }],

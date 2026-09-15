@@ -1786,6 +1786,7 @@ function makeCanUseTool(session, sdkOptions, emitNotification) {
       recordPendingInteraction(sid(), { toolName, input }).catch(() => {});
     }
 
+    let cancelAnnounced = false;
     const decision = await waitForToolApproval(requestId, {
       // Interactive prompts wait indefinitely even if the env var reinstates a
       // bound for ordinary tools: there is no sane way to answer a question on
@@ -1800,9 +1801,17 @@ function makeCanUseTool(session, sdkOptions, emitNotification) {
         _receivedAt: new Date(),
       },
       onCancel: (reason) => {
+        cancelAnnounced = true;
         session.writer.send(createNormalizedMessage({ kind: 'permission_cancelled', requestId, reason, sessionId: sid(), provider: 'claude' }));
       }
     });
+    // Every other client still shows this prompt. Codex announces any settle;
+    // Claude announced only timeouts and aborts, so a question answered in the
+    // browser (or cancelled with the session) stayed on the phone, and the phone
+    // could not dismiss it because the request was no longer pending.
+    if (!cancelAnnounced) {
+      session.writer.send(createNormalizedMessage({ kind: 'permission_cancelled', requestId, reason: 'resolved', sessionId: sid(), provider: 'claude' }));
+    }
     if (requiresInteraction && !session.ephemeral) {
       recordPendingInteraction(sid(), null).catch(() => {});
     }
