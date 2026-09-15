@@ -17,6 +17,11 @@ import { sendNativeHistory } from './native-history-transport.service.js';
 
 const epoch = randomUUID();
 
+/** An error the phone acts on by code rather than by reading the message. */
+class NativeChatError extends Error {
+  constructor(message: string, readonly code: string) { super(message); }
+}
+
 /** Called only by the websocket composition root for /native-chat/<id>. Reuses
  * the runtime behind a socket facade that filters all global broadcasts. */
 export function handleNativeChat(ws: WebSocket, request: AuthenticatedWebSocketRequest,
@@ -116,7 +121,7 @@ export function handleNativeChat(ws: WebSocket, request: AuthenticatedWebSocketR
       if (command.type === 'chat.permission-response') {
         const pending = dependencies.runtime.getPendingApprovalsForSession(sessionId);
         const approval = pending.find(p => p !== null && typeof p === 'object' && 'requestId' in p && p.requestId === command.requestId) as { toolName?: string; input?: { questions?: { question: string }[] } } | undefined;
-        if (!approval) throw new Error('Permission request is no longer pending in this session');
+        if (!approval) throw new NativeChatError('Permission request is no longer pending in this session', 'PERMISSION_NOT_PENDING');
         if (data.answers !== undefined) {
           if (approval.toolName !== 'AskUserQuestion' || !data.answers || typeof data.answers !== 'object' || Array.isArray(data.answers)) throw new Error('This permission does not accept question answers');
           const questions = approval.input?.questions;
@@ -147,7 +152,10 @@ export function handleNativeChat(ws: WebSocket, request: AuthenticatedWebSocketR
         };
       }
       facade.emit('message', JSON.stringify(command));
-    } catch (error) { send({ kind: 'native.error', requestId, error: error instanceof Error ? error.message : 'Native chat failed' }); }
+    } catch (error) {
+      send({ kind: 'native.error', requestId, error: error instanceof Error ? error.message : 'Native chat failed',
+        ...(error instanceof NativeChatError ? { code: error.code } : {}) });
+    }
   });
   send({ kind: 'native.hello', version: 1, epoch, provider: row.provider, rewind: ['claude', 'opencode', 'codex'].includes(row.provider), archived: Boolean(row.isArchived), voice: voiceService.getHealth() });
 }

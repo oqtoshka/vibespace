@@ -86,7 +86,8 @@ export const nativeControlService = {
     if (!project || project.isArchived) throw new Error('Project is unavailable');
     if (input.title !== undefined && (typeof input.title !== 'string' || input.title.length > 1000)) throw new Error('Invalid title');
     const settings = await nativeModelOptions(input.provider);
-    const model = input.model ?? settings.defaultModel;
+    // The phone's "Default" choice is an empty string, not an absent field.
+    const model = input.model || settings.defaultModel;
     if (!settings.options.some(option => option.value === model)) throw new Error('Invalid model');
     const selectedModel = settings.options.find(option => option.value === model);
     const effort = input.effort ?? selectedModel?.effort?.default ?? '';

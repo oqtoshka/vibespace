@@ -87,6 +87,8 @@ test('native session isolation, history, stream, permissions and duplicate recei
     assert.equal(calls, 0);
     await client.input({ type: 'chat.permission-response', requestId: 'permission-other', allow: true });
     assert.equal(answers, 0);
+    assert.ok(client.frames.some(f => f.kind === 'native.error' && f.code === 'PERMISSION_NOT_PENDING'),
+      'a stale prompt is identified by code so the phone drops it instead of restoring it');
     await client.input({ type: 'chat.permission-response', requestId: 'permission-one', allow: true });
     assert.equal(answers, 1);
     const catalog = mock.method(providerModelsService, 'getProviderModels', async () => ({ models: {
