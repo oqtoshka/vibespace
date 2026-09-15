@@ -515,6 +515,8 @@ function ChatInterface({
           isTaskMasterInstalled={isTaskMasterInstalled}
           onShowAllTasks={onShowAllTasks}
           setInput={setInput}
+          isPrivate={effectivePrivateMode}
+          onTogglePrivate={togglePrivateMode}
           isLoadingMoreMessages={isLoadingMoreMessages}
           hasMoreMessages={hasMoreMessages}
           totalMessages={totalMessages}
@@ -565,7 +567,6 @@ function ChatInterface({
           onModeSwitch={cyclePermissionMode}
           isPrivate={effectivePrivateMode}
           privateLocked={sessionExists}
-          onTogglePrivate={togglePrivateMode}
           effort={currentProviderEffort}
           availableEffortOptions={currentProviderEffortOptions}
           onSelectEffort={handleSelectComposerEffort}

@@ -11,7 +11,7 @@ import type {
   RefObject,
   TouchEvent,
 } from 'react';
-import { MessageSquareIcon, XIcon, Clock3, Loader2, PaperclipIcon, ChevronDown, Check, ArrowUpIcon, ActivityIcon, MoreHorizontalIcon, CpuIcon, LockIcon, LockOpenIcon } from 'lucide-react';
+import { MessageSquareIcon, XIcon, Clock3, Loader2, PaperclipIcon, ChevronDown, Check, ArrowUpIcon, ActivityIcon, MoreHorizontalIcon, CpuIcon, LockIcon } from 'lucide-react';
 
 import type { QueuedMessage } from '../../hooks/useChatComposerState';
 
@@ -80,7 +80,6 @@ interface ChatComposerProps {
   isPrivate: boolean;
   /** True once the session exists — the choice can no longer change. */
   privateLocked: boolean;
-  onTogglePrivate: () => void;
   effort: string;
   availableEffortOptions: NonNullable<ProviderModelOption['effort']>['values'];
   onSelectEffort: (effort: string) => void;
@@ -151,7 +150,6 @@ export default function ChatComposer({
   onModeSwitch,
   isPrivate,
   privateLocked,
-  onTogglePrivate,
   effort,
   availableEffortOptions,
   onSelectEffort,
@@ -633,42 +631,21 @@ export default function ChatComposer({
               </div>
             </button>
 
-            {/* Private is decided before the first message and then fixed:
-                the presence reporter reads its gate from the harness's
-                environment at spawn, so there is no flipping it later. The
-                state is never colour alone — glyph plus the word, always. */}
-            {privateLocked ? (
-              isPrivate && (
-                <span
-                  className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-violet-300/60 bg-violet-50 px-2 text-xs font-medium text-violet-700 dark:border-violet-600/40 dark:bg-violet-900/15 dark:text-violet-300 sm:px-2.5"
-                  title={t('input.privateLocked', { defaultValue: 'Private session: not reported to external boards, no notifications, no recap. Fixed for the life of the session.' })}
-                  aria-label={t('input.privateLocked', { defaultValue: 'Private session: not reported to external boards, no notifications, no recap. Fixed for the life of the session.' })}
-                >
-                  <LockIcon className="h-3 w-3 shrink-0" aria-hidden />
-                  <span className="whitespace-nowrap">{t('input.private', { defaultValue: 'private' })}</span>
-                </span>
-              )
-            ) : (
-              <button
-                type="button"
-                onClick={onTogglePrivate}
-                aria-pressed={isPrivate}
-                className={`inline-flex h-8 items-center gap-1.5 rounded-lg border px-2 text-xs font-medium transition-all duration-200 sm:px-2.5 ${
-                  isPrivate
-                    ? 'border-violet-300/60 bg-violet-50 text-violet-700 hover:bg-violet-100 dark:border-violet-600/40 dark:bg-violet-900/15 dark:text-violet-300 dark:hover:bg-violet-900/25'
-                    : 'border-border/60 bg-muted/50 text-muted-foreground hover:bg-muted'
-                }`}
-                title={t('input.privateToggle', { defaultValue: 'Start this session private: not reported to external boards, no notifications, no recap. Decided before the first message.' })}
+            {/* Private is chosen on the new-session screen, next to the model,
+                and fixed once the session exists: the presence reporter reads
+                its gate from the harness's environment at spawn. Here it is
+                only shown, never flipped — glyph plus the word, not colour. */}
+            {isPrivate && (
+              <span
+                className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-violet-300/60 bg-violet-50 px-2 text-xs font-medium text-violet-700 dark:border-violet-600/40 dark:bg-violet-900/15 dark:text-violet-300 sm:px-2.5"
+                title={privateLocked
+                  ? t('input.privateLocked', { defaultValue: 'Private session: not reported to external boards, no notifications, no recap. Fixed for the life of the session.' })
+                  : t('input.privateToggle', { defaultValue: 'Start this session private: not reported to external boards, no notifications, no recap. Decided before the first message.' })}
+                aria-label={t('input.privateLocked', { defaultValue: 'Private session: not reported to external boards, no notifications, no recap. Fixed for the life of the session.' })}
               >
-                {isPrivate
-                  ? <LockIcon className="h-3 w-3 shrink-0" aria-hidden />
-                  : <LockOpenIcon className="h-3 w-3 shrink-0" aria-hidden />}
-                <span className="hidden whitespace-nowrap sm:inline">
-                  {isPrivate
-                    ? t('input.private', { defaultValue: 'private' })
-                    : t('input.notPrivate', { defaultValue: 'not private' })}
-                </span>
-              </button>
+                <LockIcon className="h-3 w-3 shrink-0" aria-hidden />
+                <span className="whitespace-nowrap">{t('input.private', { defaultValue: 'private' })}</span>
+              </span>
             )}
 
             {/* Which model the next turn runs on. Sits next to the mode pill

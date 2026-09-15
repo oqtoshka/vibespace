@@ -1,6 +1,6 @@
 import { isProviderEnabled, OPENCODE_LABEL, OPENCODE_DEFAULT_MODEL } from '../../../../constants/providerPolicy';
 import React, { useCallback, useMemo, useState } from "react";
-import { Check, ChevronDown, Plus } from "lucide-react";
+import { Check, ChevronDown, Lock, LockOpen, Plus } from "lucide-react";
 import { Trans, useTranslation } from "react-i18next";
 
 import type {
@@ -72,6 +72,9 @@ type ProviderSelectionEmptyStateProps = {
   isTaskMasterInstalled: boolean | null;
   onShowAllTasks?: (() => void) | null;
   setInput: React.Dispatch<React.SetStateAction<string>>;
+  /** Whether the session about to be created starts private. */
+  isPrivate: boolean;
+  onTogglePrivate: () => void;
 };
 
 type ProviderGroup = {
@@ -130,6 +133,8 @@ export default function ProviderSelectionEmptyState({
   isTaskMasterInstalled,
   onShowAllTasks,
   setInput,
+  isPrivate,
+  onTogglePrivate,
 }: ProviderSelectionEmptyStateProps) {
   const { t } = useTranslation("chat");
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -343,6 +348,44 @@ export default function ProviderSelectionEmptyState({
               </Command>
             </DialogContent>
           </Dialog>
+
+          {/* Private is part of setting up the session, like the model: it
+              is read once when the session is created and fixed after, so it
+              is chosen here rather than from the composer. The state is never
+              colour alone — glyph plus the word, always. */}
+          <div className="mt-3 flex flex-col items-center gap-1.5">
+            <button
+              type="button"
+              onClick={onTogglePrivate}
+              aria-pressed={isPrivate}
+              className={`inline-flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium transition-all duration-200 ${
+                isPrivate
+                  ? "border-violet-300/60 bg-violet-50 text-violet-700 hover:bg-violet-100 dark:border-violet-600/40 dark:bg-violet-900/15 dark:text-violet-300 dark:hover:bg-violet-900/25"
+                  : "border-border/60 bg-muted/50 text-muted-foreground hover:bg-muted"
+              }`}
+              title={t("input.privateToggle", {
+                defaultValue:
+                  "Start this session private: not reported to external boards, no notifications, no recap. Decided before the first message.",
+              })}
+            >
+              {isPrivate ? (
+                <Lock className="h-3 w-3 shrink-0" aria-hidden />
+              ) : (
+                <LockOpen className="h-3 w-3 shrink-0" aria-hidden />
+              )}
+              <span className="whitespace-nowrap">
+                {isPrivate
+                  ? t("input.private", { defaultValue: "private" })
+                  : t("input.notPrivate", { defaultValue: "not private" })}
+              </span>
+            </button>
+            <p className="text-center text-[11px] text-muted-foreground">
+              {t("providerSelection.privateHint", {
+                defaultValue:
+                  "Private: not reported to external boards, no notifications, no recap",
+              })}
+            </p>
+          </div>
 
           <Dialog
             open={modelLibraryOpen}
