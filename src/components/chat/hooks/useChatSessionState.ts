@@ -1218,7 +1218,10 @@ export function useChatSessionState({
         const url = `/api/providers/sessions/${encodeURIComponent(selectedSession.id)}/token-usage`;
         const response = await authenticatedFetch(url);
         if (response.ok) {
-          const usage = await response.json();
+          // Provider routes wrap results as `{ success, data }`; storing the
+          // envelope itself read as zero tokens in the composer and `/cost`.
+          const body = await response.json();
+          const usage = body?.data ?? null;
           setTokenBudget(usage);
           // The server hands back its last live reading for this session when
           // it still has one, which restores the full gauge (percentage,
