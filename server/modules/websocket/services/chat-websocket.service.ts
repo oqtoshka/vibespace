@@ -288,6 +288,10 @@ function buildRuntimeOptions(
     // runtime puts the private-variant env (see collectAgentEnv) into the harness process it spawns for this
     // turn, so no presence reporter ever speaks for the session.
     private: Boolean(session.is_private),
+    // Briefing mode is likewise the row's: the launch adds the briefing env,
+    // instructions and tool server to the harness process (see
+    // collectAgentLaunchExtras); the client cannot ask for it per turn.
+    briefing: session.briefing_mode ? { needsPlan: Boolean(session.briefing_needs_plan) } : null,
     // OpenCode can only accept `delivery: "steer"` while the conversation is
     // running through its server engine. Interactive websocket turns opt into
     // that transport; internal one-shot helpers keep using the lighter CLI.

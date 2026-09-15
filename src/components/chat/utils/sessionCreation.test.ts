@@ -16,3 +16,23 @@ test('includes the first prompt so a new session gets an immediate provisional t
     initialMessage: 'Add session deep links',
   });
 });
+
+test('briefing mode and the plan request ride on the creation request, and are absent otherwise', () => {
+  assert.deepEqual(buildSessionCreationRequest({
+    provider: 'claude',
+    projectPath: '/workspace/project',
+    isPrivate: false,
+    briefing: { needsPlan: true },
+    initialMessage: 'Ship it',
+  }), {
+    provider: 'claude',
+    projectPath: '/workspace/project',
+    private: false,
+    briefing: true,
+    needsPlan: true,
+    initialMessage: 'Ship it',
+  });
+  assert.equal('briefing' in buildSessionCreationRequest({
+    provider: 'claude', projectPath: '/p', isPrivate: true, initialMessage: 'x',
+  }), false);
+});

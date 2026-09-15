@@ -112,3 +112,25 @@ test('collectAgentEnv merges contributors in order and survives a throwing one',
   }
   assert.deepEqual(collectAgentEnv({ provider: 'claude', scope: 'session', private: true }), {});
 });
+
+test('collectAgentLaunchExtras concatenates instructions, merges MCP servers, survives a throwing contributor', async () => {
+  const { collectAgentLaunchExtras, registerAgentLaunchContributor } = await import('@/shared/agent-env.js');
+  const unregisterA = registerAgentLaunchContributor((context) => (
+    context.briefing ? { instructions: 'A says hi', mcpServers: { a: { command: 'a' }, shared: { command: 'from-a' } } } : null
+  ));
+  const unregisterThrows = registerAgentLaunchContributor(() => { throw new Error('boom'); });
+  const unregisterB = registerAgentLaunchContributor(() => ({ instructions: '  B says hi  ', mcpServers: { shared: { command: 'from-b' } } }));
+  try {
+    const briefing = collectAgentLaunchExtras({ provider: 'claude', scope: 'session', briefing: { needsPlan: true } });
+    assert.equal(briefing.instructions, 'A says hi\n\nB says hi');
+    assert.deepEqual(briefing.mcpServers, { a: { command: 'a' }, shared: { command: 'from-b' } });
+
+    const plain = collectAgentLaunchExtras({ provider: 'claude', scope: 'session' });
+    assert.equal(plain.instructions, 'B says hi');
+    assert.deepEqual(plain.mcpServers, { shared: { command: 'from-b' } });
+  } finally {
+    unregisterA();
+    unregisterThrows();
+    unregisterB();
+  }
+});

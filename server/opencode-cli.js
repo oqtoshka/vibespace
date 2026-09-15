@@ -7,7 +7,7 @@ import crossSpawn from 'cross-spawn';
 import { appendFilesInputTag, appendImagesInputTag, normalizeAttachmentDescriptors, normalizeImageDescriptors } from './shared/image-attachments.js';
 import { createProviderRuntimeContext, normalizeRuntimeOptions } from './shared/provider-runtime-context.js';
 import { readOpenCodeTokenUsage } from './shared/opencode-token-usage.js';
-import { buildAgentEnv, collectAgentEnv } from './shared/agent-env.js';
+import { buildAgentEnv, collectAgentEnv, collectAgentLaunchExtras } from './shared/agent-env.js';
 import { hasOpenCodeCompactSummary, sendOpenCodeContextUsage } from './shared/opencode-context.js';
 import { runOpenCodeCompaction, runOpenCodeHttpTurn } from './services/opencode-http-runner.js';
 import { sessionsService } from './modules/providers/services/sessions.service.js';
@@ -249,6 +249,17 @@ async function spawnOpenCode(command, options = {}, ws, context = undefined) {
       console.error('[OpenCode] rewind failed:', error?.message || error);
     }
     options = { ...options, rewind: undefined };
+  }
+
+  // Briefing mode: the shared OpenCode server and the CLI alike get the
+  // session's launch env, but only a fresh session's first prompt can carry
+  // the plugin's instructions (see collectAgentLaunchExtras and ADR-0021).
+  if (options.briefing && !options.sessionId && !options.ephemeral) {
+    const { instructions } = collectAgentLaunchExtras({
+      provider: 'opencode', scope: 'session', private: Boolean(options.private), ephemeral: false,
+      sessionId: appSessionId ?? null, briefing: options.briefing,
+    });
+    if (instructions && typeof command === 'string') command = `${instructions}\n\n---\n\n${command}`;
   }
 
   // Images normally need the HTTP transport: `opencode run` cannot carry their
@@ -494,6 +505,7 @@ async function spawnOpenCode(command, options = {}, ws, context = undefined) {
               private: Boolean(options.private),
               ephemeral: Boolean(options.ephemeral),
               sessionId: options.sessionId ?? null,
+              briefing: options.briefing ?? null,
             }),
           }),
         });

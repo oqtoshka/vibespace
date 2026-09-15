@@ -48,6 +48,9 @@ interface UseChatComposerStateArgs {
    * session is allocated; it has no effect on an existing session.
    */
   privateMode?: boolean;
+  /** Start the next brand-new session in briefing mode; read once, like privateMode. */
+  briefingMode?: boolean;
+  briefingNeedsPlan?: boolean;
   cursorModel: string;
   claudeModel: string;
   codexModel: string;
@@ -261,6 +264,8 @@ export function useChatComposerState({
   permissionMode,
   cyclePermissionMode,
   privateMode = false,
+  briefingMode = false,
+  briefingNeedsPlan = true,
   cursorModel,
   claudeModel,
   codexModel,
@@ -877,6 +882,7 @@ export function useChatComposerState({
               provider,
               projectPath: resolvedProjectPath,
               isPrivate: Boolean(privateMode),
+              briefing: briefingMode ? { needsPlan: Boolean(briefingNeedsPlan) } : null,
               initialMessage: content,
             })),
           });
@@ -994,6 +1000,8 @@ export function useChatComposerState({
       onSessionEstablished,
       permissionMode,
       privateMode,
+      briefingMode,
+      briefingNeedsPlan,
       effort,
       interfaceLanguage,
       provider,

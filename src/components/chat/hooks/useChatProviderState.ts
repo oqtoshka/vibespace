@@ -128,6 +128,14 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
    * instead. This is an explicit one-session choice, never a saved default.
    */
   const [privateMode, setPrivateMode] = useState(false);
+  /**
+   * Whether the NEXT new session starts in briefing mode — read from a
+   * structured card on Mission Control rather than the chat — and whether it
+   * must file a plan before any work. Same lifecycle as private: chosen for
+   * one session, fixed at creation, never a saved default.
+   */
+  const [briefingMode, setBriefingMode] = useState(false);
+  const [briefingNeedsPlan, setBriefingNeedsPlan] = useState(true);
   const [pendingPermissionRequests, setPendingPermissionRequests] = useState<PendingPermissionRequest[]>([]);
   const [provider, setProvider] = useState<LLMProvider>(readStoredProvider);
   const [cursorModel, setCursorModel] = useState<string>(() => {
@@ -457,17 +465,26 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     // selected for this specific session.
     if (!selectedSession?.id) {
       setPrivateMode(false);
+      setBriefingMode(false);
+      setBriefingNeedsPlan(true);
     }
   }, [selectedSession?.id, provider]);
 
   const togglePrivateMode = useCallback(() => {
     setPrivateMode((previous) => !previous);
   }, []);
+  const toggleBriefingMode = useCallback(() => {
+    setBriefingMode((previous) => !previous);
+  }, []);
+  const toggleBriefingNeedsPlan = useCallback(() => {
+    setBriefingNeedsPlan((previous) => !previous);
+  }, []);
 
   const selectProvider = useCallback((nextProvider: LLMProvider) => {
     setProvider(nextProvider);
     if (!selectedSession?.id) {
       setPrivateMode(false);
+      setBriefingMode(false);
     }
   }, [selectedSession?.id]);
 
@@ -923,6 +940,10 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     setPermissionMode,
     privateMode,
     togglePrivateMode,
+    briefingMode,
+    toggleBriefingMode,
+    briefingNeedsPlan,
+    toggleBriefingNeedsPlan,
     pendingPermissionRequests,
     setPendingPermissionRequests,
     availablePermissionModes,

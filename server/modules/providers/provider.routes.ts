@@ -740,10 +740,15 @@ router.post(
     // row before the first turn spawns anything, which is why it is accepted
     // here and nowhere else.
     const isPrivate = body.private === true;
+    // `briefing: true` starts the session in briefing mode — read from a
+    // structured card on an external board — and `needsPlan: true` asks it for
+    // a plan before any work. Same rule as private: on the row before the
+    // first turn, or the launch cannot see it.
+    const briefing = body.briefing === true ? { needsPlan: body.needsPlan === true } : null;
     // Web clients send the first message so the row gets a provisional title
     // immediately; the provider/recap may replace that derived name later.
     const initialMessage = typeof body.initialMessage === 'string' ? body.initialMessage : undefined;
-    const result = sessionsService.createAppSession(provider, projectPath, isSide, isPrivate, initialMessage);
+    const result = sessionsService.createAppSession(provider, projectPath, isSide, isPrivate, initialMessage, briefing);
     res.status(201).json(createApiSuccessResponse(result));
   }),
 );

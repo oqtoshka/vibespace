@@ -58,6 +58,10 @@ interface ChatMessagesPaneProps {
   setInput: Dispatch<SetStateAction<string>>;
   isPrivate: boolean;
   onTogglePrivate: () => void;
+  isBriefing: boolean;
+  onToggleBriefing: () => void;
+  briefingNeedsPlan: boolean;
+  onToggleBriefingNeedsPlan: () => void;
   isLoadingMoreMessages: boolean;
   hasMoreMessages: boolean;
   totalMessages: number;
@@ -116,6 +120,10 @@ function ChatMessagesPane({
   setInput,
   isPrivate,
   onTogglePrivate,
+  isBriefing,
+  onToggleBriefing,
+  briefingNeedsPlan,
+  onToggleBriefingNeedsPlan,
   isLoadingMoreMessages,
   hasMoreMessages,
   totalMessages,
@@ -268,6 +276,10 @@ function ChatMessagesPane({
           setInput={setInput}
           isPrivate={isPrivate}
           onTogglePrivate={onTogglePrivate}
+          isBriefing={isBriefing}
+          onToggleBriefing={onToggleBriefing}
+          briefingNeedsPlan={briefingNeedsPlan}
+          onToggleBriefingNeedsPlan={onToggleBriefingNeedsPlan}
         />
       ) : (
         <>

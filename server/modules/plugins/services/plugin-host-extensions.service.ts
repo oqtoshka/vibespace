@@ -8,7 +8,12 @@ import {
   subscribeSessionMetadataChanges,
   type SessionMetadataChange,
 } from '@/modules/plugins/services/session-metadata-events.service.js';
-import { registerAgentEnvContributor, type AgentEnvContributor } from '@/shared/agent-env.js';
+import {
+  registerAgentEnvContributor,
+  registerAgentLaunchContributor,
+  type AgentEnvContributor,
+  type AgentLaunchContributor,
+} from '@/shared/agent-env.js';
 
 /**
  * In-process plugin host modules.
@@ -115,6 +120,8 @@ export type PluginHost = {
   hmacSha256: (input: string) => string;
   /** See shared/agent-env.ts — add variables to agent-spawned processes. */
   registerAgentEnvContributor: (contributor: AgentEnvContributor) => () => void;
+  /** See shared/agent-env.ts — add instructions and MCP servers to a session's launch. */
+  registerAgentLaunchContributor?: (contributor: AgentLaunchContributor) => () => void;
   /** Runs on server shutdown and on deactivation, in registration order. */
   onShutdown: (callback: () => void | Promise<void>) => void;
 };
@@ -192,6 +199,11 @@ function buildHost(name: string, pluginDir: string, deps: HostExtensionDependenc
       crypto.createHmac('sha256', deps.getSigningSecret()).update(input).digest('base64url'),
     registerAgentEnvContributor: (contributor) => {
       const unregister = registerAgentEnvContributor(contributor);
+      state.unregisterContributors.push(unregister);
+      return unregister;
+    },
+    registerAgentLaunchContributor: (contributor) => {
+      const unregister = registerAgentLaunchContributor(contributor);
       state.unregisterContributors.push(unregister);
       return unregister;
     },

@@ -39,6 +39,8 @@ type CreateAppSessionResult = {
   projectPath: string;
   isSide: boolean;
   isPrivate: boolean;
+  /** Started in briefing mode, with or without a plan asked for first. */
+  briefing: { needsPlan: boolean } | null;
   sessionName: string;
 };
 
@@ -54,6 +56,8 @@ type ArchivedSessionListItem = {
   lastActivity: string | null;
   isProjectArchived: boolean;
   isPrivate: boolean;
+  /** Started in briefing mode — read from a structured card, not the chat. */
+  isBriefing: boolean;
   avatarUrl: string | null;
 };
 
@@ -252,6 +256,7 @@ function toSessionListItem(
     lastActivity: session.updated_at ?? session.created_at ?? null,
     isProjectArchived: Boolean(project?.isArchived),
     isPrivate: Boolean(session.is_private),
+    isBriefing: Boolean(session.briefing_mode),
     avatarUrl: sessionAvatarUrl(session.provider_session_id, Boolean(session.is_private)),
     isArchived: Boolean(session.isArchived),
     isSide: Boolean(session.is_side),
@@ -380,6 +385,7 @@ export const sessionsService = {
     isSide: boolean | string = false,
     isPrivate = false,
     initialMessage?: string,
+    briefing: { needsPlan: boolean } | null = null,
   ): CreateAppSessionResult {
     if (typeof isSide === 'string') {
       initialMessage = isSide;
@@ -398,7 +404,7 @@ export const sessionsService = {
     // message still gets the stable fallback. The title is only provisional:
     // provider metadata or the background recap may replace the derived name.
     const sessionName = typeof initialMessage === 'string' ? buildCloudCliSessionName(initialMessage) : '';
-    sessionsDb.createAppSession(sessionId, provider, normalizedProjectPath, isSide, isPrivate, sessionName || null);
+    sessionsDb.createAppSession(sessionId, provider, normalizedProjectPath, isSide, isPrivate, sessionName || null, briefing);
 
     // The sidebar is fed by the transcript watcher, which cannot see a session
     // the provider has not written anything for yet. Without this the new chat
@@ -416,6 +422,7 @@ export const sessionsService = {
       projectPath: normalizedProjectPath,
       isSide,
       isPrivate,
+      briefing,
       sessionName,
     };
   },
