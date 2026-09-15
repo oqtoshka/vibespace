@@ -148,6 +148,14 @@ CREATE TABLE IF NOT EXISTS sessions (
     -- Decided at creation and never changed — a session that has reported
     -- once cannot become private after the fact.
     is_private INTEGER DEFAULT 0,
+    -- 1 when the session was started in briefing mode: the operator reads it
+    -- from a structured card on an external board rather than from the chat,
+    -- and every harness process that runs it is launched with the briefing
+    -- instructions, tool server and env. \`briefing_needs_plan\` is the
+    -- operator's request for a plan before any work. Both decided at creation
+    -- and never changed, exactly like is_private.
+    briefing_mode INTEGER DEFAULT 0,
+    briefing_needs_plan INTEGER DEFAULT 0,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (session_id),

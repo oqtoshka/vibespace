@@ -1,7 +1,7 @@
 import { OPENCODE_LABEL } from '../../../constants/providerPolicy';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ArrowDownIcon, LockIcon } from 'lucide-react';
+import { ArrowDownIcon, ClipboardListIcon, LockIcon } from 'lucide-react';
 
 import { useTasksSettings } from '../../../contexts/TasksSettingsContext';
 import { useWebSocket } from '../../../contexts/WebSocketContext';
@@ -89,6 +89,10 @@ function ChatInterface({
     setPermissionMode,
     privateMode,
     togglePrivateMode,
+    briefingMode,
+    toggleBriefingMode,
+    briefingNeedsPlan,
+    toggleBriefingNeedsPlan,
     pendingPermissionRequests,
     setPendingPermissionRequests,
     cyclePermissionMode,
@@ -297,6 +301,8 @@ function ChatInterface({
     permissionMode,
     cyclePermissionMode,
     privateMode,
+    briefingMode,
+    briefingNeedsPlan,
     cursorModel,
     claudeModel,
     codexModel,
@@ -466,6 +472,12 @@ function ChatInterface({
     ? selectedSession.isPrivate
     : privateMode;
   const isPrivateSession = sessionExists && effectivePrivateMode;
+  // Briefing: same shape. An existing session's row says whether it was
+  // started that way; a pending one shows the toggle.
+  const effectiveBriefingMode = typeof selectedSession?.isBriefing === 'boolean'
+    ? selectedSession.isBriefing
+    : briefingMode;
+  const isBriefingSession = sessionExists && effectiveBriefingMode;
 
   return (
     <PermissionContext.Provider value={permissionContextValue}>
@@ -480,6 +492,18 @@ function ChatInterface({
             <span className="font-medium">{t('chat.private', { defaultValue: 'private' })}</span>
             <span className="truncate text-violet-700/70 dark:text-violet-400/70">
               {t('chat.privateHint', { defaultValue: 'not reported to external boards, no notifications, no recap' })}
+            </span>
+          </div>
+        )}
+        {isBriefingSession && (
+          <div
+            className="flex flex-shrink-0 items-center gap-1.5 border-b border-sky-500/20 bg-sky-500/5 px-3 py-1 text-xs text-sky-700 dark:text-sky-400"
+            role="status"
+          >
+            <ClipboardListIcon className="h-3 w-3 flex-shrink-0" aria-hidden />
+            <span className="font-medium">{t('chat.briefing', { defaultValue: 'briefing' })}</span>
+            <span className="truncate text-sky-700/70 dark:text-sky-400/70">
+              {t('chat.briefingHint', { defaultValue: 'read from the card on Mission Control — status, plan, state, decisions, findings' })}
             </span>
           </div>
         )}
@@ -517,6 +541,10 @@ function ChatInterface({
           setInput={setInput}
           isPrivate={effectivePrivateMode}
           onTogglePrivate={togglePrivateMode}
+          isBriefing={effectiveBriefingMode}
+          onToggleBriefing={toggleBriefingMode}
+          briefingNeedsPlan={briefingNeedsPlan}
+          onToggleBriefingNeedsPlan={toggleBriefingNeedsPlan}
           isLoadingMoreMessages={isLoadingMoreMessages}
           hasMoreMessages={hasMoreMessages}
           totalMessages={totalMessages}

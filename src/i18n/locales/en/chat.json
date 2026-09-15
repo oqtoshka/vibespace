@@ -149,7 +149,11 @@
     "private": "private",
     "notPrivate": "not private",
     "privateToggle": "Start this session private: not reported to external boards, no notifications, no recap. Decided before the first message.",
-    "privateLocked": "Private session: not reported to external boards, no notifications, no recap. Fixed for the life of the session."
+    "privateLocked": "Private session: not reported to external boards, no notifications, no recap. Fixed for the life of the session.",
+    "briefing": "briefing",
+    "notBriefing": "chat",
+    "briefingNeedsPlan": "plan first",
+    "briefingToggle": "Start this session in briefing mode: you read it from the card on Mission Control — status, plan, state, decisions, findings — and answer there. Decided before the first message."
   },
   "composer": {
     "reasoning": "Reasoning",
@@ -187,7 +191,10 @@
       "opencode": "Ready to use OpenCode with {{model}}. Start typing your message below.",
       "default": "Select a provider above to begin"
     },
-    "pressToSearch": "Press <kbd>{{shortcut}}</kbd> to search sessions, files, and commits"
+    "pressToSearch": "Press <kbd>{{shortcut}}</kbd> to search sessions, files, and commits",
+    "briefingHint": "Briefing: read on the Mission Control card — status, plan, state, decisions, findings — instead of the chat",
+    "briefingHintPlan": "Briefing: read on the Mission Control card; the session files a plan and waits for your approval before doing anything",
+    "chatHint": "Chat: the ordinary conversation; briefing mode puts the session on a Mission Control card instead"
   },
   "session": {
     "continue": {
@@ -282,6 +289,8 @@
   },
   "chat": {
     "private": "private",
-    "privateHint": "not reported to external boards, no notifications, no recap"
+    "privateHint": "not reported to external boards, no notifications, no recap",
+    "briefing": "briefing",
+    "briefingHint": "read from the card on Mission Control — status, plan, state, decisions, findings"
   }
 }

@@ -64,6 +64,10 @@ export interface ProjectSession {
   // Started private: no presence reporting, no notifications, no recap.
   // Fixed at creation; the sidebar and the chat header spell it out.
   isPrivate?: boolean;
+  // Started in briefing mode: the operator reads this session from a
+  // structured card on Mission Control rather than from the chat. Fixed at
+  // creation, like private.
+  isBriefing?: boolean;
   [key: string]: unknown;
 }
 

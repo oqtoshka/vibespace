@@ -20,7 +20,7 @@ import os from 'os';
 import { CLAUDE_FALLBACK_MODELS, normalizeClaudeModelToCatalogValue } from './modules/providers/list/claude/claude-models.provider.js';
 import { providerModelsService } from './modules/providers/services/provider-models.service.js';
 import { appendFilesInputTag, buildClaudeUserContent, getGlobalImageAssetsDir, normalizeImageDescriptors } from './shared/image-attachments.js';
-import { buildAgentEnv, collectAgentEnv } from './shared/agent-env.js';
+import { buildAgentEnv, collectAgentEnv, collectAgentLaunchExtras } from './shared/agent-env.js';
 import { resolveClaudeCodeExecutablePath } from './shared/claude-cli-path.js';
 import {
   createNotificationEvent,
@@ -450,8 +450,27 @@ function mapCliOptionsToSDK(options = {}) {
     sdkOptions.effort = resolvedEffort;
   }
 
+  // What host plugins want this session launched with, beyond env: text for
+  // the system prompt and MCP servers. A briefing-mode session, say, gets the
+  // board's tool vocabulary and the instructions to use it; which plugin says
+  // so, and what it says, is not the runtime's business.
+  const launchContext = {
+    provider: 'claude',
+    scope: 'session',
+    private: Boolean(options.private),
+    ephemeral: Boolean(options.ephemeral),
+    sessionId: options.sessionId ?? null,
+    briefing: options.briefing ?? null,
+  };
+  const launchExtras = options.ephemeral
+    ? { instructions: '', mcpServers: {} }
+    : collectAgentLaunchExtras(launchContext);
+  sdkOptions.pluginMcpServers = launchExtras.mcpServers;
+
   // Map system prompt configuration
-  const vibespacePreamble = buildVibespaceSystemPrompt(cwd);
+  const vibespacePreamble = [buildVibespaceSystemPrompt(cwd), launchExtras.instructions]
+    .filter(Boolean)
+    .join('\n\n');
   sdkOptions.systemPrompt = {
     type: 'preset',
     preset: 'claude_code',  // Required to use CLAUDE.md
@@ -484,13 +503,7 @@ function mapCliOptionsToSDK(options = {}) {
   // that (e.g. a presence reporter's opt-out) is the plugin's business, not
   // the runtime's. Merged over the filtered host env: contributors add, never
   // remove — dropping the rest would strip ANTHROPIC_BASE_URL and friends.
-  Object.assign(sdkOptions.env, collectAgentEnv({
-    provider: 'claude',
-    scope: 'session',
-    private: Boolean(options.private),
-    ephemeral: Boolean(options.ephemeral),
-    sessionId: options.sessionId ?? null,
-  }));
+  Object.assign(sdkOptions.env, collectAgentEnv(launchContext));
 
   // Map resume session
   if (sessionId) {
@@ -555,6 +568,7 @@ function recordRestoreState(session, turnActive) {
     // Carried so a detached restore after a restart spawns the resumed turn
     // with the same gate the session was started with.
     private: Boolean(session.options?.private),
+    briefing: session.options?.briefing ?? null,
     turnActive,
   }).catch(() => {});
 }
@@ -2292,8 +2306,13 @@ async function startPersistentSession(command, options, ws) {
   }
   const sdkOptions = mapCliOptionsToSDK({ ...options, model: resolvedModel, effortModels });
 
-  const mcpServers = await loadMcpConfig(options.cwd);
-  if (mcpServers) {
+  // The user's own servers first; a plugin's launch extras are merged over
+  // them, so a server the user already configured under the same name is the
+  // plugin's version for this session and no duplicate appears.
+  const pluginMcpServers = sdkOptions.pluginMcpServers || {};
+  delete sdkOptions.pluginMcpServers;
+  const mcpServers = { ...(await loadMcpConfig(options.cwd) || {}), ...pluginMcpServers };
+  if (Object.keys(mcpServers).length > 0) {
     sdkOptions.mcpServers = mcpServers;
   }
 

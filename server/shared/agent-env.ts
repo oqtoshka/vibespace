@@ -107,7 +107,61 @@ export type AgentEnvContext = {
   private?: boolean;
   ephemeral?: boolean;
   sessionId?: string | null;
+  /**
+   * The session was started in briefing mode: the operator will read it from a
+   * structured card rather than the chat, and asked (`needsPlan`) for a plan
+   * before any work. Like `private`, decided at creation and fixed after. What
+   * the mode means to the harness — which variables, which tool server, which
+   * instructions — is a contributor's business (see collectAgentLaunchExtras).
+   */
+  briefing?: { needsPlan: boolean } | null;
 };
+
+/**
+ * What a contributor may add to a session's launch beyond environment
+ * variables: text appended to the system prompt (or, for a runtime with no
+ * system-prompt channel, put ahead of the first prompt), and MCP servers the
+ * session should have. Both are merged over the user's own configuration and
+ * never replace it.
+ */
+export type AgentLaunchExtras = {
+  instructions?: string;
+  mcpServers?: Record<string, unknown>;
+};
+export type AgentLaunchContributor = (context: AgentEnvContext) => AgentLaunchExtras | null | undefined | void;
+
+const agentLaunchContributors = new Set<AgentLaunchContributor>();
+
+/** Registers a contributor of launch extras; returns the unregister function. */
+export function registerAgentLaunchContributor(contributor: AgentLaunchContributor): () => void {
+  agentLaunchContributors.add(contributor);
+  return () => {
+    agentLaunchContributors.delete(contributor);
+  };
+}
+
+/**
+ * Collects every launch contributor's extras for one spawn: instruction blocks
+ * are concatenated in registration order, MCP servers merged (later wins on a
+ * name clash). A throwing contributor is logged and skipped, never fatal.
+ */
+export function collectAgentLaunchExtras(context: AgentEnvContext): { instructions: string; mcpServers: Record<string, unknown> } {
+  const blocks: string[] = [];
+  let mcpServers: Record<string, unknown> = {};
+  for (const contributor of agentLaunchContributors) {
+    let extra: AgentLaunchExtras | null | undefined | void;
+    try {
+      extra = contributor(context);
+    } catch (error) {
+      console.warn('[agent-env] launch contributor threw:', error instanceof Error ? error.message : error);
+      continue;
+    }
+    if (!extra) continue;
+    if (typeof extra.instructions === 'string' && extra.instructions.trim()) blocks.push(extra.instructions.trim());
+    if (extra.mcpServers && typeof extra.mcpServers === 'object') mcpServers = { ...mcpServers, ...extra.mcpServers };
+  }
+  return { instructions: blocks.join('\n\n'), mcpServers };
+}
 
 /**
  * Returns extra variables for a spawn, or nothing. Contributors are consulted in

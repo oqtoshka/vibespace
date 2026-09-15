@@ -22,6 +22,7 @@ import { codexApprovals } from './modules/codex-approvals/index.js';
 import { appendFilesInputTag, buildCodexInputItems, normalizeImageDescriptors } from './shared/image-attachments.js';
 import { createProviderRuntimeContext, normalizeRuntimeOptions } from './shared/provider-runtime-context.js';
 import { getCodexAppServer } from './services/codex-app-server.service.js';
+import { collectAgentLaunchExtras } from './shared/agent-env.js';
 import { notifyRunFailed, notifyRunStopped } from './modules/notifications/index.js';
 import { cancelRateLimitWake, scheduleRateLimitWake } from './services/rate-limit-wake.service.js';
 import { recordSessionActivity, recordSessionEnd } from './services/session-restore.service.js';
@@ -428,7 +429,20 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
     permissionMode = 'default',
     ephemeral = false,
     private: isPrivate = false,
+    briefing = null,
   } = options;
+
+  // The app-server is shared between sessions, so a per-session launch cannot
+  // reach it through env or config. What a plugin wants a briefing session
+  // told rides ahead of the first prompt instead — once, on the turn that
+  // starts the thread (see collectAgentLaunchExtras and ADR-0021).
+  if (briefing && !sessionId && !ephemeral) {
+    const { instructions } = collectAgentLaunchExtras({
+      provider: 'codex', scope: 'session', private: Boolean(isPrivate), ephemeral: false,
+      sessionId: appSessionId ?? null, briefing,
+    });
+    if (instructions) command = `${instructions}\n\n---\n\n${command}`;
+  }
 
   const resolvedModel = await runtime.resolveResumeModel(
     appSessionId || sessionId,
@@ -615,6 +629,7 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
         permissionMode,
         userId: ws?.userId || null,
         private: Boolean(isPrivate),
+        briefing,
         turnActive: true,
       }).catch(() => {});
     }
@@ -871,6 +886,7 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
           permissionMode,
           userId: ws?.userId || null,
           private: Boolean(isPrivate),
+          briefing,
           turnActive: false,
         }).catch(() => {});
       }
