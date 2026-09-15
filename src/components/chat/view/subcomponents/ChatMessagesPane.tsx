@@ -56,6 +56,8 @@ interface ChatMessagesPaneProps {
   isTaskMasterInstalled: boolean | null;
   onShowAllTasks?: (() => void) | null;
   setInput: Dispatch<SetStateAction<string>>;
+  isPrivate: boolean;
+  onTogglePrivate: () => void;
   isLoadingMoreMessages: boolean;
   hasMoreMessages: boolean;
   totalMessages: number;
@@ -112,6 +114,8 @@ function ChatMessagesPane({
   isTaskMasterInstalled,
   onShowAllTasks,
   setInput,
+  isPrivate,
+  onTogglePrivate,
   isLoadingMoreMessages,
   hasMoreMessages,
   totalMessages,
@@ -262,6 +266,8 @@ function ChatMessagesPane({
           isTaskMasterInstalled={isTaskMasterInstalled}
           onShowAllTasks={onShowAllTasks}
           setInput={setInput}
+          isPrivate={isPrivate}
+          onTogglePrivate={onTogglePrivate}
         />
       ) : (
         <>

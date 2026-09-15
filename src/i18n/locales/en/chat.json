@@ -161,6 +161,7 @@
     "effortMenu": "Select reasoning effort"
   },
   "providerSelection": {
+    "privateHint": "Private: not reported to external boards, no notifications, no recap",
     "title": "Choose Your AI Assistant",
     "description": "Select a provider to start a new conversation",
     "selectModel": "Select Model",
