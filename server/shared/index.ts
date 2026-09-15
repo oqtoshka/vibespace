@@ -2,6 +2,9 @@
 export type { IProviderSessions } from './interfaces.js';
 export type { AnyRecord, FetchHistoryOptions, FetchHistoryResult, NormalizedMessage, ProviderRunFunction, ProviderRuntimeWriter } from './types.js';
 export { buildCodexTokenBudget } from './codex-token-usage.js';
+
+// The providers token-usage service reads OpenCode spend with the same rules as the runners.
+export { lookupOpenCodeTokenUsage } from './opencode-token-usage.js';
 export {
   createCompactBoundaryMessage,
   looksLikeCompactSummary,

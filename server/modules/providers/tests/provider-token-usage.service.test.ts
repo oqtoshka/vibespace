@@ -4,10 +4,9 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { sessionsDb } from '@/modules/database/index.js';
-
 import Database from 'better-sqlite3';
 
+import { sessionsDb } from '@/modules/database/index.js';
 import { createProviderTokenUsageService } from '@/modules/providers/services/provider-token-usage.service.js';
 import { AppError } from '@/shared/utils.js';
 
@@ -158,6 +157,58 @@ test('OpenCode token usage resolves its provider-native id from the session row'
       inputTokens: 17,
       outputTokens: 7,
       breakdown: { input: 17, output: 7 },
+    });
+  } finally {
+    await rm(tempDirectory, { recursive: true, force: true });
+  }
+});
+
+test('OpenCode HTTP-server sessions sum step usage from the v2 event log', async () => {
+  const tempDirectory = await mkdtemp(path.join(tmpdir(), 'provider-token-usage-opencode-v2-'));
+  const databasePath = path.join(tempDirectory, 'opencode.db');
+  const database = new Database(databasePath);
+
+  try {
+    // `opencode serve` 1.18.x leaves the session columns at zero and records
+    // usage only on each assistant step; the legacy message table is partial.
+    database.exec(`
+      CREATE TABLE session (
+        id TEXT PRIMARY KEY,
+        tokens_input INTEGER,
+        tokens_output INTEGER,
+        tokens_reasoning INTEGER,
+        tokens_cache_read INTEGER,
+        tokens_cache_write INTEGER
+      );
+      CREATE TABLE session_message (id TEXT PRIMARY KEY, session_id TEXT, type TEXT, data TEXT);
+    `);
+    database.prepare('INSERT INTO session VALUES (?, 0, 0, 0, 0, 0)').run('provider-session');
+    const insertStep = database.prepare('INSERT INTO session_message VALUES (?, ?, ?, ?)');
+    insertStep.run('m1', 'provider-session', 'user', JSON.stringify({ text: 'Hey' }));
+    insertStep.run('m2', 'provider-session', 'assistant', JSON.stringify({
+      tokens: { input: 100, output: 10, reasoning: 4, cache: { read: 20, write: 1 } },
+    }));
+    insertStep.run('m3', 'provider-session', 'assistant', JSON.stringify({
+      tokens: { input: 200, output: 30, reasoning: 0, cache: { read: 0, write: 0 } },
+    }));
+    insertStep.run('m4', 'other-session', 'assistant', JSON.stringify({
+      tokens: { input: 9000, output: 9000, reasoning: 0, cache: { read: 0, write: 0 } },
+    }));
+  } finally {
+    database.close();
+  }
+
+  try {
+    const service = createProviderTokenUsageService({
+      getSessionById: () => createSessionRow({ provider: 'opencode' }),
+      getOpenCodeDatabasePath: () => databasePath,
+    });
+
+    assert.deepEqual(await service.getSessionTokenUsage('app-session'), {
+      used: 365,
+      inputTokens: 320,
+      outputTokens: 40,
+      breakdown: { input: 320, output: 40 },
     });
   } finally {
     await rm(tempDirectory, { recursive: true, force: true });
