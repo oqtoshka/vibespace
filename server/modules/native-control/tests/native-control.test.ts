@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { mkdtemp, rm, unlink } from 'node:fs/promises';
+import { mkdtemp, rm, unlink, writeFile } from 'node:fs/promises';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -11,6 +11,7 @@ import express from 'express';
 import { providerModelsService } from '@/modules/providers/index.js';
 import { voiceService } from '@/modules/voice/index.js';
 import { appConfigDb, closeConnection, getConnection, initializeDatabase, projectsDb, sessionsDb, userDb } from '@/modules/database/index.js';
+import { ensureImageAssetsDir } from '@/modules/assets/index.js';
 
 import { authenticateNativeControl, nativeControlService, nativePermissionOptions, resolveNativeAttachments, setNativePermissionSelection, setNativeSelection } from '../native-control.service.js';
 import { nativeControlRoutes } from '../index.js';
@@ -106,6 +107,25 @@ test('federation credentials, idempotent creation, registered projects and sessi
     assert.throws(() => resolveNativeAttachments(second.sessionId, [file.id]), /another session/);
     assert.throws(() => resolveNativeAttachments(first.sessionId, ['/etc/passwd']));
     assert.throws(() => resolveNativeAttachments(first.sessionId, Array(11).fill(file.id)));
+    const browserFilename = `native-${randomUUID()}-Pasted_image.png`;
+    const browserPath = path.join(await ensureImageAssetsDir(), browserFilename); cleanup.push(browserPath);
+    await writeFile(browserPath, Buffer.from('browser image fixture'));
+    const browserAsset = await nativeControlService.storedAsset(first.sessionId, browserFilename);
+    assert.equal(browserAsset.status, 'found');
+    if (browserAsset.status === 'found') {
+      const chunks: Buffer[] = [];
+      for await (const chunk of browserAsset.stream) chunks.push(Buffer.from(chunk));
+      assert.equal(Buffer.concat(chunks).toString(), 'browser image fixture');
+    }
+    assert.equal((await nativeControlService.storedAsset(first.sessionId, '../private')).status, 'invalid');
+    const assetApp = express(); assetApp.use('/native', nativeControlRoutes); const assetServer = assetApp.listen(0);
+    try {
+      const port = (assetServer.address() as AddressInfo).port;
+      const response = await fetch(`http://127.0.0.1:${port}/native/sessions/${first.sessionId}/stored-assets/${browserFilename}`, {
+        headers: { 'x-mc-federation-token': 'x'.repeat(40) },
+      });
+      assert.equal(response.status, 200); assert.equal(await response.text(), 'browser image fixture');
+    } finally { await new Promise<void>((resolve, reject) => assetServer.close(error => error ? reject(error) : resolve())); }
     sessionsDb.updateSessionIsArchived(first.sessionId, true);
     await assert.rejects(nativeControlService.upload(first.sessionId, 'note', 'text/plain', Buffer.from('x')), /archived/);
     getConnection().prepare('UPDATE sessions SET is_private = 1 WHERE session_id = ?').run(second.sessionId);

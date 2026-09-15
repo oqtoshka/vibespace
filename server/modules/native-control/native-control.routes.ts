@@ -51,4 +51,11 @@ router.get('/sessions/:id/attachments/:asset', route(async (req, res) => {
   res.setHeader('Content-Type', asset.mimeType); res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Content-Disposition', 'attachment'); res.send(asset.bytes);
 }));
+router.get('/sessions/:id/stored-assets/:filename', route(async (req, res) => {
+  const asset = await nativeControlService.storedAsset(String(req.params.id), String(req.params.filename));
+  if (asset.status === 'invalid') { res.status(400).json({ error: 'Invalid asset filename' }); return; }
+  if (asset.status === 'missing') { res.status(404).json({ error: 'Asset not found' }); return; }
+  res.setHeader('Content-Type', asset.contentType); res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Content-Disposition', 'attachment'); asset.stream.pipe(res);
+}));
 export default router;

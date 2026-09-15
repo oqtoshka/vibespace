@@ -2,5 +2,6 @@
 // serving chat attachments plus sandboxed generated-image artifacts.
 export { default as assetsRoutes } from './assets.routes.js';
 
-// Native-control stores session-bound uploads in the same attachment directory.
-export { ensureImageAssetsDir } from "./services/image-assets.service.js";
+// Native-control stores session-bound uploads in the same attachment directory
+// and reads browser-originated chat attachments through the same sandboxed lookup.
+export { ensureImageAssetsDir, openStoredAttachmentAsset } from "./services/image-assets.service.js";

@@ -4,7 +4,7 @@ import path from 'node:path';
 
 import { appConfigDb, getConnection, projectsDb, sessionsDb, userDb } from '@/modules/database/index.js';
 import { permissionPreferencesService, providerModelsService, sessionConversationsSearchService, sessionsService } from '@/modules/providers/index.js';
-import { ensureImageAssetsDir } from '@/modules/assets/index.js';
+import { ensureImageAssetsDir, openStoredAttachmentAsset } from '@/modules/assets/index.js';
 import { voiceService } from '@/modules/voice/index.js';
 import type { LLMProvider } from '@/shared/index.js';
 
@@ -153,6 +153,13 @@ export const nativeControlService = {
   async asset(sessionId: string, assetId: string) {
     const record = resolveNativeAttachments(sessionId, [assetId])[0];
     return { bytes: await fs.readFile(record.path), mimeType: record.mimeType };
+  },
+  /** Lets Mission Control redisplay attachments uploaded by the browser. The
+   * assets module accepts only a basename directly inside ~/.vibespace/assets;
+   * checking the requested session first preserves private/side-session scope. */
+  async storedAsset(sessionId: string, filename: string) {
+    session(sessionId);
+    return openStoredAttachmentAsset(filename);
   },
 };
 
