@@ -1,13 +1,14 @@
 import { useEffect, useState } from 'react';
 
 import { authenticatedFetch } from '../../../utils/api';
+import { readVoiceEnabledPreference } from '../../../hooks/useUiPreferences';
 import { VOICE_CONFIG_SYNC_EVENT } from '../../../hooks/useVoiceConfig';
 
 // Voice UI is gated on the `voiceEnabled` UI preference (toggled in Quick Settings /
 // the Settings modal) and a configured voice backend.
-// Preferences live under the versioned key (see useUiPreferences); the legacy
-// blob is only consulted when the versioned one hasn't been written yet.
-const STORAGE_KEYS = ['uiPreferences.v2', 'uiPreferences'];
+// Preferences live under the versioned key (see useUiPreferences). If v3 has
+// not been written yet, the migration enables voice regardless of the old v2
+// default, so this eager reader should make the same choice without a UI flash.
 const SYNC_EVENT = 'ui-preferences:sync';
 let healthRequest: Promise<VoiceHealth> | null = null;
 
@@ -72,28 +73,14 @@ function checkVoiceHealth(): Promise<VoiceHealth> {
   return request;
 }
 
-function readVoiceEnabled(): boolean {
-  for (const key of STORAGE_KEYS) {
-    try {
-      const raw = localStorage.getItem(key);
-      if (!raw) continue;
-      const parsed = JSON.parse(raw);
-      return parsed?.voiceEnabled === true || parsed?.voiceEnabled === 'true';
-    } catch {
-      return false;
-    }
-  }
-  return false;
-}
-
 export function useVoiceAvailable(): VoiceHealth & { available: boolean } {
   const [enabled, setEnabled] = useState<boolean>(() =>
-    typeof window === 'undefined' ? false : readVoiceEnabled(),
+    typeof window === 'undefined' ? false : readVoiceEnabledPreference(),
   );
   const [health, setHealth] = useState<VoiceHealth>(EMPTY_HEALTH);
 
   useEffect(() => {
-    const update = () => setEnabled(readVoiceEnabled());
+    const update = () => setEnabled(readVoiceEnabledPreference());
     window.addEventListener('storage', update);
     window.addEventListener(SYNC_EVENT, update as EventListener);
     return () => {

@@ -39,7 +39,9 @@ const DEFAULTS: UiPreferences = {
   // browser/profile should not silently revert to send-on-Enter.
   sendByCtrlEnter: true,
   sidebarVisible: true,
-  voiceEnabled: false,
+  // The managed deployments provide a server-owned Whisper backend, so a
+  // fresh browser should expose the microphone without a settings detour.
+  voiceEnabled: true,
 };
 
 const PREFERENCE_KEYS = Object.keys(DEFAULTS) as UiPreferenceKey[];
@@ -78,12 +80,16 @@ const readLegacyPreference = (key: UiPreferenceKey, fallback: boolean): boolean 
   }
 };
 
-// Storage key for the pre-v2 unified preferences blob. Because the hook
+// Storage keys from before the voice-on-by-default migration. Because the hook
 // persists the full state (defaults included) on first load, every browser
 // that ever opened the app carries an explicit `sendByCtrlEnter: false` from
 // the old default — indistinguishable from a deliberate choice. The v2 key
-// migrates the other preferences once and re-applies the new send default.
+// migrated the other preferences once and re-applied the new send default.
+// Likewise, v2 persisted `voiceEnabled: false` for everyone. V3 intentionally
+// enables it once; a later explicit opt-out is then preserved in the v3 blob.
+const PREVIOUS_UNIFIED_STORAGE_KEY = 'uiPreferences.v2';
 const LEGACY_UNIFIED_STORAGE_KEY = 'uiPreferences';
+export const UI_PREFERENCES_STORAGE_KEY = 'uiPreferences.v3';
 
 const parseStoredPreferences = (raw: string | null): UiPreferences | null => {
   if (!raw) {
@@ -104,7 +110,7 @@ const parseStoredPreferences = (raw: string | null): UiPreferences | null => {
   return null;
 };
 
-const readInitialPreferences = (storageKey: string): UiPreferences => {
+export const readInitialPreferences = (storageKey: string): UiPreferences => {
   if (typeof window === 'undefined') {
     return DEFAULTS;
   }
@@ -115,19 +121,43 @@ const readInitialPreferences = (storageKey: string): UiPreferences => {
       return current;
     }
 
+    const previousUnified = parseStoredPreferences(
+      localStorage.getItem(PREVIOUS_UNIFIED_STORAGE_KEY),
+    );
+    if (previousUnified) {
+      return { ...previousUnified, voiceEnabled: DEFAULTS.voiceEnabled };
+    }
+
     const legacyUnified = parseStoredPreferences(localStorage.getItem(LEGACY_UNIFIED_STORAGE_KEY));
     if (legacyUnified) {
-      return { ...legacyUnified, sendByCtrlEnter: DEFAULTS.sendByCtrlEnter };
+      return {
+        ...legacyUnified,
+        sendByCtrlEnter: DEFAULTS.sendByCtrlEnter,
+        voiceEnabled: DEFAULTS.voiceEnabled,
+      };
     }
   } catch {
     // Fall back to legacy keys when unified keys are missing or invalid.
   }
 
-  return PREFERENCE_KEYS.reduce((acc, key) => {
+  const legacyPreferences = PREFERENCE_KEYS.reduce((acc, key) => {
     acc[key] = readLegacyPreference(key, DEFAULTS[key]);
     return acc;
   }, { ...DEFAULTS });
+  return { ...legacyPreferences, voiceEnabled: DEFAULTS.voiceEnabled };
 };
+
+export function readVoiceEnabledPreference(): boolean {
+  try {
+    const raw = localStorage.getItem(UI_PREFERENCES_STORAGE_KEY);
+    if (!raw) return DEFAULTS.voiceEnabled;
+    const parsed = JSON.parse(raw);
+    if (parsed?.voiceEnabled === false || parsed?.voiceEnabled === 'false') return false;
+    return DEFAULTS.voiceEnabled;
+  } catch {
+    return DEFAULTS.voiceEnabled;
+  }
+}
 
 function reducer(state: UiPreferences, action: UiPreferencesAction): UiPreferences {
   switch (action.type) {
@@ -169,7 +199,7 @@ function reducer(state: UiPreferences, action: UiPreferencesAction): UiPreferenc
   }
 }
 
-export function useUiPreferences(storageKey = 'uiPreferences.v2') {
+export function useUiPreferences(storageKey = UI_PREFERENCES_STORAGE_KEY) {
   const instanceIdRef = useRef(`ui-preferences-${Math.random().toString(36).slice(2)}`);
   const [state, dispatch] = useReducer(
     reducer,
