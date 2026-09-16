@@ -89,6 +89,8 @@ export async function startManager(env = process.env) {
   // App subdomains share cookie same-site scope. Guard every workspace mutation,
   // including proxied legacy endpoints, before routing or parsing request bodies.
   if (hostingEnabled) app.use((req, res, next) => {
+    res.set('Content-Security-Policy', "frame-ancestors 'self'");
+    res.set('X-Frame-Options', 'SAMEORIGIN');
     if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method)
       && !isWorkspaceOriginAllowed(req.get('Origin'), req.get('Sec-Fetch-Site'), workspaceOrigin)) {
       res.status(403).json({ error: 'Workspace origin required.' }); return;
