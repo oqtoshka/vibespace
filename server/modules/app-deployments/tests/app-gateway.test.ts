@@ -46,6 +46,15 @@ test('gateway exchanges grants, strips credentials, rejects replay/wrong hosts a
     const cookie = opened.headers['set-cookie']![0].split(';')[0];
     assert.match(opened.headers['set-cookie']![0], /Secure; HttpOnly; SameSite=Lax/);
     assert.equal((await request(grant.pathname+grant.search)).status, 403);
+    // Exchange storage stays bounded even when the edge limiter is bypassed.
+    const nonces = new Database(path.join(root, 'nonces.db'));
+    const fill = nonces.prepare('INSERT INTO used_grants(nonce,expires) VALUES(?,?)');
+    nonces.transaction(() => { for (let n = 0; n < 10_000; n++) fill.run('capacity-'+n, Math.floor(Date.now()/1000)+60); })();
+    const cappedGrant = new URL(control.grant('alice', app.id, false).url);
+    assert.equal((await request(cappedGrant.pathname+cappedGrant.search)).status, 403);
+    nonces.prepare("DELETE FROM used_grants WHERE nonce LIKE 'capacity-%'").run();
+    assert.equal((await request(cappedGrant.pathname+cappedGrant.search)).status, 303);
+    nonces.close();
     const response = await request('/', { Cookie: cookie+'; vibespace_manager_session=secret; session=own', 'X-Vibespace-Worker-Token': 'secret' });
     assert.equal(response.status, 200); const seen = JSON.parse(response.body);
     assert.equal(seen.cookie.trim(), 'session=own'); assert.equal(seen['x-vibespace-worker-token'], undefined);
