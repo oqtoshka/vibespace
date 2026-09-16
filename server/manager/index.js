@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { createWorkspacePolicyAdminRouter } from '../modules/workspace-policy/index.js';
 import '../load-env.js';
-import { AppControl, createAppControlRouter, resolveAppWorker } from '../modules/app-deployments/index.js';
+import { AppControl, createAppControlRouter, resolveAppWorker, isWorkspaceOriginAllowed } from '../modules/app-deployments/index.js';
 import { WorkspaceControl, createWorkspaceControlRouter } from '../modules/workspace-services/index.js';
 import { deploymentConfigRouter } from '../modules/deployment-config/index.js';
 
@@ -80,7 +80,21 @@ export async function startManager(env = process.env) {
   const backend = createBackend(config.backendKind, config);
   const shareOwners = createShareOwnerIndex({ links: config.links });
 
+  const hostingEnabled = env.VS_APPS_ENABLED === 'true';
+  const workspaceOrigin = env.VS_APPS_WORKSPACE_ORIGIN || (env.VS_OIDC_REDIRECT_URI ? new URL(env.VS_OIDC_REDIRECT_URI).origin : undefined);
+  if (hostingEnabled && (!workspaceOrigin || new URL(workspaceOrigin).origin !== workspaceOrigin)) {
+    throw new Error('App hosting requires the exact public workspace origin');
+  }
   const app = express();
+  // App subdomains share cookie same-site scope. Guard every workspace mutation,
+  // including proxied legacy endpoints, before routing or parsing request bodies.
+  if (hostingEnabled) app.use((req, res, next) => {
+    if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method)
+      && !isWorkspaceOriginAllowed(req.get('Origin'), req.get('Sec-Fetch-Site'), workspaceOrigin)) {
+      res.status(403).json({ error: 'Workspace origin required.' }); return;
+    }
+    next();
+  });
   app.use(deploymentConfigRouter);
   const server = http.createServer(app);
 
@@ -216,6 +230,9 @@ export async function startManager(env = process.env) {
   installStaticHandlers(app, APP_ROOT);
 
   server.on('upgrade', async (req, socket, head) => {
+    if (hostingEnabled && !isWorkspaceOriginAllowed(req.headers.origin, req.headers['sec-fetch-site'], workspaceOrigin)) {
+      socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n'); return;
+    }
     const url = requestUrl(req);
     const identity = resolver.resolveUser(req, url);
 
