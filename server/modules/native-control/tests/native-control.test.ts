@@ -102,6 +102,11 @@ test('federation credentials, idempotent creation, registered projects and sessi
     const second = await nativeControlService.create({ ...input, requestId: randomUUID() });
     const restricted = await nativeControlService.create({ ...input, requestId: randomUUID(), permissionMode: 'default' });
     assert.equal(nativePermissionOptions('codex', restricted.sessionId).sessionMode, 'default');
+    // Briefing is a launch choice like private: stored on the row, reported back, never inferred.
+    const briefed = await nativeControlService.create({ ...input, requestId: randomUUID(), briefing: true, needsPlan: true });
+    assert.deepEqual(nativeControlService.describe(briefed.sessionId).briefing, { needsPlan: true });
+    assert.equal(nativeControlService.describe(first.sessionId).briefing, null);
+    await assert.rejects(nativeControlService.create({ ...input, requestId: randomUUID(), briefing: 'yes' as never }), /briefing/);
     const file = await nativeControlService.upload(first.sessionId, '../../note.txt', 'text/plain', Buffer.from('attachment fixture'));
     const [stored] = resolveNativeAttachments(first.sessionId, [file.id]); cleanup.push(stored.path);
     assert.equal(file.name, 'note.txt');
