@@ -2,14 +2,15 @@ import path from 'node:path';
 
 import ignore from 'ignore';
 
+
 import type {
   FileTreeDirectoryEntry,
   FileTreeNode,
   FileTreeServiceDependencies,
   FileTreeServices,
   FileTreeUploadedFile,
-} from '@/shared/types.js';
-import { AppError, FORBIDDEN_WORKSPACE_PATHS, normalizeProjectPath } from '@/shared/utils.js';
+} from '@/shared/index.js';
+import { AppError, FORBIDDEN_WORKSPACE_PATHS, normalizeProjectPath } from '@/shared/index.js';
 
 const HARD_EXCLUDED_DIRECTORY_NAMES = new Set([
   'node_modules', '.git', '.svn', '.hg',
@@ -397,6 +398,7 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
       }
 
       try {
+        await dependencies.workspace.assertWritable?.(targetPath);
         await fileSystem.makeDirectory(targetPath, false);
       } catch (error) {
         mapFileSystemError(error, {
@@ -440,6 +442,7 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
       const projectRoot = await resolveProjectRoot(projectId);
       const resolvedPath = resolvePathInsideProject(projectRoot, filePath);
       try {
+        await dependencies.workspace.assertWritable?.(resolvedPath);
         await fileSystem.writeTextFile(resolvedPath, content);
       } catch (error) {
         mapFileSystemError(error, {
@@ -493,6 +496,7 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
         if (error instanceof AppError) throw error;
       }
 
+      await dependencies.workspace.assertWritable?.(resolvedPath);
       try {
         if (input.type === 'directory') {
           await fileSystem.makeDirectory(resolvedPath, false);
@@ -546,6 +550,8 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
       }
 
       try {
+        await dependencies.workspace.assertWritable?.(resolvedOldPath);
+        await dependencies.workspace.assertWritable?.(resolvedNewPath);
         await fileSystem.rename(resolvedOldPath, resolvedNewPath);
       } catch (error) {
         mapFileSystemError(error, {
@@ -578,6 +584,7 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
         throw createFileTreeError('Cannot delete project root directory', 403, 'PROJECT_ROOT_DELETE_FORBIDDEN');
       }
 
+      await dependencies.workspace.assertWritable?.(resolvedPath);
       try {
         if (stats.isDirectory()) {
           await fileSystem.removeDirectory(resolvedPath);
@@ -636,6 +643,7 @@ export function createFileTreeService(dependencies: FileTreeServiceDependencies)
             throw error;
           }
 
+          await dependencies.workspace.assertWritable?.(destinationPath);
           const parentDirectory = path.dirname(destinationPath);
           try {
             await fileSystem.access(parentDirectory);

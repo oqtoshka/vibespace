@@ -132,7 +132,9 @@
       "upload": "Upload Files",
       "refresh": "Refresh",
       "menuLabel": "File context menu",
-      "loading": "Loading..."
+      "loading": "Loading...",
+      "hide": "Hide from file list",
+      "unhide": "Unhide"
     }
   },
   "projectWizard": {

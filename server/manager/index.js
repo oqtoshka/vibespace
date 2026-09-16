@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { createWorkspacePolicyAdminRouter } from '../modules/workspace-policy/index.js';
 import '../load-env.js';
 import { WorkspaceControl, createWorkspaceControlRouter } from '../modules/workspace-services/index.js';
 import { deploymentConfigRouter } from '../modules/deployment-config/index.js';
@@ -102,6 +103,17 @@ export async function startManager(env = process.env) {
   for (const handler of preAuthHandlers) app.use(handler);
 
   if (resolver.router) app.use('/api/auth', resolver.router);
+
+  app.use('/api/workspace-policy/admin', (req, res, next) => {
+    const identity = resolver.resolveUser(req, requestUrl(req));
+    if (identity.error) return res.status(ERROR_STATUS[identity.error] || 403).json({ error: identity.error });
+    res.locals.workspaceUser = identity.userId;
+    next();
+  }, express.json({ limit: '256kb' }), createWorkspacePolicyAdminRouter(
+    env.VS_WORKSPACE_POLICY_FILE,
+    (env.VS_WORKSPACE_POLICY_ADMINS || '').split(',').map(value => value.trim()).filter(Boolean),
+    env.VS_OIDC_REDIRECT_URI ? new URL(env.VS_OIDC_REDIRECT_URI).origin : undefined,
+  ));
 
   if (env.VS_WORKSPACE_SERVICES === 'true') {
     if (!env.VS_WORKSPACE_CONTROL_DB) throw new Error('VS_WORKSPACE_CONTROL_DB is required');
