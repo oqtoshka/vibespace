@@ -10,7 +10,7 @@ import type { LLMProvider } from '@/shared/index.js';
 
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 const providers = ['claude', 'codex', 'opencode'] as const;
-type CreateInput = { requestId: string; projectId: string; provider: LLMProvider; title?: string; model?: string; effort?: string; permissionMode?: string };
+type CreateInput = { requestId: string; projectId: string; provider: LLMProvider; title?: string; model?: string; effort?: string; permissionMode?: string; briefing?: boolean; needsPlan?: boolean };
 type Upload = { id: string; sessionId: string; path: string; name: string; mimeType: string; size: number };
 
 /** MC's instance credential is separate from browser JWTs and per-session capabilities.
@@ -96,7 +96,13 @@ export const nativeControlService = {
     const permissions = nativePermissionOptions(input.provider);
     const permissionMode = input.permissionMode ?? permissions.permissionMode;
     if (!permissions.permissionModes.includes(permissionMode)) throw new Error('Invalid permission mode');
-    const digest = createHash('sha256').update(JSON.stringify([input.projectId, input.provider, input.title || '', model, effort, permissionMode])).digest('hex');
+    for (const flag of ['briefing', 'needsPlan'] as const) {
+      if (input[flag] !== undefined && typeof input[flag] !== 'boolean') throw new Error(`Invalid ${flag}`);
+    }
+    // The phone's launch choice, the same shape the browser composer sends: fixed at
+    // creation and read by the launch, like `private`. Host plugins answer it.
+    const briefing = input.briefing ? { needsPlan: Boolean(input.needsPlan) } : null;
+    const digest = createHash('sha256').update(JSON.stringify([input.projectId, input.provider, input.title || '', model, effort, permissionMode, briefing])).digest('hex');
     const receiptKey = `native_create:${input.requestId}`;
     const id = getConnection().transaction(() => {
       const previous = appConfigDb.get(receiptKey);
@@ -105,7 +111,7 @@ export const nativeControlService = {
         if (receipt.digest !== digest) throw new Error('This request ID was already used for different content');
         session(receipt.id); return receipt.id as string;
       }
-      const created = sessionsService.createAppSession(input.provider, project.project_path, false, false, input.title);
+      const created = sessionsService.createAppSession(input.provider, project.project_path, false, false, input.title, briefing);
       providerModelsService.setSessionModel(input.provider, created.sessionId, model);
       providerModelsService.setSessionEffort(input.provider, created.sessionId, effort);
       sessionsDb.setSessionPermissionMode(created.sessionId, permissionMode);
@@ -136,6 +142,7 @@ export const nativeControlService = {
       .update(`mission-control:vibespace-session:v1:${id}`).digest('base64url');
     return { sessionId: id, provider: row.provider, title: row.custom_name, projectPath: row.project_path,
       model: row.model, effort: row.effort, permissionMode: sessionsDb.getSessionPermissionMode(id),
+      briefing: row.briefing_mode ? { needsPlan: Boolean(row.briefing_needs_plan) } : null,
       archived: Boolean(row.isArchived), capability };
   },
   async upload(id: string, name: string, mimeType: string, bytes: Buffer) {
