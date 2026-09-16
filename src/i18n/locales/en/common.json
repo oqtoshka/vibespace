@@ -313,5 +313,28 @@
       "updateAvailable": "Update available",
       "closeSidebar": "Close sidebar"
     }
+  },
+  "janitor": {
+    "title": "Janitor",
+    "unread": "New cleanup suggestions",
+    "close": "Close",
+    "description": "Suggestions only. Nothing is removed without your selection. Review the reason and preview before moving files to recoverable trash.",
+    "scan": "Scan workspace",
+    "scanning": "Scanning…",
+    "nightly": "Nightly scan",
+    "limits": "Each scan reviews up to 100 eligible files older than 48 hours and samples up to five inactive sessions. Private sessions, managed files and personal memory are excluded.",
+    "lastScan": "Last successful scan",
+    "suggestions": "Cleanup suggestions",
+    "empty": "No pending suggestions. This does not mean the entire workspace has been checked.",
+    "preview": "Preview",
+    "session": "Related session",
+    "trashSelected": "Move selected to trash",
+    "keep": "Keep selected",
+    "changed": "File changed since the scan. Scan again before cleanup.",
+    "noPreview": "No text preview is available.",
+    "trash": "Recoverable trash",
+    "retention": "Trash is not purged automatically. Restore never overwrites an existing file.",
+    "restore": "Restore",
+    "previewLimit": "First 1,200 bytes of a text file. Review the original file for full context."
   }
 }

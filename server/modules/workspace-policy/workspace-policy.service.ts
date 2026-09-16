@@ -91,7 +91,7 @@ export class WorkspacePolicy {
     try {
       return parsePolicy(JSON.parse(await readFile(filename, 'utf8')));
     } catch {
-      throw new AppError('Workspace policy is unavailable. Contact the administrator.', { code: 'EACCES', statusCode: 403 });
+      throw new AppError('Workspace policy is unavailable. Contact the administrator.', { code: 'WORKSPACE_POLICY_UNAVAILABLE', statusCode: 403 });
     }
   }
 

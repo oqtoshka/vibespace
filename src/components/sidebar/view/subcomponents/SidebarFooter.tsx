@@ -1,7 +1,8 @@
-import WorkspaceControlPanel from '../../../workspace-control/WorkspaceControlPanel';
 import { Settings, ArrowUpCircle, AlertTriangle } from 'lucide-react';
 import type { TFunction } from 'i18next';
 
+import JanitorInbox from '../../../janitor/JanitorInbox';
+import WorkspaceControlPanel from '../../../workspace-control/WorkspaceControlPanel';
 import type { ReleaseInfo } from '../../../../shared/types';
 
 type SidebarFooterProps = {
@@ -89,6 +90,7 @@ export default function SidebarFooter({
         </>
       )}
 
+      <JanitorInbox />
       <WorkspaceControlPanel />
       {/* Settings */}
       <div className="nav-divider" />

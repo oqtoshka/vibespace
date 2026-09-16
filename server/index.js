@@ -22,6 +22,7 @@ import { AppError, WORKSPACES_ROOT, getOpenCodeDatabasePath, resolveConfiguredCo
 import { recallContextUsage } from '@/shared/context-usage-cache.js';
 import { buildCodexTokenBudget } from '@/shared/codex-token-usage.js';
 import { getAdditionalFileRoots, validateAccessiblePath, validatePathInProject } from './utils/allowedPaths.js';
+import { janitorRoutes, startJanitorScheduler } from '@/modules/janitor/index.js';
 import { workspacePolicy, workspacePolicyRoutes } from '@/modules/workspace-policy/index.js';
 import { buildFileAccessRoots, fileTreeRoutes } from '@/modules/file-tree/index.js';
 import { closeSessionsWatcher, initializeSessionsWatcher, providerRuntimeService, registerPendingCliSession, registerSessionShredDependencies } from '@/modules/providers/index.js';
@@ -270,6 +271,7 @@ app.use('/api/auth', authRoutes);
 // File Tree API Routes (protected)
 app.use('/api/file-tree', authenticateToken, fileTreeRoutes);
 app.use('/api/workspace-policy', authenticateToken, workspacePolicyRoutes);
+app.use('/api/janitor', authenticateToken, janitorRoutes);
 
 // Read a background task's output file (Claude Code `run_in_background` writes to
 // <tmp>/claude-<uid>/<project>/<session>/tasks/<id>.output). Scoped hard to that
@@ -2785,6 +2787,8 @@ async function startServer() {
                 console.error('[Plugins] host module activation failed:', err?.message || err);
             });
 
+            const stopJanitor = startJanitorScheduler();
+            server.once('close', stopJanitor);
             // Start server-side plugin processes for enabled plugins
             startEnabledPluginServers().catch(err => {
                 console.error('[Plugins] Error during startup:', err.message);

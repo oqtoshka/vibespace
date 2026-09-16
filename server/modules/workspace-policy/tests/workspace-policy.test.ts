@@ -31,10 +31,10 @@ test('configured policy fails closed when missing, invalid or traversing; unconf
   try {
     const filename = path.join(directory, 'policy.json');
     const policy = new WorkspacePolicy(() => filename);
-    await assert.rejects(policy.assertWritable(directory), {code:'EACCES'});
+    await assert.rejects(policy.assertWritable(directory), {code:'WORKSPACE_POLICY_UNAVAILABLE'});
     for (const document of ['broken', JSON.stringify({version:1,root:directory,rules:[{path:'../escape',readOnly:true}]}), JSON.stringify({version:1,root:directory,rules:[{path:'core',readOnly:'false'}]})]) {
       await writeFile(filename,document);
-      await assert.rejects(policy.assertWritable(directory), {code:'EACCES'});
+      await assert.rejects(policy.assertWritable(directory), {code:'WORKSPACE_POLICY_UNAVAILABLE'});
     }
     const local = new WorkspacePolicy(() => undefined);
     await local.assertWritable('/does/not/exist');
