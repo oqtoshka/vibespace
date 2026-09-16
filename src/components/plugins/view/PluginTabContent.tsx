@@ -1,4 +1,6 @@
 import { useEffect, useRef } from 'react';
+
+import { startPluginTour } from '../tours/startPluginTour';
 import { useTheme } from '../../../contexts/ThemeContext';
 import { authenticatedFetch } from '../../../utils/api';
 import { usePlugins } from '../../../contexts/PluginsContext';
@@ -75,6 +77,7 @@ export default function PluginTabContent({
     const container = containerRef.current;
     const entryFile = plugin?.entry ?? 'index.js';
     const contextCallbacks = contextCallbacksRef.current;
+    let closeTour: (() => void) | undefined;
 
     (async () => {
       try {
@@ -93,6 +96,11 @@ export default function PluginTabContent({
         moduleRef.current = mod;
 
         const api = {
+          startTour(tour: Parameters<typeof startPluginTour>[1]) {
+            closeTour?.();
+            closeTour = startPluginTour(pluginName, tour);
+            return closeTour;
+          },
           get context(): PluginContext { return contextRef.current; },
 
           onContextChange(cb: (ctx: PluginContext) => void): () => void {
@@ -134,6 +142,7 @@ export default function PluginTabContent({
 
     return () => {
       active = false;
+      closeTour?.();
       try { moduleRef.current?.unmount?.(container); } catch { /* ignore */ }
       contextCallbacks.clear();
       moduleRef.current = null;

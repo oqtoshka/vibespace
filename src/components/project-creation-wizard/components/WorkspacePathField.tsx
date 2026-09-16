@@ -1,9 +1,11 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { FolderOpen } from 'lucide-react';
+
 import { Button, Input } from '../../../shared/view/ui';
 import { browseFilesystemFolders } from '../data/workspaceApi';
 import { getSuggestionRootPath } from '../utils/pathUtils';
 import type { FolderSuggestion } from '../types';
+
 import FolderBrowserModal from './FolderBrowserModal';
 
 type WorkspacePathFieldProps = {
@@ -19,12 +21,15 @@ export default function WorkspacePathField({
   onChange,
   onAdvanceToConfirm,
 }: WorkspacePathFieldProps) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [isEditing, setIsEditing] = useState(false);
   const [pathSuggestions, setPathSuggestions] = useState<FolderSuggestion[]>([]);
   const [showPathDropdown, setShowPathDropdown] = useState(false);
   const [showFolderBrowser, setShowFolderBrowser] = useState(false);
 
   useEffect(() => {
-    if (value.trim().length <= 2) {
+    let cancelled = false;
+    if (!isEditing || disabled || value.trim().length <= 2) {
       setPathSuggestions([]);
       setShowPathDropdown(false);
       return;
@@ -35,6 +40,7 @@ export default function WorkspacePathField({
       try {
         const directoryPath = getSuggestionRootPath(value);
         const result = await browseFilesystemFolders(directoryPath);
+        if (cancelled) return;
         const normalizedInput = value.toLowerCase();
 
         const matchingSuggestions = result.suggestions
@@ -55,12 +61,26 @@ export default function WorkspacePathField({
     }, 200);
 
     return () => {
+      cancelled = true;
       window.clearTimeout(timerId);
     };
-  }, [value]);
+  }, [value, isEditing, disabled]);
+
+  useEffect(() => {
+    if (!showPathDropdown) return;
+    const dismiss = (event: PointerEvent) => {
+      if (!containerRef.current?.contains(event.target as Node)) {
+        setIsEditing(false);
+        setShowPathDropdown(false);
+      }
+    };
+    document.addEventListener('pointerdown', dismiss);
+    return () => document.removeEventListener('pointerdown', dismiss);
+  }, [showPathDropdown]);
 
   const handleSuggestionSelect = useCallback(
     (suggestion: FolderSuggestion) => {
+      setIsEditing(false);
       onChange(suggestion.path);
       setShowPathDropdown(false);
     },
@@ -69,6 +89,8 @@ export default function WorkspacePathField({
 
   const handleFolderSelected = useCallback(
     (selectedPath: string, advanceToConfirm: boolean) => {
+      setIsEditing(false);
+      setShowPathDropdown(false);
       onChange(selectedPath);
       setShowFolderBrowser(false);
       if (advanceToConfirm) {
@@ -80,19 +102,38 @@ export default function WorkspacePathField({
 
   return (
     <>
-      <div className="relative flex gap-2">
+      <div
+        ref={containerRef}
+        className="relative flex gap-2"
+        onBlur={(event) => {
+          if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+            setIsEditing(false);
+            setShowPathDropdown(false);
+          }
+        }}
+        onKeyDown={(event) => {
+          if (event.key === 'Escape' && showPathDropdown) {
+            event.stopPropagation();
+            setIsEditing(false);
+            setShowPathDropdown(false);
+          }
+        }}
+      >
         <div className="relative flex-1">
           <Input
             type="text"
             value={value}
-            onChange={(event) => onChange(event.target.value)}
+            onChange={(event) => {
+              setIsEditing(true);
+              onChange(event.target.value);
+            }}
             placeholder="/path/to/project/workspace"
             className="w-full"
             disabled={disabled}
           />
 
           {showPathDropdown && pathSuggestions.length > 0 && (
-            <div className="absolute z-10 mt-1 max-h-60 w-full overflow-y-auto rounded-lg border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-800">
+            <div className="relative z-10 mt-1 max-h-60 w-full overflow-y-auto rounded-lg border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-800">
               {pathSuggestions.map((suggestion) => (
                 <button
                   key={suggestion.path}
@@ -110,7 +151,11 @@ export default function WorkspacePathField({
         <Button
           type="button"
           variant="outline"
-          onClick={() => setShowFolderBrowser(true)}
+          onClick={() => {
+            setIsEditing(false);
+            setShowPathDropdown(false);
+            setShowFolderBrowser(true);
+          }}
           className="px-3"
           title="Browse folders"
           disabled={disabled}

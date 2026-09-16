@@ -58,7 +58,7 @@ export default function FileTreeHeader({
   };
 
   return (
-    <div className="space-y-2 border-b border-border px-3 pb-2 pt-3">
+    <div data-tour="workspace-files" className="space-y-2 border-b border-border px-3 pb-2 pt-3">
       {/* Title and Toolbar */}
       <div className="flex items-center justify-between">
         <h3 className="text-sm font-medium text-foreground">{t('fileTree.files')}</h3>
