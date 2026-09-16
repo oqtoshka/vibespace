@@ -40,3 +40,16 @@ gateway secure: these are required integration checks, not completed claims.
 Tests cover owner/workspace isolation, path/runtime validation, serialized
 operations, retained capacity, signed grant contents, revocation versions,
 request validation and cross-origin denial.
+
+The dedicated `server/app-gateway.ts` executable now implements grant exchange,
+persistent single-use private nonces, host-only `__Host-vs-access` cookies,
+credential filtering, HTTP/SSE/WebSocket proxying and active-stream revocation.
+It consumes a controller-owned JSON file `{expiresAt, apps:[{id,hostname,address,
+port:8080,version,status:"running"}]}`. An unreadable or expired registry denies
+access. The gateway has no Docker or workspace access. Runtime deployment and
+end-to-end production integration are still pending.
+
+Cookie scoping follows [MDN's Set-Cookie reference](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Set-Cookie).
+A normal internal Docker bridge still exposes host services on the bridge;
+the runtime needs Docker 28+ isolated gateway mode or equivalent tested firewall
+rules, as described by [Docker gateway modes](https://docs.docker.com/engine/network/port-publishing/).
