@@ -1,0 +1,9 @@
+{
+  "name": "tutorial-example",
+  "displayName": "Getting started",
+  "version": "1.0.0",
+  "description": "Example deployment-specific tutorial using the host tour API.",
+  "type": "module",
+  "slot": "tab",
+  "entry": "index.js"
+}
