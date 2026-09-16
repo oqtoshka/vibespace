@@ -67,5 +67,6 @@ When hosting is enabled, the manager requires the exact public workspace origin
 (`VS_APPS_WORKSPACE_ORIGIN`, or the origin of `VS_OIDC_REDIRECT_URI`). It rejects
 other browser origins on **all** writes and WebSocket upgrades, including legacy
 worker endpoints. Sibling app subdomains are same-site for cookies: SameSite
-alone does not provide that boundary. Native token clients without Origin remain
+alone does not provide that boundary. Manager pages also restrict framing to their
+own origin, so a sibling app cannot embed the workspace UI. Native token clients without Origin remain
 supported. Use an app-only domain and do not weaken this gate at the edge.
