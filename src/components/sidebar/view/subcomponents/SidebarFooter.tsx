@@ -1,6 +1,7 @@
 import { Settings, ArrowUpCircle, AlertTriangle } from 'lucide-react';
 import type { TFunction } from 'i18next';
 
+import AppControlPanel from '../../../apps/AppControlPanel';
 import JanitorInbox from '../../../janitor/JanitorInbox';
 import WorkspaceControlPanel from '../../../workspace-control/WorkspaceControlPanel';
 import type { ReleaseInfo } from '../../../../shared/types';
@@ -90,6 +91,7 @@ export default function SidebarFooter({
         </>
       )}
 
+      <AppControlPanel />
       <JanitorInbox />
       <WorkspaceControlPanel />
       {/* Settings */}

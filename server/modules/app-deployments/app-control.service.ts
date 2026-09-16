@@ -24,10 +24,11 @@ function relativePath(value: string): string {
  */
 export class AppControl {
   private readonly db: Database.Database;
-  constructor(filename: string, private readonly links: Links, private readonly domain: string, private readonly signingKey: string) {
+  constructor(filename: string, private readonly links: Links, private readonly domain: string, private readonly signingKey: string, private readonly capacity = { owner: 3, total: 24 }) {
     if (!/^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$/.test(domain) || signingKey.length < 32) {
       throw new Error('App domain and a signing key of at least 32 characters are required.');
     }
+    if (![capacity.owner, capacity.total].every(value => Number.isInteger(value) && value > 0 && value <= 1000)) throw new Error('Invalid application capacity');
     this.db = new Database(filename);
     this.db.pragma('journal_mode = WAL'); this.db.pragma('busy_timeout = 5000');
     this.db.exec(`CREATE TABLE IF NOT EXISTS applications (
@@ -54,7 +55,7 @@ export class AppControl {
   list(owner: string) {
     const workspace = this.identity(owner);
     const rows = this.db.prepare('SELECT * FROM applications WHERE owner=? AND workspace_id=? ORDER BY created_at DESC').all(owner, workspace) as App[];
-    return { enabled: true, apps: rows.map(({ logs: _logs, ...app }) => ({ ...app, url: `https://${app.hostname}` })), limits: { apps: 3, storageMiB: 256, memoryMiB: 256 } };
+    return { enabled: true, apps: rows.map(({ logs: _logs, ...app }) => ({ ...app, url: `https://${app.hostname}` })), limits: { apps: this.capacity.owner, storageMiB: 256, memoryMiB: 256 } };
   }
   create(owner: string, input: { name: string; source: string; runtime: string; entrypoint: string }) {
     const workspace = this.identity(owner);
@@ -66,7 +67,7 @@ export class AppControl {
       // Retained volumes count against capacity too; removal cannot bypass storage quotas.
       const count = this.db.prepare('SELECT count(*) AS n FROM applications WHERE owner=?').get(owner) as { n: number };
       const global = this.db.prepare('SELECT count(*) AS n FROM applications').get() as { n: number };
-      if (count.n >= 3 || global.n >= 24) fail('Application capacity reached, including retained storage. Contact the administrator.', 409);
+      if (count.n >= this.capacity.owner || global.n >= this.capacity.total) fail('Application capacity reached, including retained storage. Contact the administrator.', 409);
       const id = crypto.randomBytes(16).toString('hex');
       const hostname = `a-${crypto.randomBytes(24).toString('hex')}.${this.domain}`;
       const now = new Date().toISOString();
