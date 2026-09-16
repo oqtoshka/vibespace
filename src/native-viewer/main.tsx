@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { Component, type ErrorInfo, type ReactNode, useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { setNativeViewerTransport } from '../utils/api';
 import { NativePreviewEventsProvider } from '../contexts/WebSocketContext';
@@ -58,16 +58,28 @@ setNativeViewerTransport(async (url: string, options: RequestInit = {}) => {
   }
 });
 
-function Viewer() {
-  const [document, setDocument] = useState<Document | null>(null);
-  const [revision, setRevision] = useState(0);
-  useEffect(() => {
-    window.mcOpen = value => { current = value; setDocument(value); };
-    window.mcChanged = () => setRevision(v => v + 1);
-    window.mcSuspend = () => { setDocument(null); current = null; };
-    void call({ op: 'ready' });
-  }, []);
-  if (!document) return <div className="native-empty">Choose a file from the project tree or chat.</div>;
+class PreviewErrorBoundary extends Component<{ document: Document; children: ReactNode }, { error: string | null }> {
+  state = { error: null as string | null };
+
+  static getDerivedStateFromError(error: unknown) {
+    return { error: error instanceof Error ? error.message : String(error) };
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error('Native file preview failed', error, info.componentStack);
+  }
+
+  render() {
+    if (!this.state.error) return this.props.children;
+    return <div className="native-render-error" role="alert">
+      <strong>Preview failed. Showing the file source instead.</strong>
+      <span>{this.props.document.name}: {this.state.error}</span>
+      <pre className="native-source">{this.props.document.content}</pre>
+    </div>;
+  }
+}
+
+function DocumentPreview({ document, revision }: { document: Document; revision: number }) {
   const file = { name: document.name, path: document.path, projectId: document.projectId };
   const ext = document.name.split('.').pop()?.toLowerCase() || '';
   const onClose = () => { void call({ op: 'close' }); };
@@ -86,5 +98,21 @@ function Viewer() {
     isCustomRenderFile={document.customRenderer === true || document.name.endsWith('.flow.json')} apiSpecKind={detectApiSpecKind(document.name, document.content)}
     isDarkMode fontSize={17} showLineNumbers extensions={[]} currentFilePath={document.path} fileName={document.name}
     projectId={document.projectId} onFileOpen={onFileOpen} readOnly/>;
+}
+
+function Viewer() {
+  const [document, setDocument] = useState<Document | null>(null);
+  const [revision, setRevision] = useState(0);
+  useEffect(() => {
+    window.mcOpen = value => { current = value; setDocument(value); };
+    window.mcChanged = () => setRevision(v => v + 1);
+    window.mcSuspend = () => { setDocument(null); current = null; };
+    void call({ op: 'ready' });
+  }, []);
+  if (!document) return <div className="native-empty">Choose a file from the project tree or chat.</div>;
+  const key = document.path + ':' + revision;
+  return <PreviewErrorBoundary key={key} document={document}>
+    <DocumentPreview document={document} revision={revision}/>
+  </PreviewErrorBoundary>;
 }
 createRoot(document.getElementById('root')!).render(<NativePreviewEventsProvider><Viewer/></NativePreviewEventsProvider>);
