@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { createWorkspacePolicyAdminRouter } from '../modules/workspace-policy/index.js';
 import '../load-env.js';
+import { AppControl, createAppControlRouter, resolveAppWorker } from '../modules/app-deployments/index.js';
 import { WorkspaceControl, createWorkspaceControlRouter } from '../modules/workspace-services/index.js';
 import { deploymentConfigRouter } from '../modules/deployment-config/index.js';
 
@@ -125,6 +126,32 @@ export async function startManager(env = process.env) {
       next();
     }, express.json({ limit: '16kb' }), createWorkspaceControlRouter(control));
     server.once('close', () => control.close());
+  }
+
+  if (env.VS_APPS_ENABLED === 'true') {
+    if (!env.VS_APPS_CONTROL_DB || !env.VS_APPS_DOMAIN || !env.VS_APPS_SIGNING_KEY_FILE) {
+      throw new Error('App control database, domain and signing key file are required');
+    }
+    const apps = new AppControl(env.VS_APPS_CONTROL_DB, config.links, env.VS_APPS_DOMAIN,
+      fs.readFileSync(env.VS_APPS_SIGNING_KEY_FILE, 'utf8').trim(),
+      { owner: Number(env.VS_APPS_OWNER_LIMIT || 3), total: Number(env.VS_APPS_TOTAL_LIMIT || 24) });
+    app.use('/api/apps', (req, res, next) => {
+      const workerToken = req.get('X-Vibespace-App-Token');
+      if (workerToken) {
+        const owner = resolveAppWorker(workerToken, config.links);
+        if (!owner) return res.status(403).json({ error: 'Worker access unavailable.' });
+        res.locals.workspaceUser = owner;
+      } else {
+        const identity = resolver.resolveUser(req, requestUrl(req));
+        if (identity.error) return res.status(ERROR_STATUS[identity.error] || 403).json({ error: identity.error });
+        res.locals.workspaceUser = identity.userId;
+      }
+      next();
+    }, express.json({ limit: '16kb' }), createAppControlRouter(apps,
+      env.VS_OIDC_REDIRECT_URI ? new URL(env.VS_OIDC_REDIRECT_URI).origin : undefined));
+    server.once('close', () => apps.close());
+  } else {
+    app.get('/api/apps', (_req, res) => res.json({ enabled: false }));
   }
 
   // Everything else that isn't a static asset belongs to a worker.

@@ -53,3 +53,13 @@ Cookie scoping follows [MDN's Set-Cookie reference](https://developer.mozilla.or
 A normal internal Docker bridge still exposes host services on the bridge;
 the runtime needs Docker 28+ isolated gateway mode or equivalent tested firewall
 rules, as described by [Docker gateway modes](https://docs.docker.com/engine/network/port-publishing/).
+
+Manager integration is gated by `VS_APPS_ENABLED=true` and requires
+`VS_APPS_CONTROL_DB`, `VS_APPS_DOMAIN`, and `VS_APPS_SIGNING_KEY_FILE`.
+`VS_APPS_OWNER_LIMIT` / `VS_APPS_TOTAL_LIMIT` override the default 3/24 retained
+application capacities. The UI remains hidden while the feature is disabled.
+`AppControlPanel` supplies lifecycle actions, logs and explicit sharing/revocation.
+Agent clients can call only this API with `X-Vibespace-App-Token` containing their
+current worker token. The manager derives their owner from the live enabled
+worker registry, rejects ambiguous mappings, and does not extend this auth method
+to other manager endpoints. Workers receive no app signing key.

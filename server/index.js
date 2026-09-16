@@ -272,6 +272,8 @@ app.use('/api/auth', authRoutes);
 app.use('/api/file-tree', authenticateToken, fileTreeRoutes);
 app.use('/api/workspace-policy', authenticateToken, workspacePolicyRoutes);
 app.use('/api/janitor', authenticateToken, janitorRoutes);
+// Deployments are manager-owned; local and worker-only installations have no runtime control.
+app.get('/api/apps', authenticateToken, (_req, res) => res.json({ enabled: false }));
 
 // Read a background task's output file (Claude Code `run_in_background` writes to
 // <tmp>/claude-<uid>/<project>/<session>/tasks/<id>.output). Scoped hard to that
