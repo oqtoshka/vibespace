@@ -62,3 +62,10 @@ Agent clients can call only this API with `X-Vibespace-App-Token` containing the
 current worker token. The manager derives their owner from the live enabled
 worker registry, rejects ambiguous mappings, and does not extend this auth method
 to other manager endpoints. Workers receive no app signing key.
+
+When hosting is enabled, the manager requires the exact public workspace origin
+(`VS_APPS_WORKSPACE_ORIGIN`, or the origin of `VS_OIDC_REDIRECT_URI`). It rejects
+other browser origins on **all** writes and WebSocket upgrades, including legacy
+worker endpoints. Sibling app subdomains are same-site for cookies: SameSite
+alone does not provide that boundary. Native token clients without Origin remain
+supported. Use an app-only domain and do not weaken this gate at the edge.
