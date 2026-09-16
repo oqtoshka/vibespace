@@ -59,7 +59,11 @@ Manager integration is gated by `VS_APPS_ENABLED=true` and requires
 application capacities. The UI remains hidden while the feature is disabled.
 `AppControlPanel` supplies lifecycle actions, logs and explicit sharing/revocation.
 Agent clients can call only this API with `X-Vibespace-App-Token` containing their
-current worker token. The manager derives their owner from the live enabled
+app-only credential: HMAC-SHA256 (hex) with the worker token as key and the
+literal `vibespace-app-control-v1` as message. Supply it to the agent as
+`VIBESPACE_APPS_TOKEN`; keep the raw worker token filtered from agent children.
+The derived credential is rejected by other worker/manager authentication paths.
+The manager derives their owner from the live enabled
 worker registry, rejects ambiguous mappings, and does not extend this auth method
 to other manager endpoints. Workers receive no app signing key.
 
