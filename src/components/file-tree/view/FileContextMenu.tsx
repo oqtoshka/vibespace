@@ -1,6 +1,8 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Copy, Download, FileText, FolderPlus, Pencil, RefreshCw, Trash2, Upload, type LucideIcon } from 'lucide-react';
+import { Copy, Eye, EyeOff, Download, FileText, FolderPlus, Pencil, RefreshCw, Trash2, Upload, type LucideIcon } from 'lucide-react';
+
+import { useFileTreeInteractions } from '../contexts/FileTreeInteractionsContext';
 import { cn } from '../../../lib/utils';
 
 type FileContextItem = {
@@ -71,6 +73,7 @@ export default function FileContextMenu({
   className?: string;
 }) {
   const { t } = useTranslation();
+  const { toggleHidden } = useFileTreeInteractions();
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [menuPosition, setMenuPosition] = useState({ x: 0, y: 0 });
   const menuRef = useRef<HTMLDivElement>(null);
@@ -92,7 +95,7 @@ export default function FileContextMenu({
     action?.();
   }, [closeContextMenu]);
 
-  const menuActions = useMemo<ContextMenuAction[]>(() => {
+  const baseActions = useMemo<ContextMenuAction[]>(() => {
     if (item?.type === 'file') {
       return [
         {
@@ -202,6 +205,15 @@ export default function FileContextMenu({
       },
     ];
   }, [item, onCopyPath, onDelete, onDownload, onNewFile, onNewFolder, onRefresh, onRename, onUpload, t]);
+
+  const menuActions = baseActions.map(action => ({ ...action,
+    isDisabled: action.isDisabled || (Boolean(item?.managedReadOnly) && ['rename', 'delete', 'newFile', 'newFolder', 'upload'].includes(action.key))
+      || (Boolean(item?.protectedDescendants) && ['rename', 'delete'].includes(action.key)),
+  }));
+  if (item && toggleHidden) menuActions.push({
+    key: 'hide', label: item.userHidden ? t('fileTree.context.unhide', 'Unhide') : t('fileTree.context.hide', 'Hide from file list'),
+    icon: item.userHidden ? Eye : EyeOff, onSelect: () => toggleHidden(item.path), isDisabled: false,
+  });
 
   useEffect(() => {
     if (!isMenuOpen) {

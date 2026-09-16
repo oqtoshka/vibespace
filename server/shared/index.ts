@@ -28,3 +28,7 @@ export { sessionAvatarUrl } from './utils.js';
 
 // Legacy and native-workspace diagram previews share source encoding/rendering.
 export { encodePlantUmlSource, inlinePlantUmlIncludes, renderDbmlToSvg } from './utils.js';
+
+// Workspace policy and file-tree consume filesystem contracts and path guards.
+export type { FileTreeDirectoryEntry, FileTreeNode, FileTreeServiceDependencies, FileTreeServices, FileTreeUploadedFile, FileTreeFileSystem, FileTreeLogger, FileTreeProjectGateway, FileTreeWorkspaceGateway } from './types.js';
+export { AppError, FORBIDDEN_WORKSPACE_PATHS, WORKSPACES_ROOT, validateWorkspacePath } from './utils.js';

@@ -5,6 +5,7 @@ import os from 'node:os';
 import mime from 'mime-types';
 import multer from 'multer';
 
+import { workspacePolicy } from '@/modules/workspace-policy/index.js';
 import { projectsDb } from '@/modules/database/index.js';
 import { createFileTreeRouter } from '@/modules/file-tree/file-tree.routes.js';
 import { createFileTreeService } from '@/modules/file-tree/file-tree.service.js';
@@ -13,8 +14,8 @@ import type {
   FileTreeLogger,
   FileTreeProjectGateway,
   FileTreeWorkspaceGateway,
-} from '@/shared/types.js';
-import { WORKSPACES_ROOT, validateWorkspacePath } from '@/shared/utils.js';
+} from '@/shared/index.js';
+import { WORKSPACES_ROOT, validateWorkspacePath } from '@/shared/index.js';
 
 const MAXIMUM_UPLOAD_SIZE_MEGABYTES = 200;
 const MAXIMUM_UPLOAD_SIZE_BYTES = MAXIMUM_UPLOAD_SIZE_MEGABYTES * 1024 * 1024;
@@ -71,6 +72,7 @@ const fileTreeProjects: FileTreeProjectGateway = {
  * the path policy explicit for every service instance.
  */
 const fileTreeWorkspace: FileTreeWorkspaceGateway = {
+  assertWritable: (candidatePath) => workspacePolicy.assertWritable(candidatePath),
   rootPath: WORKSPACES_ROOT,
   validatePath: (candidatePath) => validateWorkspacePath(candidatePath),
 };

@@ -1,10 +1,12 @@
 import type { DragEvent, ReactNode, RefObject } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ChevronRight, Folder, FolderOpen, Loader2, Upload } from 'lucide-react';
+
 import { cn } from '../../../lib/utils';
 import { useFileTreeInteractions } from '../contexts/FileTreeInteractionsContext';
 import type { FileTreeNode as FileTreeNodeType, FileTreeViewMode } from '../types/types';
 import { Input } from '../../../shared/view/ui';
+
 import FileContextMenu from './FileContextMenu';
 
 type FileTreeNodeProps = {
@@ -135,7 +137,7 @@ export default function FileTreeNode({
   };
 
   const dragProps = {
-    draggable: !isRenaming,
+    draggable: !isRenaming && !item.managedReadOnly && !item.protectedDescendants,
     onDragStart: (event: DragEvent) => interactions.onNodeDragStart(event, item),
     onDragEnd: () => interactions.onNodeDragEnd(),
     onDragOver: (event: DragEvent) => interactions.onNodeDragOver(event, item),
@@ -183,7 +185,7 @@ export default function FileTreeNode({
     );
   }
 
-  const uploadHoverButton = isDirectory && onUpload && (
+  const uploadHoverButton = isDirectory && !item.managedReadOnly && onUpload && (
     <button
       type="button"
       onClick={(event) => {
@@ -214,7 +216,7 @@ export default function FileTreeNode({
           <div className="col-span-5 flex min-w-0 items-center gap-1.5">
             {selectionCheckbox}
             <TreeItemIcon item={item} isOpen={isOpen} renderFileIcon={renderFileIcon} />
-            <span className={nameClassName}>{item.name}</span>
+            <span title={[item.name, item.policyDescription, item.managedReadOnly ? 'Managed by administrator — read only' : ''].filter(Boolean).join('\n')} className={nameClassName}>{typeof item.displayName === 'string' ? item.displayName : item.name}{item.managedReadOnly ? ' 🔒' : ''}{item.hiddenInWorkspace ? ' ◌' : ''}</span>
           </div>
           <div className="col-span-2 text-sm tabular-nums text-muted-foreground">
             {item.type === 'file' ? formatFileSize(item.size) : ''}
@@ -227,7 +229,7 @@ export default function FileTreeNode({
           <div className="flex min-w-0 items-center gap-1.5">
             {selectionCheckbox}
             <TreeItemIcon item={item} isOpen={isOpen} renderFileIcon={renderFileIcon} />
-            <span className={nameClassName}>{item.name}</span>
+            <span title={[item.name, item.policyDescription, item.managedReadOnly ? 'Managed by administrator — read only' : ''].filter(Boolean).join('\n')} className={nameClassName}>{typeof item.displayName === 'string' ? item.displayName : item.name}{item.managedReadOnly ? ' 🔒' : ''}{item.hiddenInWorkspace ? ' ◌' : ''}</span>
           </div>
           <div className="ml-2 flex flex-shrink-0 items-center gap-3 text-sm text-muted-foreground">
             {item.type === 'file' && (
@@ -242,7 +244,7 @@ export default function FileTreeNode({
         <>
           {selectionCheckbox}
           <TreeItemIcon item={item} isOpen={isOpen} renderFileIcon={renderFileIcon} />
-          <span className={nameClassName}>{item.name}</span>
+          <span title={[item.name, item.policyDescription, item.managedReadOnly ? 'Managed by administrator — read only' : ''].filter(Boolean).join('\n')} className={nameClassName}>{typeof item.displayName === 'string' ? item.displayName : item.name}{item.managedReadOnly ? ' 🔒' : ''}{item.hiddenInWorkspace ? ' ◌' : ''}</span>
         </>
       )}
       {uploadHoverButton}

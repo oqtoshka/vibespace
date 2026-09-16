@@ -16,6 +16,7 @@ export const INTERNAL_FILE_DND_TYPE = 'application/x-vibespace-tree-nodes';
  * because the rows are reached through Body → List → Node recursion.
  */
 export type FileTreeInteractions = {
+  toggleHidden?: (path: string) => void;
   /** Directory path uploads/moves would land in right now (null = none, '' = project root). */
   dropTarget: string | null;
   /** True while one of the tree's own rows is being dragged. */

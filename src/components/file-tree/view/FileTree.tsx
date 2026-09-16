@@ -3,6 +3,7 @@ import type { ChangeEvent, DragEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import { AlertTriangle, Check, X, Loader2, Folder, Trash2, Upload } from 'lucide-react';
 
+import { useWorkspaceAppearance } from '../../workspace-policy/useWorkspaceAppearance';
 import { cn } from '../../../lib/utils';
 import { ICON_SIZE_CLASS, getFileIconData } from '../constants/fileIcons';
 import { useExpandedDirectories } from '../hooks/useExpandedDirectories';
@@ -39,6 +40,7 @@ type FileTreeProps = {
 
 export default function FileTree({ selectedProject, isActive = true, onFileOpen }: FileTreeProps) {
   const { t } = useTranslation();
+  const { decorate, toggleHidden } = useWorkspaceAppearance();
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
   const newItemInputRef = useRef<HTMLInputElement>(null);
   const renameInputRef = useRef<HTMLInputElement>(null);
@@ -104,8 +106,9 @@ export default function FileTree({ selectedProject, isActive = true, onFileOpen 
   useProjectFilesWatch(selectedProject?.projectId, scheduleAutoRefresh);
 
   const { viewMode, changeViewMode } = useFileTreeViewMode();
+  const visibleFiles = useMemo(() => decorate(files), [decorate, files]);
   const { searchQuery, setSearchQuery, filteredFiles } = useFileTreeSearch({
-    files,
+    files: visibleFiles,
     expandDirectories,
     ensureFullTree,
   });
@@ -185,6 +188,7 @@ export default function FileTree({ selectedProject, isActive = true, onFileOpen 
   const parentDirOf = (itemPath: string) => itemPath.split('/').slice(0, -1).join('/');
 
   const interactions = useMemo<FileTreeInteractions>(() => ({
+    toggleHidden,
     dropTarget: upload.dropTarget,
     isInternalDrag: draggingPaths !== null,
     onNodeDragStart: (event: DragEvent, item) => {
@@ -225,7 +229,7 @@ export default function FileTree({ selectedProject, isActive = true, onFileOpen 
         return next;
       });
     },
-  }), [draggingPaths, selectedPaths, selectionMode, setDropTarget, upload.dropTarget]);
+  }), [toggleHidden, draggingPaths, selectedPaths, selectionMode, setDropTarget, upload.dropTarget]);
 
   const handleBulkDelete = useCallback(async () => {
     if (!selectedProject || selectedPaths.size === 0) return;

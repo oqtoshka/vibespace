@@ -369,3 +369,33 @@ test('createEntry performs filesystem mutation only through the injected adapter
   assert.equal(result.path, targetPath);
   assert.deepEqual(writtenFiles, [{ filePath: targetPath, content: '' }]);
 });
+
+test('all file-tree write operations consult workspace policy before changing protected contents', async () => {
+  const root=path.resolve('file-tree-protected');
+  const mutations:string[]=[];
+  const policyChecks:string[]=[];
+  const missing=Object.assign(new Error('missing'),{code:'ENOENT'});
+  const fs=createFakeFileSystem({
+    access:async candidate=>{if(candidate.endsWith('/new')||candidate.endsWith('/renamed'))throw missing;},
+    stat:async()=>createStats(false,0o644),
+    writeTextFile:async candidate=>{mutations.push(candidate);},
+    makeDirectory:async candidate=>{mutations.push(candidate);},
+    rename:async candidate=>{mutations.push(candidate);},
+    unlink:async candidate=>{if(!candidate.startsWith('/tmp/'))mutations.push(candidate);},
+    copyFile:async(_source,destination)=>{mutations.push(destination);},
+  });
+  const dependencies=createDependencies(fs,root);
+  dependencies.workspace.assertWritable=async candidate=>{policyChecks.push(candidate);throw new AppError('Protected',{code:'EACCES',statusCode:403});};
+  const service=createFileTreeService(dependencies);
+  const operations=[
+    ()=>service.saveTextFile('p','core.md','changed'),
+    ()=>service.createEntry({projectId:'p',parentPath:'',name:'new',type:'file'}),
+    ()=>service.createWorkspaceFolder(path.join(root,'new')),
+    ()=>service.renameEntry({projectId:'p',oldPath:'core.md',newName:'renamed'}),
+    ()=>service.deleteEntry({projectId:'p',targetPath:'core.md'}),
+    ()=>service.storeUploadedFiles({projectId:'p',targetPath:'',relativePaths:[],requestedFileCount:1,files:[{originalName:'core.md',temporaryPath:'/tmp/upload-policy',size:1,mimeType:'text/plain'}]}),
+  ];
+  for (const operation of operations) await assert.rejects(operation(),{code:'EACCES'});
+  assert.equal(policyChecks.length,6);
+  assert.deepEqual(mutations,[]);
+});

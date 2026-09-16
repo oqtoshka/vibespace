@@ -626,5 +626,24 @@
       "aboveWindow": "Compaction has to start below the window itself — otherwise it never starts.",
       "modelNotOwned": "This model comes from OpenCode's own catalog, so its limits cannot be edited here."
     }
+  },
+  "workspaceAppearance": {
+    "title": "Workspace files",
+    "showHidden": "Show hidden files and folders",
+    "description": "Reveal items hidden by you or the administrator. Managed files remain read-only."
+  },
+  "workspacePolicy": {
+    "title": "Workspace administration",
+    "description": "Rules apply to all workspaces in this deployment. Display names do not rename files. Read-only protection also covers nested files and API operations.",
+    "path": "Path relative to workspace",
+    "name": "Display name",
+    "tooltip": "Description / tooltip",
+    "hidden": "Hidden by default",
+    "readOnly": "Read-only",
+    "remove": "Remove rule",
+    "add": "Add rule",
+    "save": "Save rules",
+    "reload": "Reload",
+    "saved": "Workspace rules saved."
   }
 }

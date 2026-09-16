@@ -1129,6 +1129,8 @@ export type FileTreeProjectGateway = {
  * symlinks before the File Tree service exposes or mutates paths.
  */
 export type FileTreeWorkspaceGateway = {
+  /** Enforces deployment-managed read-only paths before any UI filesystem mutation. */
+  assertWritable?(candidatePath: string): Promise<void>;
   rootPath: string;
   validatePath(candidatePath: string): Promise<WorkspacePathValidationResult>;
 };

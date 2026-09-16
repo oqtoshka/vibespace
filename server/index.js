@@ -22,6 +22,7 @@ import { AppError, WORKSPACES_ROOT, getOpenCodeDatabasePath, resolveConfiguredCo
 import { recallContextUsage } from '@/shared/context-usage-cache.js';
 import { buildCodexTokenBudget } from '@/shared/codex-token-usage.js';
 import { getAdditionalFileRoots, validateAccessiblePath, validatePathInProject } from './utils/allowedPaths.js';
+import { workspacePolicy, workspacePolicyRoutes } from '@/modules/workspace-policy/index.js';
 import { buildFileAccessRoots, fileTreeRoutes } from '@/modules/file-tree/index.js';
 import { closeSessionsWatcher, initializeSessionsWatcher, providerRuntimeService, registerPendingCliSession, registerSessionShredDependencies } from '@/modules/providers/index.js';
 import { getSubagentConversation } from '@/modules/providers/list/claude/claude-sessions.provider.js';
@@ -268,6 +269,7 @@ app.use('/api/auth', authRoutes);
 
 // File Tree API Routes (protected)
 app.use('/api/file-tree', authenticateToken, fileTreeRoutes);
+app.use('/api/workspace-policy', authenticateToken, workspacePolicyRoutes);
 
 // Read a background task's output file (Claude Code `run_in_background` writes to
 // <tmp>/claude-<uid>/<project>/<session>/tasks/<id>.output). Scoped hard to that
@@ -790,6 +792,7 @@ app.post('/api/create-folder', authenticateToken, async (req, res) => {
             // Folder doesn't exist, which is what we want
         }
         try {
+            await workspacePolicy.assertWritable(targetPath);
             await fs.promises.mkdir(targetPath, { recursive: false });
             res.json({ success: true, path: targetPath });
         } catch (mkdirError) {
@@ -1386,6 +1389,7 @@ app.put('/api/projects/:projectId/file', authenticateToken, async (req, res) => 
         const { resolved } = allowed;
 
         // Write the new content
+        await workspacePolicy.assertWritable(resolved);
         await fsPromises.writeFile(resolved, content, 'utf8');
 
         res.json({
@@ -1560,6 +1564,7 @@ app.post('/api/projects/:projectId/files/create', authenticateToken, async (req,
             // Doesn't exist, which is what we want
         }
 
+        await workspacePolicy.assertWritable(resolvedPath);
         // Create file or directory
         if (type === 'directory') {
             await fsPromises.mkdir(resolvedPath, { recursive: false });
@@ -1646,6 +1651,8 @@ app.put('/api/projects/:projectId/files/rename', authenticateToken, async (req, 
             // Doesn't exist, which is what we want
         }
 
+        await workspacePolicy.assertWritable(resolvedOldPath);
+        await workspacePolicy.assertWritable(resolvedNewPath);
         // Rename
         await fsPromises.rename(resolvedOldPath, resolvedNewPath);
 
@@ -1751,6 +1758,8 @@ app.post('/api/projects/:projectId/files/move', authenticateToken, async (req, r
             }
 
             try {
+                await workspacePolicy.assertWritable(resolvedSource);
+                await workspacePolicy.assertWritable(destination);
                 await fsPromises.rename(resolvedSource, destination);
                 moved.push({ from: resolvedSource, to: destination });
             } catch (error) {
@@ -1801,6 +1810,7 @@ app.delete('/api/projects/:projectId/files', authenticateToken, async (req, res)
             return res.status(404).json({ error: 'File or directory not found' });
         }
 
+        await workspacePolicy.assertWritable(resolvedPath);
         // Prevent deleting the project root itself
         if (resolvedPath === path.resolve(projectRoot)) {
             return res.status(403).json({ error: 'Cannot delete project root directory' });
@@ -1957,6 +1967,7 @@ const uploadFilesHandler = async (req, res) => {
                     continue;
                 }
 
+                await workspacePolicy.assertWritable(destPath);
                 // Ensure parent directory exists (for nested files from folder upload)
                 const parentDir = path.dirname(destPath);
                 try {
