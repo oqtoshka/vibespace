@@ -1,9 +1,9 @@
-# Application control plane (runtime integration in progress)
+# Application control plane and gateway
 
 `server/modules/app-deployments` supplies a manager-owned SQLite registry and
-HTTP router. It is not mounted by default and does not yet deploy containers.
-A deployment needs the external runtime controller, authenticated gateway and
-UI/agent integration before enabling this feature. No Docker socket or signing
+HTTP router, authenticated gateway and UI. It is disabled by default. A deployment
+must provide a host runtime controller that satisfies the contract below before
+enabling it; this repository does not grant workers container privileges. No Docker socket or signing
 key belongs in a user's worker or application.
 
 The service receives verified workspace links, an app-only domain and an
@@ -34,8 +34,7 @@ current app version, route ownership and controller lease; exchange grants for
 host-only secure HTTP-only cookies; make private grants single-use; strip grants
 from URLs; and never forward workspace identity/tokens/cookies to app code.
 Revocation increments the access version and must close existing gateway streams
-as well as reject new requests. Generating a grant does not make an unimplemented
-gateway secure: these are required integration checks, not completed claims.
+as well as reject new requests. An external runtime controller must maintain the route lease and ownership checks.
 
 Tests cover owner/workspace isolation, path/runtime validation, serialized
 operations, retained capacity, signed grant contents, revocation versions,
@@ -46,8 +45,8 @@ persistent single-use private nonces, host-only `__Host-vs-access` cookies,
 credential filtering, HTTP/SSE/WebSocket proxying and active-stream revocation.
 It consumes a controller-owned JSON file `{expiresAt, apps:[{id,hostname,address,
 port:8080,version,status:"running"}]}`. An unreadable or expired registry denies
-access. The gateway has no Docker or workspace access. Runtime deployment and
-end-to-end production integration are still pending.
+access. The gateway has no Docker or workspace access. The gateway bounds nonce storage and active streams. Runtime deployment is
+an operator integration and must be tested separately with real storage and networks.
 
 Cookie scoping follows [MDN's Set-Cookie reference](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Set-Cookie).
 A normal internal Docker bridge still exposes host services on the bridge;

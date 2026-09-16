@@ -22,6 +22,7 @@ export class AppGateway {
   constructor(private readonly options: { registry: string; signingKey: string; nonceDatabase: string; request?: typeof http.request }) {
     if (options.signingKey.length < 32) throw new Error('Gateway signing key is required');
     this.nonces = new Database(options.nonceDatabase);
+    this.nonces.pragma('max_page_count = 2048');
     this.nonces.exec('CREATE TABLE IF NOT EXISTS used_grants(nonce TEXT PRIMARY KEY, expires INTEGER NOT NULL)');
     this.server = http.createServer((req, res) => this.request(req, res));
     this.server.maxHeadersCount = 100;
@@ -110,6 +111,8 @@ export class AppGateway {
         if (grant.app !== route.id || grant.version !== route.version || grant.kind === 'session') throw new Error('Invalid grant');
         if (grant.kind === 'private') {
           this.nonces.prepare('DELETE FROM used_grants WHERE expires<?').run(Math.floor(Date.now()/1000));
+          const count = this.nonces.prepare('SELECT count(*) AS n FROM used_grants').get() as { n: number };
+          if (count.n >= 10_000) throw new Error('Grant exchange capacity reached');
           this.nonces.prepare('INSERT INTO used_grants(nonce,expires) VALUES(?,?)').run(grant.nonce, grant.exp);
         }
         const exp = grant.kind === 'share' ? grant.exp : Math.floor(Date.now()/1000)+12*3600;
