@@ -1,31 +1,41 @@
-import { promises as fs } from 'node:fs';
-import path from 'node:path';
-import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
+import { createHash } from 'node:crypto';
+import { promises as fs } from 'node:fs';
 import os from 'node:os';
+import path from 'node:path';
+import { promisify } from 'node:util';
+
 import mime from 'mime-types';
+
 import { encodePlantUmlSource, renderDbmlToSvg } from '@/shared/index.js';
 import { sessionsDb } from '@/modules/database/index.js';
 import { resolveHtmlPreviewEntry, resolveHtmlPreviewAsset, resolveCustomRenderer, resolvePreviewModel, wireFlowCrossLinks } from '@/modules/html-preview/index.js';
+import { getAdditionalFileRoots, validateAccessiblePath } from '@/utils/allowedPaths.js';
 
 const run = promisify(execFile);
 const LIMIT = 32 * 1024 * 1024;
 const MAX_ENTRIES = 2000;
 type SessionRoot = (id: string) => string | null;
+type AdditionalRoots = () => string[];
 
-function contained(root: string, target: string) {
-  return target === root || target.startsWith(root + path.sep);
+function nativePreviewRoots() {
+  // Review links commonly point at screenshots and rendered artifacts in /tmp.
+  // Every candidate still passes realpath containment before it can be read.
+  const unixTempAlias = process.platform === 'win32' ? [] : ['/tmp'];
+  return [...new Set([...getAdditionalFileRoots(), os.tmpdir(), ...unixTempAlias].map(value => path.resolve(value)))];
 }
 
 /** Native workspace routes call this service after federation authentication.
  * Every operation re-resolves the selected session and its canonical root. No
  * caller-supplied project ID, root, shell command, or write operation is accepted. */
 export class NativeWorkspaceService {
-  constructor(private readonly sessionRoot: SessionRoot = id => {
-    const row = sessionsDb.getSessionById(id);
-    return row && !row.is_private && !row.is_side ? row.project_path : null;
-  }) {}
+  constructor(
+    private readonly sessionRoot: SessionRoot = id => {
+      const row = sessionsDb.getSessionById(id);
+      return row && !row.is_private && !row.is_side ? row.project_path : null;
+    },
+    private readonly additionalRoots: AdditionalRoots = nativePreviewRoots,
+  ) {}
 
   private async root(id: string) {
     const directory = this.sessionRoot(id);
@@ -33,13 +43,17 @@ export class NativeWorkspaceService {
     return fs.realpath(directory);
   }
 
-  private async target(root: string, value: unknown) {
+  private async accessibleTarget(root: string, value: unknown) {
     if (typeof value !== 'string' || value.length > 4096 || value.includes('\0')) throw new Error('Invalid file path');
     const lexical = path.isAbsolute(value) ? path.resolve(value) : path.resolve(root, value);
-    if (!contained(root, lexical)) throw new Error('File is outside the session workspace');
     const real = await fs.realpath(lexical);
-    if (!contained(root, real)) throw new Error('File is outside the session workspace');
-    return real;
+    const access = await validateAccessiblePath(root, real, this.additionalRoots());
+    if (!access.valid) throw new Error('File is outside the session workspace and approved file roots');
+    return { path: real, outsideProject: access.outsideProject === true };
+  }
+
+  private async target(root: string, value: unknown) {
+    return (await this.accessibleTarget(root, value)).path;
   }
 
   private async read(root: string, target: string) {
@@ -112,7 +126,14 @@ export class NativeWorkspaceService {
       const entry = await this.target(root, request.op === 'html' ? request.path : request.entry);
       if (!/\.html?$/i.test(entry)) throw new Error('Not an HTML entry');
       const preview = await resolveHtmlPreviewEntry(root, entry, {
-        validatePath: async (_, value) => { try { return { valid: true, resolved: await this.target(root, value) }; } catch { return { valid: false, error: 'Asset is outside the session workspace' }; } },
+        validatePath: async (_, value) => {
+          try {
+            const target = await this.accessibleTarget(root, value);
+            return { valid: true, resolved: target.path, outsideProject: target.outsideProject };
+          } catch {
+            return { valid: false, error: 'Asset is outside the session workspace and approved file roots' };
+          }
+        },
         resolveModel: resolvePreviewModel,
       });
       if (!preview.valid) throw new Error(preview.error);
