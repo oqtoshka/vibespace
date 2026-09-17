@@ -116,21 +116,50 @@ test('collectAgentEnv merges contributors in order and survives a throwing one',
 test('collectAgentLaunchExtras concatenates instructions, merges MCP servers, survives a throwing contributor', async () => {
   const { collectAgentLaunchExtras, registerAgentLaunchContributor } = await import('@/shared/agent-env.js');
   const unregisterA = registerAgentLaunchContributor((context) => (
-    context.briefing ? { instructions: 'A says hi', mcpServers: { a: { command: 'a' }, shared: { command: 'from-a' } } } : null
+    context.launchOptions?.['acme.review']
+      ? { instructions: 'A says hi', mcpServers: { a: { command: 'a' }, shared: { command: 'from-a' } }, allowedTools: ['mcp__a__look', 'mcp__a__look', ''] }
+      : null
   ));
   const unregisterThrows = registerAgentLaunchContributor(() => { throw new Error('boom'); });
   const unregisterB = registerAgentLaunchContributor(() => ({ instructions: '  B says hi  ', mcpServers: { shared: { command: 'from-b' } } }));
   try {
-    const briefing = collectAgentLaunchExtras({ provider: 'claude', scope: 'session', briefing: { needsPlan: true } });
-    assert.equal(briefing.instructions, 'A says hi\n\nB says hi');
-    assert.deepEqual(briefing.mcpServers, { a: { command: 'a' }, shared: { command: 'from-b' } });
+    const chosen = collectAgentLaunchExtras({ provider: 'claude', scope: 'session', launchOptions: { 'acme.review': true } });
+    assert.equal(chosen.instructions, 'A says hi\n\nB says hi');
+    assert.deepEqual(chosen.mcpServers, { a: { command: 'a' }, shared: { command: 'from-b' } });
+    assert.deepEqual(chosen.allowedTools, ['mcp__a__look']);
 
     const plain = collectAgentLaunchExtras({ provider: 'claude', scope: 'session' });
     assert.equal(plain.instructions, 'B says hi');
     assert.deepEqual(plain.mcpServers, { shared: { command: 'from-b' } });
+    assert.deepEqual(plain.allowedTools, []);
   } finally {
     unregisterA();
     unregisterThrows();
     unregisterB();
   }
+});
+
+test('launch options: only declared ids are kept, values are true or a small object, strict refuses the unknown', async () => {
+  const { listLaunchOptions, normalizeLaunchOptions, parseStoredLaunchOptions, registerLaunchOption } = await import('@/shared/agent-env.js');
+  assert.throws(() => registerLaunchOption({ id: 'Bad Id', label: 'x' }));
+  assert.throws(() => registerLaunchOption({ id: 'acme.review', label: ' ' }));
+  const unregister = registerLaunchOption({ id: 'acme.review', label: 'review', hint: 'Reviewed elsewhere', providers: ['claude'] });
+  try {
+    assert.deepEqual(listLaunchOptions().map((option) => option.id), ['acme.review']);
+    assert.equal(normalizeLaunchOptions(undefined), null);
+    assert.equal(normalizeLaunchOptions({ 'acme.review': false }), null);
+    assert.deepEqual(normalizeLaunchOptions({ 'acme.review': true, 'other.thing': true }), { 'acme.review': true });
+    assert.deepEqual(normalizeLaunchOptions({ 'acme.review': { depth: 'deep' } }), { 'acme.review': { depth: 'deep' } });
+    assert.throws(() => normalizeLaunchOptions({ 'other.thing': true }, { strict: true }), /Unknown launch option: other\.thing/);
+    assert.throws(() => normalizeLaunchOptions({ 'acme.review': 'yes' }), /Invalid launch option/);
+    assert.throws(() => normalizeLaunchOptions({ 'acme.review': { blob: 'x'.repeat(4096) } }), /Invalid launch option/);
+    assert.throws(() => normalizeLaunchOptions(['acme.review']), /Invalid launch options/);
+  } finally {
+    unregister();
+  }
+  assert.deepEqual(listLaunchOptions(), []);
+  assert.equal(normalizeLaunchOptions({ 'acme.review': true }), null);
+
+  assert.deepEqual(parseStoredLaunchOptions('{"acme.review":true}'), { 'acme.review': true });
+  for (const cell of [null, '', '{}', '[]', 'not json', 7]) assert.equal(parseStoredLaunchOptions(cell), null);
 });

@@ -491,15 +491,18 @@ const addSessionIsPrivate = (db: Database): void => {
   addColumnToTableIfNotExists(db, 'sessions', columnNames, 'is_private', 'INTEGER DEFAULT 0');
 };
 
-/** Adds the briefing-mode launch flags (see schema.ts) to pre-existing databases. */
-const addSessionBriefing = (db: Database): void => {
+/**
+ * Adds the plugin-declared launch options (see schema.ts) to pre-existing
+ * databases. The two single-purpose launch columns an earlier build added are
+ * left where they are, unread.
+ */
+const addSessionLaunchOptions = (db: Database): void => {
   if (!tableExists(db, 'sessions')) {
     return;
   }
 
   const columnNames = getTableInfo(db, 'sessions').map((column) => column.name);
-  addColumnToTableIfNotExists(db, 'sessions', columnNames, 'briefing_mode', 'INTEGER DEFAULT 0');
-  addColumnToTableIfNotExists(db, 'sessions', columnNames, 'briefing_needs_plan', 'INTEGER DEFAULT 0');
+  addColumnToTableIfNotExists(db, 'sessions', columnNames, 'launch_options', 'TEXT');
 };
 
 /**
@@ -603,7 +606,7 @@ export const runMigrations = (db: Database) => {
     addSessionRecap(db);
     addSessionIsSide(db);
     addSessionIsPrivate(db);
-    addSessionBriefing(db);
+    addSessionLaunchOptions(db);
     addSessionModelColumn(db);
     addSessionEffortColumn(db);
     addSessionPermissionModeColumn(db);

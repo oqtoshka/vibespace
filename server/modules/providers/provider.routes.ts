@@ -24,6 +24,7 @@ import type {
   UpsertProviderMcpServerInput,
 } from '@/shared/types.js';
 import { AppError, asyncHandler, createApiSuccessResponse } from '@/shared/utils.js';
+import { listLaunchOptions, normalizeLaunchOptions } from '@/shared/agent-env.js';
 
 const router = express.Router();
 router.param('provider', (req, res, next, value) => {
@@ -705,6 +706,9 @@ router.get(
   asyncHandler(async (_req: Request, res: Response) => {
     res.json(createApiSuccessResponse({
       providers: providerCapabilitiesService.listAllProviderCapabilities(),
+      // Launch-time choices host plugins declared; empty on a plain install,
+      // and the composer then shows nothing.
+      launchOptions: listLaunchOptions(),
     }));
   }),
 );
@@ -740,15 +744,22 @@ router.post(
     // row before the first turn spawns anything, which is why it is accepted
     // here and nowhere else.
     const isPrivate = body.private === true;
-    // `briefing: true` starts the session in briefing mode — read from a
-    // structured card on an external board — and `needsPlan: true` asks it for
-    // a plan before any work. Same rule as private: on the row before the
-    // first turn, or the launch cannot see it.
-    const briefing = body.briefing === true ? { needsPlan: body.needsPlan === true } : null;
+    // `launchOptions` are the choices host plugins declared for new sessions
+    // (see registerLaunchOption). Same rule as private: on the row before the
+    // first turn, or the launch cannot see them.
+    let launchOptions;
+    try {
+      launchOptions = normalizeLaunchOptions(body.launchOptions);
+    } catch (error) {
+      throw new AppError(error instanceof Error ? error.message : 'Invalid launch options', {
+        code: 'INVALID_LAUNCH_OPTIONS',
+        statusCode: 400,
+      });
+    }
     // Web clients send the first message so the row gets a provisional title
     // immediately; the provider/recap may replace that derived name later.
     const initialMessage = typeof body.initialMessage === 'string' ? body.initialMessage : undefined;
-    const result = sessionsService.createAppSession(provider, projectPath, isSide, isPrivate, initialMessage, briefing);
+    const result = sessionsService.createAppSession(provider, projectPath, isSide, isPrivate, initialMessage, launchOptions);
     res.status(201).json(createApiSuccessResponse(result));
   }),
 );
