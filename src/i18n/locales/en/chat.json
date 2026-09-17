@@ -153,6 +153,7 @@
     "briefing": "briefing",
     "notBriefing": "chat",
     "briefingNeedsPlan": "plan first",
+    "briefingNeedsPlanTooltip": "Different from Plan Mode below. Plan Mode locks the agent's tools and you approve the plan here in the chat. Plan first keeps the tools unlocked: the agent files its plan on the Mission Control card and waits until you approve it there, from the board or the phone. Use one or the other, not both.",
     "briefingToggle": "Start this session in briefing mode: you read it from the card on Mission Control — status, plan, state, decisions, findings — and answer there. Decided before the first message."
   },
   "composer": {
