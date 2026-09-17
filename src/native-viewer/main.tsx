@@ -2,6 +2,7 @@ import React, { Component, type ErrorInfo, type ReactNode, useEffect, useState }
 import { createRoot } from 'react-dom/client';
 import { setNativeViewerTransport } from '../utils/api';
 import { NativePreviewEventsProvider } from '../contexts/WebSocketContext';
+import { NativeThemeProvider, useTheme } from '../contexts/ThemeContext';
 import CodeEditorSurface from '../components/code-editor/view/subcomponents/CodeEditorSurface';
 import CodeEditorImageView from '../components/code-editor/view/subcomponents/CodeEditorImageView';
 import CodeEditorPdfView from '../components/code-editor/view/subcomponents/CodeEditorPdfView';
@@ -80,6 +81,7 @@ class PreviewErrorBoundary extends Component<{ document: Document; children: Rea
 }
 
 function DocumentPreview({ document, revision }: { document: Document; revision: number }) {
+  const { isDarkMode } = useTheme();
   const file = { name: document.name, path: document.path, projectId: document.projectId };
   const ext = document.name.split('.').pop()?.toLowerCase() || '';
   const onClose = () => { void call({ op: 'close' }); };
@@ -96,7 +98,7 @@ function DocumentPreview({ document, revision }: { document: Document; revision:
     isMarkdownFile={['md','markdown'].includes(ext)} isPlantUmlFile={['puml','plantuml','iuml','wsd'].includes(ext)}
     isDbmlFile={ext === 'dbml'} isCsvFile={['csv','tsv'].includes(ext)} isHtmlFile={['html','htm'].includes(ext)}
     isCustomRenderFile={document.customRenderer === true || document.name.endsWith('.flow.json')} apiSpecKind={detectApiSpecKind(document.name, document.content)}
-    isDarkMode fontSize={17} showLineNumbers extensions={[]} currentFilePath={document.path} fileName={document.name}
+    isDarkMode={isDarkMode} fontSize={17} showLineNumbers extensions={[]} currentFilePath={document.path} fileName={document.name}
     projectId={document.projectId} onFileOpen={onFileOpen} readOnly/>;
 }
 
@@ -115,4 +117,4 @@ function Viewer() {
     <DocumentPreview document={document} revision={revision}/>
   </PreviewErrorBoundary>;
 }
-createRoot(document.getElementById('root')!).render(<NativePreviewEventsProvider><Viewer/></NativePreviewEventsProvider>);
+createRoot(document.getElementById('root')!).render(<NativeThemeProvider><NativePreviewEventsProvider><Viewer/></NativePreviewEventsProvider></NativeThemeProvider>);
