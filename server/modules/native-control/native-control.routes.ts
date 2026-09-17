@@ -17,6 +17,7 @@ const route = (fn: express.RequestHandler): express.RequestHandler => async (req
 };
 const one = (value: unknown): string | undefined => typeof value === 'string' ? value : undefined;
 router.get('/catalog', route((_req, res) => { res.json(nativeControlService.catalog()); }));
+router.post('/projects', route(async (req, res) => { res.json(await nativeControlService.createProject(req.body)); }));
 router.get('/models/:provider', route(async (req, res) => {
   if (!['claude', 'codex', 'opencode'].includes(String(req.params.provider))) throw new Error('Unknown provider');
   const provider = req.params.provider as LLMProvider;

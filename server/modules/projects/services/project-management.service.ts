@@ -85,6 +85,7 @@ function mapProjectRowToApiView(projectRow: ProjectRepositoryRow): ProjectApiVie
   };
 }
 
+/** Used by projects, worktrees and native-control to validate and register project folders. */
 export async function createProject(
   input: CreateProjectInput,
   dependencies: CreateProjectDependencies = defaultDependencies,
