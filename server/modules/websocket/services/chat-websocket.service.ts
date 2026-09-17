@@ -28,6 +28,7 @@ import type {
   ProviderRuntimeWriter,
 } from '@/shared/types.js';
 import { createNormalizedMessage, parseIncomingJsonObject } from '@/shared/utils.js';
+import { parseStoredLaunchOptions } from '@/shared/agent-env.js';
 
 /**
  * Trust boundary for client-supplied image attachments: chat.send options come
@@ -288,10 +289,10 @@ function buildRuntimeOptions(
     // runtime puts the private-variant env (see collectAgentEnv) into the harness process it spawns for this
     // turn, so no presence reporter ever speaks for the session.
     private: Boolean(session.is_private),
-    // Briefing mode is likewise the row's: the launch adds the briefing env,
-    // instructions and tool server to the harness process (see
-    // collectAgentLaunchExtras); the client cannot ask for it per turn.
-    briefing: session.briefing_mode ? { needsPlan: Boolean(session.briefing_needs_plan) } : null,
+    // Launch options are likewise the row's: the plugins that declared them
+    // add env, instructions and tool servers to the harness process (see
+    // collectAgentLaunchExtras); the client cannot ask for them per turn.
+    launchOptions: parseStoredLaunchOptions(session.launch_options),
     // OpenCode can only accept `delivery: "steer"` while the conversation is
     // running through its server engine. Interactive websocket turns opt into
     // that transport; internal one-shot helpers keep using the lighter CLI.

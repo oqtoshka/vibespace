@@ -44,6 +44,8 @@ import {
     stopClaudeSDKTask,
     getClaudeSDKBackgroundTasks,
     isClaudeSDKSessionAlive,
+    getPendingApprovalsForSession,
+    resolveToolApproval,
 } from './claude-sdk.js';
 import { spawnCursor } from './cursor-cli.js';
 import { injectCodexMessage } from './openai-codex.js';
@@ -68,8 +70,8 @@ import { nativeControlRoutes } from './modules/native-control/index.js';
 import { assetsRoutes } from './modules/assets/index.js';
 import browserUseMcpRoutes from './modules/browser-use/browser-use-mcp.routes.js';
 import { browserUseService } from './modules/browser-use/browser-use.service.js';
-import { initializeDatabase, projectsDb, sessionsDb, fileSharesDb, appConfigDb } from './modules/database/index.js';
-import { sessionsService } from '@/modules/providers/index.js';
+import { initializeDatabase, projectsDb, sessionsDb, fileSharesDb, appConfigDb, userDb } from './modules/database/index.js';
+import { permissionPreferencesService, sessionsService } from '@/modules/providers/index.js';
 import {
     activateHostExtensions,
     deactivateHostExtensions,
@@ -2783,6 +2785,38 @@ async function startServer() {
                         return { status: run.status, providerSessionId: run.providerSessionId, lastAssistantText };
                     },
                     abort: (sessionId) => serverAbortRun(sessionId),
+                },
+                interactions: {
+                    getPending: (sessionId) => getPendingApprovalsForSession(sessionId)
+                        .map(({ requestId, toolName, input, receivedAt }) => ({ requestId, toolName, input, receivedAt })),
+                    resolve: (sessionId, requestId, decision) => {
+                        if (!getPendingApprovalsForSession(sessionId).some((pending) => pending.requestId === requestId)) {
+                            return false;
+                        }
+                        const allow = decision?.allow === true;
+                        const permissionMode = allow && typeof decision.permissionMode === 'string' && decision.permissionMode
+                            ? decision.permissionMode
+                            : undefined;
+                        // A chat client that ends plan mode sends the new mode with its next
+                        // message, which is what stores it. Nobody sends anything here, so store
+                        // it now — or the next queued message puts the session back in plan mode.
+                        if (permissionMode) sessionsDb.setSessionPermissionMode(sessionId, permissionMode);
+                        resolveToolApproval(requestId, {
+                            allow,
+                            updatedInput: decision?.updatedInput,
+                            message: typeof decision?.message === 'string' ? decision.message : undefined,
+                            permissionMode,
+                        });
+                        return true;
+                    },
+                },
+                getDefaultPermissionMode: (provider) => {
+                    try {
+                        const user = userDb.getSingleActiveUser();
+                        return user ? permissionPreferencesService.get(Number(user.id), provider).defaultMode : null;
+                    } catch {
+                        return null;
+                    }
                 },
                 enqueueMessage: (sessionId, prompt, options) => serverEnqueueMessage(sessionId, prompt, options),
             }).catch((err) => {

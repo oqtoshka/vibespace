@@ -11,8 +11,10 @@ import {
 import {
   registerAgentEnvContributor,
   registerAgentLaunchContributor,
+  registerLaunchOption,
   type AgentEnvContributor,
   type AgentLaunchContributor,
+  type LaunchOptionDeclaration,
 } from '@/shared/agent-env.js';
 
 /**
@@ -48,6 +50,24 @@ export type HostRunView = {
   status: 'running' | 'completed';
   providerSessionId: string | null;
   lastAssistantText: string;
+};
+
+/** A prompt a session is parked on until somebody answers it (a plan to approve, a question). */
+export type HostPendingInteraction = {
+  requestId: string;
+  toolName: string;
+  input: unknown;
+  receivedAt: Date;
+};
+
+/** The answer to a parked prompt — the same shape a chat client sends. */
+export type HostInteractionDecision = {
+  allow: boolean;
+  /** Shown to the agent when the prompt is refused. */
+  message?: string;
+  updatedInput?: unknown;
+  /** Approving the end of plan mode: the mode the session continues in. */
+  permissionMode?: string;
 };
 
 /**
@@ -104,6 +124,21 @@ export type PluginHost = {
     abort: (sessionId: string) => Promise<boolean>;
   };
   /**
+   * The prompts a session is parked on, and answering one from outside the
+   * chat — an integration whose own surface shows the plan or the question.
+   * Optional: absent on a host that predates it.
+   */
+  interactions?: {
+    getPending: (sessionId: string) => HostPendingInteraction[];
+    /** False when the prompt is gone (answered elsewhere, turn ended) or not this session's. */
+    resolve: (sessionId: string, requestId: string, decision: HostInteractionDecision) => boolean;
+  };
+  /**
+   * The permission mode the operator's new sessions of a provider start in —
+   * what an integration that ends plan mode should continue in. Null when unknown.
+   */
+  getDefaultPermissionMode?: (provider: string) => string | null;
+  /**
    * Pushes a prompt into a session through the server-owned queue, so a run
    * starts with no browser attached. Returns false if the session vanished.
    */
@@ -122,6 +157,11 @@ export type PluginHost = {
   registerAgentEnvContributor: (contributor: AgentEnvContributor) => () => void;
   /** See shared/agent-env.ts — add instructions and MCP servers to a session's launch. */
   registerAgentLaunchContributor?: (contributor: AgentLaunchContributor) => () => void;
+  /**
+   * See shared/agent-env.ts — offer a launch-time choice for new sessions. The
+   * host shows and stores it; contributors read it from `context.launchOptions`.
+   */
+  registerLaunchOption?: (declaration: LaunchOptionDeclaration) => () => void;
   /** Runs on server shutdown and on deactivation, in registration order. */
   onShutdown: (callback: () => void | Promise<void>) => void;
 };
@@ -146,6 +186,8 @@ export type HostExtensionDependencies = {
   getSigningSecret: () => string;
   sessions: Omit<PluginHost['sessions'], 'onMetadataChanged'>;
   runs: PluginHost['runs'];
+  interactions?: PluginHost['interactions'];
+  getDefaultPermissionMode?: PluginHost['getDefaultPermissionMode'];
   enqueueMessage: PluginHost['enqueueMessage'];
 };
 
@@ -194,6 +236,8 @@ function buildHost(name: string, pluginDir: string, deps: HostExtensionDependenc
       },
     },
     runs: deps.runs,
+    interactions: deps.interactions,
+    getDefaultPermissionMode: deps.getDefaultPermissionMode,
     enqueueMessage: deps.enqueueMessage,
     hmacSha256: (input) =>
       crypto.createHmac('sha256', deps.getSigningSecret()).update(input).digest('base64url'),
@@ -204,6 +248,11 @@ function buildHost(name: string, pluginDir: string, deps: HostExtensionDependenc
     },
     registerAgentLaunchContributor: (contributor) => {
       const unregister = registerAgentLaunchContributor(contributor);
+      state.unregisterContributors.push(unregister);
+      return unregister;
+    },
+    registerLaunchOption: (declaration) => {
+      const unregister = registerLaunchOption(declaration);
       state.unregisterContributors.push(unregister);
       return unregister;
     },

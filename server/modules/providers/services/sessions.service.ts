@@ -16,6 +16,7 @@ import type {
   RewindResult,
 } from '@/shared/types.js';
 import { AppError, sessionAvatarUrl } from '@/shared/utils.js';
+import { parseStoredLaunchOptions, type SessionLaunchOptions } from '@/shared/agent-env.js';
 
 /**
  * How long after discarding a helper session to re-check that the session
@@ -39,8 +40,8 @@ type CreateAppSessionResult = {
   projectPath: string;
   isSide: boolean;
   isPrivate: boolean;
-  /** Started in briefing mode, with or without a plan asked for first. */
-  briefing: { needsPlan: boolean } | null;
+  /** The plugin-declared launch options the session was created with. */
+  launchOptions: SessionLaunchOptions | null;
   sessionName: string;
 };
 
@@ -56,8 +57,8 @@ type ArchivedSessionListItem = {
   lastActivity: string | null;
   isProjectArchived: boolean;
   isPrivate: boolean;
-  /** Started in briefing mode — read from a structured card, not the chat. */
-  isBriefing: boolean;
+  /** The plugin-declared launch options the session was created with. */
+  launchOptions: SessionLaunchOptions | null;
   avatarUrl: string | null;
 };
 
@@ -256,7 +257,7 @@ function toSessionListItem(
     lastActivity: session.updated_at ?? session.created_at ?? null,
     isProjectArchived: Boolean(project?.isArchived),
     isPrivate: Boolean(session.is_private),
-    isBriefing: Boolean(session.briefing_mode),
+    launchOptions: parseStoredLaunchOptions(session.launch_options),
     avatarUrl: sessionAvatarUrl(session.provider_session_id, Boolean(session.is_private)),
     isArchived: Boolean(session.isArchived),
     isSide: Boolean(session.is_side),
@@ -385,7 +386,7 @@ export const sessionsService = {
     isSide: boolean | string = false,
     isPrivate = false,
     initialMessage?: string,
-    briefing: { needsPlan: boolean } | null = null,
+    launchOptions: SessionLaunchOptions | null = null,
   ): CreateAppSessionResult {
     if (typeof isSide === 'string') {
       initialMessage = isSide;
@@ -404,7 +405,7 @@ export const sessionsService = {
     // message still gets the stable fallback. The title is only provisional:
     // provider metadata or the background recap may replace the derived name.
     const sessionName = typeof initialMessage === 'string' ? buildCloudCliSessionName(initialMessage) : '';
-    sessionsDb.createAppSession(sessionId, provider, normalizedProjectPath, isSide, isPrivate, sessionName || null, briefing);
+    sessionsDb.createAppSession(sessionId, provider, normalizedProjectPath, isSide, isPrivate, sessionName || null, launchOptions);
 
     // The sidebar is fed by the transcript watcher, which cannot see a session
     // the provider has not written anything for yet. Without this the new chat
@@ -422,7 +423,7 @@ export const sessionsService = {
       projectPath: normalizedProjectPath,
       isSide,
       isPrivate,
-      briefing,
+      launchOptions,
       sessionName,
     };
   },

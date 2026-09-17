@@ -12,6 +12,7 @@ import { providerModelsService } from '@/modules/providers/index.js';
 import { voiceService } from '@/modules/voice/index.js';
 import { appConfigDb, closeConnection, getConnection, initializeDatabase, projectsDb, sessionsDb, userDb } from '@/modules/database/index.js';
 import { ensureImageAssetsDir } from '@/modules/assets/index.js';
+import { registerLaunchOption } from '@/shared/agent-env.js';
 
 import { authenticateNativeControl, nativeControlService, nativePermissionOptions, resolveNativeAttachments, setNativePermissionSelection, setNativeSelection } from '../native-control.service.js';
 import { nativeControlRoutes } from '../index.js';
@@ -109,11 +110,18 @@ test('federation credentials, idempotent creation, registered projects and sessi
     const second = await nativeControlService.create({ ...input, requestId: randomUUID() });
     const restricted = await nativeControlService.create({ ...input, requestId: randomUUID(), permissionMode: 'default' });
     assert.equal(nativePermissionOptions('codex', restricted.sessionId).sessionMode, 'default');
-    // Briefing is a launch choice like private: stored on the row, reported back, never inferred.
-    const briefed = await nativeControlService.create({ ...input, requestId: randomUUID(), briefing: true, needsPlan: true });
-    assert.deepEqual(nativeControlService.describe(briefed.sessionId).briefing, { needsPlan: true });
-    assert.equal(nativeControlService.describe(first.sessionId).briefing, null);
-    await assert.rejects(nativeControlService.create({ ...input, requestId: randomUUID(), briefing: 'yes' as never }), /briefing/);
+    // Launch options are a creation-time choice like private: stored on the row, reported
+    // back, and refused outright when no plugin here declares them.
+    const unregisterOption = registerLaunchOption({ id: 'acme.review', label: 'review' });
+    try {
+      const chosen = await nativeControlService.create({ ...input, requestId: randomUUID(), launchOptions: { 'acme.review': { depth: 'deep' } } });
+      assert.deepEqual(nativeControlService.describe(chosen.sessionId).launchOptions, { 'acme.review': { depth: 'deep' } });
+      assert.equal(nativeControlService.describe(first.sessionId).launchOptions, null);
+      await assert.rejects(nativeControlService.create({ ...input, requestId: randomUUID(), launchOptions: { 'other.thing': true } }), /Unknown launch option: other\.thing/);
+      await assert.rejects(nativeControlService.create({ ...input, requestId: randomUUID(), launchOptions: 'yes' as never }), /Invalid launch options/);
+    } finally {
+      unregisterOption();
+    }
     const file = await nativeControlService.upload(first.sessionId, '../../note.txt', 'text/plain', Buffer.from('attachment fixture'));
     const [stored] = resolveNativeAttachments(first.sessionId, [file.id]); cleanup.push(stored.path);
     assert.equal(file.name, 'note.txt');

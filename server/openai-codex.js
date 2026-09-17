@@ -429,17 +429,17 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
     permissionMode = 'default',
     ephemeral = false,
     private: isPrivate = false,
-    briefing = null,
+    launchOptions = null,
   } = options;
 
   // The app-server is shared between sessions, so a per-session launch cannot
-  // reach it through env or config. What a plugin wants a briefing session
-  // told rides ahead of the first prompt instead — once, on the turn that
+  // reach it through env or config. What a plugin wants a session with launch
+  // options told rides ahead of the first prompt instead — once, on the turn that
   // starts the thread (see collectAgentLaunchExtras and ADR-0021).
-  if (briefing && !sessionId && !ephemeral) {
+  if (launchOptions && !sessionId && !ephemeral) {
     const { instructions } = collectAgentLaunchExtras({
       provider: 'codex', scope: 'session', private: Boolean(isPrivate), ephemeral: false,
-      sessionId: appSessionId ?? null, briefing,
+      sessionId: appSessionId ?? null, launchOptions,
     });
     if (instructions) command = `${instructions}\n\n---\n\n${command}`;
   }
@@ -629,7 +629,7 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
         permissionMode,
         userId: ws?.userId || null,
         private: Boolean(isPrivate),
-        briefing,
+        launchOptions,
         turnActive: true,
       }).catch(() => {});
     }
@@ -886,7 +886,7 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
           permissionMode,
           userId: ws?.userId || null,
           private: Boolean(isPrivate),
-          briefing,
+          launchOptions,
           turnActive: false,
         }).catch(() => {});
       }
