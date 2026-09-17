@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { setNativeViewerTransport } from '../utils/api';
 import { NativePreviewEventsProvider } from '../contexts/WebSocketContext';
+import { NativeThemeProvider, useTheme } from '../contexts/ThemeContext';
 import CodeEditorSurface from '../components/code-editor/view/subcomponents/CodeEditorSurface';
 import CodeEditorImageView from '../components/code-editor/view/subcomponents/CodeEditorImageView';
 import CodeEditorPdfView from '../components/code-editor/view/subcomponents/CodeEditorPdfView';
@@ -59,6 +60,7 @@ setNativeViewerTransport(async (url: string, options: RequestInit = {}) => {
 });
 
 function Viewer() {
+  const { isDarkMode } = useTheme();
   const [document, setDocument] = useState<Document | null>(null);
   const [revision, setRevision] = useState(0);
   useEffect(() => {
@@ -84,7 +86,7 @@ function Viewer() {
     isMarkdownFile={['md','markdown'].includes(ext)} isPlantUmlFile={['puml','plantuml','iuml','wsd'].includes(ext)}
     isDbmlFile={ext === 'dbml'} isCsvFile={['csv','tsv'].includes(ext)} isHtmlFile={['html','htm'].includes(ext)}
     isCustomRenderFile={document.customRenderer === true || document.name.endsWith('.flow.json')} apiSpecKind={detectApiSpecKind(document.name, document.content)}
-    isDarkMode fontSize={17} showLineNumbers extensions={[]} currentFilePath={document.path} fileName={document.name}
+    isDarkMode={isDarkMode} fontSize={17} showLineNumbers extensions={[]} currentFilePath={document.path} fileName={document.name}
     projectId={document.projectId} onFileOpen={onFileOpen} readOnly/>;
 }
-createRoot(document.getElementById('root')!).render(<NativePreviewEventsProvider><Viewer/></NativePreviewEventsProvider>);
+createRoot(document.getElementById('root')!).render(<NativeThemeProvider><NativePreviewEventsProvider><Viewer/></NativePreviewEventsProvider></NativeThemeProvider>);
