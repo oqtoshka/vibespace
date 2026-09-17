@@ -8,10 +8,11 @@ import { ensureImageAssetsDir, openStoredAttachmentAsset } from '@/modules/asset
 import { voiceService } from '@/modules/voice/index.js';
 import { createProject } from '@/modules/projects/index.js';
 import type { LLMProvider } from '@/shared/index.js';
+import { normalizeLaunchOptions, parseStoredLaunchOptions } from '@/shared/agent-env.js';
 
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
 const providers = ['claude', 'codex', 'opencode'] as const;
-type CreateInput = { requestId: string; projectId: string; provider: LLMProvider; title?: string; model?: string; effort?: string; permissionMode?: string; briefing?: boolean; needsPlan?: boolean };
+type CreateInput = { requestId: string; projectId: string; provider: LLMProvider; title?: string; model?: string; effort?: string; permissionMode?: string; launchOptions?: unknown };
 type Upload = { id: string; sessionId: string; path: string; name: string; mimeType: string; size: number };
 
 /** MC's instance credential is separate from browser JWTs and per-session capabilities.
@@ -112,13 +113,11 @@ export const nativeControlService = {
     const permissions = nativePermissionOptions(input.provider);
     const permissionMode = input.permissionMode ?? permissions.permissionMode;
     if (!permissions.permissionModes.includes(permissionMode)) throw new Error('Invalid permission mode');
-    for (const flag of ['briefing', 'needsPlan'] as const) {
-      if (input[flag] !== undefined && typeof input[flag] !== 'boolean') throw new Error(`Invalid ${flag}`);
-    }
-    // The phone's launch choice, the same shape the browser composer sends: fixed at
-    // creation and read by the launch, like `private`. Host plugins answer it.
-    const briefing = input.briefing ? { needsPlan: Boolean(input.needsPlan) } : null;
-    const digest = createHash('sha256').update(JSON.stringify([input.projectId, input.provider, input.title || '', model, effort, permissionMode, briefing])).digest('hex');
+    // The remote client's launch choices, the same shape the browser composer sends:
+    // fixed at creation and read by the launch, like `private`. An option no plugin
+    // here declares is refused rather than dropped — the caller counts on it.
+    const launchOptions = normalizeLaunchOptions(input.launchOptions, { strict: true });
+    const digest = createHash('sha256').update(JSON.stringify([input.projectId, input.provider, input.title || '', model, effort, permissionMode, launchOptions])).digest('hex');
     const receiptKey = `native_create:${input.requestId}`;
     const id = getConnection().transaction(() => {
       const previous = appConfigDb.get(receiptKey);
@@ -127,7 +126,7 @@ export const nativeControlService = {
         if (receipt.digest !== digest) throw new Error('This request ID was already used for different content');
         session(receipt.id); return receipt.id as string;
       }
-      const created = sessionsService.createAppSession(input.provider, project.project_path, false, false, input.title, briefing);
+      const created = sessionsService.createAppSession(input.provider, project.project_path, false, false, input.title, launchOptions);
       providerModelsService.setSessionModel(input.provider, created.sessionId, model);
       providerModelsService.setSessionEffort(input.provider, created.sessionId, effort);
       sessionsDb.setSessionPermissionMode(created.sessionId, permissionMode);
@@ -158,7 +157,7 @@ export const nativeControlService = {
       .update(`mission-control:vibespace-session:v1:${id}`).digest('base64url');
     return { sessionId: id, provider: row.provider, title: row.custom_name, projectPath: row.project_path,
       model: row.model, effort: row.effort, permissionMode: sessionsDb.getSessionPermissionMode(id),
-      briefing: row.briefing_mode ? { needsPlan: Boolean(row.briefing_needs_plan) } : null,
+      launchOptions: parseStoredLaunchOptions(row.launch_options),
       archived: Boolean(row.isArchived), capability };
   },
   async upload(id: string, name: string, mimeType: string, bytes: Buffer) {

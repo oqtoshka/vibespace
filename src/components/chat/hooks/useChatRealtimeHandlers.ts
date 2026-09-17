@@ -27,6 +27,8 @@ interface UseChatRealtimeHandlersArgs {
   setContextUsage: (usage: ContextUsage | null) => void;
   pendingPermissionRequests: PendingPermissionRequest[];
   setPendingPermissionRequests: Dispatch<SetStateAction<PendingPermissionRequest[]>>;
+  /** A prompt answered elsewhere (another client, an integration) moved the session to this mode. */
+  onPermissionModeResolved?: (permissionMode: string) => void;
   streamTimerRef: MutableRefObject<number | null>;
   /**
    * Text streamed so far, per session id.
@@ -77,6 +79,7 @@ export function useChatRealtimeHandlers({
   setContextUsage,
   pendingPermissionRequests,
   setPendingPermissionRequests,
+  onPermissionModeResolved,
   streamTimerRef,
   accumulatedStreamRef,
   lastSeqRef,
@@ -384,6 +387,11 @@ export function useChatRealtimeHandlers({
 
             pendingPermissionRequestsRef.current = nextPendingPermissionRequests;
             setPendingPermissionRequests(nextPendingPermissionRequests);
+            // Plan mode ended with that answer, wherever it was given: without
+            // this the composer keeps sending `plan` with the next message.
+            if (typeof msg.permissionMode === 'string' && msg.permissionMode) {
+              onPermissionModeResolved?.(msg.permissionMode);
+            }
           }
           break;
         }
@@ -439,6 +447,7 @@ export function useChatRealtimeHandlers({
     setContextUsage,
     pendingPermissionRequests,
     setPendingPermissionRequests,
+    onPermissionModeResolved,
     streamTimerRef,
     accumulatedStreamRef,
     lastSeqRef,

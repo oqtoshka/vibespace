@@ -4,6 +4,7 @@ import type { Dispatch, RefObject, SetStateAction } from 'react';
 
 import type { ChatMessage } from '../../types/types';
 import type {
+  LaunchOptionDeclaration,
   Project,
   ProjectSession,
   LLMProvider,
@@ -58,10 +59,9 @@ interface ChatMessagesPaneProps {
   setInput: Dispatch<SetStateAction<string>>;
   isPrivate: boolean;
   onTogglePrivate: () => void;
-  isBriefing: boolean;
-  onToggleBriefing: () => void;
-  briefingNeedsPlan: boolean;
-  onToggleBriefingNeedsPlan: () => void;
+  launchOptionDeclarations: LaunchOptionDeclaration[];
+  launchOptionValues: Record<string, true>;
+  onToggleLaunchOption: (id: string) => void;
   isLoadingMoreMessages: boolean;
   hasMoreMessages: boolean;
   totalMessages: number;
@@ -120,10 +120,9 @@ function ChatMessagesPane({
   setInput,
   isPrivate,
   onTogglePrivate,
-  isBriefing,
-  onToggleBriefing,
-  briefingNeedsPlan,
-  onToggleBriefingNeedsPlan,
+  launchOptionDeclarations,
+  launchOptionValues,
+  onToggleLaunchOption,
   isLoadingMoreMessages,
   hasMoreMessages,
   totalMessages,
@@ -276,10 +275,9 @@ function ChatMessagesPane({
           setInput={setInput}
           isPrivate={isPrivate}
           onTogglePrivate={onTogglePrivate}
-          isBriefing={isBriefing}
-          onToggleBriefing={onToggleBriefing}
-          briefingNeedsPlan={briefingNeedsPlan}
-          onToggleBriefingNeedsPlan={onToggleBriefingNeedsPlan}
+          launchOptionDeclarations={launchOptionDeclarations}
+          launchOptionValues={launchOptionValues}
+          onToggleLaunchOption={onToggleLaunchOption}
         />
       ) : (
         <>

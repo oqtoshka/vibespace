@@ -1,13 +1,13 @@
 import { OPENCODE_LABEL } from '../../../constants/providerPolicy';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ArrowDownIcon, ClipboardListIcon, LockIcon } from 'lucide-react';
+import { ArrowDownIcon, LockIcon, SlidersHorizontalIcon } from 'lucide-react';
 
 import { useTasksSettings } from '../../../contexts/TasksSettingsContext';
 import { useWebSocket } from '../../../contexts/WebSocketContext';
 import PermissionContext from '../../../contexts/PermissionContext';
 import { QuickSettingsPanel } from '../../quick-settings-panel';
-import type { ChatInterfaceProps, Provider  } from '../types/types';
+import type { ChatInterfaceProps, PermissionMode, Provider  } from '../types/types';
 import type { LLMProvider } from '../../../types/app';
 import { useChatProviderState } from '../hooks/useChatProviderState';
 import { useChatSessionState } from '../hooks/useChatSessionState';
@@ -89,10 +89,9 @@ function ChatInterface({
     setPermissionMode,
     privateMode,
     togglePrivateMode,
-    briefingMode,
-    toggleBriefingMode,
-    briefingNeedsPlan,
-    toggleBriefingNeedsPlan,
+    launchOptionDeclarations,
+    launchOptionValues,
+    toggleLaunchOption,
     pendingPermissionRequests,
     setPendingPermissionRequests,
     cyclePermissionMode,
@@ -301,8 +300,7 @@ function ChatInterface({
     permissionMode,
     cyclePermissionMode,
     privateMode,
-    briefingMode,
-    briefingNeedsPlan,
+    launchOptionValues,
     cursorModel,
     claudeModel,
     codexModel,
@@ -344,6 +342,10 @@ function ChatInterface({
     });
   }, [isActive, requestLatestMessages, selectedProject, selectedSession, sendMessage]);
 
+  const handlePermissionModeResolved = useCallback((nextMode: string) => {
+    setPermissionMode(nextMode as PermissionMode);
+  }, [setPermissionMode]);
+
   useChatRealtimeHandlers({
     isActive,
     subscribe,
@@ -354,6 +356,7 @@ function ChatInterface({
     setContextUsage,
     pendingPermissionRequests,
     setPendingPermissionRequests,
+    onPermissionModeResolved: handlePermissionModeResolved,
     streamTimerRef,
     accumulatedStreamRef,
     lastSeqRef,
@@ -472,12 +475,14 @@ function ChatInterface({
     ? selectedSession.isPrivate
     : privateMode;
   const isPrivateSession = sessionExists && effectivePrivateMode;
-  // Briefing: same shape. An existing session's row says whether it was
-  // started that way; a pending one shows the toggle.
-  const effectiveBriefingMode = typeof selectedSession?.isBriefing === 'boolean'
-    ? selectedSession.isBriefing
-    : briefingMode;
-  const isBriefingSession = sessionExists && effectiveBriefingMode;
+  // Plugin-declared launch options: same shape. An existing session's row says
+  // what it was started with; a pending one shows the toggles.
+  const effectiveLaunchOptions: Record<string, unknown> = selectedSession?.launchOptions !== undefined
+    ? selectedSession.launchOptions ?? {}
+    : launchOptionValues;
+  const launchOptionBadges = sessionExists
+    ? launchOptionDeclarations.filter((option) => option.badge && effectiveLaunchOptions[option.id])
+    : [];
 
   return (
     <PermissionContext.Provider value={permissionContextValue}>
@@ -495,18 +500,20 @@ function ChatInterface({
             </span>
           </div>
         )}
-        {isBriefingSession && (
+        {launchOptionBadges.map((option) => (
           <div
+            key={option.id}
             className="flex flex-shrink-0 items-center gap-1.5 border-b border-sky-500/20 bg-sky-500/5 px-3 py-1 text-xs text-sky-700 dark:text-sky-400"
             role="status"
+            data-testid={`launch-option-badge-${option.id}`}
           >
-            <ClipboardListIcon className="h-3 w-3 flex-shrink-0" aria-hidden />
-            <span className="font-medium">{t('chat.briefing', { defaultValue: 'briefing' })}</span>
-            <span className="truncate text-sky-700/70 dark:text-sky-400/70">
-              {t('chat.briefingHint', { defaultValue: 'read from the card on Mission Control — status, plan, state, decisions, findings' })}
-            </span>
+            <SlidersHorizontalIcon className="h-3 w-3 flex-shrink-0" aria-hidden />
+            <span className="font-medium">{option.badge}</span>
+            {option.badgeHint && (
+              <span className="truncate text-sky-700/70 dark:text-sky-400/70">{option.badgeHint}</span>
+            )}
           </div>
-        )}
+        ))}
         <ChatMessagesPane
           scrollContainerRef={scrollContainerRef}
           transcriptListRef={transcriptListRef}
@@ -541,10 +548,9 @@ function ChatInterface({
           setInput={setInput}
           isPrivate={effectivePrivateMode}
           onTogglePrivate={togglePrivateMode}
-          isBriefing={effectiveBriefingMode}
-          onToggleBriefing={toggleBriefingMode}
-          briefingNeedsPlan={briefingNeedsPlan}
-          onToggleBriefingNeedsPlan={toggleBriefingNeedsPlan}
+          launchOptionDeclarations={launchOptionDeclarations}
+          launchOptionValues={launchOptionValues}
+          onToggleLaunchOption={toggleLaunchOption}
           isLoadingMoreMessages={isLoadingMoreMessages}
           hasMoreMessages={hasMoreMessages}
           totalMessages={totalMessages}

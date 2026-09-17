@@ -1,9 +1,10 @@
 import { isProviderEnabled, OPENCODE_LABEL, OPENCODE_DEFAULT_MODEL } from '../../../../constants/providerPolicy';
 import React, { useCallback, useMemo, useState } from "react";
-import { Check, ChevronDown, ClipboardList, Lock, LockOpen, Plus } from "lucide-react";
+import { Check, ChevronDown, Lock, LockOpen, Plus, SlidersHorizontal } from "lucide-react";
 import { Trans, useTranslation } from "react-i18next";
 
 import type {
+  LaunchOptionDeclaration,
   ProjectSession,
   LLMProvider,
   ProviderModelActions,
@@ -75,12 +76,10 @@ type ProviderSelectionEmptyStateProps = {
   /** Whether the session about to be created starts private. */
   isPrivate: boolean;
   onTogglePrivate: () => void;
-  /** Whether the session about to be created starts in briefing mode, and
-   *  whether it must file a plan before any work. */
-  isBriefing: boolean;
-  onToggleBriefing: () => void;
-  briefingNeedsPlan: boolean;
-  onToggleBriefingNeedsPlan: () => void;
+  /** Launch-time choices host plugins declared, and the ones switched on. */
+  launchOptionDeclarations: LaunchOptionDeclaration[];
+  launchOptionValues: Record<string, true>;
+  onToggleLaunchOption: (id: string) => void;
 };
 
 type ProviderGroup = {
@@ -141,10 +140,9 @@ export default function ProviderSelectionEmptyState({
   setInput,
   isPrivate,
   onTogglePrivate,
-  isBriefing,
-  onToggleBriefing,
-  briefingNeedsPlan,
-  onToggleBriefingNeedsPlan,
+  launchOptionDeclarations,
+  launchOptionValues,
+  onToggleLaunchOption,
 }: ProviderSelectionEmptyStateProps) {
   const { t } = useTranslation("chat");
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -397,73 +395,44 @@ export default function ProviderSelectionEmptyState({
             </p>
           </div>
 
-          {/* Briefing mode is the other launch-time choice: the session is
-              read from a structured card on Mission Control (status, plan,
-              state, decisions, findings) instead of the chat, and may be
-              told to file a plan before doing anything. Read once at
-              creation, exactly like private. Glyph plus the word, never
-              colour alone. */}
-          <div className="mt-2 flex flex-col items-center gap-1.5">
-            <div className="flex flex-wrap items-center justify-center gap-2">
-              <button
-                type="button"
-                onClick={onToggleBriefing}
-                aria-pressed={isBriefing}
-                data-testid="briefing-toggle"
-                className={`inline-flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium transition-all duration-200 ${
-                  isBriefing
-                    ? "border-sky-300/60 bg-sky-50 text-sky-700 hover:bg-sky-100 dark:border-sky-600/40 dark:bg-sky-900/15 dark:text-sky-300 dark:hover:bg-sky-900/25"
-                    : "border-border/60 bg-muted/50 text-muted-foreground hover:bg-muted"
-                }`}
-                title={t("input.briefingToggle", {
-                  defaultValue:
-                    "Start this session in briefing mode: you read it from the card on Mission Control — status, plan, state, decisions, findings — and answer there. Decided before the first message.",
-                })}
-              >
-                <ClipboardList className="h-3 w-3 shrink-0" aria-hidden />
-                <span className="whitespace-nowrap">
-                  {isBriefing
-                    ? t("input.briefing", { defaultValue: "briefing" })
-                    : t("input.notBriefing", { defaultValue: "chat" })}
-                </span>
-              </button>
-              {isBriefing && (
-                <label
-                  className="inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-lg border border-border/60 bg-muted/50 px-2.5 text-xs text-muted-foreground"
-                  title={t("input.briefingNeedsPlanTooltip", {
-                    defaultValue:
-                      "Different from Plan Mode below. Plan Mode locks the agent's tools and you approve the plan here in the chat. Plan first keeps the tools unlocked: the agent files its plan on the Mission Control card and waits until you approve it there, from the board or the phone. Use one or the other, not both.",
-                  })}
-                >
-                  <input
-                    type="checkbox"
-                    checked={briefingNeedsPlan}
-                    onChange={onToggleBriefingNeedsPlan}
-                    data-testid="briefing-needs-plan"
-                    className="h-3.5 w-3.5 accent-sky-600"
-                  />
-                  <span className="whitespace-nowrap">
-                    {t("input.briefingNeedsPlan", { defaultValue: "plan first" })}
-                  </span>
-                </label>
-              )}
-            </div>
-            <p className="text-center text-[11px] text-muted-foreground">
-              {isBriefing
-                ? briefingNeedsPlan
-                  ? t("providerSelection.briefingHintPlan", {
-                      defaultValue:
-                        "Briefing: read on the Mission Control card; the session files a plan and waits for your approval before doing anything",
-                    })
-                  : t("providerSelection.briefingHint", {
-                      defaultValue:
-                        "Briefing: read on the Mission Control card — status, plan, state, decisions, findings — instead of the chat",
-                    })
-                : t("providerSelection.chatHint", {
-                    defaultValue: "Chat: the ordinary conversation; briefing mode puts the session on a Mission Control card instead",
-                  })}
-            </p>
-          </div>
+          {/* Launch-time choices host plugins declared (none on a plain
+              install): the app shows and stores them, every word is the
+              plugin's. Read once at creation, exactly like private. Glyph
+              plus the word, never colour alone. */}
+          {launchOptionDeclarations
+            .filter((option) => !option.providers?.length || option.providers.includes(provider))
+            .map((option) => {
+              const isOn = Boolean(launchOptionValues[option.id]);
+              const hint = isOn ? option.hint : option.offHint ?? option.hint;
+              return (
+                <div key={option.id} className="mt-2 flex flex-col items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => onToggleLaunchOption(option.id)}
+                    aria-pressed={isOn}
+                    data-testid={`launch-option-${option.id}`}
+                    className={`inline-flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-medium transition-all duration-200 ${
+                      isOn
+                        ? "border-sky-300/60 bg-sky-50 text-sky-700 hover:bg-sky-100 dark:border-sky-600/40 dark:bg-sky-900/15 dark:text-sky-300 dark:hover:bg-sky-900/25"
+                        : "border-border/60 bg-muted/50 text-muted-foreground hover:bg-muted"
+                    }`}
+                    title={option.tooltip}
+                  >
+                    {isOn ? (
+                      <Check className="h-3 w-3 shrink-0" aria-hidden />
+                    ) : (
+                      <SlidersHorizontal className="h-3 w-3 shrink-0" aria-hidden />
+                    )}
+                    <span className="whitespace-nowrap">
+                      {isOn ? option.label : option.offLabel ?? option.label}
+                    </span>
+                  </button>
+                  {hint && (
+                    <p className="text-center text-[11px] text-muted-foreground">{hint}</p>
+                  )}
+                </div>
+              );
+            })}
 
           <Dialog
             open={modelLibraryOpen}

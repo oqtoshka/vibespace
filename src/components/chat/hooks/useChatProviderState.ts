@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { authenticatedFetch } from '../../../utils/api';
 import type { PendingPermissionRequest, PermissionMode } from '../types/types';
 import type {
+  LaunchOptionDeclaration,
   ProjectSession,
   LLMProvider,
   Project,
@@ -65,6 +66,7 @@ type ProviderCapabilitiesApiResponse = {
   success?: boolean;
   data?: {
     providers?: ProviderCapabilities[];
+    launchOptions?: LaunchOptionDeclaration[];
   };
 };
 
@@ -129,13 +131,12 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
    */
   const [privateMode, setPrivateMode] = useState(false);
   /**
-   * Whether the NEXT new session starts in briefing mode — read from a
-   * structured card on Mission Control rather than the chat — and whether it
-   * must file a plan before any work. Same lifecycle as private: chosen for
-   * one session, fixed at creation, never a saved default.
+   * Launch-time choices host plugins declared, and which of them the NEXT new
+   * session starts with. Same lifecycle as private: chosen for one session,
+   * fixed at creation, never a saved default. Empty on a plain install.
    */
-  const [briefingMode, setBriefingMode] = useState(false);
-  const [briefingNeedsPlan, setBriefingNeedsPlan] = useState(true);
+  const [launchOptionDeclarations, setLaunchOptionDeclarations] = useState<LaunchOptionDeclaration[]>([]);
+  const [launchOptionValues, setLaunchOptionValues] = useState<Record<string, true>>({});
   const [pendingPermissionRequests, setPendingPermissionRequests] = useState<PendingPermissionRequest[]>([]);
   const [provider, setProvider] = useState<LLMProvider>(readStoredProvider);
   const [cursorModel, setCursorModel] = useState<string>(() => {
@@ -273,6 +274,7 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
           byProvider[capabilities.provider] = capabilities;
         }
         setProviderCapabilities(byProvider);
+        setLaunchOptionDeclarations(Array.isArray(body.data.launchOptions) ? body.data.launchOptions : []);
       } catch (error) {
         console.error('Error loading provider capabilities:', error);
       }
@@ -465,26 +467,27 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     // selected for this specific session.
     if (!selectedSession?.id) {
       setPrivateMode(false);
-      setBriefingMode(false);
-      setBriefingNeedsPlan(true);
+      setLaunchOptionValues({});
     }
   }, [selectedSession?.id, provider]);
 
   const togglePrivateMode = useCallback(() => {
     setPrivateMode((previous) => !previous);
   }, []);
-  const toggleBriefingMode = useCallback(() => {
-    setBriefingMode((previous) => !previous);
-  }, []);
-  const toggleBriefingNeedsPlan = useCallback(() => {
-    setBriefingNeedsPlan((previous) => !previous);
+  const toggleLaunchOption = useCallback((id: string) => {
+    setLaunchOptionValues((previous) => {
+      const next = { ...previous };
+      if (next[id]) delete next[id];
+      else next[id] = true;
+      return next;
+    });
   }, []);
 
   const selectProvider = useCallback((nextProvider: LLMProvider) => {
     setProvider(nextProvider);
     if (!selectedSession?.id) {
       setPrivateMode(false);
-      setBriefingMode(false);
+      setLaunchOptionValues({});
     }
   }, [selectedSession?.id]);
 
@@ -940,10 +943,9 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     setPermissionMode,
     privateMode,
     togglePrivateMode,
-    briefingMode,
-    toggleBriefingMode,
-    briefingNeedsPlan,
-    toggleBriefingNeedsPlan,
+    launchOptionDeclarations,
+    launchOptionValues,
+    toggleLaunchOption,
     pendingPermissionRequests,
     setPendingPermissionRequests,
     availablePermissionModes,
