@@ -690,7 +690,9 @@ export async function describeOpenCodeCompaction(modelId: string | null): Promis
   const limit = await resolveOpenCodeModelLimit(resolvedModel);
 
   return {
-    configPath: getOpenCodeConfigPath(),
+    configPath: process.env.VS_OPENCODE_SERVER_CONFIG_DIR?.trim()
+      ? path.join(process.env.VS_OPENCODE_SERVER_CONFIG_DIR.trim(), 'opencode.json')
+      : getOpenCodeConfigPath(),
     compaction,
     model: resolvedModel,
     limit,
