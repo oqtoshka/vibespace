@@ -451,21 +451,26 @@ function mapCliOptionsToSDK(options = {}) {
   }
 
   // What host plugins want this session launched with, beyond env: text for
-  // the system prompt and MCP servers. A briefing-mode session, say, gets the
-  // board's tool vocabulary and the instructions to use it; which plugin says
-  // so, and what it says, is not the runtime's business.
+  // the system prompt, MCP servers and the tools allowed without a prompt.
+  // Which plugin says so, and what it says — typically in answer to a launch
+  // option the session was created with — is not the runtime's business.
   const launchContext = {
     provider: 'claude',
     scope: 'session',
     private: Boolean(options.private),
     ephemeral: Boolean(options.ephemeral),
     sessionId: options.sessionId ?? null,
-    briefing: options.briefing ?? null,
+    launchOptions: options.launchOptions ?? null,
   };
   const launchExtras = options.ephemeral
-    ? { instructions: '', mcpServers: {} }
+    ? { instructions: '', mcpServers: {}, allowedTools: [] }
     : collectAgentLaunchExtras(launchContext);
   sdkOptions.pluginMcpServers = launchExtras.mcpServers;
+  // Tools a plugin vouches for — its own MCP server's, normally — join the
+  // operator's allow list for this session only; nothing is written to settings.
+  for (const tool of launchExtras.allowedTools) {
+    if (!sdkOptions.allowedTools.includes(tool)) sdkOptions.allowedTools.push(tool);
+  }
 
   // Map system prompt configuration
   const vibespacePreamble = [buildVibespaceSystemPrompt(cwd), launchExtras.instructions]
@@ -568,7 +573,7 @@ function recordRestoreState(session, turnActive) {
     // Carried so a detached restore after a restart spawns the resumed turn
     // with the same gate the session was started with.
     private: Boolean(session.options?.private),
-    briefing: session.options?.briefing ?? null,
+    launchOptions: session.options?.launchOptions ?? null,
     turnActive,
   }).catch(() => {});
 }
@@ -1824,7 +1829,12 @@ function makeCanUseTool(session, sdkOptions, emitNotification) {
     // browser (or cancelled with the session) stayed on the phone, and the phone
     // could not dismiss it because the request was no longer pending.
     if (!cancelAnnounced) {
-      session.writer.send(createNormalizedMessage({ kind: 'permission_cancelled', requestId, reason: 'resolved', sessionId: sid(), provider: 'claude' }));
+      // An approval that ends plan mode names the mode the session continues in;
+      // clients that did not give the answer follow it.
+      const resolvedMode = requiresInteraction && decision?.allow && typeof decision.permissionMode === 'string' && decision.permissionMode
+        ? decision.permissionMode
+        : undefined;
+      session.writer.send(createNormalizedMessage({ kind: 'permission_cancelled', requestId, reason: 'resolved', ...(resolvedMode ? { permissionMode: resolvedMode } : {}), sessionId: sid(), provider: 'claude' }));
     }
     if (requiresInteraction && !session.ephemeral) {
       recordPendingInteraction(sid(), null).catch(() => {});

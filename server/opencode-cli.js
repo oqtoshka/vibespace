@@ -251,13 +251,13 @@ async function spawnOpenCode(command, options = {}, ws, context = undefined) {
     options = { ...options, rewind: undefined };
   }
 
-  // Briefing mode: the shared OpenCode server and the CLI alike get the
+  // Launch options: the shared OpenCode server and the CLI alike get the
   // session's launch env, but only a fresh session's first prompt can carry
   // the plugin's instructions (see collectAgentLaunchExtras and ADR-0021).
-  if (options.briefing && !options.sessionId && !options.ephemeral) {
+  if (options.launchOptions && !options.sessionId && !options.ephemeral) {
     const { instructions } = collectAgentLaunchExtras({
       provider: 'opencode', scope: 'session', private: Boolean(options.private), ephemeral: false,
-      sessionId: appSessionId ?? null, briefing: options.briefing,
+      sessionId: appSessionId ?? null, launchOptions: options.launchOptions,
     });
     if (instructions && typeof command === 'string') command = `${instructions}\n\n---\n\n${command}`;
   }
@@ -505,7 +505,7 @@ async function spawnOpenCode(command, options = {}, ws, context = undefined) {
               private: Boolean(options.private),
               ephemeral: Boolean(options.ephemeral),
               sessionId: options.sessionId ?? null,
-              briefing: options.briefing ?? null,
+              launchOptions: options.launchOptions ?? null,
             }),
           }),
         });

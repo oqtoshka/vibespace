@@ -64,11 +64,26 @@ export interface ProjectSession {
   // Started private: no presence reporting, no notifications, no recap.
   // Fixed at creation; the sidebar and the chat header spell it out.
   isPrivate?: boolean;
-  // Started in briefing mode: the operator reads this session from a
-  // structured card on Mission Control rather than from the chat. Fixed at
-  // creation, like private.
-  isBriefing?: boolean;
+  // The plugin-declared launch options the session was created with (option
+  // id → value). Fixed at creation, like private.
+  launchOptions?: Record<string, unknown> | null;
   [key: string]: unknown;
+}
+
+/**
+ * A launch-time choice a host plugin offers for new sessions. The app shows the
+ * toggle and the badge; every word of it comes from the plugin.
+ */
+export interface LaunchOptionDeclaration {
+  id: string;
+  label: string;
+  offLabel?: string;
+  tooltip?: string;
+  hint?: string;
+  offHint?: string;
+  badge?: string;
+  badgeHint?: string;
+  providers?: string[];
 }
 
 export interface ProjectSessionMeta {

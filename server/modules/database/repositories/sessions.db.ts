@@ -21,15 +21,11 @@ type SessionRow = {
   isArchived: number;
   is_side: number;
   is_private: number;
-  /** Started in briefing mode (see schema.ts); fixed at creation. */
-  briefing_mode: number;
-  briefing_needs_plan: number;
+  /** JSON of the plugin-declared launch options (see schema.ts); fixed at creation. */
+  launch_options: string | null;
   created_at: string;
   updated_at: string;
 };
-
-/** The briefing-mode launch choice, made once when the session is created. */
-export type SessionBriefingLaunch = { needsPlan: boolean };
 
 type RecentSessionsPage = {
   sessions: SessionRow[];
@@ -37,7 +33,7 @@ type RecentSessionsPage = {
 };
 
 const SESSION_ROW_COLUMNS =
-  'session_id, provider, provider_session_id, project_path, jsonl_path, custom_name, name_source, recap, recap_message_count, topic_memory, model, effort, isArchived, is_side, is_private, briefing_mode, briefing_needs_plan, created_at, updated_at';
+  'session_id, provider, provider_session_id, project_path, jsonl_path, custom_name, name_source, recap, recap_message_count, topic_memory, model, effort, isArchived, is_side, is_private, launch_options, created_at, updated_at';
 
 /**
  * SQL predicate: a transcript sync must not rename an app-created session.
@@ -215,8 +211,8 @@ export const sessionsDb = {
    *
    * `isPrivate` is the only moment the flag can be set: it has to be in place
    * before the first turn spawns the harness, and nothing updates it later.
-   * `briefing` is the same kind of choice: the launch reads it, nothing
-   * rewrites it.
+   * `launchOptions` are the same kind of choice: the launch reads them,
+   * nothing rewrites them.
    */
   createAppSession(
     sessionId: string,
@@ -225,7 +221,7 @@ export const sessionsDb = {
     isSide: boolean | string = false,
     isPrivate = false,
     customName?: string | null,
-    briefing: SessionBriefingLaunch | null = null,
+    launchOptions: Record<string, unknown> | null = null,
   ): string {
     const db = getConnection();
     const normalizedProjectPath = normalizeProjectPathForProvider(provider, projectPath);
@@ -240,11 +236,12 @@ export const sessionsDb = {
     }
     const derivedName = typeof customName === 'string' && customName.trim() ? customName.trim() : null;
     db.prepare(
-      `INSERT INTO sessions (session_id, provider, provider_session_id, custom_name, name_source, project_path, jsonl_path, isArchived, is_side, is_private, briefing_mode, briefing_needs_plan, created_at, updated_at)
-       VALUES (?, ?, NULL, ?, ?, ?, NULL, 0, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
+      `INSERT INTO sessions (session_id, provider, provider_session_id, custom_name, name_source, project_path, jsonl_path, isArchived, is_side, is_private, launch_options, created_at, updated_at)
+       VALUES (?, ?, NULL, ?, ?, ?, NULL, 0, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
     ).run(
       sessionId, provider, derivedName, derivedName ? 'derived' : null, normalizedProjectPath,
-      isSide ? 1 : 0, isPrivate ? 1 : 0, briefing ? 1 : 0, briefing?.needsPlan ? 1 : 0,
+      isSide ? 1 : 0, isPrivate ? 1 : 0,
+      launchOptions && Object.keys(launchOptions).length ? JSON.stringify(launchOptions) : null,
     );
 
     return sessionId;

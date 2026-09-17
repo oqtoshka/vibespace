@@ -85,7 +85,7 @@ function scheduleWrite() {
 }
 
 /** Upsert a live session. Call on register and on turn start/end. */
-export async function recordSessionActivity({ provider, sessionId, cwd, permissionMode, userId, turnActive, private: isPrivate, briefing }) {
+export async function recordSessionActivity({ provider, sessionId, cwd, permissionMode, userId, turnActive, private: isPrivate, launchOptions }) {
   if (!sessionId) return;
   await loadOnce();
   const prev = entries.get(sessionId) || {};
@@ -98,8 +98,8 @@ export async function recordSessionActivity({ provider, sessionId, cwd, permissi
     // Sticky once set: a private session must come back private. Nothing can
     // clear it short of the session ending.
     private: Boolean(isPrivate ?? prev.private),
-    // Same stickiness: a briefing session resumes as one.
-    briefing: briefing ?? prev.briefing ?? null,
+    // Same stickiness: a session resumes with the launch options it was created with.
+    launchOptions: launchOptions ?? prev.launchOptions ?? null,
     turnActive: Boolean(turnActive),
     // Owned by recordPendingInteraction — activity updates must not drop it.
     pendingPrompt: prev.pendingPrompt ?? null,
@@ -275,7 +275,7 @@ export async function restoreInterruptedSessions(spawn, hooks = {}) {
         cwd: entry.cwd,
         permissionMode: entry.permissionMode,
         private: Boolean(entry.private),
-        briefing: entry.briefing ?? null,
+        launchOptions: entry.launchOptions ?? null,
       }, makeDetachedWriter(entry.userId)).catch((error) => {
         console.error(`[session restore] resume of ${entry.sessionId} failed:`, error?.message || error);
       });
