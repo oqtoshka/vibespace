@@ -29,6 +29,18 @@ test('native permissions inherit defaults, preserve session restrictions and mig
     assert.throws(() => preferences.update(id, 'codex', 'permission-test', { sessionMode: 'invented' }));
     assert.throws(() => preferences.update(id, 'claude', 'permission-test', { sessionMode: 'bypassPermissions' }));
     assert.equal(preferences.get(id + 1, 'codex').defaultMode, 'bypassPermissions');
+    const previousMode = process.env.VS_OPENCODE_DEFAULT_PERMISSION_MODE;
+    try {
+      process.env.VS_OPENCODE_DEFAULT_PERMISSION_MODE = 'bypassPermissions';
+      assert.equal(preferences.get(id, 'opencode').defaultMode, 'bypassPermissions');
+      preferences.update(id, 'opencode', undefined, { defaultMode: 'plan' });
+      assert.equal(preferences.get(id, 'opencode').defaultMode, 'plan');
+      process.env.VS_OPENCODE_DEFAULT_PERMISSION_MODE = 'invalid';
+      assert.equal(preferences.get(id + 1, 'opencode').defaultMode, 'default');
+    } finally {
+      if (previousMode === undefined) delete process.env.VS_OPENCODE_DEFAULT_PERMISSION_MODE;
+      else process.env.VS_OPENCODE_DEFAULT_PERMISSION_MODE = previousMode;
+    }
   } finally {
     closeConnection();
     if (previous === undefined) delete process.env.DATABASE_PATH; else process.env.DATABASE_PATH = previous;

@@ -512,11 +512,12 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
       if (provider === 'codex') settingsMode = settings.permissionMode;
       else if ((provider === 'claude' || provider === 'cursor') && settings.skipPermissions) settingsMode = 'bypassPermissions';
     } catch { /* Invalid legacy settings do not grant permissions. */ }
-    const defaultMode = [providerSavedMode, settingsMode].find(mode => mode && validModes.includes(mode)) ?? getDefaultPermissionModeForProvider(provider);
+    const legacyDefaultMode = [providerSavedMode, settingsMode].find(mode => mode && validModes.includes(mode));
+    const defaultMode = legacyDefaultMode ?? getDefaultPermissionModeForProvider(provider);
     setPermissionMode(savedMode ?? defaultMode);
     void authenticatedFetch('/api/settings/chat-permissions', {
       method: 'PUT', body: JSON.stringify({ provider, sessionId: selectedSession?.id,
-        defaultMode, sessionMode: sessionSavedMode && validModes.includes(sessionSavedMode) ? sessionSavedMode : undefined, onlyIfMissing: true }),
+        defaultMode: legacyDefaultMode, sessionMode: sessionSavedMode && validModes.includes(sessionSavedMode) ? sessionSavedMode : undefined, onlyIfMissing: true }),
     }).then(async response => {
       if (!response.ok) throw new Error('Permission preferences could not be synchronized');
       const preferences = await response.json();

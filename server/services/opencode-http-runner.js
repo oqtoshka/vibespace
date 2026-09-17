@@ -1,4 +1,4 @@
-import { assertOpenCodeServerModel } from '../modules/providers/index.js';
+import { assertOpenCodeServerModel, opencodeQuestions } from '../modules/providers/index.js';
 import { appendFilesInputTag, buildOpenCodePromptAttachments } from '../shared/image-attachments.js';
 import { classifyOpenCodeFailure } from '../shared/opencode-failure.js';
 import { createCompleteMessage, createNormalizedMessage, generateMessageId } from '../shared/utils.js';
@@ -612,11 +612,16 @@ export async function runOpenCodeHttpTurn(command, options, ws, hooks = {}) {
   let lastStepTokens = null;
   let settle = null;
   let idleTimer = null;
+  const questions = opencodeQuestions.bind(activeSessionId, event => ws.send(createNormalizedMessage(event)),
+    (id, answers) => requestJson(server, `/api/session/${activeSessionId}/question/${id}/${answers === null ? 'reject' : 'reply'}`, {
+      method: 'POST', ...(answers === null ? {} : { body: JSON.stringify({ answers }) }),
+    }));
   const finished = new Promise((resolve) => {
     settle = resolve;
   });
 
   const finish = (outcome) => {
+    questions.close();
     if (idleTimer) {
       clearTimeout(idleTimer);
       idleTimer = null;
@@ -704,6 +709,15 @@ export async function runOpenCodeHttpTurn(command, options, ws, hooks = {}) {
       idleTimer = null;
     }
 
+    if (type === 'question.v2.asked') {
+      turnLooksDone = false;
+      questions.request(properties);
+      return;
+    }
+    if (type === 'question.v2.replied' || type === 'question.v2.rejected') {
+      questions.remove(properties.requestID);
+      return;
+    }
     if (type === 'permission.v2.asked') {
       const reply = resolvePermissionReply(permissionMode);
       void requestJson(server, `/api/session/${activeSessionId}/permission/${properties.id}/reply`, {
@@ -844,6 +858,10 @@ export async function runOpenCodeHttpTurn(command, options, ws, hooks = {}) {
   });
   await streamReady;
 
+  // Pending questions survive in the OpenCode server across client reconnects.
+  const outstanding = await requestJson(server, `/api/session/${activeSessionId}/question`).catch(() => []);
+  if (Array.isArray(outstanding)) outstanding.forEach(question => questions.request(question));
+
   let outcome;
   try {
     await requestJson(server, `/api/session/${activeSessionId}/prompt`, {
@@ -865,6 +883,7 @@ export async function runOpenCodeHttpTurn(command, options, ws, hooks = {}) {
       }));
     }
   } finally {
+    questions.close();
     releaseHandle?.(activeSessionId);
   }
 
