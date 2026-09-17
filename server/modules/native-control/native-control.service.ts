@@ -6,6 +6,7 @@ import { appConfigDb, getConnection, projectsDb, sessionsDb, userDb } from '@/mo
 import { permissionPreferencesService, providerModelsService, sessionConversationsSearchService, sessionsService } from '@/modules/providers/index.js';
 import { ensureImageAssetsDir, openStoredAttachmentAsset } from '@/modules/assets/index.js';
 import { voiceService } from '@/modules/voice/index.js';
+import { createProject } from '@/modules/projects/index.js';
 import type { LLMProvider } from '@/shared/index.js';
 
 const uuid = /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i;
@@ -73,6 +74,21 @@ export function setNativePermissionSelection(id: string, mode: unknown) {
 /** Native-control router owns the instance catalog; project paths are always resolved
  * from registered IDs and cannot be supplied by a client to escape into another cwd. */
 export const nativeControlService = {
+  async createProject(input: unknown) {
+    if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Invalid project request');
+    const { path: directory, name } = input as Record<string, unknown>;
+    if (typeof directory !== 'string' || !path.isAbsolute(directory.trim()) || directory.length > 4000 ||
+        typeof name !== 'string' || !name.trim() || name.length > 100) throw new Error('Choose a name and an absolute project folder');
+    try {
+      return await createProject({ projectPath: directory.trim(), customName: name.trim() });
+    } catch (error) {
+      // A lost response may be retried: registration of the same active folder is idempotent.
+      if (!(error instanceof Error) || !('code' in error) || error.code !== 'PROJECT_ALREADY_EXISTS') throw error;
+      const existing = projectsDb.getProjectPath(path.resolve(directory.trim()));
+      if (!existing) throw error;
+      return { outcome: 'existing', project: { projectId: existing.project_id, path: existing.project_path, displayName: existing.custom_project_name || path.basename(existing.project_path), isArchived: Boolean(existing.isArchived) } };
+    }
+  },
   catalog() {
     return {
       projects: projectsDb.getProjectPaths().map(project => ({ id: project.project_id,
