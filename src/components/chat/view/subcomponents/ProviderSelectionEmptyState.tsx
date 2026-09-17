@@ -428,7 +428,13 @@ export default function ProviderSelectionEmptyState({
                 </span>
               </button>
               {isBriefing && (
-                <label className="inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-lg border border-border/60 bg-muted/50 px-2.5 text-xs text-muted-foreground">
+                <label
+                  className="inline-flex h-8 cursor-pointer items-center gap-1.5 rounded-lg border border-border/60 bg-muted/50 px-2.5 text-xs text-muted-foreground"
+                  title={t("input.briefingNeedsPlanTooltip", {
+                    defaultValue:
+                      "Different from Plan Mode below. Plan Mode locks the agent's tools and you approve the plan here in the chat. Plan first keeps the tools unlocked: the agent files its plan on the Mission Control card and waits until you approve it there, from the board or the phone. Use one or the other, not both.",
+                  })}
+                >
                   <input
                     type="checkbox"
                     checked={briefingNeedsPlan}
