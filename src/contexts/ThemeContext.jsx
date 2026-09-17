@@ -2,6 +2,17 @@ import React, { createContext, useContext, useState, useEffect } from 'react';
 
 const ThemeContext = createContext();
 
+/** The embedded file viewer follows its native host; it has no browser preference store. */
+export const NativeThemeProvider = ({ children }) => {
+  const [isDarkMode, setIsDarkMode] = useState(() => document.documentElement.classList.contains('dark'));
+  useEffect(() => {
+    const observer = new MutationObserver(() => setIsDarkMode(document.documentElement.classList.contains('dark')));
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+    return () => observer.disconnect();
+  }, []);
+  return <ThemeContext.Provider value={{ isDarkMode, toggleDarkMode: () => {} }}>{children}</ThemeContext.Provider>;
+};
+
 export const useTheme = () => {
   const context = useContext(ThemeContext);
   if (!context) {
