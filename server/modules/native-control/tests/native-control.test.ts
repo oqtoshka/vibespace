@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm, unlink, writeFile } from 'node:fs/promises';
 import type { AddressInfo } from 'node:net';
-import { tmpdir } from 'node:os';
+import { homedir } from 'node:os';
 import path from 'node:path';
 import test, { mock } from 'node:test';
 
@@ -18,7 +18,7 @@ import { nativeControlRoutes } from '../index.js';
 
 test('federation credentials, idempotent creation, registered projects and session-bound files', async () => {
   const previous = process.env.DATABASE_PATH;
-  const directory = await mkdtemp(path.join(tmpdir(), 'native-control-test-'));
+  const directory = await mkdtemp(path.join(homedir(), '.native-control-test-'));
   closeConnection(); process.env.DATABASE_PATH = path.join(directory, 'auth.db');
   const cleanup: string[] = [];
   try {
@@ -72,6 +72,13 @@ test('federation credentials, idempotent creation, registered projects and sessi
     }
     projectsDb.createProjectPath(directory, 'Native fixture');
     const projectId = projectsDb.getProjectPaths()[0].project_id;
+    const registered = await nativeControlService.createProject({ path: directory + '/', name: 'Native fixture' });
+    assert.equal(registered.outcome, 'existing');
+    assert.equal(registered.project.projectId, projectId);
+    assert.equal(projectsDb.getProjectPaths().length, 1, 'retry must reuse the registered folder');
+    await assert.rejects(nativeControlService.createProject({ path: 'relative/path', name: 'Invalid' }), /absolute project folder/);
+    await assert.rejects(nativeControlService.createProject({ path: directory, name: ' ' }), /absolute project folder/);
+    await assert.rejects(nativeControlService.createProject(null), /Invalid project request/);
     const input = { requestId: randomUUID(), projectId, provider: 'codex' as const, title: 'Native fixture' };
     const first = await nativeControlService.create(input);
     assert.equal(first.model, 'gpt-5.6-sol');
