@@ -24,6 +24,7 @@ export { rewindCodexTurn } from './services/codex-rewind.service.js';
 export { assertOpenCodeServerModel } from './services/opencode-server-model.service.js';
 
 export { permissionPreferencesService } from './services/permission-preferences.service.js';
+export { opencodeQuestions } from './services/opencode-questions.service.js';
 
 export { scheduleSessionRecap, cancelSessionRecap, generateSessionRecap } from './services/session-recap.service.js';
 

@@ -7,6 +7,7 @@ import { ProviderSkills } from '../../../../../skills';
 import AccountContent from './content/AccountContent';
 import ContextContent from './content/ContextContent';
 import PermissionsContent from './content/PermissionsContent';
+import OpenCodePermissionsContent from './content/OpenCodePermissionsContent';
 
 export default function AgentCategoryContentSection({
   selectedAgent,
@@ -74,6 +75,7 @@ export default function AgentCategoryContentSection({
         />
       )}
 
+      {selectedCategory === 'permissions' && selectedAgent === 'opencode' && <OpenCodePermissionsContent />}
       {selectedCategory === 'context' && selectedAgent === 'opencode' && <ContextContent />}
 
       {selectedCategory === 'mcp' && (

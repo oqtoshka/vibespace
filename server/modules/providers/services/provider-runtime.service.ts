@@ -1,4 +1,5 @@
 import { codexApprovals } from '@/modules/codex-approvals/index.js';
+import { opencodeQuestions } from './opencode-questions.service.js';
 import { providerRegistry } from '@/modules/providers/provider.registry.js';
 import { providerModelsService } from '@/modules/providers/services/provider-models.service.js';
 import { sessionsService } from '@/modules/providers/services/sessions.service.js';
@@ -97,13 +98,14 @@ export function createProviderRuntimeService(
 
     resolveToolApproval(requestId: string, decision: ProviderPermissionDecision): void {
       codexApprovals.resolve(requestId, decision);
+      opencodeQuestions.resolve(requestId, decision);
       for (const provider of dependencies.listProviders()) {
         provider.runtime.permissions?.resolve(requestId, decision);
       }
     },
 
     getPendingApprovalsForSession(sessionId: string): unknown[] {
-      return [...codexApprovals.list(sessionId), ...dependencies.listProviders().flatMap(
+      return [...codexApprovals.list(sessionId), ...opencodeQuestions.list(sessionId), ...dependencies.listProviders().flatMap(
         (provider) => provider.runtime.permissions?.listPending(sessionId) ?? [],
       )];
     },

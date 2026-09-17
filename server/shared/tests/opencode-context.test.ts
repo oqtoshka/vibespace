@@ -60,6 +60,30 @@ const defaults: OpenCodeCompactionConfig = {
   reserved: null,
 };
 
+test('managed v2 model and limits appear without copying them into user config', async () => {
+  await withConfig({ compaction: { auto: true } }, async configPath => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), 'managed-opencode-'));
+    const previous = process.env.VS_OPENCODE_SERVER_CONFIG_DIR;
+    const managedPath = path.join(directory, 'opencode.json');
+    const managed = { model: 'managed/large', providers: { managed: { models: { large: { limit: { context: 524288, output: 32768 } } } } } };
+    await writeFile(managedPath, JSON.stringify(managed));
+    process.env.VS_OPENCODE_SERVER_CONFIG_DIR = directory;
+    try {
+      const result = await describeOpenCodeCompaction(null);
+      assert.equal(result.model, 'managed/large');
+      assert.equal(result.limit?.context, 524288);
+      assert.equal(result.compactAtTokens, 491520);
+      await writeOpenCodeCompactionConfig({ tailTurns: 4 });
+      assert.deepEqual(JSON.parse(await readFile(managedPath, 'utf8')), managed);
+      assert.equal(JSON.parse(await readFile(configPath, 'utf8')).provider, undefined);
+    } finally {
+      if (previous === undefined) delete process.env.VS_OPENCODE_SERVER_CONFIG_DIR;
+      else process.env.VS_OPENCODE_SERVER_CONFIG_DIR = previous;
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+});
+
 test('a window with no declared input ceiling compacts at context minus output', () => {
   // This is the case that made the panel look wrong: a 64k model whose session
   // row had counted 200k of cumulative spend.

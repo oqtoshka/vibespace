@@ -109,6 +109,20 @@ function readConfigFileSync(): Record<string, unknown> | null {
   }
 }
 
+// Runtime metadata can live in an operator-managed v2 config. Keep writes scoped
+// to the user's global file; copying managed providers there would shadow later
+// deployment changes and could copy credentials into an editable file.
+function readEffectiveConfigFileSync(): Record<string, unknown> {
+  const user = readConfigFileSync() ?? {};
+  const managedDirectory = process.env.VS_OPENCODE_SERVER_CONFIG_DIR?.trim();
+  if (!managedDirectory) return user;
+  try {
+    const managed = asRecord(JSON.parse(fsSync.readFileSync(path.join(managedDirectory, 'opencode.json'), 'utf8'))) ?? {};
+    return { ...user, ...managed, provider: managed.providers ?? managed.provider ?? user.provider,
+      compaction: { ...asRecord(user.compaction), ...asRecord(managed.compaction) } };
+  } catch { return user; }
+}
+
 /**
  * The model OpenCode uses when a session does not name one.
  *
@@ -116,7 +130,7 @@ function readConfigFileSync(): Record<string, unknown> | null {
  * describes the window of.
  */
 export function readOpenCodeDefaultModel(): string | null {
-  const model = readConfigFileSync()?.model;
+  const model = readEffectiveConfigFileSync().model ?? process.env.VS_OPENCODE_DEFAULT_MODEL;
   return typeof model === 'string' && model.includes('/') ? model : null;
 }
 
@@ -124,7 +138,7 @@ export function readOpenCodeDefaultModel(): string | null {
  * Reads the compaction block, filling in OpenCode's own defaults.
  */
 export function readOpenCodeCompactionConfig(): OpenCodeCompactionConfig {
-  const compaction = asRecord(readConfigFileSync()?.compaction);
+  const compaction = asRecord(readEffectiveConfigFileSync().compaction);
   if (!compaction) return { ...DEFAULT_COMPACTION };
 
   return {
@@ -297,7 +311,7 @@ function readModelLimitFromConfig(modelId: string): OpenCodeModelLimit | null {
   const parts = splitModelId(modelId);
   if (!parts) return null;
 
-  const providers = asRecord(readConfigFileSync()?.provider);
+  const providers = asRecord(readEffectiveConfigFileSync().provider);
   const models = asRecord(asRecord(providers?.[parts.providerId])?.models);
   const limit = asRecord(asRecord(models?.[parts.modelKey])?.limit);
   if (!limit) return null;

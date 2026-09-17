@@ -94,10 +94,14 @@ const PROVIDER_CAPABILITIES: Record<LLMProvider, ProviderCapabilities> = {
 export const providerCapabilitiesService = {
   getProviderCapabilities(provider: LLMProvider): ProviderCapabilities {
     providerPolicy.assertEnabled(provider);
-    return PROVIDER_CAPABILITIES[provider];
+    const capabilities = PROVIDER_CAPABILITIES[provider];
+    const configured = provider === 'opencode' ? process.env.VS_OPENCODE_DEFAULT_PERMISSION_MODE : undefined;
+    return configured && capabilities.permissionModes.includes(configured)
+      ? { ...capabilities, defaultPermissionMode: configured }
+      : capabilities;
   },
 
   listAllProviderCapabilities(): ProviderCapabilities[] {
-    return providerPolicy.enabled().map((id) => PROVIDER_CAPABILITIES[id]);
+    return providerPolicy.enabled().map((id) => this.getProviderCapabilities(id));
   },
 };
