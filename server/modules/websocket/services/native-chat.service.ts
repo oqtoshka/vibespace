@@ -14,6 +14,7 @@ import { handleChatConnection } from './chat-websocket.service.js';
 import { chatRunRegistry } from './chat-run-registry.service.js';
 import { scopeNativeCommand, validNativeCapability } from './native-chat-policy.service.js';
 import { sendNativeHistory } from './native-history-transport.service.js';
+import { nativeHistoryWithReceipts, retainNativeSend } from './native-send-journal.service.js';
 
 const epoch = randomUUID();
 
@@ -38,11 +39,21 @@ export function handleNativeChat(ws: WebSocket, request: AuthenticatedWebSocketR
     if (ws.readyState === 1 && ws.bufferedAmount < 12 * 1024 * 1024) ws.send(JSON.stringify({ ...payload, sessionId }));
   };
   const facade = new EventEmitter() as EventEmitter & { readyState: number; send: (raw: string) => void };
+  const pendingSends = new Map<string, { content: string; options: { images?: unknown[]; files?: unknown[] } }>();
   Object.defineProperty(facade, 'readyState', { get: () => ws.readyState });
   facade.send = raw => {
     try {
       const event = JSON.parse(raw);
       if (event.sessionId !== sessionId && !(event.kind === 'protocol_error' && !event.sessionId)) return;
+      if (event.kind === 'send_ack') {
+        const pending = pendingSends.get(event.clientMsgId);
+        if (pending) {
+          if (!sessionsDb.getSessionById(sessionId)?.provider_session_id) {
+            retainNativeSend(sessionId, event.clientMsgId, pending.content, pending.options);
+          }
+          pendingSends.delete(event.clientMsgId);
+        }
+      }
       send({ ...event, nativeRunId: chatRunRegistry.getRun(sessionId)?.startedAt ?? null });
     } catch { /* Non-JSON/global frames are outside the scoped protocol. */ }
   };
@@ -78,7 +89,7 @@ export function handleNativeChat(ws: WebSocket, request: AuthenticatedWebSocketR
         if (!Number.isInteger(limit) || !Number.isInteger(offset)) throw new Error('Invalid page');
         historyBusy = true;
         try {
-          const page = await sessionsService.fetchHistory(sessionId, { limit, offset });
+          const page = nativeHistoryWithReceipts(sessionId, await sessionsService.fetchHistory(sessionId, { limit, offset }));
           const run = chatRunRegistry.getRun(sessionId);
           await sendNativeHistory(ws, { kind: 'native.history', sessionId, requestId, ...page, runId: run?.startedAt ?? null,
             running: run?.status === 'running', archived: Boolean(current.isArchived),
@@ -150,6 +161,9 @@ export function handleNativeChat(ws: WebSocket, request: AuthenticatedWebSocketR
           ...(current.model ? { model: current.model } : {}),
           ...(current.effort ? { reasoningEffort: current.effort, effort: current.effort } : {}),
         };
+      }
+      if (command.type === 'chat.send' && typeof command.clientMsgId === 'string') {
+        pendingSends.set(command.clientMsgId, { content: String(command.content ?? ''), options: command.options as { images?: unknown[]; files?: unknown[] } });
       }
       facade.emit('message', JSON.stringify(command));
     } catch (error) {

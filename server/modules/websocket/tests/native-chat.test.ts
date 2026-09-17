@@ -12,6 +12,7 @@ import { providerModelsService } from '@/modules/providers/index.js';
 import { connectedClients } from '../services/websocket-state.service.js';
 import { chatRunRegistry } from '../services/chat-run-registry.service.js';
 import { handleNativeChat } from '../services/native-chat.service.js';
+import { nativeHistoryWithReceipts } from '../services/native-send-journal.service.js';
 
 class Socket extends EventEmitter {
   readyState = 1;
@@ -107,7 +108,10 @@ test('native session isolation, history, stream, permissions and duplicate recei
     client.inputNow({ type: 'native.select', model: 'fixture-model', effort: 'low', permissionMode: 'bypassPermissions' });
     assert.equal(sessionsDb.getSessionPermissionMode('native-one'), 'bypassPermissions',
       'a permission selection is saved before a following Stop/send can overtake async model lookup');
-    await new Promise(resolve => setTimeout(resolve, 20));
+    const selectionDeadline = Date.now() + 3000;
+    while (!client.frames.some(frame => frame.kind === 'native.options') && Date.now() < selectionDeadline) {
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
     assert.equal(client.frames.filter(frame => frame.kind === 'native.error').length, errorsBeforeSelection);
     assert.equal(client.frames.filter(frame => frame.kind === 'native.options').at(-1)?.permissionMode, 'bypassPermissions');
     chatRunRegistry.completeRun('native-one', { exitCode: 0 });
@@ -131,12 +135,26 @@ test('native session isolation, history, stream, permissions and duplicate recei
     assert.deepEqual(runtimeOptions.files.map(item => item.path), [filePath]);
     assert.equal(calls, 1);
     assert.ok(client.frames.some(f => f.kind === 'send_ack'));
+    await client.input({ type: 'native.history', requestId: 'accepted-before-provider-transcript' });
+    const acceptedPage = client.frames.find(f => f.requestId === 'accepted-before-provider-transcript');
+    assert.equal((acceptedPage?.messages as { role: string; content: string }[]).filter(m => m.role === 'user' && m.content === 'hello').length, 1,
+      'a first message accepted before the provider creates its transcript survives Stop/reconnect');
     assert.ok(client.frames.some(f => f.kind === 'stream_delta'));
     client.close(1000);
     const reconnected = open('native-one');
     await reconnected.input({ type: 'chat.send', clientMsgId: 'native-send', content: 'hello' });
     assert.equal(calls, 1);
     assert.ok(reconnected.frames.some(f => f.kind === 'send_ack'));
+    await reconnected.input({ type: 'native.history', requestId: 'accepted-after-reconnect' });
+    const reconnectedPage = reconnected.frames.find(f => f.requestId === 'accepted-after-reconnect');
+    assert.equal((reconnectedPage?.messages as { role: string; content: string }[]).filter(m => m.role === 'user' && m.content === 'hello').length, 1,
+      'retrying the same send must not duplicate the durable first message');
+    const canonicalPage = { messages: [{ id: 'provider-user', sessionId: 'native-one', provider: 'claude' as const,
+      kind: 'text' as const, role: 'user' as const, content: 'hello', timestamp: new Date().toISOString() }],
+      total: 150, limit: 100, offset: 0, hasMore: true };
+    assert.deepEqual(nativeHistoryWithReceipts('native-one', canonicalPage), canonicalPage,
+      'the canonical transcript replaces the receipt without changing pagination or duplicating the first message');
+    assert.equal(JSON.parse(appConfigDb.get('native_messages:native-one') || '[]').length, 0);
     sessionsDb.updateSessionIsArchived('native-one', true);
     await reconnected.input({ type: 'chat.send', clientMsgId: 'new-send', content: 'archived' });
     assert.equal(calls, 1);
