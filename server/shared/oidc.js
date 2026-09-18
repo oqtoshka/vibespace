@@ -1,6 +1,7 @@
 import crypto from 'crypto';
 
 import jwt from 'jsonwebtoken';
+import { isManagedUsername } from './index.js';
 
 /**
  * OpenID Connect client — authorization code flow with PKCE.
@@ -36,8 +37,6 @@ const PROVIDER_TIMEOUT_MS = 10_000;
 export const FLOW_COOKIE = 'vibespace_oidc_flow';
 export const FLOW_TTL_SECONDS = 600;
 
-/** Usernames become filesystem-adjacent identifiers downstream, so keep them boring. */
-const USERNAME_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/i;
 
 export class OidcError extends Error {
   constructor(code, message) {
@@ -360,11 +359,11 @@ export function createOidcClient(config, { fetchImpl = globalThis.fetch } = {}) 
       );
     }
 
-    if (!USERNAME_PATTERN.test(username)) {
+    if (!isManagedUsername(username)) {
       throw new OidcError(
         'invalid_username',
         `Claim "${config.usernameClaim}" is "${username}", which is not a usable VibeSpace username ` +
-          '(letters, digits, "_" and "-" only). Point VS_OIDC_USERNAME_CLAIM at a different claim.',
+          '(1–64 characters: letters, digits, ".", "_" and "-", starting with a letter or digit). Point VS_OIDC_USERNAME_CLAIM at a different claim.',
       );
     }
 

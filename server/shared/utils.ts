@@ -35,6 +35,20 @@ import type {
   WorkspacePathValidationResult,
 } from '@/shared/types.js';
 
+//----------------- MANAGED IDENTITY VALIDATION ------------
+/**
+ * OIDC, manager registries and worker authentication use the same account key.
+ * Accept dotted IdP usernames verbatim; never replace punctuation or change
+ * case, because those transformations can route a user to another tenant.
+ * The 1–64 character ASCII allowlist remains safe for HTTP identity headers
+ * and direct path components: slashes, whitespace and standalone dots fail.
+ */
+export function isManagedUsername(value: unknown): value is string {
+  return typeof value === 'string' && value === value.trim()
+    && /^[a-z0-9][a-z0-9_.-]{0,63}$/i.test(value);
+}
+
+// ---------------------------
 //----------------- ENVIRONMENT UTILITIES ------------
 /**
  * Indicates whether the backend is running in hosted Platform mode rather than
