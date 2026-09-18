@@ -25,6 +25,7 @@ import { getAdditionalFileRoots, validateAccessiblePath, validatePathInProject }
 import { janitorRoutes, startJanitorScheduler } from '@/modules/janitor/index.js';
 import { workspacePolicy, workspacePolicyRoutes } from '@/modules/workspace-policy/index.js';
 import { buildFileAccessRoots, fileTreeRoutes } from '@/modules/file-tree/index.js';
+import { officePreviewRoutes } from '@/modules/office-preview/index.js';
 import { closeSessionsWatcher, initializeSessionsWatcher, providerRuntimeService, registerPendingCliSession, registerSessionShredDependencies } from '@/modules/providers/index.js';
 import { getSubagentConversation } from '@/modules/providers/list/claude/claude-sessions.provider.js';
 import { createWebSocketServer } from '@/modules/websocket/index.js';
@@ -272,6 +273,7 @@ app.use('/api/auth', authRoutes);
 
 // File Tree API Routes (protected)
 app.use('/api/file-tree', authenticateToken, fileTreeRoutes);
+app.use('/api/office-preview', authenticateToken, officePreviewRoutes);
 app.use('/api/workspace-policy', authenticateToken, workspacePolicyRoutes);
 app.use('/api/janitor', authenticateToken, janitorRoutes);
 // Deployments are manager-owned; local and worker-only installations have no runtime control.
