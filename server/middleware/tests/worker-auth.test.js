@@ -61,6 +61,15 @@ function runMiddleware(headers) {
 }
 
 describe('worker mode identity', () => {
+  test('keeps a dotted manager identity distinct from a dashed account', async () => {
+    const dotted = await runMiddleware({ 'x-vibespace-user': 'person.name' });
+    const dashed = await runMiddleware({ 'x-vibespace-user': 'person-name' });
+    assert.equal(dotted.nexted, true);
+    assert.equal(dotted.user.username, 'person.name');
+    assert.notEqual(dotted.user.id, dashed.user.id);
+    assert.equal((await runMiddleware({ 'x-vibespace-user': '../person.name' })).status, 401);
+  });
+
   test('provisions the user named by the manager on first contact', async () => {
     const result = await runMiddleware({ 'x-vibespace-user': 'main' });
 
