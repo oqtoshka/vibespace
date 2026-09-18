@@ -3,6 +3,8 @@ import { unifiedMergeView } from '@codemirror/merge';
 import type { Extension } from '@codemirror/state';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+
+import { isOfficeFile } from '../../../../shared/office-formats';
 import { usePaletteOps } from '../../../contexts/PaletteOpsContext';
 import { useTheme } from '../../../contexts/ThemeContext';
 import { useCodeEditorDocument } from '../hooks/useCodeEditorDocument';
@@ -12,6 +14,9 @@ import type { CodeEditorFile } from '../types/types';
 import { createMinimapExtension, createScrollToFirstChunkExtension, getLanguageExtensions } from '../utils/editorExtensions';
 import { getEditorStyles } from '../utils/editorStyles';
 import { createEditorToolbarPanelExtension } from '../utils/editorToolbarPanel';
+import { isImageFile } from '../utils/binaryFile';
+import { detectApiSpecKind } from '../utils/apiSpec';
+
 import CodeEditorFooter from './subcomponents/CodeEditorFooter';
 import CodeEditorHeader from './subcomponents/CodeEditorHeader';
 import CodeEditorLoadingState from './subcomponents/CodeEditorLoadingState';
@@ -20,8 +25,6 @@ import CodeEditorBinaryFile from './subcomponents/CodeEditorBinaryFile';
 import CodeEditorPdfView from './subcomponents/CodeEditorPdfView';
 import CodeEditorImageView from './subcomponents/CodeEditorImageView';
 import CodeEditorMediaPreview from './subcomponents/CodeEditorMediaPreview';
-import { isImageFile } from '../utils/binaryFile';
-import { detectApiSpecKind } from '../utils/apiSpec';
 
 type CodeEditorProps = {
   file: CodeEditorFile;
@@ -230,7 +233,7 @@ export default function CodeEditor({
 
   // PDFs are detected as binary (so no text read happens) but render inline in
   // the browser's native PDF viewer rather than the "cannot be displayed" screen.
-  if (isBinary && isPdfFile) {
+  if (isBinary && (isPdfFile || isOfficeFile(file.name))) {
     return (
       <CodeEditorPdfView
         file={file}

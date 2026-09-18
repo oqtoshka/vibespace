@@ -1,6 +1,9 @@
 import { Download, Maximize2, Minimize2, X } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
-import { api } from '../../../../utils/api';
+import { useTranslation } from 'react-i18next';
+
+import { isOfficeFile } from '../../../../../shared/office-formats';
+import { api, authenticatedFetch } from '../../../../utils/api';
 import { useFileDiskVersion } from '../../../../hooks/useFileDiskVersion';
 import type { CodeEditorFile } from '../../types/types';
 
@@ -27,6 +30,11 @@ export default function CodeEditorPdfView({
   onClose,
   onToggleFullscreen,
 }: CodeEditorPdfViewProps) {
+  const { t } = useTranslation('codeEditor');
+  const office = isOfficeFile(file.name);
+  const [retry, setRetry] = useState(0);
+  const [downloading, setDownloading] = useState(false);
+  const [loadedKey, setLoadedKey] = useState('');
   const [objectUrl, setObjectUrl] = useState<string | null>(null);
   const [status, setStatus] = useState<'loading' | 'loaded' | 'error'>('loading');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -34,24 +42,36 @@ export default function CodeEditorPdfView({
 
   const projectId = file.projectId;
   const filePath = file.path;
+  const sourceKey = `${projectId}:${filePath}:${office}`;
   // Re-fetch when the PDF is rewritten on disk (e.g. a regenerated export).
   const diskVersion = useFileDiskVersion(projectId, filePath);
 
   useEffect(() => {
     let cancelled = false;
+    const controller = new AbortController();
     setStatus('loading');
     setErrorMessage(null);
 
     (async () => {
       try {
         if (!projectId) throw new Error('Missing project identifier');
-        const response = await api.readFileBlob(projectId, filePath);
-        if (!response.ok) throw new Error(`Failed to load PDF (HTTP ${response.status})`);
-        const blob = await response.blob();
+        const endpoint = office
+          ? `/api/office-preview/${encodeURIComponent(projectId)}?path=${encodeURIComponent(filePath)}`
+          : `/api/projects/${encodeURIComponent(projectId)}/files/content?path=${encodeURIComponent(filePath)}`;
+        const response = await authenticatedFetch(endpoint, { signal: controller.signal });
+        if (!response.ok) {
+          const result = await response.json().catch(() => ({}));
+          const known = ['OFFICE_UNAVAILABLE', 'OFFICE_BUSY', 'OFFICE_TOO_LARGE', 'OFFICE_INVALID', 'OFFICE_CHANGED', 'OFFICE_FORBIDDEN', 'OFFICE_NOT_FOUND'];
+          throw new Error(known.includes(result.code) ? t(`office.errors.${result.code}`) : t('office.failed'));
+        }
+        const bytes = await response.arrayBuffer();
+        if (new TextDecoder().decode(bytes.slice(0, 5)) !== '%PDF-') throw new Error(t('office.failed'));
+        const blob = new Blob([bytes], { type: 'application/pdf' });
         if (cancelled) return;
         const url = URL.createObjectURL(blob);
         objectUrlRef.current = url;
         setObjectUrl(url);
+        setLoadedKey(sourceKey);
         setStatus('loaded');
       } catch (error) {
         if (cancelled) return;
@@ -62,35 +82,54 @@ export default function CodeEditorPdfView({
 
     return () => {
       cancelled = true;
+      controller.abort();
       if (objectUrlRef.current) {
         URL.revokeObjectURL(objectUrlRef.current);
         objectUrlRef.current = null;
       }
     };
-  }, [projectId, filePath, diskVersion]);
+  }, [projectId, filePath, diskVersion, office, retry, sourceKey, t]);
 
-  const handleDownload = () => {
-    if (!objectUrl) return;
-    const anchor = document.createElement('a');
-    anchor.href = objectUrl;
-    anchor.download = file.name;
-    document.body.appendChild(anchor);
-    anchor.click();
-    document.body.removeChild(anchor);
+  const handleDownload = async () => {
+    if (downloading || !projectId) return;
+    setDownloading(true);
+    let originalUrl: string | undefined;
+    try {
+      let url = objectUrl;
+      if (office) {
+        const response = await api.readFileBlob(projectId, filePath);
+        if (!response.ok) throw new Error(t('office.downloadFailed'));
+        originalUrl = URL.createObjectURL(await response.blob());
+        url = originalUrl;
+      }
+      if (!url) return;
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = file.name;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+    } catch {
+      setErrorMessage(t('office.downloadFailed'));
+    } finally {
+      if (originalUrl) setTimeout(() => URL.revokeObjectURL(originalUrl!), 1000);
+      setDownloading(false);
+    }
   };
 
   const body = (
-    <div className="relative h-full w-full bg-muted">
+    <div className="relative min-h-0 w-full flex-1 bg-muted">
       {status === 'error' ? (
         <div className="flex h-full w-full items-center justify-center p-8 text-center text-sm text-muted-foreground">
           <div>
-            <p className="font-medium text-foreground">Couldn’t display this PDF</p>
+            <p className="font-medium text-foreground">{t('office.failed')}</p>
             <p className="mt-1">{errorMessage}</p>
+            <button className="mt-3 rounded border px-3 py-1" onClick={() => setRetry(value => value + 1)}>{t('office.retry')}</button>
           </div>
         </div>
-      ) : status === 'loading' ? (
+      ) : status === 'loading' || loadedKey !== sourceKey ? (
         <div className="flex h-full w-full items-center justify-center text-sm text-muted-foreground">
-          Loading PDF…
+          {t(office ? 'office.loading' : 'filePreview.loading')}
         </div>
       ) : (
         <iframe
@@ -108,9 +147,9 @@ export default function CodeEditorPdfView({
       <button
         type="button"
         onClick={handleDownload}
-        disabled={!objectUrl}
+        disabled={downloading || (!office && (!objectUrl || loadedKey !== sourceKey))}
         className="flex items-center justify-center rounded-md p-1.5 text-gray-600 hover:bg-gray-100 hover:text-gray-900 disabled:opacity-50 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-white"
-        title="Download file"
+        title={t(office ? 'office.downloadOriginal' : 'actions.download')} aria-label={t(office ? 'office.downloadOriginal' : 'actions.download')}
       >
         <Download className="h-4 w-4" />
       </button>
@@ -119,7 +158,7 @@ export default function CodeEditorPdfView({
           type="button"
           onClick={onToggleFullscreen}
           className="flex items-center justify-center rounded-md p-1.5 text-gray-600 hover:bg-gray-100 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-white"
-          title={isFullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+          title={t(isFullscreen ? 'actions.exitFullscreen' : 'actions.fullscreen')}
         >
           {isFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
         </button>
@@ -128,7 +167,7 @@ export default function CodeEditorPdfView({
         type="button"
         onClick={onClose}
         className="flex items-center justify-center rounded-md p-1.5 text-gray-600 hover:bg-gray-100 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-white"
-        title="Close"
+        title={t('actions.close')} aria-label={t('actions.close')}
       >
         <X className="h-4 w-4" />
       </button>
@@ -148,6 +187,7 @@ export default function CodeEditorPdfView({
     return (
       <div className="flex h-full w-full flex-col bg-background">
         {header}
+        {office && <p className="border-b px-3 py-1 text-xs text-muted-foreground">{t('office.readOnly')}</p>}
         {body}
       </div>
     );
@@ -165,6 +205,7 @@ export default function CodeEditorPdfView({
     <div className={containerClassName}>
       <div className={innerClassName}>
         {header}
+        {office && <p className="border-b px-3 py-1 text-xs text-muted-foreground">{t('office.readOnly')}</p>}
         {body}
       </div>
     </div>
