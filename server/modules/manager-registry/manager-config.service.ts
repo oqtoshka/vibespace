@@ -1,4 +1,5 @@
 import crypto from 'crypto';
+import { isManagedUsername } from '@/shared/index.js';
 
 import { WorkerRegistry } from './worker-registry.service.js';
 
@@ -13,7 +14,6 @@ import { WorkerRegistry } from './worker-registry.service.js';
  */
 
 const DEFAULT_PORT = 7000;
-const USERNAME_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/i;
 
 function parseUserMap(env: NodeJS.ProcessEnv, { requirePasswordHash }: { requirePasswordHash: boolean }) {
   const encoded = env.VS_MANAGER_USERS_B64;
@@ -47,7 +47,7 @@ function parseUserMap(env: NodeJS.ProcessEnv, { requirePasswordHash }: { require
   const links = new Map();
 
   for (const [username, value] of Object.entries(parsed)) {
-    if (!USERNAME_PATTERN.test(username)) {
+    if (!isManagedUsername(username)) {
       throw new Error(`Invalid username in manager user map: "${username}".`);
     }
     if (!value || typeof value !== 'object' || Array.isArray(value)) {

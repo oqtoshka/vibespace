@@ -1,4 +1,5 @@
 import { readFileSync, statSync } from 'node:fs';
+import { isManagedUsername } from '@/shared/index.js';
 
 type WorkerLink = {
   user_id: string;
@@ -33,7 +34,7 @@ export class WorkerRegistry extends Map<string, WorkerLink> {
       }
       const next = new Map<string, WorkerLink>();
       for (const entry of snapshot.workers) {
-        if (!/^[a-z0-9][a-z0-9_-]{0,63}$/i.test(entry.username)
+        if (!isManagedUsername(entry.username)
             || typeof entry.workerToken !== 'string' || entry.workerToken.length < 32
             || typeof entry.workspaceDir !== 'string' || !entry.workspaceDir.startsWith('/')) {
           throw new Error('Invalid worker identity');
