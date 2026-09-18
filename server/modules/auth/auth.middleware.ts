@@ -3,6 +3,7 @@ import crypto from 'crypto';
 import jwt from 'jsonwebtoken';
 
 import { IS_PLATFORM } from '@/shared/utils.js';
+import { isManagedUsername } from '@/shared/index.js';
 
 import {
   IS_WORKER_MODE,
@@ -14,8 +15,6 @@ import { userDb, appConfigDb } from '../database/index.js';
 // Use env var if set, otherwise auto-generate a unique secret per installation
 const JWT_SECRET = process.env.JWT_SECRET || appConfigDb.getOrCreateJwtSecret();
 
-// Usernames become filesystem-adjacent identifiers downstream, so keep them boring.
-const WORKER_USERNAME_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/i;
 
 /**
  * Verifies the manager's shared secret in constant time.
@@ -63,7 +62,7 @@ const readWorkerIdentity = (req) => {
 
   const raw = req.headers[WORKER_USER_HEADER];
   const username = Array.isArray(raw) ? raw[0] : raw;
-  if (typeof username !== 'string' || !WORKER_USERNAME_PATTERN.test(username)) {
+  if (!isManagedUsername(username)) {
     return null;
   }
 

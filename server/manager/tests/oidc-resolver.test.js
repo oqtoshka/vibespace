@@ -124,6 +124,18 @@ describe('manager oidc resolver: the authorization request', () => {
 });
 
 describe('manager oidc resolver: completing a login', () => {
+  it('completes OIDC for a dotted identity without routing it to its dashed neighbour', async () => {
+    links.set('person.name', { user_id: 'person.name', upstream: 'http://dotted:7100', enabled: true });
+    links.set('person-name', { user_id: 'person-name', upstream: 'http://dashed:7100', enabled: true });
+    const { authorize, cookie } = await beginLogin();
+    const { fragment } = await callback({ cookie, state: authorize.searchParams.get('state'),
+      code: makeCode({ username: 'person.name', nonce: authorize.searchParams.get('nonce') }) });
+    assert.equal(fragment.get('error'), null);
+    const identity = resolver.resolveUser({ headers: { authorization: `Bearer ${fragment.get('token')}` } }, new URL('http://m/api/x'));
+    assert.equal(identity.userId, 'person.name');
+    assert.equal(identity.link.upstream, 'http://dotted:7100');
+  });
+
   it('issues a session the proxy path accepts', async () => {
     const { authorize, cookie } = await beginLogin('/session/abc');
     const { res, fragment } = await callback({
