@@ -42,5 +42,22 @@
     "loading": "Loading preview...",
     "error": "Unable to display this file.",
     "openInNewTab": "Open in new tab"
+  },
+  "office": {
+    "loading": "Preparing document preview…",
+    "failed": "Could not display this document",
+    "retry": "Try again",
+    "downloadOriginal": "Download original",
+    "downloadFailed": "Could not download the original file. Try again.",
+    "readOnly": "Read-only preview · static slides and printed pages. Fonts and layout may differ from the original.",
+    "errors": {
+      "OFFICE_UNAVAILABLE": "Office preview is unavailable on this server. You can download the original or try again later.",
+      "OFFICE_BUSY": "The preview service is busy. Try again shortly.",
+      "OFFICE_TOO_LARGE": "This file is too large to preview (source limit: 25 MiB). Download the original.",
+      "OFFICE_INVALID": "The document may be damaged or password-protected. Download it to open in an Office application.",
+      "OFFICE_CHANGED": "The file changed while being read. Try again.",
+      "OFFICE_FORBIDDEN": "This file is outside the selected project.",
+      "OFFICE_NOT_FOUND": "The file or project was not found."
+    }
   }
 }
