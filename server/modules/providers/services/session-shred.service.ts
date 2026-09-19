@@ -6,7 +6,7 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 
 import { sessionsDb } from '@/modules/database/index.js';
-import { findCodexRolloutPath } from '@/shared/codex-plan-ledger.js';
+import { findCodexRolloutPath } from '@/shared/index.js';
 import { getDataDir } from '@/shared/utils.js';
 
 /**
