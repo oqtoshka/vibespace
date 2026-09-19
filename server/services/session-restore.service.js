@@ -17,7 +17,7 @@ import { promises as fs } from 'fs';
 import path from 'path';
 
 import { readOpenClaudeTasks } from '../shared/claude-task-ledger.js';
-import { readCodexPlanState } from '../shared/codex-plan-ledger.js';
+import { readCodexPlanState } from '../shared/index.js';
 import { readOpenCodeTaskState } from '../shared/opencode-todo-ledger.js';
 import { readCursorTaskState } from '../shared/cursor-todo-ledger.js';
 import { getDataDir } from '../shared/utils.js';
