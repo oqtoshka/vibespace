@@ -9,7 +9,7 @@ import {
 import { createProviderRuntimeContext, normalizeRuntimeOptions } from './shared/provider-runtime-context.js';
 import { notifyRunFailed, notifyRunStopped } from './modules/notifications/index.js';
 import { recordSessionActivity, recordSessionEnd } from './services/session-restore.service.js';
-import { planTaskContinuation } from './services/task-continuation.js';
+import { planTaskContinuation } from './modules/task-continuation/index.js';
 import { createCompleteMessage, createNormalizedMessage, flattenPromptForWindowsShell } from './shared/utils.js';
 
 // cross-spawn resolves .cmd shims/PATHEXT on Windows and delegates to

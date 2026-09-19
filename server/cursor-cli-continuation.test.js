@@ -9,7 +9,7 @@ const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'cursor-continuation-'));
 process.env.DATABASE_PATH = path.join(tempRoot, 'data', 'auth.db');
 
 const { spawnCursor } = await import('./cursor-cli.js');
-const { __clearTaskContinuationState, __setTaskLedgerReader } = await import('./services/task-continuation.js');
+const { __clearTaskContinuationState, __setTaskLedgerReader } = await import('./modules/task-continuation/index.js');
 
 /** A fake cursor-agent: records its argv, reports a session, a result, exits. */
 async function installFakeCursorAgent() {

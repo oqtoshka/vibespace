@@ -9,7 +9,7 @@ import Database from 'better-sqlite3';
 // Read into consts at module load — set before the import.
 process.env.VIBESPACE_TASK_NUDGE_MAX = '3';
 
-const { planTaskContinuation, __clearTaskContinuationState, __setTaskLedgerReader } = await import('../task-continuation.js');
+const { planTaskContinuation, __clearTaskContinuationState, __setTaskLedgerReader } = await import('../../modules/task-continuation/index.js');
 const { readOpenCodeTaskState } = await import('../../shared/opencode-todo-ledger.js');
 const { readCodexPlanState, findCodexRolloutPath } = await import('../../shared/index.js');
 const { readCursorTaskState } = await import('../../shared/cursor-todo-ledger.js');
@@ -256,7 +256,7 @@ test('the planner nudges while the ledger is open and stops when it closes', () 
   }
 });
 
-test('two no-progress nudges give up; activity resets the stall but not the budget', () => {
+test('two no-progress nudges give up; productive activity renews the budget', () => {
   __clearTaskContinuationState();
   const open = [{ id: '1', subject: 'stuck', status: 'pending', waitingOnUser: false }];
 
@@ -268,14 +268,13 @@ test('two no-progress nudges give up; activity resets the stall but not the budg
     assert.ok(planTaskContinuation({ provider: 'codex', sessionId: 'sid_stall' }));
     assert.equal(planTaskContinuation({ provider: 'codex', sessionId: 'sid_stall' }), null, 'stall detector trips on the third look');
 
-    // Real work every turn: activity moves, so only the budget (3) bounds it.
+    // Real work can take arbitrarily more turns than the empty-loop budget (3).
     __clearTaskContinuationState();
     let activity = 0;
     __setTaskLedgerReader('codex', () => ({ open, activity: activity += 1 }));
-    assert.ok(planTaskContinuation({ provider: 'codex', sessionId: 'sid_budget' }));
-    assert.ok(planTaskContinuation({ provider: 'codex', sessionId: 'sid_budget' }));
-    assert.ok(planTaskContinuation({ provider: 'codex', sessionId: 'sid_budget' }));
-    assert.equal(planTaskContinuation({ provider: 'codex', sessionId: 'sid_budget' }), null, 'budget exhausted');
+    for (let turn = 0; turn < 12; turn += 1) {
+      assert.ok(planTaskContinuation({ provider: 'codex', sessionId: 'sid_budget' }), 'productive work must not exhaust a lifetime budget');
+    }
   } finally {
     __setTaskLedgerReader('codex', null);
   }

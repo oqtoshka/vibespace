@@ -26,7 +26,7 @@ import { collectAgentLaunchExtras } from './shared/agent-env.js';
 import { notifyRunFailed, notifyRunStopped } from './modules/notifications/index.js';
 import { cancelRateLimitWake, scheduleRateLimitWake } from './services/rate-limit-wake.service.js';
 import { recordSessionActivity, recordSessionEnd } from './services/session-restore.service.js';
-import { planTaskContinuation } from './services/task-continuation.js';
+import { planTaskContinuation } from './modules/task-continuation/index.js';
 import { broadcastSessionUpdate, generateInitialSessionTitle, scheduleSessionRecap, rewindCodexTurn } from './modules/providers/index.js';
 import { buildCodexTokenBudget, readLatestCodexTokenBudget } from './shared/codex-token-usage.js';
 import { toCodexAppServerSandboxPolicy } from './shared/codex-sandbox-policy.js';
