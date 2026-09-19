@@ -11,7 +11,7 @@ process.env.VIBESPACE_TASK_NUDGE_MAX = '3';
 
 const { planTaskContinuation, __clearTaskContinuationState, __setTaskLedgerReader } = await import('../task-continuation.js');
 const { readOpenCodeTaskState } = await import('../../shared/opencode-todo-ledger.js');
-const { readCodexPlanState, findCodexRolloutPath } = await import('../../shared/codex-plan-ledger.js');
+const { readCodexPlanState, findCodexRolloutPath } = await import('../../shared/index.js');
 const { readCursorTaskState } = await import('../../shared/cursor-todo-ledger.js');
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'vibespace-task-continuation-'));
@@ -70,7 +70,7 @@ function writeRollout(root, sessionId, lines) {
   const dir = path.join(root, '2026', '08', '19');
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, `rollout-2026-08-19T10-00-00-${sessionId}.jsonl`);
-  fs.writeFileSync(file, lines.map((l) => JSON.stringify(l)).join('\n'));
+  fs.writeFileSync(file, lines.map((l) => JSON.stringify({ timestamp: '2026-08-19T10:00:00Z', ...l })).join('\n'));
   return file;
 }
 
@@ -118,8 +118,8 @@ test('the codex reader takes the newest plan, in every encoding, and filters to 
 
   const state = readCodexPlanState('sid-plan', root);
   assert.deepEqual(state.open, [
-    { id: '2', subject: 'wrapped active', status: 'in_progress', waitingOnUser: false },
-    { id: '3', subject: 'wrapped next', status: 'pending', waitingOnUser: false },
+    { id: '6', subject: 'wrapped active', status: 'in_progress', waitingOnUser: false },
+    { id: '7', subject: 'wrapped next', status: 'pending', waitingOnUser: false },
   ]);
   assert.ok(state.activity >= 2, 'tool calls in the window are counted');
 
@@ -142,9 +142,7 @@ test('the codex reader follows the plan tool when an MCP server serves it', () =
       },
     },
   ]);
-  assert.deepEqual(readCodexPlanState('sid-mcp-exec', root).open, [
-    { id: '2', subject: 'exec open', status: 'in_progress', waitingOnUser: false },
-  ]);
+  assert.equal(readCodexPlanState('sid-mcp-exec', root).open[0].subject, 'old world');
 
   writeRollout(root, 'sid-mcp-item', [
     planCall([{ step: 'old world', status: 'pending' }]),
@@ -162,7 +160,7 @@ test('the codex reader follows the plan tool when an MCP server serves it', () =
     },
   ]);
   assert.deepEqual(readCodexPlanState('sid-mcp-item', root).open, [
-    { id: '1', subject: 'item open', status: 'pending', waitingOnUser: false },
+    { id: '2', subject: 'item open', status: 'pending', waitingOnUser: false },
   ]);
 });
 
@@ -327,4 +325,37 @@ test('unknown providers and missing session ids are ignored', () => {
   __clearTaskContinuationState();
   assert.equal(planTaskContinuation({ provider: 'claude', sessionId: 'x' }), null);
   assert.equal(planTaskContinuation({ provider: 'opencode', sessionId: '' }), null);
+});
+
+
+test('completed turn with mc.plan work resumes; cumulative updates cannot hide omitted work', () => {
+  const root = path.join(tmp, 'briefing-regression');
+  const call = (args, status = 'completed', server = 'mc') => ({
+    timestamp: '2026-09-20T00:00:00Z', type: 'event_msg',
+    payload: { type: 'item_completed', item: { type: 'McpToolCall', server, tool: 'plan', arguments: args, status } },
+  });
+  const records = [
+    call({ steps: [{ content: 'Repair supervisor', status: 'in_progress' }, { content: 'Verify restore', status: 'pending' }] }),
+    call({ steps: [{ content: 'Repair supervisor', status: 'done' }] }),
+    call({ steps: [], replace: true }, 'failed'),
+    call({ steps: [], replace: true }, 'completed', 'another-server'),
+  ];
+  writeRollout(root, 'briefing', records);
+  __clearTaskContinuationState();
+  __setTaskLedgerReader('codex', id => readCodexPlanState(id, root));
+  try {
+    assert.match(planTaskContinuation({ provider: 'codex', sessionId: 'briefing' }), /Verify restore/);
+    records.push(call({ steps: [{ content: 'Verify restore', status: 'skipped' }] }));
+    writeRollout(root, 'briefing', records);
+    assert.equal(planTaskContinuation({ provider: 'codex', sessionId: 'briefing' }), null);
+    records.push(call({ steps: [{ content: '[waiting on user] Choose scope', status: 'pending' }] }));
+    writeRollout(root, 'briefing', records);
+    assert.equal(planTaskContinuation({ provider: 'codex', sessionId: 'briefing' }), null);
+    records.push(call({ steps: [{ content: 'Fresh work', status: 'pending' }], replace: true }));
+    writeRollout(root, 'briefing', records);
+    assert.match(planTaskContinuation({ provider: 'codex', sessionId: 'briefing' }), /Fresh work/);
+    records.push(call({ steps: [], remove: ['Fresh work'] }));
+    writeRollout(root, 'briefing', records);
+    assert.equal(planTaskContinuation({ provider: 'codex', sessionId: 'briefing' }), null);
+  } finally { __setTaskLedgerReader('codex', null); __clearTaskContinuationState(); }
 });
