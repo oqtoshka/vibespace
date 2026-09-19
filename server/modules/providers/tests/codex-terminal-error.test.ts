@@ -9,7 +9,7 @@ import { queryCodex } from '../../../openai-codex.js';
 // eslint-disable-next-line boundaries/no-unknown
 import { stopCodexAppServer } from '../../../services/codex-app-server.service.js';
 // eslint-disable-next-line boundaries/no-unknown
-import { __clearTaskContinuationState, __setTaskLedgerReader } from '../../../services/task-continuation.js';
+import { __clearTaskContinuationState, __setTaskLedgerReader } from '../../task-continuation/index.js';
 
 test('failed Codex turns preserve the provider explanation and a policy block cannot trigger a continuation', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'codex-terminal-error-'));
