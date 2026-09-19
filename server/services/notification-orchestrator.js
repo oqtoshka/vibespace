@@ -383,6 +383,7 @@ function notifyBackgroundWorkCompleted({ userId, provider, sessionId = null, ses
   });
 }
 
+/** @param {{userId: string | number | null, provider: string, sessionId?: string | null, error: unknown, sessionName?: string | null}} options */
 function notifyRunFailed({ userId, provider, sessionId = null, error, sessionName = null }) {
   const errorMessage = normalizeErrorMessage(error);
 

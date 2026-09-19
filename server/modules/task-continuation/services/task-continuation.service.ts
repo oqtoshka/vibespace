@@ -1,9 +1,11 @@
-import { readCodexPlanState } from '../shared/index.js';
-import { readCursorTaskState } from '../shared/cursor-todo-ledger.js';
-import { readOpenCodeTaskState } from '../shared/opencode-todo-ledger.js';
-import { WAITING_ON_USER_MARKER } from '../shared/waiting-on-user.js';
+import { readCodexPlanState, readCursorTaskState, readOpenCodeTaskState, WAITING_ON_USER_MARKER } from '../../../shared/index.js';
+import { notifyRunFailed } from '../../notifications/index.js';
 
-import { notifyRunFailed } from './notification-orchestrator.js';
+type LedgerItem = { id: string | number; status: string; subject: string; waitingOnUser?: boolean };
+type LedgerResult = { open: LedgerItem[]; activity: number };
+type LedgerReader = (sessionId: string, options?: { cwd?: string | null }) => LedgerResult;
+type Ledger = { read: LedgerReader; listName: string; closeHow: string };
+type ContinuationState = { count: number; stalls: number; fingerprint: string | null; activity: number };
 
 /**
  * Task-ledger continuation for the per-turn providers (OpenCode, Codex, Cursor).
@@ -15,8 +17,7 @@ import { notifyRunFailed } from './notification-orchestrator.js';
  * todo table, Codex's update_plan) still has open items gets a continuation
  * turn, and the model exits the loop by editing the ledger.
  *
- * Bounds mirror the Claude mechanism: at most TASK_NUDGE_MAX continuations per
- * session, and two consecutive nudges that run no tools and leave the ledger
+ * Bounds apply to consecutive unproductive continuations, not the session lifetime; and two consecutive nudges that run no tools and leave the ledger
  * untouched give up early — both bail-outs notify through the ordinary
  * run-failed channel. VIBESPACE_TASK_NUDGE=0 disables the mechanism.
  *
@@ -25,11 +26,11 @@ import { notifyRunFailed } from './notification-orchestrator.js';
  * loop stands down quietly, and the items stay open for the user to answer.
  */
 
-const TASK_NUDGE_MAX = parseInt(process.env.VIBESPACE_TASK_NUDGE_MAX, 10) || 5;
+const TASK_NUDGE_MAX = parseInt(process.env.VIBESPACE_TASK_NUDGE_MAX || '5', 10) || 5;
 const TASK_NUDGE_ENABLED = !['0', 'false', 'off'].includes((process.env.VIBESPACE_TASK_NUDGE || '').trim().toLowerCase());
 
 // Readers take (sessionId, { cwd }); Cursor's store is filed under its cwd.
-const LEDGERS = {
+const LEDGERS: Record<string, Ledger> = {
   opencode: { read: (sessionId) => readOpenCodeTaskState(sessionId), listName: 'todo list', closeHow: 'todowrite' },
   codex: { read: (sessionId) => readCodexPlanState(sessionId), listName: 'plan', closeHow: 'update_plan' },
   cursor: { read: (sessionId, { cwd } = {}) => readCursorTaskState(sessionId, cwd), listName: 'todo list', closeHow: 'TodoWrite' },
@@ -38,9 +39,9 @@ const LEDGERS = {
 // `${provider}:${sessionId}` -> { count, stalls, fingerprint, activity }.
 // Entries are dropped as soon as a session's ledger closes or a bail-out
 // fires, so the map only ever holds sessions mid-continuation.
-const states = new Map();
+const states = new Map<string, ContinuationState>();
 
-function buildOpenTasksNudge(open, { listName, closeHow }) {
+function buildOpenTasksNudge(open: LedgerItem[], { listName, closeHow }: Ledger) {
   return [
     `[session supervisor] Automated check: this turn ended, but your ${listName} still has open items:`,
     ...open.map((t) => `- #${t.id} [${t.status}] ${t.subject}`),
@@ -56,11 +57,12 @@ function buildOpenTasksNudge(open, { listName, closeHow }) {
 
 /**
  * Decides whether a just-finished turn should roll into a continuation turn.
+ * Consumed by Codex, Cursor and OpenCode provider runtimes at turn completion.
  * Returns the continuation prompt, or null when the session is genuinely done
  * (no open items), the mechanism is off, or nudging has stopped helping — the
  * give-up paths notify the user before returning null.
  */
-export function planTaskContinuation({ provider, sessionId, cwd = null, userId = null, sessionName = null }) {
+export function planTaskContinuation({ provider, sessionId, cwd = null, userId = null, sessionName = null }: { provider: string; sessionId: string; cwd?: string | null; userId?: string | number | null; sessionName?: string | null }) {
   const ledger = LEDGERS[provider];
   if (!TASK_NUDGE_ENABLED || !ledger || !sessionId) return null;
 
@@ -85,6 +87,9 @@ export function planTaskContinuation({ provider, sessionId, cwd = null, userId =
     state.stalls += 1;
   } else {
     state.stalls = 0;
+    // A productive turn renews the budget. The cap protects against empty loops,
+    // not against a real task needing more than five agent turns.
+    state.count = 0;
   }
 
   if (state.count >= TASK_NUDGE_MAX || state.stalls >= 2) {
@@ -110,12 +115,13 @@ export function planTaskContinuation({ provider, sessionId, cwd = null, userId =
   return buildOpenTasksNudge(actionable, ledger);
 }
 
-/** Test seams. */
+/** Test seam consumed by provider and continuation regression tests. */
 export function __clearTaskContinuationState() {
   states.clear();
 }
 
 const defaultReaders = Object.fromEntries(Object.entries(LEDGERS).map(([name, ledger]) => [name, ledger.read]));
-export function __setTaskLedgerReader(provider, read) {
+/** Provider and continuation tests replace ledger I/O through this seam. */
+export function __setTaskLedgerReader(provider: string, read: LedgerReader | null) {
   LEDGERS[provider].read = read || defaultReaders[provider];
 }
