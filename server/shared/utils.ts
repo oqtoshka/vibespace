@@ -35,6 +35,8 @@ import type {
   WorkspacePathValidationResult,
 } from '@/shared/types.js';
 
+import { isWaitingOnUserSubject } from './waiting-on-user.js';
+
 //----------------- MANAGED IDENTITY VALIDATION ------------
 /**
  * OIDC, manager registries and worker authentication use the same account key.
@@ -1705,3 +1707,189 @@ export async function inlinePlantUmlIncludes(source: string, baseDir: string, pr
  * renderer. It performs no project reads; callers supply authorized source and
  * must catch parse errors before returning a preview response. */
 export function renderDbmlToSvg(source: string): string { return renderDbml(source, 'svg'); }
+
+//----------------- CODEX SUPERVISOR LEDGER ------------
+// Kept beside shared utilities because turn continuation and boot restoration
+// must interpret the same executed plan, independently of briefing declarations.
+function extractWrappedPlanArguments(source: string) {
+  const markers = [...source.matchAll(/tools\.(?:mcp__[A-Za-z0-9_-]+__)?update_plan\b/g)];
+  const marker = markers.at(-1);
+  if (!marker) return null;
+
+  const callStart = source.indexOf('(', marker.index + marker[0].length);
+  if (callStart < 0) return null;
+
+  let objectStart = callStart + 1;
+  while (/\s/.test(source[objectStart] || '')) objectStart += 1;
+  if (source[objectStart] !== '{') return null;
+
+  let depth = 0;
+  let quote: string | null = null;
+  let escaped = false;
+  for (let i = objectStart; i < source.length; i += 1) {
+    const char = source[i];
+    if (quote) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === '\\') {
+        escaped = true;
+      } else if (char === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (char === '"' || char === "'" || char === '`') {
+      quote = char;
+      continue;
+    }
+    if (char === '{' || char === '[') depth += 1;
+    if (char === '}' || char === ']') depth -= 1;
+    if (depth === 0) {
+      return source.slice(objectStart, i + 1);
+    }
+  }
+  return null;
+}
+
+function jsonFromCodeModeObject(source: string) {
+  let result = '';
+  let quote: string | null = null;
+  let escaped = false;
+
+  for (let i = 0; i < source.length;) {
+    const char = source[i];
+    if (quote) {
+      result += char;
+      i += 1;
+      if (escaped) {
+        escaped = false;
+      } else if (char === '\\') {
+        escaped = true;
+      } else if (char === quote) {
+        quote = null;
+      }
+      continue;
+    }
+
+    if (char === '"') {
+      quote = char;
+      result += char;
+      i += 1;
+      continue;
+    }
+
+    if (/[A-Za-z_$]/.test(char)) {
+      let end = i + 1;
+      while (/[A-Za-z0-9_$]/.test(source[end] || '')) end += 1;
+      const identifier = source.slice(i, end);
+      const previous = result.trimEnd().at(-1);
+      let next = end;
+      while (/\s/.test(source[next] || '')) next += 1;
+      result += (previous === '{' || previous === ',') && source[next] === ':'
+        ? JSON.stringify(identifier)
+        : identifier;
+      i = end;
+      continue;
+    }
+
+    // Trailing commas are valid in the generated JavaScript but not JSON.
+    if (char === ',') {
+      let next = i + 1;
+      while (/\s/.test(source[next] || '')) next += 1;
+      if (source[next] === '}' || source[next] === ']') {
+        i += 1;
+        continue;
+      }
+    }
+
+    result += char;
+    i += 1;
+  }
+
+  return result;
+}
+
+
+function codexSessionsRoot(): string {
+  return path.join(process.env.CODEX_HOME?.trim() || path.join(os.homedir(), '.codex'), 'sessions');
+}
+
+/** Used by continuation and boot restoration to locate a provider rollout. */
+export function findCodexRolloutPath(sessionId: string, root = codexSessionsRoot()): string | null {
+  if (!sessionId) return null;
+  const list = (dir: string): string[] => {
+    try { return fs.readdirSync(dir).sort().reverse(); } catch { return []; }
+  };
+  for (const year of list(root)) for (const month of list(path.join(root, year)))
+    for (const day of list(path.join(root, year, month))) {
+      const dir = path.join(root, year, month, day);
+      for (const file of list(dir)) if (file.endsWith(`-${sessionId}.jsonl`)) return path.join(dir, file);
+    }
+  return null;
+}
+
+/**
+ * Continuation and boot restoration consume executed mc.plan/update_plan calls.
+ * Modern calls require successful structured receipts: source text can contain
+ * failed, conditional or merely quoted calls. Post-2026-09-17 updates accumulate;
+ * omission is not completion. Reads replay the whole history, including plans
+ * older than the old 512 KiB tail. No provider state is modified here.
+ */
+export function readCodexPlanState(sessionId: string, root = codexSessionsRoot()) {
+  const empty = { open: [], activity: 0 };
+  const file = findCodexRolloutPath(sessionId, root);
+  if (!file) return empty;
+  let text: string;
+  try { text = fs.readFileSync(file, 'utf8'); } catch { return empty; }
+  let steps: { id: string; subject: string; status: string }[] = [];
+  let nextId = 1;
+  let activity = 0;
+  for (const line of text.split('\n')) {
+    try {
+      const record = JSON.parse(line);
+      const payload = record?.payload;
+      if (!payload) continue;
+      if (['function_call', 'custom_tool_call'].includes(payload.type)) activity++;
+      let args: AnyRecord | undefined;
+      let briefing = false;
+      if (payload.type === 'item_completed') {
+        const item = payload.item;
+        if (item?.type !== 'McpToolCall' || item.server !== 'mc'
+          || !['plan', 'update_plan'].includes(item.tool)
+          || (item.status !== undefined && item.status !== 'completed') || item.error || item.result?.isError) continue;
+        args = item.arguments;
+        briefing = item.tool === 'plan';
+      } else {
+        if (!['function_call', 'custom_tool_call'].includes(payload.type)) continue;
+        const raw = payload.arguments ?? payload.input;
+        if (typeof raw !== 'string' || String(payload.name).includes('mcp__') || raw.includes('mcp__')) continue;
+        if (payload.name === 'update_plan') args = JSON.parse(raw);
+        else if (payload.name === 'exec') {
+          const literal = extractWrappedPlanArguments(raw);
+          if (literal) args = JSON.parse(jsonFromCodeModeObject(literal));
+        }
+      }
+      const plan = briefing ? args?.steps : args?.plan;
+      if (!args || !Array.isArray(plan)
+        || (args.remove !== undefined && (!Array.isArray(args.remove) || !args.remove.every((v: unknown) => typeof v === 'string')))
+        || (args.replace !== undefined && typeof args.replace !== 'boolean')) continue;
+      const incoming = plan.map(step => ({
+        subject: String((briefing ? step?.content : step?.step) || '(untitled)').trim(),
+        status: String(step?.status || 'pending'),
+      }));
+      const legacy = typeof record.timestamp === 'string' && record.timestamp < '2026-09-17T05:00:00.000Z';
+      const closed = (status: string) => ['completed', 'done', 'skipped'].includes(status);
+      if (legacy) steps = steps.filter(s => closed(s.status) || incoming.some(n => n.subject === s.subject));
+      if (args.replace || (!incoming.length && args.remove === undefined)) steps = [];
+      else steps = steps.filter(s => !args.remove?.some((v: string) => v.trim() === s.subject));
+      for (const step of incoming) {
+        const previous = steps.find(s => s.subject === step.subject);
+        if (previous) previous.status = step.status;
+        else steps.push({ id: String(nextId++), ...step });
+      }
+    } catch { /* Malformed records cannot erase earlier work. */ }
+  }
+  return { open: steps.filter(s => !['completed', 'done', 'skipped'].includes(s.status)).map(s => ({
+    ...s, waitingOnUser: isWaitingOnUserSubject(s.subject),
+  })), activity };
+}

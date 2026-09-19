@@ -34,3 +34,5 @@ export { encodePlantUmlSource, inlinePlantUmlIncludes, renderDbmlToSvg } from '.
 // Workspace policy and file-tree consume filesystem contracts and path guards.
 export type { FileTreeDirectoryEntry, FileTreeNode, FileTreeServiceDependencies, FileTreeServices, FileTreeUploadedFile, FileTreeFileSystem, FileTreeLogger, FileTreeProjectGateway, FileTreeWorkspaceGateway } from './types.js';
 export { AppError, FORBIDDEN_WORKSPACE_PATHS, WORKSPACES_ROOT, validateWorkspacePath } from './utils.js';
+
+export { readCodexPlanState, findCodexRolloutPath } from './utils.js';
