@@ -175,6 +175,7 @@ export default tseslint.config(
             "server/shared/opencode-failure.ts",
             "server/shared/opencode-token-usage.ts",
             "server/shared/cursor-todo-ledger.ts",
+            "server/shared/opencode-todo-ledger.js",
           ], // classify shared utility files so modules can depend on them explicitly
           mode: "file",
         },

@@ -13,7 +13,7 @@ import { stopCodexAppServer } from './services/codex-app-server.service.js';
 import {
   __clearTaskContinuationState,
   __setTaskLedgerReader,
-} from './services/task-continuation.js';
+} from './modules/task-continuation/index.js';
 
 async function waitFor(check, message) {
   const deadline = Date.now() + 5_000;

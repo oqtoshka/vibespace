@@ -151,10 +151,9 @@ test('two no-progress nudges give up instead of looping forever', async () => {
   }
 });
 
-// Real work (tool calls) resets the stall detector but not the budget: a model
-// that keeps working without ever closing its ledger is bounded by
-// VIBESPACE_TASK_NUDGE_MAX, not trusted indefinitely.
-test('a working-but-never-closing session is bounded by the nudge budget', async () => {
+// Real work renews the continuation budget; the ledger, not a lifetime turn
+// count, decides when productive work finishes.
+test('a productive session continues beyond the nudge budget until its ledger closes', async () => {
   const sessionId = 'nudge-budget-1';
   writeTask(sessionId, 1, 'pending', 'sisyphus');
 
@@ -163,14 +162,15 @@ test('a working-but-never-closing session is bounded by the nudge budget', async
   const respond = function* (i) {
     yield assistantTool('Bash', sessionId);
     yield assistantText(`working ${i}`, sessionId);
+    if (i >= 7) writeTask(sessionId, 1, 'completed', 'sisyphus');
   };
   __setClaudeQueryImpl(scriptedRuntime(sessionId, respond, received));
 
   try {
     await queryClaudeSDK('start', { sessionId, ephemeral: false }, makeRecordingWriter());
-    await waitUntil(() => !isClaudeSDKSessionAlive(sessionId), 'the budget to run out', 5000);
-    // …but the budget (3, set at the top of this file) still bounds the loop.
-    assert.equal(received.filter(isNudge).length, 3, 'exactly VIBESPACE_TASK_NUDGE_MAX nudges');
+    await waitUntil(() => !isClaudeSDKSessionAlive(sessionId), 'the completed ledger to close', 5000);
+    // The configured budget is three, but seven productive continuations finish.
+    assert.equal(received.filter(isNudge).length, 7, 'productive turns continue beyond VIBESPACE_TASK_NUDGE_MAX');
   } finally {
     await abortClaudeSDKSession(sessionId).catch(() => {});
     __setClaudeQueryImpl(null);

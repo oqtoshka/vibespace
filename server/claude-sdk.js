@@ -93,7 +93,8 @@ const SESSION_IDLE_TIMEOUT_MS = parseInt(process.env.CLAUDE_SESSION_IDLE_TIMEOUT
 // still holds open items is nudged to continue instead of being reaped: the
 // model declared that work and hasn't closed it, so an idle turn boundary is
 // not the end of the session. Bounded so a confused model can't run all night:
-// at most TASK_NUDGE_MAX nudges per session, and two consecutive nudges that
+// at most TASK_NUDGE_MAX consecutive unproductive nudges; productive turns renew
+// the budget. Two consecutive nudges that
 // produce no tool calls and no ledger change give up early with a notification.
 // The model exits the loop by editing the ledger — completing, deleting, or
 // re-scoping its tasks — or, when a task is genuinely parked on the user (an
@@ -1203,6 +1204,8 @@ async function maybeContinueOpenTasks(session) {
     nudges.stalls += 1;
   } else {
     nudges.stalls = 0;
+    // Budget bounds consecutive empty attempts, not productive session lifetime.
+    nudges.count = 0;
   }
 
   if (nudges.count >= TASK_NUDGE_MAX || nudges.stalls >= 2) {
