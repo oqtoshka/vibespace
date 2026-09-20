@@ -631,14 +631,74 @@ function resolveProviderSessionId(appSessionId: string, session: SessionRow): st
 }
 
 /**
+ * How one mid-turn delivery attempt ended, which decides who owes the message:
+ *
+ * - `delivered` — the runtime acknowledged it (or reported it started), and
+ *   streams the bubble itself. The queue must never send it again.
+ * - `declined` — it definitely was not taken: no live turn, no runtime support,
+ *   or a runtime that answered with no id. Nothing was sent, so the queue sends
+ *   it as its own turn.
+ * - `unresolved` — the attempt threw or outran its deadline with no answer
+ *   either way. The message may already be executing, so it is NOT re-sent:
+ *   the item stays in the queue, labelled for the operator, until the attempt's
+ *   late answer settles it or the operator removes it.
+ * - `unavailable` — the item is not ours to attempt (already gone from the
+ *   queue, already delivered, another attempt holds the claim). Do nothing.
+ *
+ * Only `declined` is proof that nothing happened, and only proof licenses a
+ * re-send: an answer to a question can be harmless to repeat, but the same
+ * path carries instructions, and running one twice is not recoverable by
+ * apologising for it afterwards.
+ */
+type MidTurnDeliveryOutcome = 'delivered' | 'declined' | 'unresolved' | 'unavailable';
+
+/**
+ * True only for the outcome that proves nothing reached the runtime, so the
+ * queued message is the server's to send as its own turn.
+ */
+function queueStillOwesDelivery(outcome: MidTurnDeliveryOutcome): boolean {
+  return outcome === 'declined';
+}
+
+/**
+ * How long to wait for an injection's answer before telling the operator the
+ * delivery is unresolved. Every runtime acks a steer in milliseconds, so a wait
+ * this long means the call is wedged. The attempt is not cancelled at the
+ * deadline — we keep observing it, because its late answer is the only thing
+ * that can settle who owns the message.
+ */
+const MID_TURN_DELIVERY_DEADLINE_MS = 30_000;
+
+/** Overridden by tests to exercise the deadline without waiting 30 seconds. */
+let midTurnDeliveryDeadlineMs = MID_TURN_DELIVERY_DEADLINE_MS;
+
+/**
+ * Test seam for `server/modules/websocket/tests/server-enqueue-steering.test.ts`:
+ * shortens (or restores) the injection deadline so the unresolved path is
+ * deterministic in tests. Never called in production code.
+ */
+export function setMidTurnDeliveryDeadlineForTests(ms: number | null): void {
+  midTurnDeliveryDeadlineMs = ms ?? MID_TURN_DELIVERY_DEADLINE_MS;
+}
+
+/** Sentinel for an injection that had not answered by the deadline. */
+const DELIVERY_DEADLINE_PASSED = Symbol('mid-turn delivery deadline passed');
+
+/**
  * Hands a queued message to the provider runtime so it lands in the RUNNING
  * turn at the agent's next step instead of waiting for the whole run — what
  * the Claude Code CLI does with a message typed mid-task.
  *
  * The item stays in the shared queue (so every client still sees it pending)
  * until the runtime reports it started, at which point the runtime's own
- * stream carries the user bubble. Returns false when the runtime can't take it
- * and the server-drained queue remains responsible for it.
+ * stream carries the user bubble.
+ *
+ * For the whole round trip the item is *claimed*: the injection's answer has
+ * not arrived, so `deliveredUuid` is not set yet, and a turn that completes in
+ * that window would otherwise drain the very message being injected and send
+ * it a second time. The claim ends only on an answer — accepted (the runtime
+ * owns it) or definitely refused (the drain owns it). No answer keeps the
+ * claim and marks the item unresolved for the operator.
  */
 async function tryDeliverToRunningTurn(
   appSessionId: string,
@@ -646,33 +706,106 @@ async function tryDeliverToRunningTurn(
   provider: LLMProvider,
   item: { id: string; content: string; options: AnyRecord },
   dependencies: ChatWebSocketDependencies,
-): Promise<boolean> {
+): Promise<MidTurnDeliveryOutcome> {
   const injectFn = dependencies.injectFns?.[provider];
   const providerSessionId = resolveProviderSessionId(appSessionId, session);
   if (!injectFn || !providerSessionId || !chatRunRegistry.isProcessing(appSessionId)) {
-    return false;
+    return 'declined';
+  }
+
+  // Claim before the first await: from here on nothing else may consume this
+  // item. A refused claim means someone else already owns the outcome (a
+  // repeated `chat.queue-add` for the same id, an item Stop removed, an
+  // earlier unresolved attempt), so this attempt must not send anything.
+  if (!chatRunRegistry.claimForMidTurnDelivery(appSessionId, item.id)) {
+    return 'unavailable';
   }
 
   const runtimeOptions = buildRuntimeOptions(session, item.options ?? {}, provider, appSessionId);
+  // A runtime may report the message started before (or instead of) answering
+  // the call — Codex fires `onDelivered` inside `turn/steer`. That callback is
+  // itself proof of delivery, so a later throw cannot turn it into a doubt.
+  let runtimeReportedDelivery = false;
 
-  try {
-    const injectedUuid = await injectFn(providerSessionId, item.content, {
+  const settlement = settleInjection(
+    appSessionId,
+    item.id,
+    injectFn(providerSessionId, item.content, {
       ...runtimeOptions,
       clientUserMessageId: item.id,
       // Delivered: the runtime now owns the message and streams the bubble.
-      onDelivered: () => chatRunRegistry.removeQueued(appSessionId, item.id),
+      onDelivered: () => {
+        runtimeReportedDelivery = true;
+        chatRunRegistry.removeQueued(appSessionId, item.id);
+      },
       // Cancelled (Stop pressed): hand the text back to the composer.
       onCancelled: () => chatRunRegistry.removeQueued(appSessionId, item.id, 'aborted'),
-    });
-    if (!injectedUuid) {
-      return false;
+    }),
+    () => runtimeReportedDelivery,
+  );
+
+  let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<typeof DELIVERY_DEADLINE_PASSED>((resolve) => {
+    deadlineTimer = setTimeout(() => resolve(DELIVERY_DEADLINE_PASSED), midTurnDeliveryDeadlineMs);
+    // Never hold the process open just to time an injection out.
+    deadlineTimer.unref?.();
+  });
+  const raced = await Promise.race([settlement, deadline]);
+  clearTimeout(deadlineTimer);
+  if (raced !== DELIVERY_DEADLINE_PASSED) {
+    return raced;
+  }
+
+  // Past the deadline with no answer. Say so on the card rather than guessing,
+  // and keep watching: the answer that eventually arrives still decides
+  // ownership, and a late acceptance must keep the drain off this message.
+  console.warn(`[Chat] Mid-turn delivery unresolved after ${midTurnDeliveryDeadlineMs}ms for session ${appSessionId} — leaving it undrainable and flagged for the operator`);
+  chatRunRegistry.markDeliveryUnresolved(appSessionId, item.id);
+  void settlement.then((late) => {
+    if (queueStillOwesDelivery(late) && !chatRunRegistry.isProcessing(appSessionId)) {
+      void drainQueue(appSessionId);
     }
-    chatRunRegistry.markDelivered(appSessionId, item.id, injectedUuid);
-    return true;
+  });
+  return 'unresolved';
+}
+
+/**
+ * Awaits one injection and applies its answer to the queue item, so the same
+ * rules hold whether that answer beats the deadline or arrives long after it.
+ * Never rejects: the outcome carries the verdict.
+ */
+async function settleInjection(
+  appSessionId: string,
+  id: string,
+  injection: Promise<string | null>,
+  runtimeReportedDelivery: () => boolean,
+): Promise<MidTurnDeliveryOutcome> {
+  try {
+    const injectedUuid = await injection;
+    if (injectedUuid) {
+      chatRunRegistry.markDelivered(appSessionId, id, injectedUuid);
+      return 'delivered';
+    }
+    if (runtimeReportedDelivery()) {
+      // It answered "no id" after having already started the message. Trust
+      // the stronger signal and keep the drain away from it.
+      return 'delivered';
+    }
+    // A definite refusal: the runtime looked and did not take it.
+    chatRunRegistry.releaseMidTurnClaim(appSessionId, id);
+    return 'declined';
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    if (runtimeReportedDelivery()) {
+      console.warn(`[Chat] Mid-turn delivery reported started, then failed for session ${appSessionId}`, { error: message });
+      return 'delivered';
+    }
+    // A throw is not a refusal: the request may have reached the runtime and
+    // failed on the way back. Leave it visibly unresolved instead of asserting
+    // either outcome.
     console.warn(`[Chat] Mid-turn delivery failed for session ${appSessionId}`, { error: message });
-    return false;
+    chatRunRegistry.markDeliveryUnresolved(appSessionId, id);
+    return 'unresolved';
   }
 }
 
@@ -716,7 +849,7 @@ async function handleChatQueueAdd(
     ? data.id.trim()
     : `queued_${Date.now()}_${Math.round(Math.random() * 1e9).toString(36)}`;
 
-  chatRunRegistry.enqueue(sessionId, {
+  const queued = chatRunRegistry.enqueue(sessionId, {
     id,
     content,
     imageCount: images.length,
@@ -724,9 +857,21 @@ async function handleChatQueueAdd(
     userId,
     createdAt: Date.now(),
   });
+  if (!queued) {
+    // The queue is full. Refuse this message out loud instead of making room
+    // by dropping an older one: the client's pending-send journal hands the
+    // text back to the composer, and the error says why.
+    sendProtocolError(
+      ws,
+      'QUEUE_FULL',
+      'This session already has the maximum number of queued messages. Wait for some to send, or remove one.',
+      sessionId,
+    );
+    return;
+  }
 
   const provider = session.provider as LLMProvider;
-  const delivered = await tryDeliverToRunningTurn(
+  const outcome = await tryDeliverToRunningTurn(
     sessionId,
     session,
     provider,
@@ -734,7 +879,10 @@ async function handleChatQueueAdd(
     dependencies,
   );
 
-  if (!delivered && !chatRunRegistry.isProcessing(sessionId)) {
+  // Re-check rather than trust the pre-await reading: the turn can finish while
+  // the injection is in flight, and then nothing else would start this
+  // message's own run.
+  if (queueStillOwesDelivery(outcome) && !chatRunRegistry.isProcessing(sessionId)) {
     void drainQueue(sessionId);
   }
 }
@@ -745,6 +893,12 @@ async function handleChatQueueAdd(
  * A message already handed to the provider runtime has to be recalled there
  * first; if the runtime has started it, the content is on its way to the model
  * and the item stays put (the client learns this by not seeing it removed).
+ *
+ * A message whose delivery attempt is still in flight cannot be recalled at
+ * all — there is no id to cancel it by yet — so it also stays put until that
+ * attempt answers. An attempt that never answered (`deliveryUnresolved`) is
+ * removable: that is the operator taking the decision back, and getting the
+ * text into the composer is the only honest retry for an outcome nobody knows.
  */
 async function handleChatQueueRemove(
   ws: WebSocket,
@@ -763,6 +917,11 @@ async function handleChatQueueRemove(
   }
 
   const queued = chatRunRegistry.getQueued(sessionId, id);
+  if (queued?.midTurnAttemptInFlight) {
+    // Mid-handover: neither ours to drop nor the runtime's to cancel yet.
+    chatRunRegistry.touchQueue(sessionId);
+    return;
+  }
   if (queued?.deliveredUuid) {
     const session = sessionsDb.getSessionById(sessionId);
     const provider = session?.provider as LLMProvider | undefined;
@@ -1034,14 +1193,25 @@ export async function serverAbortRun(sessionId: string): Promise<boolean> {
  * composer. Without it — boot restore, the usage-limit wake — the message is a
  * turn of its own and must not join someone else's, so it waits for the drain.
  *
- * Exactly-once is the registry's: the item is enqueued once under a unique id,
- * and only one of the two paths can consume it. A steered item is stamped with
- * `deliveredUuid`, which `dequeueNext` skips, so the drain cannot send it
- * again; a steer that fails leaves the item untouched for the drain. The
- * boolean return is unchanged and means "VibeSpace owns this message", not
- * "the model has read it" — callers that persist a receipt (the plugin host's
- * decision delivery) still get their answer synchronously, before the
- * injection round-trip resolves.
+ * Single delivery is the registry's: the item is enqueued once under a unique
+ * id, and only one of the two paths can consume it. The item is claimed for the
+ * whole injection round trip, so a turn completing mid-injection cannot drain
+ * it; a steer the runtime accepts is then stamped with `deliveredUuid`, which
+ * `dequeueNext` skips, and only a definite refusal is released back to the
+ * drain. An attempt that answers neither way is left claimed and flagged for
+ * the operator — this path carries instructions, so an outcome nobody can read
+ * is never resolved by sending the message again.
+ *
+ * The return is unchanged in meaning — "VibeSpace owns this message", not "the
+ * model has read it" — so callers that persist a receipt (the plugin host's
+ * decision delivery) still get their answer synchronously, before the injection
+ * round-trip resolves. It is now also false when the session's queue is full,
+ * which is the one case where VibeSpace does not take the message at all: the
+ * caller must tell whoever submitted it rather than record an acceptance.
+ *
+ * Ownership is in-memory. A message that has been accepted here and not yet
+ * delivered does not survive a restart of this process, and a caller's durable
+ * receipt does not restore it.
  */
 export function serverEnqueueMessage(
   sessionId: string,
@@ -1057,7 +1227,7 @@ export function serverEnqueueMessage(
     return false;
   }
   const id = `server_${Date.now()}_${Math.round(Math.random() * 1e9).toString(36)}`;
-  chatRunRegistry.enqueue(sessionId, {
+  const queued = chatRunRegistry.enqueue(sessionId, {
     id,
     content,
     imageCount: 0,
@@ -1065,6 +1235,13 @@ export function serverEnqueueMessage(
     userId,
     createdAt: Date.now(),
   });
+  if (!queued) {
+    // A full queue is a refusal, not a place to make room by dropping someone
+    // else's message. The caller (an operator's answer, a supervisor prompt)
+    // learns it was not taken and can say so.
+    console.warn(`[Chat] Refused a server-initiated message for session ${sessionId}: the queue is full`);
+    return false;
+  }
   if (!deliverMidTurn) {
     if (!chatRunRegistry.isProcessing(sessionId)) {
       void drainQueue(sessionId);
@@ -1078,7 +1255,7 @@ export function serverEnqueueMessage(
     return true;
   }
   void (async () => {
-    const delivered = await tryDeliverToRunningTurn(
+    const outcome = await tryDeliverToRunningTurn(
       sessionId,
       session,
       session.provider as LLMProvider,
@@ -1088,7 +1265,7 @@ export function serverEnqueueMessage(
     // Re-check rather than trust the pre-await reading: the turn can finish
     // while the injection is in flight, and then nothing else would start this
     // message's own run.
-    if (!delivered && !chatRunRegistry.isProcessing(sessionId)) {
+    if (queueStillOwesDelivery(outcome) && !chatRunRegistry.isProcessing(sessionId)) {
       void drainQueue(sessionId);
     }
   })();
