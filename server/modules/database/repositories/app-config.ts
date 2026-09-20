@@ -50,4 +50,20 @@ export const appConfigDb = {
     }
     return secret;
   },
+
+  /** Session-capabilities owns this independent secret. A failed read must not rotate it.
+   * INSERT ON CONFLICT also preserves the first key if two server processes initialize together. */
+  getOrCreateSessionCapabilitySecret(): string {
+    const db = getConnection();
+    const key = 'mc_session_capability_secret_v2';
+    const read = () => db.prepare('SELECT value FROM app_config WHERE key = ?').get(key) as { value: string } | undefined;
+    let row = read();
+    if (!row) {
+      db.prepare('INSERT INTO app_config (key, value) VALUES (?, ?) ON CONFLICT(key) DO NOTHING')
+        .run(key, crypto.randomBytes(64).toString('hex'));
+      row = read();
+    }
+    if (!row || row.value.length !== 128 || !/^[a-f0-9]{128}$/.test(row.value)) throw new Error('Session capability signing state is unavailable');
+    return row.value;
+  },
 };

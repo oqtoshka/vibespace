@@ -4,6 +4,7 @@ import crypto from 'node:crypto';
 
 import express, { type RequestHandler, type Router } from 'express';
 
+import { authorizeSessionCapability } from '@/modules/session-capabilities/index.js';
 import {
   subscribeSessionMetadataChanges,
   type SessionMetadataChange,
@@ -153,6 +154,8 @@ export type PluginHost = {
    * secret without ever seeing the secret itself.
    */
   hmacSha256: (input: string) => string;
+  /** Private integration routes delegate v2 authentication to core; false never permits legacy fallback. */
+  verifySessionCapability: (sessionId: string, supplied: unknown) => boolean;
   /** See shared/agent-env.ts — add variables to agent-spawned processes. */
   registerAgentEnvContributor: (contributor: AgentEnvContributor) => () => void;
   /** See shared/agent-env.ts — add instructions and MCP servers to a session's launch. */
@@ -241,6 +244,7 @@ function buildHost(name: string, pluginDir: string, deps: HostExtensionDependenc
     enqueueMessage: deps.enqueueMessage,
     hmacSha256: (input) =>
       crypto.createHmac('sha256', deps.getSigningSecret()).update(input).digest('base64url'),
+    verifySessionCapability: authorizeSessionCapability,
     registerAgentEnvContributor: (contributor) => {
       const unregister = registerAgentEnvContributor(contributor);
       state.unregisterContributors.push(unregister);
