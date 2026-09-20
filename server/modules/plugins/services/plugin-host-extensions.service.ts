@@ -37,11 +37,26 @@ import {
 
 //----------------- HOST API ------------
 
-/** The session row fields a host module may read. */
+/**
+ * The session row fields a host module may read.
+ *
+ * `project_path` is the directory the session belongs to: written when the row
+ * is created, and thereafter refreshed by the synchronizer from the *first*
+ * valid record of the provider transcript. A per-turn `cwd` override is used
+ * for the run and never written back here, so this stays the launch directory
+ * for the life of the session — which is what makes it safe to group by.
+ *
+ * `is_private` is SQLite's 0/1. Absent or anything else means *unknown*, and a
+ * reader that cannot prove a session is public must treat it as private. Both
+ * fields were always returned at runtime; declaring them stops a plugin having
+ * to reach past the type to see what it is already being handed.
+ */
 export type HostSessionRow = {
   session_id: string;
   provider: string;
   provider_session_id: string | null;
+  project_path: string | null;
+  is_private: number;
   isArchived: boolean;
 };
 
@@ -96,6 +111,19 @@ export type PluginHost = {
   };
   sessions: {
     getById: (sessionId: string) => HostSessionRow | null;
+    /**
+     * The non-archived, non-side sessions of one project, newest first, capped
+     * at `limit`. Bounded on purpose: this is how an integration finds the
+     * sessions alongside it, not a way to walk the whole database.
+     *
+     * The caller passes a `project_path` it already holds — normally the one on
+     * its own row — so no path from a request body needs to be trusted.
+     *
+     * Optional so a plugin written against this contract still loads on a host
+     * that predates it; a plugin must treat its absence as "cannot observe",
+     * not as "there are none".
+     */
+    listByProjectPath?: (projectPath: string, limit: number) => HostSessionRow[];
     /** Creates an app session row; returns its id. */
     createAppSession: (provider: string, cwd: string) => { sessionId: string };
     /** Archives (or with `force`, deletes) a session through the ordinary service path. */
