@@ -95,6 +95,8 @@ export type HostRunLease = {
 export type HostPendingInteraction = {
   requestId: string;
   toolName: string;
+  /** Provider invocation identity used to correlate externally mirrored questions. */
+  toolUseId?: string;
   input: unknown;
   receivedAt: Date;
 };

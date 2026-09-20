@@ -1904,6 +1904,7 @@ function makeCanUseTool(session, sdkOptions, emitNotification) {
         _sessionId: sid(),
         _appSessionId: session.appSessionId || null,
         _toolName: toolName,
+        _toolUseId: typeof context?.toolUseID === 'string' ? context.toolUseID : undefined,
         _input: input,
         _receivedAt: new Date(),
       },
@@ -2946,6 +2947,7 @@ function getPendingApprovalsForSession(sessionId) {
       pending.push({
         requestId,
         toolName: resolver._toolName || 'UnknownTool',
+        toolUseId: resolver._toolUseId,
         input: resolver._input,
         context: resolver._context,
         sessionId,
