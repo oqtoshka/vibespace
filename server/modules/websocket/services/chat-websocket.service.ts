@@ -1007,13 +1007,6 @@ export function registerChatDependenciesAtBoot(dependencies: ChatWebSocketDepend
 }
 
 /**
- * Server-initiated message send: enqueue + immediate drain, no client socket
- * behind it. Mirrors `handleChatQueueAdd` minus the ws plumbing; the drained
- * run broadcasts to every connected client, so a browser that opens the
- * session later sees the live turn. Returns false when the session row does
- * not exist (caller logs and moves on).
- */
-/**
  * Server-initiated abort: the `chat.abort` path without a socket behind it,
  * for a plugin host module enforcing a deadline on a session it drives.
  * Returns false when there is no running turn or the boot dependencies were
@@ -1030,26 +1023,74 @@ export async function serverAbortRun(sessionId: string): Promise<boolean> {
   return success;
 }
 
+/**
+ * Server-initiated message send: enqueue, then take the same delivery path a
+ * browser composer send takes.
+ *
+ * `deliverMidTurn` is what makes an operator-authored message (a Mission
+ * Control decision answer) behave like an ordinary user message instead of
+ * waiting out the turn: with it, a session that is mid-turn gets the text
+ * steered into the running turn, exactly as `handleChatQueueAdd` does for the
+ * composer. Without it — boot restore, the usage-limit wake — the message is a
+ * turn of its own and must not join someone else's, so it waits for the drain.
+ *
+ * Exactly-once is the registry's: the item is enqueued once under a unique id,
+ * and only one of the two paths can consume it. A steered item is stamped with
+ * `deliveredUuid`, which `dequeueNext` skips, so the drain cannot send it
+ * again; a steer that fails leaves the item untouched for the drain. The
+ * boolean return is unchanged and means "VibeSpace owns this message", not
+ * "the model has read it" — callers that persist a receipt (the plugin host's
+ * decision delivery) still get their answer synchronously, before the
+ * injection round-trip resolves.
+ */
 export function serverEnqueueMessage(
   sessionId: string,
   content: string,
   options: AnyRecord = {},
-  { userId = null }: { userId?: string | number | null } = {},
+  { userId = null, deliverMidTurn = false }: {
+    userId?: string | number | null;
+    deliverMidTurn?: boolean;
+  } = {},
 ): boolean {
   const session = sessionsDb.getSessionById(sessionId);
   if (!session) {
     return false;
   }
+  const id = `server_${Date.now()}_${Math.round(Math.random() * 1e9).toString(36)}`;
   chatRunRegistry.enqueue(sessionId, {
-    id: `server_${Date.now()}_${Math.round(Math.random() * 1e9).toString(36)}`,
+    id,
     content,
     imageCount: 0,
     options,
     userId,
     createdAt: Date.now(),
   });
-  if (!chatRunRegistry.isProcessing(sessionId)) {
-    void drainQueue(sessionId);
+  if (!deliverMidTurn) {
+    if (!chatRunRegistry.isProcessing(sessionId)) {
+      void drainQueue(sessionId);
+    }
+    return true;
   }
+  const dependencies = drainDependencies;
+  if (!dependencies) {
+    // Nothing registered yet (a headless server that has not listened): the
+    // boot registration's drain picks this up.
+    return true;
+  }
+  void (async () => {
+    const delivered = await tryDeliverToRunningTurn(
+      sessionId,
+      session,
+      session.provider as LLMProvider,
+      { id, content, options },
+      dependencies,
+    );
+    // Re-check rather than trust the pre-await reading: the turn can finish
+    // while the injection is in flight, and then nothing else would start this
+    // message's own run.
+    if (!delivered && !chatRunRegistry.isProcessing(sessionId)) {
+      void drainQueue(sessionId);
+    }
+  })();
   return true;
 }
