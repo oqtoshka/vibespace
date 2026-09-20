@@ -9,6 +9,7 @@ import test, { mock } from 'node:test';
 import express from 'express';
 
 import { appConfigDb, closeConnection, initializeDatabase, sessionsDb, userDb } from '@/modules/database/index.js';
+import { sessionCapabilityExpiry } from '@/modules/session-capabilities/index.js';
 
 import { nativeControlRoutes } from '../index.js';
 import { nativeControlService } from '../native-control.service.js';
@@ -40,7 +41,9 @@ test('owner capability distinguishes confirmed absence, privacy refusals and fai
       const response = await lookup(id);
       assert.equal(response.status, 200);
       assert.equal(response.headers.get('cache-control'), 'no-store');
-      assert.deepEqual(await response.json(), { sessionId: id, state, capability: nativeControlService.describe(id).capability });
+      const body = await response.json() as { sessionId: string; state: string; capability: string };
+      assert.equal(body.sessionId, id); assert.equal(body.state, state);
+      assert.ok(sessionCapabilityExpiry(id, body.capability));
     }
     const absent = await lookup(missing);
     assert.equal(absent.status, 200);

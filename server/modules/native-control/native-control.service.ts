@@ -1,8 +1,9 @@
-import { createHash, createHmac, timingSafeEqual, randomUUID } from 'node:crypto';
+import { createHash, timingSafeEqual, randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 
 import { appConfigDb, getConnection, projectsDb, sessionsDb, userDb } from '@/modules/database/index.js';
+import { issueSessionCapability } from '@/modules/session-capabilities/index.js';
 import { permissionPreferencesService, providerModelsService, sessionConversationsSearchService, sessionsService } from '@/modules/providers/index.js';
 import { ensureImageAssetsDir, openStoredAttachmentAsset } from '@/modules/assets/index.js';
 import { voiceService } from '@/modules/voice/index.js';
@@ -26,7 +27,7 @@ export function authenticateNativeControl(supplied: unknown): boolean {
 
 function session(id: string) {
   const row = sessionsDb.getSessionById(id);
-  if (!row || row.is_private || row.is_side) throw new Error('Session is unavailable');
+  if (!row || row.is_private !== 0 || row.is_side !== 0) throw new Error('Session is unavailable');
   return row;
 }
 
@@ -153,8 +154,7 @@ export const nativeControlService = {
   },
   describe(id: string) {
     const row = session(id);
-    const capability = createHmac('sha256', appConfigDb.getOrCreateJwtSecret())
-      .update(`mission-control:vibespace-session:v1:${id}`).digest('base64url');
+    const capability = issueSessionCapability(id);
     return { sessionId: id, provider: row.provider, title: row.custom_name, projectPath: row.project_path,
       model: row.model, effort: row.effort, permissionMode: sessionsDb.getSessionPermissionMode(id),
       launchOptions: parseStoredLaunchOptions(row.launch_options),
