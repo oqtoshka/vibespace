@@ -12,6 +12,31 @@ const defaults = {
   ttsVoice: 'alloy',
 };
 
+test('preserves the entire native audio upload and long multilingual transcript ending', async () => {
+  const bytes = Buffer.alloc(8 * 1024 * 1024, 0x5a);
+  Buffer.from('end-of-recording').copy(bytes, bytes.length - 16);
+  const text = 'English and русский текст. '.repeat(5_000) + 'Последняя фраза — complete ending 🐜';
+  const service = createVoiceService({
+    defaults,
+    transcriptionPresets: [],
+    loadUserOverrides: () => ({}),
+    timeoutMs: 1_000,
+    fetchBackend: async (_url, options) => {
+      const form = options.body as FormData;
+      const file = form.get('file') as File;
+      assert.equal(file.name, 'recording.m4a');
+      assert.equal(file.type, 'audio/mp4');
+      assert.deepEqual(Buffer.from(await file.arrayBuffer()), bytes);
+      assert.equal(form.get('model'), defaults.sttModel);
+      return new Response(JSON.stringify({ text }));
+    },
+  });
+  assert.deepEqual(await service.transcribe({
+    userId: 42,
+    audio: { bytes, mimeType: 'audio/mp4', fileName: 'recording.m4a' },
+  }), { ok: true, value: { text } });
+});
+
 test('reports whether the server-controlled backend is configured', () => {
   const service = createVoiceService({
     defaults: { ...defaults, baseUrl: '' },
