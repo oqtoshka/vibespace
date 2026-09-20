@@ -2808,7 +2808,7 @@ async function startServer() {
                 },
                 interactions: {
                     getPending: (sessionId) => getPendingApprovalsForSession(sessionId)
-                        .map(({ requestId, toolName, input, receivedAt }) => ({ requestId, toolName, input, receivedAt })),
+                        .map(({ requestId, toolName, toolUseId, input, receivedAt }) => ({ requestId, toolName, toolUseId, input, receivedAt })),
                     resolve: (sessionId, requestId, decision) => {
                         if (!getPendingApprovalsForSession(sessionId).some((pending) => pending.requestId === requestId)) {
                             return false;

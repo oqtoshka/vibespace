@@ -193,7 +193,7 @@ test('a session parked on an unanswered permission prompt is not reaped', async 
       captured.decision = options.canUseTool(
         'AskUserQuestion',
         { questions: [{ question: 'which way?' }] },
-        {},
+        { toolUseID: 'toolu_mirrored_question' },
       );
       yield resultMsg(sessionId);           // the turn settles; the prompt does not
       await captured.answered;
@@ -223,6 +223,8 @@ test('a session parked on an unanswered permission prompt is not reaped', async 
     await delay(250);
     assert.equal(isClaudeSDKSessionAlive(sessionId), true, 'session must outlive an unanswered prompt');
     assert.equal(getPendingApprovalsForSession(sessionId).length, 1, 'the prompt is still answerable');
+
+    assert.equal(getPendingApprovalsForSession(sessionId)[0].toolUseId, 'toolu_mirrored_question', 'mirrored answers can target the exact tool invocation');
 
     // Answering late still works — the whole point of keeping it alive.
     resolveToolApproval(request.requestId, { allow: true });
