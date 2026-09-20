@@ -162,7 +162,8 @@ export const nativeControlService = {
   },
   /** Federation clients renew before owner actions; a failed read must never mean missing. */
   ownerCapability(id: string) {
-    if (!uuid.test(id)) throw new Error('Invalid session ID');
+    // Imported OpenCode sessions predate app UUIDs; preserve the viewer ID grammar.
+    if (!/^[a-zA-Z0-9._-]{1,120}$/.test(id)) throw new Error('Invalid session ID');
     const row = sessionsDb.getSessionById(id);
     if (!row) return { sessionId: id, state: 'missing' as const };
     if (row.is_private !== 0 || row.is_side !== 0) throw new Error('Session is unavailable');

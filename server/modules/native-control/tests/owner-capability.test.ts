@@ -25,9 +25,10 @@ test('owner capability distinguishes confirmed absence, privacy refusals and fai
     userDb.createUser('operator', 'unused');
     const federation = 'f'.repeat(40);
     appConfigDb.set('mc_federation_token', federation);
-    const active = randomUUID(), archived = randomUUID(), missing = randomUUID();
+    const active = randomUUID(), archived = randomUUID(), missing = randomUUID(), legacy = 'ses_legacy-opencode';
     const privateId = randomUUID(), side = randomUUID();
     for (const id of [active, archived]) sessionsDb.createAppSession(id, 'codex', directory);
+    sessionsDb.createAppSession(legacy, 'opencode', directory);
     sessionsDb.createAppSession(privateId, 'codex', directory, false, true);
     sessionsDb.createAppSession(side, 'codex', directory, true);
     sessionsDb.updateSessionIsArchived(archived, true);
@@ -35,7 +36,7 @@ test('owner capability distinguishes confirmed absence, privacy refusals and fai
     const lookup = (id: string, headers: Record<string, string> = { 'x-mc-federation-token': federation }) =>
       fetch(url + id + '/owner-capability', { headers });
 
-    for (const [id, state] of [[active, 'active'], [archived, 'archived']] as const) {
+    for (const [id, state] of [[active, 'active'], [archived, 'archived'], [legacy, 'active']] as const) {
       const response = await lookup(id);
       assert.equal(response.status, 200);
       assert.equal(response.headers.get('cache-control'), 'no-store');
@@ -44,7 +45,7 @@ test('owner capability distinguishes confirmed absence, privacy refusals and fai
     const absent = await lookup(missing);
     assert.equal(absent.status, 200);
     assert.deepEqual(await absent.json(), { sessionId: missing, state: 'missing' });
-    for (const id of [privateId, side, 'invalid']) {
+    for (const id of [privateId, side, 'invalid!', 'x'.repeat(121)]) {
       const refused = await lookup(id);
       assert.equal(refused.status, 400);
       const body = await refused.json() as Record<string, unknown>;
