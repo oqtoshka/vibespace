@@ -2820,7 +2820,18 @@ async function startServer() {
                         return null;
                     }
                 },
-                enqueueMessage: (sessionId, prompt, options) => serverEnqueueMessage(sessionId, prompt, options),
+                // `deliverMidTurn` is a delivery instruction, not a runtime
+                // option: strip it here so it never reaches a provider's spawn
+                // options. A plugin sets it for an operator-authored message
+                // (a Mission Control decision answer) that should reach a
+                // working agent the moment it is submitted, the way a composer
+                // message does — rather than queue behind the whole turn.
+                enqueueMessage: (sessionId, prompt, options) => {
+                    const { deliverMidTurn, ...runtimeOptions } = options ?? {};
+                    return serverEnqueueMessage(sessionId, prompt, runtimeOptions, {
+                        deliverMidTurn: deliverMidTurn === true,
+                    });
+                },
             }).catch((err) => {
                 console.error('[Plugins] host module activation failed:', err?.message || err);
             });

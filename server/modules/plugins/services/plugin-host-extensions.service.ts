@@ -142,6 +142,15 @@ export type PluginHost = {
   /**
    * Pushes a prompt into a session through the server-owned queue, so a run
    * starts with no browser attached. Returns false if the session vanished.
+   *
+   * `options.deliverMidTurn: true` asks for composer semantics instead: when
+   * the session is working, the prompt is steered into the running turn rather
+   * than queued behind it. Set it for anything the operator just wrote and
+   * expects the agent to see now (a Mission Control decision answer); leave it
+   * off for a prompt that means "start a turn" (a queued task, a supervisor
+   * resume). The host strips the key before the rest of `options` reaches the
+   * runtime, and the return value still means "VibeSpace owns this message",
+   * not "the model has read it".
    */
   enqueueMessage: (
     sessionId: string,
