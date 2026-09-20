@@ -2,9 +2,11 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 
 /** Used by the native gateway to bind a backend-held MC capability to one chat. */
 export function validNativeCapability(sessionId: string, supplied: unknown, secret: string): boolean {
-  if (!/^[a-zA-Z0-9._-]{1,120}$/.test(sessionId) || typeof supplied !== 'string') return false;
+  if (!/^[a-zA-Z0-9._-]{1,120}$/.test(sessionId) || typeof supplied !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(supplied)) return false;
   const expected = createHmac('sha256', secret).update(`mission-control:vibespace-session:v1:${sessionId}`).digest('base64url');
-  return supplied.length === expected.length && timingSafeEqual(Buffer.from(supplied), Buffer.from(expected));
+  // Validate the wire alphabet before the constant-time comparison: equal JS
+  // character counts alone do not guarantee equal UTF-8 buffer lengths.
+  return timingSafeEqual(Buffer.from(supplied, 'ascii'), Buffer.from(expected, 'ascii'));
 }
 
 /** Native gateway accepts a narrow command vocabulary; no arbitrary runtime options. */
