@@ -2765,6 +2765,13 @@ async function startServer() {
                 sessions: {
                     getById: (sessionId) => sessionsDb.getSessionById(sessionId),
                     getPermissionMode: (sessionId) => sessionsDb.getSessionPermissionMode(sessionId),
+                    // Bounded, and bounded here rather than trusting the caller: the page
+                    // query already excludes archived and side sessions.
+                    listByProjectPath: (projectPath, limit) => sessionsDb.getSessionsByProjectPathPage(
+                        projectPath,
+                        Math.max(1, Math.min(Number(limit) || 0, 200)),
+                        0,
+                    ),
                     createAppSession: (provider, cwd) => sessionsService.createAppSession(provider, cwd),
                     deleteOrArchiveById: (sessionId, options) =>
                         sessionsService.deleteOrArchiveSessionById(sessionId, options),

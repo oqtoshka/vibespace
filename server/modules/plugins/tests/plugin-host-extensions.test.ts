@@ -34,7 +34,9 @@ function deps(root: string, plugins: ReturnType<typeof writePlugin>[]) {
       authenticateToken: (_req: express.Request, _res: express.Response, next: express.NextFunction) => next(),
       getSigningSecret: () => 'secret',
       sessions: {
-        getById: (id: string) => (id === 'known' ? { session_id: id, provider: 'claude', provider_session_id: null, isArchived: false } : null),
+        getById: (id: string) => (id === 'known'
+          ? { session_id: id, provider: 'claude', provider_session_id: null, project_path: '/tmp/known', is_private: 0, isArchived: false }
+          : null),
         createAppSession: () => ({ sessionId: 'new' }),
         deleteOrArchiveById: async () => undefined,
         rename: () => undefined,
