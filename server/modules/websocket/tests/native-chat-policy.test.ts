@@ -11,6 +11,14 @@ test('native capability binds one session and rejects malformed/other-session cr
   assert.equal(validNativeCapability('../one', token, 'fixture'), false);
   assert.equal(validNativeCapability('one', 'bad', 'fixture'), false);
 });
+test('untrusted capability headers always reject malformed bytes without throwing', () => {
+  // Same JS character length as the 43-char signature, different UTF-8 byte length.
+  for (const supplied of ['é'.repeat(43), 'a'.repeat(42) + 'é', '\0'.repeat(43),
+    ' '.repeat(43), 'a'.repeat(44), 'a'.repeat(100_000), null, undefined, 42, {}]) {
+    assert.doesNotThrow(() => assert.equal(validNativeCapability('one', supplied, 'fixture'), false));
+  }
+});
+
 test('native commands cannot target other sessions or inject runtime options', () => {
   assert.throws(() => scopeNativeCommand({ type: 'chat.abort', sessionId: 'other' }, 'one'));
   assert.throws(() => scopeNativeCommand({ type: 'files.watch', path: '/etc/passwd' }, 'one'));
