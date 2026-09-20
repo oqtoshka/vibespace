@@ -160,6 +160,15 @@ export const nativeControlService = {
       launchOptions: parseStoredLaunchOptions(row.launch_options),
       archived: Boolean(row.isArchived), capability };
   },
+  /** Federation clients renew before owner actions; a failed read must never mean missing. */
+  ownerCapability(id: string) {
+    if (!uuid.test(id)) throw new Error('Invalid session ID');
+    const row = sessionsDb.getSessionById(id);
+    if (!row) return { sessionId: id, state: 'missing' as const };
+    if (row.is_private !== 0 || row.is_side !== 0) throw new Error('Session is unavailable');
+    return { sessionId: id, state: row.isArchived ? 'archived' as const : 'active' as const,
+      capability: this.describe(id).capability };
+  },
   async upload(id: string, name: string, mimeType: string, bytes: Buffer) {
     const row = session(id);
     if (row.isArchived) throw new Error('Session is archived');
