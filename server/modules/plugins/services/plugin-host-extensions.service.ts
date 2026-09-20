@@ -141,7 +141,9 @@ export type PluginHost = {
   getDefaultPermissionMode?: (provider: string) => string | null;
   /**
    * Pushes a prompt into a session through the server-owned queue, so a run
-   * starts with no browser attached. Returns false if the session vanished.
+   * starts with no browser attached. Returns false if the session vanished or
+   * its queue is full — in both cases nothing was taken, so a caller that
+   * persists a receipt must record a refusal rather than an acceptance.
    *
    * `options.deliverMidTurn: true` asks for composer semantics instead: when
    * the session is working, the prompt is steered into the running turn rather
@@ -151,6 +153,10 @@ export type PluginHost = {
    * resume). The host strips the key before the rest of `options` reaches the
    * runtime, and the return value still means "VibeSpace owns this message",
    * not "the model has read it".
+   *
+   * That ownership lives in memory only: a message accepted here and not yet
+   * delivered is gone if the server restarts, and a durable receipt on the
+   * caller's side does not bring it back.
    */
   enqueueMessage: (
     sessionId: string,
