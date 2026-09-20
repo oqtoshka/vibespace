@@ -4,6 +4,8 @@ Federation clients can call
 `GET /api/native-control/sessions/:id/owner-capability` before an owner action.
 The existing federation credential and single active operator are required;
 browser Origin requests are refused. Responses must not be cached.
+IDs use the existing viewer grammar (1–120 ASCII letters, digits, dots, underscores
+or hyphens), including imported OpenCode IDs; they are not limited to app UUIDs.
 
 A successful lookup echoes `sessionId` and returns `state: active` or
 `state: archived` with a session capability. Only ordinary sessions with known
