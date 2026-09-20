@@ -72,6 +72,12 @@ test('native session isolation, history, stream, permissions and duplicate recei
       } } as never, dependencies);
       return socket;
     };
+    const malformed = new Socket(); sockets.push(malformed);
+    assert.doesNotThrow(() => handleNativeChat(malformed as never, {
+      url: '/native-chat/native-one', headers: { 'x-vibespace-session-capability': 'é'.repeat(43) },
+    } as never, dependencies));
+    assert.equal(malformed.code, 4403);
+    assert.deepEqual(malformed.frames, []);
     assert.equal(open('native-other').code, 4403);
     assert.equal(open('native-codex', 'native-codex').frames[0]?.rewind, true);
     const client = open('native-one');
