@@ -9,6 +9,7 @@ router.use((req, res, next) => {
   if (req.headers.origin || !authenticateNativeControl(req.headers['x-mc-federation-token'])) {
     res.status(403).json({ error: 'Native control authentication failed' }); return;
   }
+  res.setHeader('Cache-Control', 'no-store');
   next();
 });
 const route = (fn: express.RequestHandler): express.RequestHandler => async (req, res, next) => {
@@ -43,6 +44,9 @@ router.get('/search/sessions', route(async (req, res) => {
   }));
 }));
 router.get('/sessions/:id', route((req, res) => { res.json(nativeControlService.describe(String(req.params.id))); }));
+router.get('/sessions/:id/owner-capability', route((req, res) => {
+  res.json(nativeControlService.ownerCapability(String(req.params.id)));
+}));
 router.post('/sessions/:id/attachments', express.raw({ type: 'application/octet-stream', limit: '10mb' }), route(async (req, res) => {
   res.json(await nativeControlService.upload(String(req.params.id), decodeURIComponent(String(req.headers['x-file-name'] || 'file')),
     String(req.headers['x-file-type'] || 'application/octet-stream'), req.body));
