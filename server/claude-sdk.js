@@ -114,10 +114,21 @@ const TASK_NUDGE_ENABLED = !['0', 'false', 'off'].includes((process.env.VIBESPAC
 // sessions without touching ~/.claude/settings.json; a host-level
 // CLAUDE_CODE_AUTO_COMPACT_WINDOW env var still outranks it. Set
 // VIBESPACE_CLAUDE_AUTO_COMPACT_WINDOW=auto to fall back to the CLI default.
+//
+// The setting is a WINDOW, not the trigger. The CLI compacts at
+//   min(realWindow, autoCompactWindow) - min(maxOutputTokens, 20000) - 13000
+// and clamps the window itself to [100_000, 1_000_000]. Every current large
+// model reserves the full 20k of output headroom, so the trigger lands
+// AUTO_COMPACT_RESERVE below whatever is configured here: the 193k default is
+// what makes a session compact at 160k, which is the number the context gauge
+// and /context report. Change the default through AUTO_COMPACT_AT so the two
+// stay tied together.
+const AUTO_COMPACT_RESERVE = 33000;
+const AUTO_COMPACT_AT = 160000;
 const AUTO_COMPACT_WINDOW = (() => {
   const raw = (process.env.VIBESPACE_CLAUDE_AUTO_COMPACT_WINDOW || '').trim().toLowerCase();
   if (raw === 'auto' || raw === '0' || raw === 'off') return null;
-  return parseInt(raw, 10) || 256000;
+  return parseInt(raw, 10) || (AUTO_COMPACT_AT + AUTO_COMPACT_RESERVE);
 })();
 
 function createRequestId() {
