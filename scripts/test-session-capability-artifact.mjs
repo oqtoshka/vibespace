@@ -22,9 +22,17 @@ const listener = net.createServer();
 await new Promise(resolve => listener.listen(0, '127.0.0.1', resolve));
 const port = listener.address().port;
 await new Promise(resolve => listener.close(resolve));
-const child = spawn(process.execPath, [path.join(root, 'dist-server/server/index.js')], {
+// Isolate application paths without replacing the shell's HOME or inheriting
+// production tokens. Sync named builtin exports before loading server modules.
+const preload = path.join(home, 'isolate-paths.mjs');
+fs.writeFileSync(preload, `import os from 'node:os';
+import {syncBuiltinESMExports} from 'node:module';
+os.homedir = () => ${JSON.stringify(home)};
+syncBuiltinESMExports();
+`);
+const child = spawn(process.execPath, ['--import', preload, path.join(root, 'dist-server/server/index.js')], {
   cwd: root, stdio: ['ignore', 'ignore', 'ignore'],
-  env: { ...process.env, HOME: home, DATABASE_PATH: database, HOST: '127.0.0.1',
+  env: { PATH: process.env.PATH, LANG: 'en_US.UTF-8', DATABASE_PATH: database, HOST: '127.0.0.1',
     SERVER_PORT: String(port), VIBESPACE_SESSION_RESTORE: '0', VS_OIDC_ISSUER: ' ',
     ANTHILL_RUNNER: 'false', VIBESPACE_MODE: 'local' },
 });
