@@ -166,6 +166,8 @@ scratchpad/
 # Machine-local release installer. Owned and copied in by the infrastructure
 # Ansible role; it names this host's LaunchAgent and hostname.
 /scripts/release/install-local.mjs
+/scripts/release/capability-gate.mjs
+/scripts/release/release-isolation.mjs
 
 # Embedded native file-viewer build
 dist-native-viewer/
