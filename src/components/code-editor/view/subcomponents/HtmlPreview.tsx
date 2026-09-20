@@ -27,6 +27,7 @@ import { usePreviewFullscreen } from '../../../preview/usePreviewFullscreen';
 type HtmlPreviewProps = {
   projectId?: string;
   path: string;
+  nativePaneControls?: boolean;
 };
 
 // Subresource kinds worth a reload. Anything else changing under the web root
@@ -41,7 +42,7 @@ const RESOURCE_RELOAD_DEBOUNCE_MS = 400;
 const extensionOf = (filePath: string) => filePath.split('.').pop()?.toLowerCase() ?? '';
 const isUnder = (root: string, filePath: string) => filePath === root || filePath.startsWith(`${root}/`);
 
-export default function HtmlPreview({ projectId, path }: HtmlPreviewProps) {
+export default function HtmlPreview({ projectId, path, nativePaneControls = false }: HtmlPreviewProps) {
   const [entryUrl, setEntryUrl] = useState<string | null>(null);
   const [resourceRoots, setResourceRoots] = useState<string[]>([]);
   const [resourceVersion, setResourceVersion] = useState(0);
@@ -149,7 +150,7 @@ export default function HtmlPreview({ projectId, path }: HtmlPreviewProps) {
   }
 
   return (
-    <PreviewShell zoomable isFullscreen={isFullscreen} onToggleFullscreen={toggleFullscreen}>
+    <PreviewShell zoomable isFullscreen={isFullscreen} onToggleFullscreen={toggleFullscreen} showFullscreenControl={!nativePaneControls}>
       {entryUrl && (
         <iframe
           ref={iframeRef}
