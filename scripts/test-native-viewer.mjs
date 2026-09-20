@@ -24,7 +24,8 @@ try {
   const page = await browser.newPage({ viewport: { width: 1000, height: 720 } });
   const errors = [];
   page.on('pageerror', error => { errors.push(String(error)); console.error(error); });
-  await page.addInitScript(() => { window.webkit = { messageHandlers: { workspace: { postMessage: async () => ({}) } } }; });
+  await page.addInitScript(() => { window.webkit = { messageHandlers: { workspace: { postMessage: async payload => payload.op === 'html'
+    ? { entryUrl: 'data:text/html,<h1>Native HTML fixture</h1>', resourceRoots: [] } : {} } } }; });
   await page.goto(`http://127.0.0.1:${server.address().port}/`);
   await page.waitForFunction(() => typeof window.mcOpen === 'function');
   const content = '# Native Markdown\n\n**Rendered bold**\n\n- First item\n- Second item\n\n| Name | Value |\n| --- | --- |\n| Answer | 42 |\n\n```js\nconst answer = 42;\n```';
@@ -42,6 +43,13 @@ try {
   await page.evaluate(() => window.mcSuspend());
   await page.getByText('Choose a file from the project tree or chat.').waitFor();
   assert.equal(await page.locator('.native-source').count(), 0);
+  await page.evaluate(document => window.mcOpen(document), { ...document, path: 'fixture.html', name: 'fixture.html', content: '<h1>Native HTML fixture</h1>' });
+  await page.getByTitle('Zoom in', { exact: true }).waitFor();
+  assert.equal(await page.getByTitle('Fullscreen', { exact: true }).count(), 0, 'Native HTML expansion belongs to the host toolbar, not a CSS overlay');
+  await page.getByTitle('Zoom in', { exact: true }).click();
+  await page.getByTitle('Reset zoom (100%)', { exact: true }).click();
+  assert.equal(await page.locator('iframe').count(), 1);
+  await page.screenshot({ path: '/private/tmp/mc-native-html-controls.png' });
   assert.deepEqual(errors, []);
   console.log('PASS: native Markdown, table, list, light theme, source toggle and empty state');
 } finally {

@@ -99,7 +99,7 @@ function DocumentPreview({ document, revision }: { document: Document; revision:
     isDbmlFile={ext === 'dbml'} isCsvFile={['csv','tsv'].includes(ext)} isHtmlFile={['html','htm'].includes(ext)}
     isCustomRenderFile={document.customRenderer === true || document.name.endsWith('.flow.json')} apiSpecKind={detectApiSpecKind(document.name, document.content)}
     isDarkMode={isDarkMode} fontSize={17} showLineNumbers extensions={[]} currentFilePath={document.path} fileName={document.name}
-    projectId={document.projectId} onFileOpen={onFileOpen} readOnly/>;
+    projectId={document.projectId} onFileOpen={onFileOpen} readOnly nativePaneControls/>;
 }
 
 function Viewer() {

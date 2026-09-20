@@ -14,6 +14,7 @@ import ApiSpecPreview from './ApiSpecPreview';
 
 type CodeEditorSurfaceProps = {
   readOnly?: boolean;
+  nativePaneControls?: boolean;
   content: string;
   onChange: (value: string) => void;
   previewMode: boolean;
@@ -36,6 +37,7 @@ type CodeEditorSurfaceProps = {
 
 export default function CodeEditorSurface({
   readOnly = false,
+  nativePaneControls = false,
   content,
   onChange,
   previewMode,
@@ -83,7 +85,7 @@ export default function CodeEditorSurface({
   }
 
   if (previewMode && isHtmlFile) {
-    return <HtmlPreview projectId={projectId} path={currentFilePath ?? ''} />;
+    return <HtmlPreview projectId={projectId} path={currentFilePath ?? ''} nativePaneControls={nativePaneControls} />;
   }
 
   if (previewMode && apiSpecKind) {

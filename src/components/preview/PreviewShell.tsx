@@ -24,6 +24,8 @@ type PreviewShellProps = {
   children: ReactNode;
   isFullscreen: boolean;
   onToggleFullscreen: () => void;
+  /** Native hosts own pane expansion outside the web view. */
+  showFullscreenControl?: boolean;
   /** Adds zoom controls. Off for content that is already text-reflowing. */
   zoomable?: boolean;
   className?: string;
@@ -39,6 +41,7 @@ export default function PreviewShell({
   children,
   isFullscreen,
   onToggleFullscreen,
+  showFullscreenControl = true,
   zoomable = false,
   className = 'bg-white',
 }: PreviewShellProps) {
@@ -84,12 +87,12 @@ export default function PreviewShell({
             </PreviewControlButton>
           </>
         )}
-        <PreviewControlButton
+        {showFullscreenControl && <PreviewControlButton
           title={isFullscreen ? 'Exit fullscreen (Esc)' : 'Fullscreen'}
           onClick={onToggleFullscreen}
         >
           {isFullscreen ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
-        </PreviewControlButton>
+        </PreviewControlButton>}
       </PreviewControlCluster>
     </div>
   );
