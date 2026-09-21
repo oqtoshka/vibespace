@@ -22,10 +22,10 @@ export const claudeBackgroundRuntime: BackgroundRuntime = {
  * runtime inventory, or a Claude session not loaded in memory (restart, idle-reaped),
  * reports `available: false` — an empty list there would read as "everything finished".
  */
-export function nativeBackgroundSnapshot(row: { id: string; provider: string; provider_session_id?: string | null },
+export function nativeBackgroundSnapshot(sessionId: string, row: { provider: string; provider_session_id?: string | null },
   runtime: BackgroundRuntime = claudeBackgroundRuntime, now = Date.now()): NativeBackgroundSnapshot {
   if (row.provider !== 'claude') return { kind: 'native.background', available: false, observedAt: now, reason: 'unsupported-provider' };
-  const id = row.provider_session_id || row.id;
+  const id = row.provider_session_id || sessionId;
   if (!runtime.alive(id)) return { kind: 'native.background', available: false, observedAt: now, reason: 'not-live' };
   const running = runtime.tasks(id).slice(0, 500)
     .filter(task => typeof task.taskId === 'string' && task.taskId)
