@@ -10,6 +10,8 @@ import { pathToFileURL } from 'node:url';
 import { sessionsDb } from '@/modules/database/index.js';
 import { chatRunRegistry } from '@/modules/websocket/services/chat-run-registry.service.js';
 import {
+  admitPeerMessage,
+  getPeerMessage,
   handleChatConnection,
   serverEnqueueMessage,
   serverEnqueueMessageChecked,
@@ -98,6 +100,8 @@ function pluginHost(plugin: Awaited<ReturnType<typeof loadPlugin>>, hmac: (input
     // a host lacks it (covered by the plugin's own suite).
     enqueueMessageChecked: (id: string, prompt: string, options?: Record<string, unknown>) =>
       serverEnqueueMessageChecked(id, prompt, options ?? {}),
+    // The durable outbox the plugin actually sends through.
+    peerOutbox: { admit: admitPeerMessage, get: getPeerMessage },
   };
 }
 
@@ -176,14 +180,20 @@ test('joined: the real CLI, the real peer router and this module\'s real queue d
     assert.equal(received.length, 2, 'the long turn is running');
     const busy = await runCli(plugin, ['send', '--to', 'joined-recipient', '--text', 'while you are busy', '--request-id', 'b'.repeat(64)], env);
     assert.equal(busy.json.state, 'accepted');
+    assert.equal(busy.json.status, 'pending', 'stored in the durable outbox, not the in-memory queue');
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(received.length, 2, 'it did not jump into the running turn');
-    assert.equal(chatRunRegistry.hasQueued('joined-recipient'), true, 'it is waiting in the real queue');
+    assert.equal(chatRunRegistry.hasQueued('joined-recipient'), false, 'the ordinary chat queue is not used');
+    assert.equal(getPeerMessage('joined-sender', 'b'.repeat(64))?.status, 'pending');
     release();
     state.block = undefined;
     for (let i = 0; i < 20 && received.length < 3; i += 1) await new Promise((resolve) => setTimeout(resolve, 5));
     assert.equal(received.length, 3, 'it ran at the completion boundary');
     assert.match(received[2].content, /while you are busy/);
+    assert.equal(getPeerMessage('joined-sender', 'b'.repeat(64))?.status, 'dispatched');
+    const busyReplay = await runCli(plugin, ['send', '--to', 'joined-recipient', '--text', 'while you are busy', '--request-id', 'b'.repeat(64)], env);
+    assert.equal(busyReplay.json.status, 'dispatched', 'the replay reports the stored state now');
+    assert.equal(busyReplay.json.delivery, 'unknown');
 
     // No runtime: refused before anything is queued, because the real drain
     // would dequeue and drop it. The receipt is `rejected`, so the *same*
