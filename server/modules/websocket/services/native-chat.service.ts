@@ -99,7 +99,7 @@ export function handleNativeChat(ws: WebSocket, request: AuthenticatedWebSocketR
         return;
       }
       if (data.type === 'native.background') {
-        send({ requestId, ...nativeBackgroundSnapshot(current) });
+        send({ requestId, ...nativeBackgroundSnapshot(sessionId, current) });
         return;
       }
       if (data.type === 'native.transcribe') {
