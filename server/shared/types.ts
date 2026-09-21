@@ -32,6 +32,43 @@ export type CheckedEnqueueResult =
   | { outcome: 'accepted'; recipientBusy: boolean }
   | { outcome: 'missing' | 'runtime-unavailable' | 'queue-full' };
 
+/** Persisted state of a peer outbox row (database + websocket modules). */
+export type PeerOutboxStatus = 'pending' | 'dispatched' | 'cancelled';
+
+/**
+ * What the host tells a plugin about a durable peer message. `dispatched`
+ * means handed to the recipient runtime at `dispatchedAt` — not that it
+ * finished, and after a crash not even that it started.
+ */
+export type PeerOutboxRecord = {
+  senderSessionId: string;
+  requestId: string;
+  recipientSessionId: string;
+  fingerprint: string;
+  status: PeerOutboxStatus;
+  reason: string | null;
+  acceptedAt: string;
+  dispatchedAt: string | null;
+  updatedAt: string;
+};
+
+/** Input to `PluginHost.peerOutbox.admit`. */
+export type PeerAdmissionInput = {
+  senderSessionId: string;
+  requestId: string;
+  recipientSessionId: string;
+  content: string;
+  fingerprint: string;
+};
+
+/**
+ * Result of `PluginHost.peerOutbox.admit`. Only `accepted` and `existing`
+ * carry a record; every refusal persisted nothing.
+ */
+export type PeerAdmissionResult =
+  | { outcome: 'accepted' | 'existing'; record: PeerOutboxRecord }
+  | { outcome: 'conflict' | 'missing' | 'ineligible' | 'runtime-unavailable' | 'queue-full'; reason?: string };
+
 // ---------------------------
 //----------------- WEBSOCKET TRANSPORT TYPES ------------
 /**
