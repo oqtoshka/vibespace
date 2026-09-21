@@ -268,6 +268,35 @@ CREATE TABLE IF NOT EXISTS provider_models (
 );
 `;
 
+/**
+ * Durable outbox for cross-session peer messages (plugin host
+ * `peerOutbox`). One row per (sender, requestId): that pair is the idempotency
+ * key, so a replay reads the original row instead of creating a second one.
+ * `status`: `pending` (persisted, never handed to a runtime), `dispatched`
+ * (marked *before* the runtime is called, so after a crash its fate is
+ * unknown and it is never replayed automatically), `cancelled` (with a
+ * `reason`; never dispatched). Rows are kept, not deleted, so a replay can
+ * always report the original outcome.
+ */
+export const PEER_OUTBOX_TABLE_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS peer_outbox (
+    sender_session_id TEXT NOT NULL,
+    request_id TEXT NOT NULL,
+    recipient_session_id TEXT NOT NULL,
+    project_path TEXT NOT NULL,
+    content TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('pending', 'dispatched', 'cancelled')),
+    reason TEXT,
+    accepted_at TEXT NOT NULL,
+    dispatched_at TEXT,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (sender_session_id, request_id)
+);
+CREATE INDEX IF NOT EXISTS idx_peer_outbox_recipient_status
+ON peer_outbox(recipient_session_id, status, accepted_at);
+`;
+
 export const INIT_SCHEMA_SQL = `
 -- Initialize authentication database
 PRAGMA foreign_keys = ON;
@@ -321,4 +350,5 @@ CREATE INDEX IF NOT EXISTS idx_file_shares_project_file ON file_shares(project_i
 ${PROVIDER_MODELS_TABLE_SCHEMA_SQL}
 CREATE INDEX IF NOT EXISTS idx_provider_models_provider_order
 ON provider_models(provider, sort_order, id);
+${PEER_OUTBOX_TABLE_SCHEMA_SQL}
 `;

@@ -6,4 +6,7 @@ export {
   serverAbortRun,
   serverEnqueueMessage,
   serverEnqueueMessageChecked,
+  // peer outbox: used by server/index.js to expose PluginHost.peerOutbox.
+  admitPeerMessage,
+  getPeerMessage,
 } from './services/chat-websocket.service.js';

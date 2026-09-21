@@ -14,6 +14,8 @@ export {
 export { providerModelsDb } from '@/modules/database/repositories/provider-models.js';
 // projectsDb: used by Projects, Worktrees, Git, WebSocket, and notification modules to persist and resolve project records.
 export { projectsDb } from '@/modules/database/repositories/projects.db.js';
+// peerOutboxDb: used by WebSocket's peer outbox service to persist cross-session peer messages.
+export { peerOutboxDb, type PeerOutboxEntry } from '@/modules/database/repositories/peer-outbox.db.js';
 export { pushSubscriptionsDb } from '@/modules/database/repositories/push-subscriptions.js';
 export { scanStateDb } from '@/modules/database/repositories/scan-state.db.js';
 export { sessionsDb } from '@/modules/database/repositories/sessions.db.js';

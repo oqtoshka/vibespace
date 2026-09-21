@@ -16,7 +16,12 @@ import {
   type AgentLaunchContributor,
   type LaunchOptionDeclaration,
 } from '@/shared/agent-env.js';
-import type { CheckedEnqueueResult } from '@/shared/types.js';
+import type {
+  CheckedEnqueueResult,
+  PeerAdmissionInput,
+  PeerAdmissionResult,
+  PeerOutboxRecord,
+} from '@/shared/types.js';
 
 /**
  * In-process plugin host modules.
@@ -188,6 +193,16 @@ export type PluginHost = {
     options?: Record<string, unknown>,
   ) => CheckedEnqueueResult;
   /**
+   * Durable, idempotent outbox for cross-session peer messages. `admit`
+   * persists an accepted message keyed on (sender, requestId) and dispatches
+   * it only while the recipient is eligible; `get` reads a row back so a
+   * replay reports the original state. See the websocket module's outbox.
+   */
+  peerOutbox?: {
+    admit: (input: PeerAdmissionInput) => PeerAdmissionResult;
+    get: (senderSessionId: string, requestId: string) => PeerOutboxRecord | null;
+  };
+  /**
    * HMAC-SHA256 of `input` under VibeSpace's own signing secret (base64url).
    * Lets a plugin verify a capability minted by something that shares that
    * secret without ever seeing the secret itself.
@@ -230,6 +245,7 @@ export type HostExtensionDependencies = {
   getDefaultPermissionMode?: PluginHost['getDefaultPermissionMode'];
   enqueueMessage: PluginHost['enqueueMessage'];
   enqueueMessageChecked?: PluginHost['enqueueMessageChecked'];
+  peerOutbox?: PluginHost['peerOutbox'];
 };
 
 type ActiveExtension = {
@@ -281,6 +297,7 @@ function buildHost(name: string, pluginDir: string, deps: HostExtensionDependenc
     getDefaultPermissionMode: deps.getDefaultPermissionMode,
     enqueueMessage: deps.enqueueMessage,
     enqueueMessageChecked: deps.enqueueMessageChecked,
+    peerOutbox: deps.peerOutbox,
     hmacSha256: (input) =>
       crypto.createHmac('sha256', deps.getSigningSecret()).update(input).digest('base64url'),
     registerAgentEnvContributor: (contributor) => {

@@ -2,7 +2,7 @@ import path from 'node:path';
 
 import type { WebSocket } from 'ws';
 
-import { sessionsDb } from '@/modules/database/index.js';
+import { peerOutboxDb, sessionsDb } from '@/modules/database/index.js';
 import { providerModelsService, sessionsService } from '@/modules/providers/index.js';
 import { chatRunRegistry, MAX_QUEUED_MESSAGES } from '@/modules/websocket/services/chat-run-registry.service.js';
 import {
@@ -24,6 +24,9 @@ import type {
   AnyRecord,
   AuthenticatedWebSocketRequest,
   CheckedEnqueueResult,
+  PeerAdmissionInput,
+  PeerAdmissionResult,
+  PeerOutboxRecord,
   LLMProvider,
   ProviderPermissionDecision,
   ProviderRuntimeWriter,
@@ -367,6 +370,22 @@ async function drainQueue(appSessionId: string): Promise<void> {
     return;
   }
 
+  await executeStartedRun(appSessionId, run, item, session, provider, dependencies);
+}
+
+/**
+ * Runs one already-started queued turn to completion. Shared by `drainQueue`
+ * and the peer outbox dispatcher so both hand a message to the runtime the
+ * same way.
+ */
+async function executeStartedRun(
+  appSessionId: string,
+  run: NonNullable<ReturnType<typeof chatRunRegistry.startQueuedRun>>,
+  item: { content: string; options?: AnyRecord; userId?: string | number | null },
+  session: NonNullable<ReturnType<typeof sessionsDb.getSessionById>>,
+  provider: LLMProvider,
+  dependencies: ChatWebSocketDependencies,
+): Promise<void> {
   const clientOptions = (item.options ?? {}) as AnyRecord;
   recordSessionPreferences(provider, appSessionId, clientOptions);
   const runtimeOptions = buildRuntimeOptions(session, clientOptions, provider, appSessionId);
@@ -423,7 +442,11 @@ function ensureQueueDrainingRegistered(dependencies: ChatWebSocketDependencies):
   }
   drainHandlerRegistered = true;
   chatRunRegistry.setRunCompleteHandler((appSessionId) => {
+    // drainQueue starts its run synchronously, so the outbox dispatch below
+    // sees the session busy and waits for the next completion: the ordinary
+    // queue always goes first.
     void drainQueue(appSessionId);
+    tryDispatchPeerOutbox(appSessionId);
   });
 }
 
@@ -567,6 +590,9 @@ async function handleChatAbort(
   // (Messages the runtime already holds are cancelled inside the abort above,
   // which removes them the same way.)
   chatRunRegistry.clearQueue(sessionId, 'aborted');
+  // Stop also cancels accepted peer messages for this session — recorded as
+  // `cancelled: recipient-aborted`, so a replay reports it instead of `pending`.
+  peerOutboxDb.cancelPendingForRecipient(sessionId, 'recipient-aborted');
 
   chatRunRegistry.completeRun(sessionId, {
     exitCode: success ? 0 : 1,
@@ -1005,6 +1031,7 @@ export function handleChatConnection(
  */
 export function registerChatDependenciesAtBoot(dependencies: ChatWebSocketDependencies): void {
   ensureQueueDrainingRegistered(dependencies);
+  startPeerOutboxSweeper();
 }
 
 /**
@@ -1027,6 +1054,9 @@ export async function serverAbortRun(sessionId: string): Promise<boolean> {
   }
   const success = await drainDependencies.runtime.abort(run.provider, sessionId);
   chatRunRegistry.clearQueue(sessionId, 'aborted');
+  // Stop also cancels accepted peer messages for this session — recorded as
+  // `cancelled: recipient-aborted`, so a replay reports it instead of `pending`.
+  peerOutboxDb.cancelPendingForRecipient(sessionId, 'recipient-aborted');
   chatRunRegistry.completeRun(sessionId, { exitCode: success ? 0 : 1, aborted: true });
   return success;
 }
@@ -1087,4 +1117,196 @@ export function serverEnqueueMessage(
     void drainQueue(sessionId);
   }
   return true;
+}
+
+/*
+ * Durable peer outbox.
+ *
+ * Accepted cross-session peer messages live in the `peer_outbox` table, not in
+ * the in-memory chat queue, so neither a server restart nor a runtime that is
+ * missing at drain time can lose one silently. The ordinary chat queue and its
+ * callers are untouched.
+ *
+ * - Admission is idempotent on (sender, requestId). A replay returns the row as
+ *   it is now; it never creates a second row or a second dispatch.
+ * - A row is handed to the runtime only while the recipient is idle, its
+ *   ordinary queue is empty, and its provider has a runtime. Nothing is removed
+ *   before that check: an ineligible runtime just leaves the row `pending`.
+ * - Before every dispatch the recipient is re-validated against the row: it
+ *   must still exist, be public, be unarchived and be in the same project.
+ *   Otherwise the row is `cancelled` with the reason. Nothing here creates a
+ *   session or wakes an archived or private one.
+ * - The row is marked `dispatched` *before* the runtime is called. A crash
+ *   between the two leaves `dispatched` with an unknown fate, and it is never
+ *   replayed automatically: at-most-once, not exactly-once.
+ * - Operator Stop cancels the recipient's pending rows (`recipient-aborted`).
+ * - Retries are bounded: every run completion, every admission and one
+ *   host-owned sweeper try again; a row still pending after
+ *   PEER_OUTBOX_MAX_PENDING_MS is cancelled as `expired`.
+ */
+
+/** Per-recipient cap on pending rows — the chat queue's cap of 20 (a literal:
+ * the registry constant is not yet initialised when a circular import loads
+ * this module first). */
+export const PEER_OUTBOX_MAX_PENDING = 20;
+/** A pending row older than this is cancelled as `expired`, never sent late. */
+export const PEER_OUTBOX_MAX_PENDING_MS = 24 * 60 * 60 * 1000;
+const PEER_OUTBOX_SWEEP_MS = 30 * 1000;
+
+function toPeerRecord(entry: PeerOutboxRecord & { content?: string; projectPath?: string }): PeerOutboxRecord {
+  const { content: _content, projectPath: _projectPath, ...record } = entry;
+  return record;
+}
+
+function isPublic(row: { is_private?: unknown }): boolean {
+  return row.is_private === 0 || row.is_private === false;
+}
+
+function isArchived(row: { isArchived?: unknown }): boolean {
+  return row.isArchived === 1 || row.isArchived === true;
+}
+
+function projectOf(row: { project_path?: unknown }): string | null {
+  const value = typeof row.project_path === 'string' ? row.project_path.trim() : '';
+  return value === '' ? null : value;
+}
+
+/** Why a recipient may not receive a row for `projectPath`, or null if it may. */
+function recipientIneligibility(recipientSessionId: string, projectPath: string): string | null {
+  const row = sessionsDb.getSessionById(recipientSessionId);
+  if (!row) return 'recipient-missing';
+  if (isArchived(row)) return 'recipient-archived';
+  if (!isPublic(row)) return 'recipient-private';
+  if (projectOf(row) !== projectPath) return 'recipient-left-project';
+  return null;
+}
+
+/**
+ * Plugin host `peerOutbox.get`. Consumer: server/index.js host wiring.
+ */
+export function getPeerMessage(senderSessionId: string, requestId: string): PeerOutboxRecord | null {
+  const entry = peerOutboxDb.get(senderSessionId, requestId);
+  return entry ? toPeerRecord(entry) : null;
+}
+
+/**
+ * Plugin host `peerOutbox.admit`. Consumer: server/index.js host wiring.
+ * Refusals persist nothing, so the same requestId may be retried.
+ */
+export function admitPeerMessage(input: PeerAdmissionInput): PeerAdmissionResult {
+  const existing = peerOutboxDb.get(input.senderSessionId, input.requestId);
+  if (existing) {
+    return existing.fingerprint === input.fingerprint
+      ? { outcome: 'existing', record: toPeerRecord(existing) }
+      : { outcome: 'conflict' };
+  }
+  const sender = sessionsDb.getSessionById(input.senderSessionId);
+  if (!sender) return { outcome: 'missing', reason: 'sender-missing' };
+  if (isArchived(sender) || !isPublic(sender)) return { outcome: 'ineligible', reason: 'sender-ineligible' };
+  const projectPath = projectOf(sender);
+  if (!projectPath) return { outcome: 'ineligible', reason: 'sender-has-no-project' };
+  if (input.recipientSessionId === input.senderSessionId) return { outcome: 'ineligible', reason: 'recipient-is-sender' };
+  const ineligible = recipientIneligibility(input.recipientSessionId, projectPath);
+  if (ineligible === 'recipient-missing') return { outcome: 'missing', reason: ineligible };
+  if (ineligible) return { outcome: 'ineligible', reason: ineligible };
+  const recipient = sessionsDb.getSessionById(input.recipientSessionId);
+  const provider = recipient?.provider as LLMProvider | undefined;
+  if (!drainDependencies || !provider || !drainDependencies.runtime.hasRuntime(provider)) {
+    return { outcome: 'runtime-unavailable' };
+  }
+  if (peerOutboxDb.countPending(input.recipientSessionId) >= PEER_OUTBOX_MAX_PENDING) {
+    return { outcome: 'queue-full' };
+  }
+  if (!peerOutboxDb.insertPending({ ...input, projectPath })) {
+    // Lost a race with an identical key: report what is stored.
+    const raced = peerOutboxDb.get(input.senderSessionId, input.requestId);
+    if (!raced) return { outcome: 'conflict' };
+    return raced.fingerprint === input.fingerprint
+      ? { outcome: 'existing', record: toPeerRecord(raced) }
+      : { outcome: 'conflict' };
+  }
+  dispatchPeerOutbox(input.recipientSessionId);
+  const stored = peerOutboxDb.get(input.senderSessionId, input.requestId);
+  return { outcome: 'accepted', record: toPeerRecord(stored!) };
+}
+
+/**
+ * Hands the recipient's oldest eligible pending row to its runtime, if it can
+ * right now. Synchronous up to the dispatch mark; the run itself continues in
+ * the background and its completion re-enters here for the next row.
+ * Exported for tests and the sweeper.
+ */
+export function dispatchPeerOutbox(recipientSessionId: string): void {
+  const dependencies = drainDependencies;
+  if (!dependencies) return;
+  for (;;) {
+    if (chatRunRegistry.isProcessing(recipientSessionId) || chatRunRegistry.hasQueued(recipientSessionId)) return;
+    const entry = peerOutboxDb.nextPending(recipientSessionId);
+    if (!entry) return;
+    const ineligible = recipientIneligibility(recipientSessionId, entry.projectPath);
+    if (ineligible) {
+      peerOutboxDb.cancel(entry.senderSessionId, entry.requestId, ineligible);
+      continue;
+    }
+    const session = sessionsDb.getSessionById(recipientSessionId)!;
+    const provider = session.provider as LLMProvider | undefined;
+    // Runtime not available: leave the row pending. Nothing was dequeued.
+    if (!provider || !dependencies.runtime.hasRuntime(provider)) return;
+    const run = chatRunRegistry.startQueuedRun(recipientSessionId);
+    if (!run) return;
+    if (!peerOutboxDb.markDispatched(entry.senderSessionId, entry.requestId)) {
+      chatRunRegistry.completeRun(recipientSessionId, { exitCode: 1 });
+      return;
+    }
+    void executeStartedRun(recipientSessionId, run, { content: entry.content, userId: null }, session, provider, dependencies);
+    return;
+  }
+}
+
+/**
+ * One bounded retry pass over every recipient with pending rows: expires rows
+ * older than PEER_OUTBOX_MAX_PENDING_MS, then tries each recipient once.
+ * Exported for tests.
+ */
+export function sweepPeerOutbox(nowMs: number = Date.now()): void {
+  peerOutboxDb.cancelPendingAcceptedBefore(new Date(nowMs - PEER_OUTBOX_MAX_PENDING_MS).toISOString(), 'expired');
+  for (const recipient of peerOutboxDb.recipientsWithPending()) {
+    dispatchPeerOutbox(recipient);
+  }
+}
+
+/** A dispatch failure (e.g. the database is closing) is logged, never thrown
+ * into the run-complete handler: rows stay pending for the next attempt. */
+function tryDispatchPeerOutbox(recipientSessionId: string): void {
+  try {
+    dispatchPeerOutbox(recipientSessionId);
+  } catch (error) {
+    console.error('[Chat] Peer outbox dispatch failed', { sessionId: recipientSessionId, error: error instanceof Error ? error.message : String(error) });
+  }
+}
+
+let peerOutboxSweeper: ReturnType<typeof setInterval> | null = null;
+
+/**
+ * Starts the single host-owned sweeper (idempotent, unref'd so it never holds
+ * the process open) and runs one pass immediately — which is what re-attempts
+ * rows left pending by a restart. Returns a stop function. Consumer:
+ * registerChatDependenciesAtBoot.
+ */
+export function startPeerOutboxSweeper(intervalMs: number = PEER_OUTBOX_SWEEP_MS): () => void {
+  if (!peerOutboxSweeper) {
+    peerOutboxSweeper = setInterval(() => {
+      try { sweepPeerOutbox(); } catch (error) {
+        console.error('[Chat] Peer outbox sweep failed', { error: error instanceof Error ? error.message : String(error) });
+      }
+    }, intervalMs);
+    peerOutboxSweeper.unref?.();
+  }
+  sweepPeerOutbox();
+  return stopPeerOutboxSweeper;
+}
+
+export function stopPeerOutboxSweeper(): void {
+  if (peerOutboxSweeper) clearInterval(peerOutboxSweeper);
+  peerOutboxSweeper = null;
 }
