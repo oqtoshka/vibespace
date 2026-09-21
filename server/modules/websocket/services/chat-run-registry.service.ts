@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 
 import { projectsDb, sessionsDb } from '@/modules/database/index.js';
@@ -302,6 +303,41 @@ function recordProviderSessionId(run: ChatRun, providerSessionId: string): void 
 }
 
 /**
+ * Turn-admission reservations, one per app session. While a reservation is held
+ * and unexpired, every registry start path (`startRun`, `startQueuedRun`,
+ * `startResumeRun`) refuses, so a host integration can mutate owner resources
+ * without a VibeSpace turn starting underneath it. Expiry is enforced lazily at
+ * each start, so a holder that dies cannot wedge the session past its TTL.
+ *
+ * It covers only turns VibeSpace starts. A native CLI resumed in a terminal is
+ * outside this process and cannot be refused, which is why the reservation does
+ * not claim to cover every start path.
+ */
+type AdmissionReservation = {
+  token: string;
+  providerSessionId: string;
+  resourceId: string;
+  generation: string;
+  expiresAt: number;
+};
+
+const admissionReservations = new Map<string, AdmissionReservation>();
+const MAX_ADMISSION_RESERVATION_MS = 60_000;
+
+/** True while an unexpired reservation holds the session's turn admission. */
+function isAdmissionReserved(appSessionId: string): boolean {
+  const reservation = admissionReservations.get(appSessionId);
+  if (!reservation) {
+    return false;
+  }
+  if (reservation.expiresAt <= Date.now()) {
+    admissionReservations.delete(appSessionId);
+    return false;
+  }
+  return true;
+}
+
+/**
  * Builds a run whose outbound stream fans out to every connected client (no
  * single originating socket) and registers it. Shared by the two
  * server-initiated run kinds — background auto-resume and queue drain. Returns
@@ -309,7 +345,7 @@ function recordProviderSessionId(run: ChatRun, providerSessionId: string): void 
  */
 function createBroadcastRun(appSessionId: string): ChatRun | null {
   const existing = runs.get(appSessionId);
-  if (existing && existing.status === 'running') {
+  if ((existing && existing.status === 'running') || isAdmissionReserved(appSessionId)) {
     return null;
   }
 
@@ -380,7 +416,7 @@ export const chatRunRegistry = {
     userId: string | number | null;
   }): ChatRun | null {
     const existing = runs.get(input.appSessionId);
-    if (existing && existing.status === 'running') {
+    if ((existing && existing.status === 'running') || isAdmissionReserved(input.appSessionId)) {
       return null;
     }
 
@@ -419,6 +455,56 @@ export const chatRunRegistry = {
    * socket), or `null` when a run is already active for the session (the caller
    * then keeps streaming to the current run instead).
    */
+  /**
+   * Reserves the session's turn admission for a bounded mutation (resource
+   * cleanup). Returns null — never a partial grant — when a run is active,
+   * unsent messages are queued, a reservation is already held, the TTL is not in
+   * (0, 60s], or the session is not bound to the expected provider session. The
+   * lease is bound to the resource id and generation and released only by its
+   * own token. Consumed by tests only: it is NOT exposed to host plugins, because
+   * a start refused here drops an auto-resume turn and does not re-drain the
+   * queue on release, and terminal-native turns bypass it (see handoff).
+   */
+  reserveAdmission(input: {
+    appSessionId: string;
+    providerSessionId: string;
+    resourceId: string;
+    generation: string;
+    ttlMs: number;
+  }): { expiresAt: number; release: () => void } | null {
+    const { appSessionId, providerSessionId, resourceId, generation, ttlMs } = input;
+    if (![appSessionId, providerSessionId, resourceId, generation].every((value) => typeof value === 'string' && value)
+      || !Number.isFinite(ttlMs) || ttlMs <= 0 || ttlMs > MAX_ADMISSION_RESERVATION_MS) {
+      return null;
+    }
+    if (runs.get(appSessionId)?.status === 'running' || isAdmissionReserved(appSessionId)
+      || chatRunRegistry.hasQueued(appSessionId)) {
+      return null;
+    }
+    // An unreadable or rebound session is not an idle one.
+    let boundProviderSessionId: string | null | undefined;
+    try {
+      boundProviderSessionId = sessionsDb.getSessionById(appSessionId)?.provider_session_id;
+    } catch {
+      return null;
+    }
+    if (boundProviderSessionId !== providerSessionId) {
+      return null;
+    }
+    const reservation: AdmissionReservation = {
+      token: randomUUID(), providerSessionId, resourceId, generation, expiresAt: Date.now() + ttlMs,
+    };
+    admissionReservations.set(appSessionId, reservation);
+    return {
+      expiresAt: reservation.expiresAt,
+      release: () => {
+        if (admissionReservations.get(appSessionId)?.token === reservation.token) {
+          admissionReservations.delete(appSessionId);
+        }
+      },
+    };
+  },
+
   startResumeRun(appSessionId: string): ChatSessionWriter | null {
     return createBroadcastRun(appSessionId)?.writer ?? null;
   },
@@ -663,5 +749,6 @@ export const chatRunRegistry = {
   clearAll(): void {
     runs.clear();
     queues.clear();
+    admissionReservations.clear();
   },
 };
