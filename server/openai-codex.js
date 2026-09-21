@@ -28,7 +28,7 @@ import { cancelRateLimitWake, scheduleRateLimitWake } from './services/rate-limi
 import { recordSessionActivity, recordSessionEnd } from './services/session-restore.service.js';
 import { planTaskContinuation } from './modules/task-continuation/index.js';
 import { broadcastSessionUpdate, generateInitialSessionTitle, scheduleSessionRecap, rewindCodexTurn } from './modules/providers/index.js';
-import { buildCodexTokenBudget, readLatestCodexTokenBudget } from './shared/codex-token-usage.js';
+import { buildCodexTokenBudget, CODEX_AUTO_COMPACT_LIMIT, readLatestCodexTokenBudget } from './shared/codex-token-usage.js';
 import { toCodexAppServerSandboxPolicy } from './shared/codex-sandbox-policy.js';
 import { createCompleteMessage, createNormalizedMessage } from './shared/utils.js';
 
@@ -547,6 +547,15 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
       model: resolvedModel,
       sandbox: sandboxMode,
       approvalPolicy: appServerApprovalPolicy,
+      // Compact at the same point claude sessions do (see CODEX_AUTO_COMPACT_LIMIT).
+      // Only a thread being loaded takes config, so a resume re-applies it after
+      // an app-server restart.
+      ...(CODEX_AUTO_COMPACT_LIMIT ? {
+        config: {
+          model_auto_compact_token_limit: CODEX_AUTO_COMPACT_LIMIT,
+          model_auto_compact_token_limit_scope: 'total',
+        },
+      } : {}),
     };
     const threadResponse = sessionId
       ? await appServer.request('thread/resume', { threadId: sessionId, ...threadOptions })
