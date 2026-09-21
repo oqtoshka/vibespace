@@ -116,10 +116,11 @@ export const peerOutboxDb = {
       .run(reason, now(), recipientSessionId).changes;
   },
 
-  cancelPendingAcceptedBefore(cutoffIso: string, reason: string): number {
+  /** Expires pending rows accepted at or before the cutoff (age >= bound). */
+  cancelPendingAcceptedAtOrBefore(cutoffIso: string, reason: string): number {
     return getConnection()
       .prepare(`UPDATE peer_outbox SET status = 'cancelled', reason = ?, updated_at = ?
-        WHERE status = 'pending' AND accepted_at < ?`)
+        WHERE status = 'pending' AND accepted_at <= ?`)
       .run(reason, now(), cutoffIso).changes;
   },
 };

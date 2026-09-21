@@ -422,8 +422,10 @@ async function executeStartedRun(
     console.error(`[Chat] Queued run for provider "${provider}" failed`, { sessionId: appSessionId, error: message });
   } finally {
     // Terminal complete flips the run to completed and re-fires the drain for
-    // the next queued item (if any).
-    chatRunRegistry.completeRun(appSessionId, { exitCode: 1 });
+    // the next queued item (if any). Run-scoped: if the runtime already
+    // emitted its own complete and the drain started the next turn, this
+    // late settle must not end that newer run.
+    chatRunRegistry.completeRunIfCurrent(run, { exitCode: 1 });
   }
 }
 
@@ -575,12 +577,33 @@ async function handleChatAbort(
     return;
   }
 
-  const run = chatRunRegistry.getRun(sessionId);
-  if (!run || run.status !== 'running') {
-    sendProtocolError(ws, 'NO_ACTIVE_RUN', `Session "${sessionId}" has no active run.`, sessionId);
-    return;
+  // Stop cancels accepted peer messages even when no turn is running — a
+  // pending row on an idle recipient (runtime loss, restart) would otherwise
+  // dispatch later as a surprise — and holds peer dispatch off until the abort
+  // below has finished.
+  beginPeerStop(sessionId);
+  try {
+    const run = chatRunRegistry.getRun(sessionId);
+    if (!run || run.status !== 'running') {
+      sendProtocolError(ws, 'NO_ACTIVE_RUN', `Session "${sessionId}" has no active run.`, sessionId);
+      return;
+    }
+    await abortRunAndStopQueues(run, sessionId, dependencies);
+  } finally {
+    endPeerStop(sessionId);
   }
+}
 
+/**
+ * The shared tail of both Stop paths. Clears the ordinary queue and cancels
+ * peer rows admitted while the abort was in flight, then completes the
+ * aborted run. Returns the runtime's abort result.
+ */
+async function abortRunAndStopQueues(
+  run: NonNullable<ReturnType<typeof chatRunRegistry.getRun>>,
+  sessionId: string,
+  dependencies: ChatWebSocketDependencies,
+): Promise<boolean> {
   const success = await dependencies.runtime.abort(run.provider, sessionId);
 
   // Stop stops everything the user has lined up, not just the current turn:
@@ -590,14 +613,15 @@ async function handleChatAbort(
   // (Messages the runtime already holds are cancelled inside the abort above,
   // which removes them the same way.)
   chatRunRegistry.clearQueue(sessionId, 'aborted');
-  // Stop also cancels accepted peer messages for this session — recorded as
-  // `cancelled: recipient-aborted`, so a replay reports it instead of `pending`.
+  // Peer rows admitted while the abort was in flight are cancelled too —
+  // recorded as `cancelled: recipient-aborted`, so a replay reports it.
   peerOutboxDb.cancelPendingForRecipient(sessionId, 'recipient-aborted');
 
   chatRunRegistry.completeRun(sessionId, {
     exitCode: success ? 0 : 1,
     aborted: true,
   });
+  return success;
 }
 
 /**
@@ -1048,17 +1072,18 @@ export function registerChatDependenciesAtBoot(dependencies: ChatWebSocketDepend
  * never registered (a headless server that has not listened yet).
  */
 export async function serverAbortRun(sessionId: string): Promise<boolean> {
-  const run = chatRunRegistry.getRun(sessionId);
-  if (!drainDependencies || !run || run.status !== 'running') {
-    return false;
+  // Same peer policy as chat.abort: cancel even with nothing running (still
+  // returning false), and hold dispatch off until the abort has finished.
+  beginPeerStop(sessionId);
+  try {
+    const run = chatRunRegistry.getRun(sessionId);
+    if (!drainDependencies || !run || run.status !== 'running') {
+      return false;
+    }
+    return await abortRunAndStopQueues(run, sessionId, drainDependencies);
+  } finally {
+    endPeerStop(sessionId);
   }
-  const success = await drainDependencies.runtime.abort(run.provider, sessionId);
-  chatRunRegistry.clearQueue(sessionId, 'aborted');
-  // Stop also cancels accepted peer messages for this session — recorded as
-  // `cancelled: recipient-aborted`, so a replay reports it instead of `pending`.
-  peerOutboxDb.cancelPendingForRecipient(sessionId, 'recipient-aborted');
-  chatRunRegistry.completeRun(sessionId, { exitCode: success ? 0 : 1, aborted: true });
-  return success;
 }
 
 /**
@@ -1171,6 +1196,42 @@ function projectOf(row: { project_path?: unknown }): string | null {
   return value === '' ? null : value;
 }
 
+/** Why a sender may no longer speak for `projectPath`, or null if it still may. */
+function senderIneligibility(senderSessionId: string, projectPath: string): string | null {
+  const row = sessionsDb.getSessionById(senderSessionId);
+  if (!row) return 'sender-missing';
+  if (isArchived(row)) return 'sender-archived';
+  if (!isPublic(row)) return 'sender-private';
+  if (projectOf(row) !== projectPath) return 'sender-left-project';
+  return null;
+}
+
+/**
+ * A pending row expires when its age is at least PEER_OUTBOX_MAX_PENDING_MS
+ * (age >= bound). The sweeper and every dispatch use this same definition.
+ */
+function isPeerRowExpired(acceptedAt: string, nowMs: number = Date.now()): boolean {
+  const acceptedMs = Date.parse(acceptedAt);
+  return !Number.isFinite(acceptedMs) || nowMs - acceptedMs >= PEER_OUTBOX_MAX_PENDING_MS;
+}
+
+/** Recipients with a Stop in flight; the dispatcher launches nothing for them. */
+const peerStopsInFlight = new Map<string, number>();
+
+/** Called at the start of both Stop paths: cancels the recipient's pending
+ * peer rows and suppresses dispatch until `endPeerStop`. Counted, so
+ * overlapping Stops for one session nest correctly. */
+function beginPeerStop(sessionId: string): void {
+  peerStopsInFlight.set(sessionId, (peerStopsInFlight.get(sessionId) ?? 0) + 1);
+  peerOutboxDb.cancelPendingForRecipient(sessionId, 'recipient-aborted');
+}
+
+function endPeerStop(sessionId: string): void {
+  const remaining = (peerStopsInFlight.get(sessionId) ?? 1) - 1;
+  if (remaining > 0) peerStopsInFlight.set(sessionId, remaining);
+  else peerStopsInFlight.delete(sessionId);
+}
+
 /** Why a recipient may not receive a row for `projectPath`, or null if it may. */
 function recipientIneligibility(recipientSessionId: string, projectPath: string): string | null {
   const row = sessionsDb.getSessionById(recipientSessionId);
@@ -1239,11 +1300,23 @@ export function admitPeerMessage(input: PeerAdmissionInput): PeerAdmissionResult
 export function dispatchPeerOutbox(recipientSessionId: string): void {
   const dependencies = drainDependencies;
   if (!dependencies) return;
+  // A Stop is in flight for this recipient: nothing may launch until it ends.
+  if (peerStopsInFlight.has(recipientSessionId)) return;
   for (;;) {
     if (chatRunRegistry.isProcessing(recipientSessionId) || chatRunRegistry.hasQueued(recipientSessionId)) return;
     const entry = peerOutboxDb.nextPending(recipientSessionId);
     if (!entry) return;
-    const ineligible = recipientIneligibility(recipientSessionId, entry.projectPath);
+    // The age bound is enforced here, on every dispatch path, not only by the
+    // sweeper: an expired row is cancelled, never sent late.
+    if (isPeerRowExpired(entry.acceptedAt)) {
+      peerOutboxDb.cancel(entry.senderSessionId, entry.requestId, 'expired');
+      continue;
+    }
+    // The sender is re-validated too (fail closed): a sender that has since
+    // become private, been archived, left the project or been deleted no
+    // longer speaks for this project. Dispatched rows are never rewritten.
+    const ineligible = senderIneligibility(entry.senderSessionId, entry.projectPath)
+      ?? recipientIneligibility(recipientSessionId, entry.projectPath);
     if (ineligible) {
       peerOutboxDb.cancel(entry.senderSessionId, entry.requestId, ineligible);
       continue;
@@ -1255,7 +1328,7 @@ export function dispatchPeerOutbox(recipientSessionId: string): void {
     const run = chatRunRegistry.startQueuedRun(recipientSessionId);
     if (!run) return;
     if (!peerOutboxDb.markDispatched(entry.senderSessionId, entry.requestId)) {
-      chatRunRegistry.completeRun(recipientSessionId, { exitCode: 1 });
+      chatRunRegistry.completeRunIfCurrent(run, { exitCode: 1 });
       return;
     }
     void executeStartedRun(recipientSessionId, run, { content: entry.content, userId: null }, session, provider, dependencies);
@@ -1269,7 +1342,7 @@ export function dispatchPeerOutbox(recipientSessionId: string): void {
  * Exported for tests.
  */
 export function sweepPeerOutbox(nowMs: number = Date.now()): void {
-  peerOutboxDb.cancelPendingAcceptedBefore(new Date(nowMs - PEER_OUTBOX_MAX_PENDING_MS).toISOString(), 'expired');
+  peerOutboxDb.cancelPendingAcceptedAtOrBefore(new Date(nowMs - PEER_OUTBOX_MAX_PENDING_MS).toISOString(), 'expired');
   for (const recipient of peerOutboxDb.recipientsWithPending()) {
     dispatchPeerOutbox(recipient);
   }
