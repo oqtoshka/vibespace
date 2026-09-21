@@ -115,14 +115,16 @@ export const resolveContextGauge = (
     return null;
   }
 
+  // Codex budgets carry the limit VibeSpace configured for the thread; other
+  // estimates never claim a threshold, so the UI treats them as "no
+  // compaction promised" — the safe reading.
+  const compactAtPercent = resolveCompactAtPercent(usage?.autoCompactThreshold, max);
   return {
     used,
     max,
     percentage: Math.min(100, Math.max(0, (used / max) * 100)),
-    compactAtPercent: null,
-    // Unknown rather than false, but the estimate never claims a threshold, so
-    // the UI treats it as "no compaction promised" — the safe reading.
-    autoCompactEnabled: false,
+    compactAtPercent,
+    autoCompactEnabled: compactAtPercent !== null,
     estimated: true,
   };
 };

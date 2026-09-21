@@ -21,7 +21,27 @@ export type CodexTokenBudget = {
     input: number;
     output: number;
   };
+  /** Context size at which VibeSpace asks Codex to compact, when it is inside the window. */
+  autoCompactThreshold?: number;
 };
+
+/**
+ * Context size, in tokens, at which Codex sessions compact. Codex otherwise
+ * compacts on its own model-tuned schedule, close to the full window (258k for
+ * gpt-5.6), long after the 160k point claude sessions compact at. Handed to
+ * the app-server as `model_auto_compact_token_limit` with scope `total`, i.e.
+ * counted against the whole active context. VIBESPACE_CODEX_AUTO_COMPACT_LIMIT
+ * overrides it; `auto`, `off` or `0` leaves Codex on its own default.
+ *
+ * Exported for openai-codex.js, which puts it on every thread it loads; the
+ * budget below reports it so the gauge can mark where compaction will fire.
+ */
+export const CODEX_AUTO_COMPACT_LIMIT: number | null = (() => {
+  const raw = (process.env.VIBESPACE_CODEX_AUTO_COMPACT_LIMIT || '').trim().toLowerCase();
+  if (raw === 'auto' || raw === '0' || raw === 'off') return null;
+  const parsed = Number.parseInt(raw, 10);
+  return parsed > 0 ? parsed : 160_000;
+})();
 
 const sessionPathCache = new Map<string, string>();
 
@@ -83,6 +103,9 @@ export function buildCodexTokenBudget(info: unknown): CodexTokenBudget | null {
       input: cumulativeInputTokens || contextInputTokens,
       output: cumulativeOutputTokens || contextOutputTokens,
     },
+    ...(hasContextReading && CODEX_AUTO_COMPACT_LIMIT && CODEX_AUTO_COMPACT_LIMIT < contextWindow
+      ? { autoCompactThreshold: CODEX_AUTO_COMPACT_LIMIT }
+      : {}),
   };
 }
 

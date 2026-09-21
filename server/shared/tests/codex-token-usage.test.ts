@@ -48,3 +48,15 @@ test('Codex token usage ignores empty or malformed readings', () => {
   assert.equal(buildCodexTokenBudget({}), null);
   assert.equal(buildCodexTokenBudget({ total_token_usage: { total_tokens: 'nope' } }), null);
 });
+
+test('Codex budget marks the configured 160k compaction point inside the window', () => {
+  const reading = (window: number) => buildCodexTokenBudget({
+    total_token_usage: { input_tokens: 90_000, output_tokens: 100, total_tokens: 90_100 },
+    last_token_usage: { input_tokens: 90_000, output_tokens: 100, total_tokens: 90_100 },
+    model_context_window: window,
+  });
+
+  assert.equal(reading(258_400)?.autoCompactThreshold, 160_000);
+  // A limit at or past the window is no promise: Codex compacts on its own.
+  assert.equal(reading(128_000)?.autoCompactThreshold, undefined);
+});
