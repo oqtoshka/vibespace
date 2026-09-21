@@ -13,6 +13,7 @@ import type { AuthenticatedWebSocketRequest } from '@/shared/index.js';
 import { handleChatConnection } from './chat-websocket.service.js';
 import { chatRunRegistry } from './chat-run-registry.service.js';
 import { scopeNativeCommand, validNativeCapability } from './native-chat-policy.service.js';
+import { nativeBackgroundSnapshot } from './native-background.service.js';
 import { sendNativeHistory } from './native-history-transport.service.js';
 import { nativeHistoryWithReceipts, retainNativeSend } from './native-send-journal.service.js';
 
@@ -95,6 +96,10 @@ export function handleNativeChat(ws: WebSocket, request: AuthenticatedWebSocketR
             running: run?.status === 'running', archived: Boolean(current.isArchived),
             replay: run?.status === 'running' ? chatRunRegistry.replayEvents(sessionId, 0) : [] }, data.chunked === true);
         } finally { historyBusy = false; }
+        return;
+      }
+      if (data.type === 'native.background') {
+        send({ requestId, ...nativeBackgroundSnapshot(current) });
         return;
       }
       if (data.type === 'native.transcribe') {
