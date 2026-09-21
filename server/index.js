@@ -30,7 +30,7 @@ import { closeSessionsWatcher, initializeSessionsWatcher, providerRuntimeService
 import { getSubagentConversation } from '@/modules/providers/list/claude/claude-sessions.provider.js';
 import { createWebSocketServer } from '@/modules/websocket/index.js';
 import { chatRunRegistry } from '@/modules/websocket/services/chat-run-registry.service.js';
-import { registerChatDependenciesAtBoot, serverAbortRun, serverEnqueueMessage } from '@/modules/websocket/index.js';
+import { registerChatDependenciesAtBoot, serverAbortRun, serverEnqueueMessage, serverEnqueueMessageChecked } from '@/modules/websocket/index.js';
 import { forgetRateLimitWake, startRateLimitWakeLoop } from '@/services/rate-limit-wake.service.js';
 import { cancelSessionRecap } from '@/modules/providers/index.js';
 import { forgetSession as forgetRestoreEntry, restoreInterruptedSessions } from '@/services/session-restore.service.js';
@@ -2828,6 +2828,7 @@ async function startServer() {
                     }
                 },
                 enqueueMessage: (sessionId, prompt, options) => serverEnqueueMessage(sessionId, prompt, options),
+    enqueueMessageChecked: (sessionId, prompt, options) => serverEnqueueMessageChecked(sessionId, prompt, options),
             }).catch((err) => {
                 console.error('[Plugins] host module activation failed:', err?.message || err);
             });

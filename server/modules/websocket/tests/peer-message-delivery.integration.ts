@@ -9,7 +9,11 @@ import { pathToFileURL } from 'node:url';
 
 import { sessionsDb } from '@/modules/database/index.js';
 import { chatRunRegistry } from '@/modules/websocket/services/chat-run-registry.service.js';
-import { handleChatConnection, serverEnqueueMessage } from '@/modules/websocket/services/chat-websocket.service.js';
+import {
+  handleChatConnection,
+  serverEnqueueMessage,
+  serverEnqueueMessageChecked,
+} from '@/modules/websocket/services/chat-websocket.service.js';
 
 import {
   FakeSocket,
@@ -32,7 +36,7 @@ import {
  * Everything above proves one half. This proves them connected: the real
  * `mc-peer` CLI → HTTP over an ephemeral port → the plugin's real peer router
  * and its real capability check → the plugin's real `queuePeerMessage` →
- * **this module's** `serverEnqueueMessage` → **this module's** `drainQueue` →
+ * **this module's** `serverEnqueueMessageChecked` → **this module's** `drainQueue` →
  * the recording runtime. No stub transport and no copied queue algorithm takes
  * part in the acceptance.
  *
@@ -82,16 +86,18 @@ function pluginHost(plugin: Awaited<ReturnType<typeof loadPlugin>>, hmac: (input
     sessions: {
       getById: (id: string) => {
         const row = sessionsDb.getSessionById(id) as Record<string, unknown> | null;
-        return row ? { ...row, isArchived: Boolean(row.is_archived) } : null;
+        return row ? { ...row, isArchived: Boolean(row.isArchived) } : null;
       },
       listByProjectPath: (projectPath: string, limit: number) =>
         (sessionsDb.getAllSessions() as Array<Record<string, unknown>>)
           .filter((row) => row.project_path === projectPath)
           .slice(0, limit)
-          .map((row) => ({ ...row, isArchived: Boolean(row.is_archived) })),
+          .map((row) => ({ ...row, isArchived: Boolean(row.isArchived) })),
     },
-    enqueueMessage: (id: string, prompt: string, options?: Record<string, unknown>) =>
-      serverEnqueueMessage(id, prompt, options ?? {}),
+    // Only the checked contract: the plugin must refuse, not fall back, when
+    // a host lacks it (covered by the plugin's own suite).
+    enqueueMessageChecked: (id: string, prompt: string, options?: Record<string, unknown>) =>
+      serverEnqueueMessageChecked(id, prompt, options ?? {}),
   };
 }
 
@@ -114,6 +120,9 @@ test('joined: the real CLI, the real peer router and this module\'s real queue d
     sessionsDb.createSession('joined-sender', 'claude', '/workspace/demo', 'Sender');
     sessionsDb.createSession('joined-recipient', 'claude', '/workspace/demo', 'Recipient');
     sessionsDb.createSession('joined-elsewhere', 'claude', '/workspace/other', 'Elsewhere');
+    sessionsDb.createAppSession('joined-private', 'claude', '/workspace/demo', false, true);
+    sessionsDb.createSession('joined-archived', 'claude', '/workspace/demo', 'Archived');
+    sessionsDb.updateSessionIsArchived('joined-archived', true);
 
     const received: RuntimeCall[] = [];
     let release = () => {};
@@ -176,16 +185,51 @@ test('joined: the real CLI, the real peer router and this module\'s real queue d
     assert.equal(received.length, 3, 'it ran at the completion boundary');
     assert.match(received[2].content, /while you are busy/);
 
-    // No runtime: the real drain dequeues and drops. The answer must still claim
-    // nothing — it says accepted, and delivery is unknown, which is exactly right.
+    // No runtime: refused before anything is queued, because the real drain
+    // would dequeue and drop it. The receipt is `rejected`, so the *same*
+    // requestId is accepted once the runtime is back — and exactly once.
     state.hasRuntime = false;
-    const blind = await runCli(plugin, ['send', '--to', 'joined-recipient', '--text', 'into the dark', '--request-id', 'c'.repeat(64)], env);
-    assert.equal(blind.json.state, 'accepted');
-    assert.equal(blind.json.delivery, 'unknown');
+    const darkArgs = ['send', '--to', 'joined-recipient', '--text', 'into the dark', '--request-id', 'c'.repeat(64)];
+    const refused = await runCli(plugin, darkArgs, env);
+    assert.equal(refused.code, 4, 'refused, not accepted');
+    assert.match(String(refused.json.error), /runtime is not available.*Nothing was queued/);
+    assert.equal('state' in refused.json, false, 'no acceptance shape on a refusal');
     await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(chatRunRegistry.hasQueued('joined-recipient'), false, 'nothing was queued to be dropped');
     assert.equal(received.length, 3, 'nothing ran');
-    assert.equal(chatRunRegistry.hasQueued('joined-recipient'), false, 'the real drain dropped it');
-    state.hasRuntime = true;
+
+    state.hasRuntime = true; // the runtime is back (reattach)
+    const reattached = await runCli(plugin, darkArgs, env);
+    assert.equal(reattached.code, 0);
+    assert.equal(reattached.json.state, 'accepted');
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(received.length, 4, 'the retried message ran once');
+    assert.match(received[3].content, /into the dark/);
+    const again = await runCli(plugin, darkArgs, env);
+    assert.equal(again.json.acceptedAt, reattached.json.acceptedAt, 'the accepted receipt replays');
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(received.length, 4, 'and is not re-sent');
+
+    // Private, archived and nonexistent targets are refused through the real rows.
+    for (const [to, id] of [['joined-private', 'e'], ['joined-archived', 'f'], ['joined-ghost', '9']] as const) {
+      const denied = await runCli(plugin, ['send', '--to', to, '--text', 'hello', '--request-id', id.repeat(64)], env);
+      assert.equal(denied.code, 4, `${to} is not addressable`);
+    }
+
+    // A forged sender in the body is refused outright, not silently replaced.
+    const forged = await fetch(`http://127.0.0.1:${port}/api/mission-control/peer/sessions/joined-sender/send`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-vibespace-peer-capability': env.MC_PEER_CAPABILITY },
+      body: JSON.stringify({ to: 'joined-recipient', text: 'as someone else', requestId: '7'.repeat(64), from: 'joined-elsewhere' }),
+    });
+    assert.equal(forged.status, 400);
+    // Another session's peer capability cannot speak as this one.
+    const stolen = await fetch(`http://127.0.0.1:${port}/api/mission-control/peer/sessions/joined-sender/send`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-vibespace-peer-capability': plugin.sessionPeerCapability(hmac, 'joined-elsewhere') },
+      body: JSON.stringify({ to: 'joined-recipient', text: 'impersonation', requestId: '8'.repeat(64) }),
+    });
+    assert.equal(stolen.status, 403);
 
     // Cross-project target and cross-domain capability, over the same live route.
     const far = await runCli(plugin, ['send', '--to', 'joined-elsewhere', '--text', 'hello', '--request-id', 'd'.repeat(64)], env);
@@ -196,6 +240,14 @@ test('joined: the real CLI, the real peer router and this module\'s real queue d
       body: '{}',
     });
     assert.equal(operator.status, 403, 'an operator capability is refused on the peer route');
-    assert.equal(received.length, 3, 'no refusal path reached the runtime');
+    const operatorSend = await fetch(`http://127.0.0.1:${port}/api/mission-control/peer/sessions/joined-sender/send`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-vibespace-peer-capability': plugin.missionControlSessionCapability(hmac, 'joined-sender') },
+      body: JSON.stringify({ to: 'joined-recipient', text: 'operator authority', requestId: '6'.repeat(64) }),
+    });
+    assert.equal(operatorSend.status, 403, 'nor can it send');
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(received.length, 4, 'no refusal path reached the runtime');
+    assert.ok(received.every((call) => !/operator authority|impersonation|as someone else/.test(call.content)));
   });
 });

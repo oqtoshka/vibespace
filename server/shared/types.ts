@@ -21,6 +21,17 @@ export type ApiSuccessShape<TData = unknown> = {
  */
 export type AnyRecord = Record<string, any>;
 
+/**
+ * Outcome of `serverEnqueueMessageChecked` (websocket module), surfaced to
+ * plugins as `PluginHost.enqueueMessageChecked`. `accepted` means only that the
+ * item is in the in-memory queue of a session whose provider runtime was
+ * available at that moment — not that it ran, and not that it survives a
+ * restart. Every other outcome means nothing was queued.
+ */
+export type CheckedEnqueueResult =
+  | { outcome: 'accepted'; recipientBusy: boolean }
+  | { outcome: 'missing' | 'runtime-unavailable' | 'queue-full' };
+
 // ---------------------------
 //----------------- WEBSOCKET TRANSPORT TYPES ------------
 /**

@@ -107,8 +107,12 @@ export type QueueRemoval = {
 /** Pending messages per app session id, oldest first. */
 const queues = new Map<string, QueuedMessage[]>();
 
-/** Mirror of the client cap so a runaway loop can't grow the queue unbounded. */
-const MAX_QUEUED_MESSAGES = 20;
+/**
+ * Mirror of the client cap so a runaway loop can't grow the queue unbounded.
+ * Exported for `serverEnqueueMessageChecked`, which refuses at the cap instead
+ * of letting `enqueue` evict the oldest item silently.
+ */
+export const MAX_QUEUED_MESSAGES = 20;
 
 /**
  * Invoked whenever a run's terminal `complete` passes through the registry, so

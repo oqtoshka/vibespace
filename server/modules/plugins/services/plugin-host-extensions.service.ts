@@ -16,6 +16,7 @@ import {
   type AgentLaunchContributor,
   type LaunchOptionDeclaration,
 } from '@/shared/agent-env.js';
+import type { CheckedEnqueueResult } from '@/shared/types.js';
 
 /**
  * In-process plugin host modules.
@@ -176,6 +177,17 @@ export type PluginHost = {
     options?: Record<string, unknown>,
   ) => boolean;
   /**
+   * Like `enqueueMessage`, but refuses — queueing nothing — when the session's
+   * provider runtime is unavailable or its queue is at the cap, instead of
+   * accepting an item the drain would drop or evict. `accepted` is in-memory
+   * only: not a delivery, and lost on a server restart.
+   */
+  enqueueMessageChecked?: (
+    sessionId: string,
+    prompt: string,
+    options?: Record<string, unknown>,
+  ) => CheckedEnqueueResult;
+  /**
    * HMAC-SHA256 of `input` under VibeSpace's own signing secret (base64url).
    * Lets a plugin verify a capability minted by something that shares that
    * secret without ever seeing the secret itself.
@@ -217,6 +229,7 @@ export type HostExtensionDependencies = {
   interactions?: PluginHost['interactions'];
   getDefaultPermissionMode?: PluginHost['getDefaultPermissionMode'];
   enqueueMessage: PluginHost['enqueueMessage'];
+  enqueueMessageChecked?: PluginHost['enqueueMessageChecked'];
 };
 
 type ActiveExtension = {
@@ -267,6 +280,7 @@ function buildHost(name: string, pluginDir: string, deps: HostExtensionDependenc
     interactions: deps.interactions,
     getDefaultPermissionMode: deps.getDefaultPermissionMode,
     enqueueMessage: deps.enqueueMessage,
+    enqueueMessageChecked: deps.enqueueMessageChecked,
     hmacSha256: (input) =>
       crypto.createHmac('sha256', deps.getSigningSecret()).update(input).digest('base64url'),
     registerAgentEnvContributor: (contributor) => {

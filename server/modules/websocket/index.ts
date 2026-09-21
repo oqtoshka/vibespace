@@ -5,4 +5,5 @@ export {
   registerChatDependenciesAtBoot,
   serverAbortRun,
   serverEnqueueMessage,
+  serverEnqueueMessageChecked,
 } from './services/chat-websocket.service.js';
