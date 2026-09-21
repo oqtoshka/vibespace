@@ -4,7 +4,7 @@ import type { WebSocket } from 'ws';
 
 import { sessionsDb } from '@/modules/database/index.js';
 import { providerModelsService, sessionsService } from '@/modules/providers/index.js';
-import { chatRunRegistry } from '@/modules/websocket/services/chat-run-registry.service.js';
+import { chatRunRegistry, MAX_QUEUED_MESSAGES } from '@/modules/websocket/services/chat-run-registry.service.js';
 import {
   subscribeProjectFiles,
   unsubscribeProjectFiles,
@@ -23,6 +23,7 @@ import {
 import type {
   AnyRecord,
   AuthenticatedWebSocketRequest,
+  CheckedEnqueueResult,
   LLMProvider,
   ProviderPermissionDecision,
   ProviderRuntimeWriter,
@@ -1028,6 +1029,40 @@ export async function serverAbortRun(sessionId: string): Promise<boolean> {
   chatRunRegistry.clearQueue(sessionId, 'aborted');
   chatRunRegistry.completeRun(sessionId, { exitCode: success ? 0 : 1, aborted: true });
   return success;
+}
+
+/**
+ * `serverEnqueueMessage` for callers that must not claim acceptance of a
+ * message the drain would drop. Consumer: the plugin host's
+ * `enqueueMessageChecked` (cross-session peer messages).
+ *
+ * `drainQueue` dequeues before it checks the provider runtime, so an item
+ * queued while the runtime is unavailable is silently lost, and `enqueue`
+ * silently evicts the oldest item at the cap. This refuses both cases before
+ * anything is queued, so a refused caller can retry later with nothing to
+ * duplicate. It does not make the queue durable: an accepted item still lives
+ * only in memory and is lost on a server restart.
+ */
+export function serverEnqueueMessageChecked(
+  sessionId: string,
+  content: string,
+  options: AnyRecord = {},
+): CheckedEnqueueResult {
+  const session = sessionsDb.getSessionById(sessionId);
+  if (!session) {
+    return { outcome: 'missing' };
+  }
+  const provider = session.provider as LLMProvider | undefined;
+  const dependencies = drainDependencies;
+  if (!dependencies || !provider || !dependencies.runtime.hasRuntime(provider)) {
+    return { outcome: 'runtime-unavailable' };
+  }
+  if (chatRunRegistry.getQueueForClient(sessionId).length >= MAX_QUEUED_MESSAGES) {
+    return { outcome: 'queue-full' };
+  }
+  const recipientBusy = chatRunRegistry.isProcessing(sessionId);
+  serverEnqueueMessage(sessionId, content, options);
+  return { outcome: 'accepted', recipientBusy };
 }
 
 export function serverEnqueueMessage(

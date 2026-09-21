@@ -2,8 +2,12 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { sessionsDb } from '@/modules/database/index.js';
-import { chatRunRegistry } from '@/modules/websocket/services/chat-run-registry.service.js';
-import { handleChatConnection, serverEnqueueMessage } from '@/modules/websocket/services/chat-websocket.service.js';
+import { chatRunRegistry, MAX_QUEUED_MESSAGES } from '@/modules/websocket/services/chat-run-registry.service.js';
+import {
+  handleChatConnection,
+  serverEnqueueMessage,
+  serverEnqueueMessageChecked,
+} from '@/modules/websocket/services/chat-websocket.service.js';
 
 import {
   FakeSocket,
@@ -112,4 +116,50 @@ test('the isolated database neither copies from nor writes to the install direct
     assert.equal(sessionsDb.getAllSessions().length, 1);
   });
   assert.equal(await legacyDatabaseFingerprint(), before, 'database/auth.db is byte-for-byte untouched');
+});
+
+test('the checked enqueue refuses a recipient with no runtime and queues nothing the drain would drop', async () => {
+  await withIsolatedDatabase(async () => {
+    sessionsDb.createSession('checked-dead', 'claude', '/workspace/demo', 'Dead');
+    const received: RuntimeCall[] = [];
+    const state = { hasRuntime: false };
+    handleChatConnection(new FakeSocket() as never, { user: { id: 1 } } as never, recordingRuntime(received, state));
+
+    assert.deepEqual(serverEnqueueMessageChecked('checked-missing', PEER_MESSAGE, {}), { outcome: 'missing' });
+    assert.deepEqual(serverEnqueueMessageChecked('checked-dead', PEER_MESSAGE, {}), { outcome: 'runtime-unavailable' });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(chatRunRegistry.hasQueued('checked-dead'), false, 'nothing was queued');
+    assert.deepEqual(received, []);
+
+    state.hasRuntime = true;
+    assert.deepEqual(serverEnqueueMessageChecked('checked-dead', PEER_MESSAGE, {}), { outcome: 'accepted', recipientBusy: false });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(received.length, 1, 'accepted once the runtime is back, and it ran');
+  });
+});
+
+test('the checked enqueue reports a busy recipient and refuses at the cap instead of evicting', async () => {
+  await withIsolatedDatabase(async () => {
+    sessionsDb.createSession('checked-busy', 'claude', '/workspace/demo', 'Busy');
+    const received: RuntimeCall[] = [];
+    let release = () => {};
+    const block = new Promise<void>((resolve) => { release = resolve; });
+    handleChatConnection(new FakeSocket() as never, { user: { id: 1 } } as never, recordingRuntime(received, { hasRuntime: true, block }));
+
+    serverEnqueueMessage('checked-busy', 'first turn', {});
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(received.length, 1, 'the first turn is running');
+
+    for (let i = 0; i < MAX_QUEUED_MESSAGES; i += 1) {
+      assert.deepEqual(serverEnqueueMessageChecked('checked-busy', `queued ${i}`, {}), { outcome: 'accepted', recipientBusy: true });
+    }
+    assert.deepEqual(serverEnqueueMessageChecked('checked-busy', 'one too many', {}), { outcome: 'queue-full' });
+    const queued = chatRunRegistry.getQueueForClient('checked-busy').map((item) => item.content);
+    assert.equal(queued.length, MAX_QUEUED_MESSAGES);
+    assert.equal(queued[0], 'queued 0', 'the oldest accepted item was not evicted');
+    assert.equal(queued.includes('one too many'), false);
+
+    chatRunRegistry.clearQueue('checked-busy', 'aborted');
+    release();
+  });
 });
