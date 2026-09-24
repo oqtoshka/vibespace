@@ -207,6 +207,17 @@ export function useChatRealtimeHandlers({
               );
               return;
             }
+            if (msg.code === 'RUN_ADMISSION_RESERVED') {
+              // No run is active: a host integration holds the session for a
+              // few seconds (resource cleanup). Hand the send back to the
+              // composer's re-queue path, exactly like RUN_IN_PROGRESS, but do
+              // not claim a run is processing. The server drains the queue as
+              // soon as the reservation ends.
+              window.dispatchEvent(
+                new CustomEvent('vibespace:run-in-progress', { detail: { sessionId: sid } }),
+              );
+              return;
+            }
             // Surface the failure in the conversation and stop the spinner —
             // the run never started (or was rejected), so no `complete` follows.
             onSessionIdle?.(sid);

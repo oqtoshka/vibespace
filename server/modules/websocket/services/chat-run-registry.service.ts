@@ -123,6 +123,13 @@ export const MAX_QUEUED_MESSAGES = 20;
  */
 let onRunCompleteHandler: ((appSessionId: string) => void) | null = null;
 
+/**
+ * Additional run-completion observers (host plugins via `host.runs.onCompleted`).
+ * A hint only: fired after the drain handler, each isolated so a throwing
+ * observer cannot break the drain or the others.
+ */
+const runCompleteListeners = new Set<(appSessionId: string) => void>();
+
 /** The client-facing view of a queued item (no server-only bookkeeping). */
 function toClientQueued(item: QueuedMessage): {
   id: string;
@@ -256,6 +263,15 @@ function decorateAndRecordEvent(run: ChatRun, message: NormalizedMessage): Norma
       const appSessionId = run.appSessionId;
       setTimeout(() => handler(appSessionId), 0);
     }
+    if (runCompleteListeners.size > 0) {
+      const listeners = Array.from(runCompleteListeners);
+      const appSessionId = run.appSessionId;
+      setTimeout(() => {
+        for (const listener of listeners) {
+          try { listener(appSessionId); } catch { /* an observer's failure is its own */ }
+        }
+      }, 0);
+    }
   }
 
   run.events.push(outbound);
@@ -309,9 +325,18 @@ function recordProviderSessionId(run: ChatRun, providerSessionId: string): void 
  * without a VibeSpace turn starting underneath it. Expiry is enforced lazily at
  * each start, so a holder that dies cannot wedge the session past its TTL.
  *
+ * A refused start is deferred, never dropped: `chat.send` answers
+ * RUN_ADMISSION_RESERVED (the client re-queues), the queue drain and the peer
+ * outbox re-run when the reservation ends (release OR expiry fires the
+ * admission-released handler), and a Claude background auto-resume or
+ * open-task nudge waits on `whenAdmissionFree` before it opens its run.
+ *
  * It covers only turns VibeSpace starts. A native CLI resumed in a terminal is
- * outside this process and cannot be refused, which is why the reservation does
- * not claim to cover every start path.
+ * outside this process and cannot be refused. The operator accepted that gap
+ * for the resource-owner cleanup on 2026-09-24 (the cleanup only ever targets
+ * VibeSpace-created briefing sessions, and resuming one of those from a
+ * terminal mid-cleanup is an unlikely edge), which is why the plugin host may
+ * attest `coversAllRunStarts` for VibeSpace-hosted sessions.
  */
 type AdmissionReservation = {
   token: string;
@@ -319,10 +344,49 @@ type AdmissionReservation = {
   resourceId: string;
   generation: string;
   expiresAt: number;
+  expiryTimer: ReturnType<typeof setTimeout> | null;
 };
 
 const admissionReservations = new Map<string, AdmissionReservation>();
 const MAX_ADMISSION_RESERVATION_MS = 60_000;
+
+/** Callers parked in `whenAdmissionFree`, woken when the reservation ends. */
+const admissionWaiters = new Map<string, Array<() => void>>();
+
+/**
+ * Invoked (on a later tick) whenever a reservation ends, by release or by
+ * expiry, so the websocket layer re-drains the queue and the peer outbox that
+ * the reservation refused. Registered by the chat websocket service.
+ */
+let onAdmissionReleasedHandler: ((appSessionId: string) => void) | null = null;
+
+/**
+ * Ends the given reservation if it is still the one held: wakes the parked
+ * callers and fires the released handler. Token-checked, so a stale release
+ * or timer never ends a newer reservation.
+ */
+function endAdmissionReservation(appSessionId: string, token: string): void {
+  const reservation = admissionReservations.get(appSessionId);
+  if (!reservation || reservation.token !== token) {
+    return;
+  }
+  admissionReservations.delete(appSessionId);
+  if (reservation.expiryTimer) {
+    clearTimeout(reservation.expiryTimer);
+  }
+  const waiters = admissionWaiters.get(appSessionId) ?? [];
+  admissionWaiters.delete(appSessionId);
+  // A later tick: the releaser's own `finally` finishes before a deferred turn
+  // or a drain starts, and a throwing waiter cannot break the others.
+  setTimeout(() => {
+    for (const wake of waiters) {
+      try { wake(); } catch { /* a waiter's failure is its own */ }
+    }
+    if (onAdmissionReleasedHandler) {
+      onAdmissionReleasedHandler(appSessionId);
+    }
+  }, 0);
+}
 
 /** True while an unexpired reservation holds the session's turn admission. */
 function isAdmissionReserved(appSessionId: string): boolean {
@@ -331,7 +395,7 @@ function isAdmissionReserved(appSessionId: string): boolean {
     return false;
   }
   if (reservation.expiresAt <= Date.now()) {
-    admissionReservations.delete(appSessionId);
+    endAdmissionReservation(appSessionId, reservation.token);
     return false;
   }
   return true;
@@ -461,9 +525,9 @@ export const chatRunRegistry = {
    * unsent messages are queued, a reservation is already held, the TTL is not in
    * (0, 60s], or the session is not bound to the expected provider session. The
    * lease is bound to the resource id and generation and released only by its
-   * own token. Consumed by tests only: it is NOT exposed to host plugins, because
-   * a start refused here drops an auto-resume turn and does not re-drain the
-   * queue on release, and terminal-native turns bypass it (see handoff).
+   * own token. Exposed to host plugins as `host.runs.reserve` (see
+   * plugin-host-extensions.service.ts). Refused starts are deferred, not
+   * dropped: see the reservation note above.
    */
   reserveAdmission(input: {
     appSessionId: string;
@@ -477,8 +541,11 @@ export const chatRunRegistry = {
       || !Number.isFinite(ttlMs) || ttlMs <= 0 || ttlMs > MAX_ADMISSION_RESERVATION_MS) {
       return null;
     }
+    // Any queue item refuses, including one already handed to a running turn's
+    // runtime (`deliveredUuid`) but not yet started: the runtime may open a
+    // fresh turn for it right after the current run completes.
     if (runs.get(appSessionId)?.status === 'running' || isAdmissionReserved(appSessionId)
-      || chatRunRegistry.hasQueued(appSessionId)) {
+      || (queues.get(appSessionId) ?? []).length > 0) {
       return null;
     }
     // An unreadable or rebound session is not an idle one.
@@ -492,17 +559,43 @@ export const chatRunRegistry = {
       return null;
     }
     const reservation: AdmissionReservation = {
-      token: randomUUID(), providerSessionId, resourceId, generation, expiresAt: Date.now() + ttlMs,
+      token: randomUUID(), providerSessionId, resourceId, generation, expiresAt: Date.now() + ttlMs, expiryTimer: null,
     };
     admissionReservations.set(appSessionId, reservation);
+    // Expiry must also wake deferred work, not only be noticed lazily by the
+    // next start: a holder that dies would otherwise strand a parked resume.
+    reservation.expiryTimer = setTimeout(() => endAdmissionReservation(appSessionId, reservation.token), ttlMs);
+    reservation.expiryTimer.unref?.();
     return {
       expiresAt: reservation.expiresAt,
-      release: () => {
-        if (admissionReservations.get(appSessionId)?.token === reservation.token) {
-          admissionReservations.delete(appSessionId);
-        }
-      },
+      release: () => endAdmissionReservation(appSessionId, reservation.token),
     };
+  },
+
+  /** True while an unexpired reservation holds the session's turn admission. */
+  isAdmissionReserved(appSessionId: string): boolean {
+    return isAdmissionReserved(appSessionId);
+  },
+
+  /**
+   * Resolves once the session's turn admission is free: immediately when no
+   * reservation is held, otherwise when it is released or expires. A caller
+   * must re-check after waking (another reservation may have been taken).
+   */
+  whenAdmissionFree(appSessionId: string): Promise<void> {
+    if (!isAdmissionReserved(appSessionId)) {
+      return Promise.resolve();
+    }
+    return new Promise((resolve) => {
+      const waiters = admissionWaiters.get(appSessionId) ?? [];
+      waiters.push(resolve);
+      admissionWaiters.set(appSessionId, waiters);
+    });
+  },
+
+  /** Registers the handler fired when a reservation ends (release or expiry). */
+  setAdmissionReleasedHandler(handler: (appSessionId: string) => void): void {
+    onAdmissionReleasedHandler = handler;
   },
 
   startResumeRun(appSessionId: string): ChatSessionWriter | null {
@@ -597,6 +690,14 @@ export const chatRunRegistry = {
    */
   setRunCompleteHandler(handler: (appSessionId: string) => void): void {
     onRunCompleteHandler = handler;
+  },
+
+  /** Subscribes an observer to run completions; returns the unsubscribe. */
+  addRunCompleteListener(listener: (appSessionId: string) => void): () => void {
+    runCompleteListeners.add(listener);
+    return () => {
+      runCompleteListeners.delete(listener);
+    };
   },
 
   /** Client-facing snapshot of the pending queue for a session (for subscribe). */
@@ -749,6 +850,17 @@ export const chatRunRegistry = {
   clearAll(): void {
     runs.clear();
     queues.clear();
+    for (const reservation of admissionReservations.values()) {
+      if (reservation.expiryTimer) {
+        clearTimeout(reservation.expiryTimer);
+      }
+    }
     admissionReservations.clear();
+    for (const waiters of admissionWaiters.values()) {
+      for (const wake of waiters) {
+        wake();
+      }
+    }
+    admissionWaiters.clear();
   },
 };

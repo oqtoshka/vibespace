@@ -1156,7 +1156,7 @@ function armIdleTimer(session) {
       .then((handled) => {
         if (handled || session.ended) return;
         if (session.pendingTasks.size > 0 || session.awaitingResult || session.turnActive
-          || hasPendingApprovalsForSession(session.sessionId)) {
+          || session.deferredTurns > 0 || hasPendingApprovalsForSession(session.sessionId)) {
           armIdleTimer(session);
           return;
         }
@@ -1212,6 +1212,12 @@ async function maybeContinueOpenTasks(session) {
   // State may have moved while we were on disk; a live turn owns the session.
   if (session.ended || session.input.closed) return false;
   if (session.turnActive || session.awaitingResult || session.pendingTasks.size > 0) return true;
+  // A reservation holds the session: nudge once it ends (the reaper stays off
+  // meanwhile), without charging the nudge budget for the wait.
+  if (isTurnAdmissionHeld(session)) {
+    deferUntilTurnAdmitted(session, 'open tasks remain', () => maybeContinueOpenTasks(session));
+    return true;
+  }
 
   // Stall detection: a nudge that produced no tool calls AND left the ledger
   // untouched did nothing. Two of those in a row mean nudging isn't helping.
@@ -1410,17 +1416,14 @@ async function handleTaskMessage(session, message) {
     const isBackground = (task && task.background) || session.turnActive === false;
     if (isBackground && !session.ended && !session.input.closed) {
       const text = buildTaskNotificationMessage(message);
-      // No active turn → open a fresh run for the auto-resumed turn so its
-      // output streams under its own sequence and the session shows as
-      // processing again (a server-initiated resume has no client `chat.send`
-      // behind it, so without the status the composer would still show "send"
-      // while messages stream in — and a user send would race into a
-      // RUN_IN_PROGRESS rejection). A resume turn also has to settle even if it
-      // produces only a result, which the helper's `awaitingResult` covers.
-      ensureRunForServerStartedTurn(session, 'Resuming — background task finished');
-      console.log(`[claude bg] session ${session.sessionId}: background task ${message.task_id} ${message.status || 'completed'} — auto-resuming agent`);
-      await applyPendingModelSwitch(session);
-      session.input.push(makeUserMessage(text));
+      // A turn-admission reservation (a host cleanup holding the session for a
+      // few seconds) refuses the resume run. Wait for it to end instead of
+      // dropping the resume, or running it with no run under the cleanup.
+      if (isTurnAdmissionHeld(session)) {
+        deferUntilTurnAdmitted(session, 'background task finished', () => resumeForBackgroundTask(session, message, text));
+        return;
+      }
+      await resumeForBackgroundTask(session, message, text);
     }
     return;
   }
@@ -1432,6 +1435,60 @@ async function handleTaskMessage(session, message) {
       return;
     }
   }
+}
+
+/**
+ * Opens the run for a background-job auto-resume and feeds the resume prompt.
+ * No active turn → a fresh run for the auto-resumed turn so its output streams
+ * under its own sequence and the session shows as processing again (a
+ * server-initiated resume has no client `chat.send` behind it, so without the
+ * status the composer would still show "send" while messages stream in — and a
+ * user send would race into a RUN_IN_PROGRESS rejection). A resume turn also
+ * has to settle even if it produces only a result, which the helper's
+ * `awaitingResult` covers.
+ */
+async function resumeForBackgroundTask(session, message, text) {
+  if (session.ended || session.input.closed) return;
+  ensureRunForServerStartedTurn(session, 'Resuming — background task finished');
+  console.log(`[claude bg] session ${session.sessionId}: background task ${message.task_id} ${message.status || 'completed'} — auto-resuming agent`);
+  await applyPendingModelSwitch(session);
+  session.input.push(makeUserMessage(text));
+}
+
+/**
+ * True when a server-started turn must not open now: no turn is in flight (a
+ * running turn simply absorbs the prompt) and a turn-admission reservation
+ * holds the session. Without the gateway seam (tests, one-shot callers) there
+ * is no reservation.
+ */
+function isTurnAdmissionHeld(session) {
+  return !session.turnActive && session.isTurnAdmissionReserved?.() === true;
+}
+
+/**
+ * Parks a server-started turn until the session's turn admission is free, then
+ * runs `start` — re-parking if another reservation was taken in between, and
+ * giving up only when the session itself ended. Keeps the idle reaper off the
+ * session while it waits, so the deferred turn is not reaped with it.
+ */
+function deferUntilTurnAdmitted(session, label, start) {
+  console.log(`[claude] session ${session.sessionId}: turn admission reserved — deferring server-started turn (${label})`);
+  clearIdleTimer(session);
+  session.deferredTurns = (session.deferredTurns ?? 0) + 1;
+  const wait = session.whenTurnAdmissionFree?.() ?? Promise.resolve();
+  wait.then(() => {
+    session.deferredTurns -= 1;
+    if (session.ended || session.input.closed) return undefined;
+    if (isTurnAdmissionHeld(session)) {
+      deferUntilTurnAdmitted(session, label, start);
+      return undefined;
+    }
+    return start();
+  }).catch((error) => {
+    console.warn(`[claude] session ${session.sessionId}: deferred turn (${label}) failed:`, error?.message || error);
+  }).finally(() => {
+    if (!session.ended && !session.turnActive && !session.deferredTurns) armIdleTimer(session);
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -2226,6 +2283,10 @@ async function reuseSession(session, command, options, ws) {
   if (options.acquireResumeRun) {
     session.acquireResumeRun = options.acquireResumeRun;
   }
+  if (typeof options.isTurnAdmissionReserved === 'function') {
+    session.isTurnAdmissionReserved = options.isTurnAdmissionReserved;
+    session.whenTurnAdmissionFree = options.whenTurnAdmissionFree;
+  }
   session.currentRateLimitWakeMessageId = options.rateLimitWakeMessageId ?? null;
   session.currentRateLimitWakeAttempts = options.rateLimitWakeAttempts ?? 0;
   if (typeof options.locale === 'string' && options.locale.trim()) {
@@ -2373,6 +2434,12 @@ async function startPersistentSession(command, options, ws) {
     // Opens a fresh chat-run for a background auto-resume turn (null in tests /
     // one-shot callers, where the current writer is reused instead).
     acquireResumeRun: typeof options.acquireResumeRun === 'function' ? options.acquireResumeRun : null,
+    // Turn-admission reservation seam (a host cleanup holding the session):
+    // server-started turns wait on it instead of being dropped. Null outside
+    // the gateway.
+    isTurnAdmissionReserved: typeof options.isTurnAdmissionReserved === 'function' ? options.isTurnAdmissionReserved : null,
+    whenTurnAdmissionFree: typeof options.whenTurnAdmissionFree === 'function' ? options.whenTurnAdmissionFree : null,
+    deferredTurns: 0,
     // The selected catalog value, not sdkOptions.model — the latter is absent
     // for "default" (see mapCliOptionsToSDK), and effort validation plus the
     // mid-session switch in reuseSession both need something to compare against.
