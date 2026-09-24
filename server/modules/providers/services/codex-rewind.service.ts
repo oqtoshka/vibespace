@@ -5,17 +5,28 @@ export async function rewindCodexTurn(
   request: (method: string, params: AnyRecord) => Promise<AnyRecord>,
   threadId: string,
   anchor: string,
-): Promise<void> {
-  if (!anchor.startsWith('codex-turn-')) throw new Error('Invalid Codex edit anchor. Reload the conversation.');
-  const { thread } = await request('thread/read', { threadId, includeTurns: true });
-  if (thread?.id !== threadId || !Array.isArray(thread.turns)) throw new Error('Could not verify Codex history. Reload the conversation.');
-  const turns = thread.turns as AnyRecord[];
-  if (thread.status?.type === 'active' || turns.some(turn => turn.status === 'inProgress')) {
-    throw new Error('Stop the response before editing.');
+  beforePaginatedRevert: () => void = () => {},
+): Promise<'legacy' | 'paginated'> {
+  if (!/^codex-turn-[a-zA-Z0-9_-]+$/.test(anchor)) throw new Error('Invalid Codex edit anchor. Reload the conversation.');
+  const { thread } = await request('thread/read', { threadId, includeTurns: false });
+  if (thread?.id !== threadId) throw new Error('Could not verify Codex history. Reload the conversation.');
+  if (thread.status?.type === 'active') throw new Error('Stop the response before editing.');
+  const beforeTurnId = anchor.slice('codex-turn-'.length);
+  if (thread.historyMode === 'paginated') {
+    // The provider validates the anchor and idle state atomically. Revert keeps
+    // the thread ID but replaces its durable rollout; counting hydrated turns
+    // and calling legacy rollback is not supported for this storage format.
+    beforePaginatedRevert();
+    await request('thread/revert', { threadId, beforeTurnId });
+    return 'paginated';
   }
-  const index = turns.findIndex(turn => turn.id === anchor.slice('codex-turn-'.length));
+  if (thread.historyMode && thread.historyMode !== 'legacy') throw new Error('Unknown Codex history format. Update VibeSpace before editing.');
+  const full = await request('thread/read', { threadId, includeTurns: true });
+  if (full.thread?.id !== threadId || !Array.isArray(full.thread.turns)) throw new Error('Could not verify Codex history. Reload the conversation.');
+  const turns = full.thread.turns as AnyRecord[];
+  if (full.thread.status?.type === 'active' || turns.some(turn => turn.status === 'inProgress')) throw new Error('Stop the response before editing.');
+  const index = turns.findIndex(turn => turn.id === beforeTurnId);
   if (index < 0) throw new Error('This message is no longer in Codex history. Reload the conversation.');
-  // Never append the replacement if rollback fails. The same loaded thread
-  // owns both the persisted rollback marker and the model's in-memory context.
   await request('thread/rollback', { threadId, numTurns: turns.length - index });
+  return 'legacy';
 }

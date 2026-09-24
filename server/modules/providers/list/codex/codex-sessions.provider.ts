@@ -9,6 +9,8 @@ import {
   parseFilesInputTag, readObjectRecord, sliceTailPage, toImageAttachments,
 } from '@/shared/index.js';
 
+import { readCodexRevertedHistory } from '../../services/codex-reverted-history.service.js';
+
 const PROVIDER = 'codex';
 
 type CodexHistoryResult =
@@ -729,7 +731,7 @@ export class CodexSessionsProvider implements IProviderSessions {
    */
   private normalizeHistoryEntry(raw: AnyRecord, sessionId: string | null): NormalizedMessage[] {
     const ts = raw.timestamp || new Date().toISOString();
-    const baseId = raw.uuid || generateMessageId('codex');
+    const baseId = raw.uuid || raw.id || generateMessageId('codex');
 
     if (raw.type === 'compact_boundary') {
       return [createCompactBoundaryMessage({
@@ -857,7 +859,7 @@ export class CodexSessionsProvider implements IProviderSessions {
     }
 
     const ts = raw.timestamp || new Date().toISOString();
-    const baseId = raw.uuid || generateMessageId('codex');
+    const baseId = raw.uuid || raw.id || generateMessageId('codex');
 
     if (raw.type === 'item') {
       switch (raw.itemType) {
@@ -999,11 +1001,13 @@ export class CodexSessionsProvider implements IProviderSessions {
   ): Promise<FetchHistoryResult> {
     const { limit = null, offset = 0 } = options;
 
+    const row = sessionsDb.getSessionById(sessionId);
+    const canonical = await readCodexRevertedHistory(row?.provider_session_id || sessionId, Boolean(row?.is_private));
     let result: CodexHistoryResult;
     try {
       // Load full history first so `total` reflects frontend-normalized messages,
       // not raw JSONL records.
-      result = await getCodexSessionMessages(sessionId, null, 0);
+      result = canonical === undefined ? await getCodexSessionMessages(sessionId, null, 0) : { messages: canonical };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       console.warn(`[CodexProvider] Failed to load session ${sessionId}:`, message);
@@ -1015,7 +1019,7 @@ export class CodexSessionsProvider implements IProviderSessions {
 
     const normalized: NormalizedMessage[] = [];
     for (const raw of rawMessages) {
-      normalized.push(...this.normalizeHistoryEntry(raw, sessionId));
+      normalized.push(...(raw.type === 'item' ? this.normalizeMessage(raw, sessionId) : this.normalizeHistoryEntry(raw, sessionId)));
     }
 
     const toolResultMap = new Map<string, NormalizedMessage>();

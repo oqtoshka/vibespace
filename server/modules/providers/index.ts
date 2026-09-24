@@ -29,3 +29,5 @@ export { scheduleSessionRecap, cancelSessionRecap, generateSessionRecap } from '
 
 // Native chat (websocket) answers `native.background` from Claude's live background-task set.
 export { getClaudeSDKLiveBackgroundTasks, isClaudeSDKSessionAlive } from './list/claude/claude-runtime.provider.js';
+
+export { registerCodexRevertedHistoryReader, markCodexRevertedHistory } from './services/codex-reverted-history.service.js';
