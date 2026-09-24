@@ -1047,6 +1047,10 @@ function handleChatSubscribe(
 
     const run = chatRunRegistry.getRun(sessionId);
     const isProcessing = chatRunRegistry.isProcessing(sessionId);
+    // `lastSeq` is a position inside one run. A client still holding the
+    // previous run's position would otherwise skip this run's first events.
+    const clientRunId = (target as AnyRecord).runId;
+    const replayAfter = typeof clientRunId === 'string' && run && clientRunId !== run.runId ? 0 : lastSeq;
 
     // Future live events for this run should land on the socket that asked —
     // this is what makes mid-stream page refreshes work for all providers.
@@ -1063,6 +1067,7 @@ function handleChatSubscribe(
       sessionId,
       isProcessing,
       lastSeq: run?.lastSeq ?? 0,
+      runId: run?.runId,
       pendingPermissions,
       // Server-owned message queue snapshot so a freshly-opened client sees any
       // messages another browser queued for this session.
@@ -1075,7 +1080,7 @@ function handleChatSubscribe(
     // replaying them (e.g. after a page reload where the client's lastSeq is
     // 0) would duplicate messages the history fetch already returned.
     if (isProcessing) {
-      for (const event of chatRunRegistry.replayEvents(sessionId, lastSeq)) {
+      for (const event of chatRunRegistry.replayEvents(sessionId, replayAfter)) {
         sendJson(ws, event);
       }
     }

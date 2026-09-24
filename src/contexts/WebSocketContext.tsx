@@ -16,6 +16,8 @@ export type ServerEvent = {
   type?: string;
   sessionId?: string;
   seq?: number;
+  /** Run the `seq` belongs to; it restarts at 1 for every run. */
+  runId?: string;
   [key: string]: unknown;
 };
 

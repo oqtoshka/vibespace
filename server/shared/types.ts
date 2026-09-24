@@ -382,6 +382,8 @@ export type NormalizedMessage = {
    * the live events they missed across websocket reconnects.
    */
   seq?: number;
+  /** Id of the chat run this sequenced live event belongs to; `seq` restarts per run. */
+  runId?: string;
   role?: 'user' | 'assistant';
   content?: string;
   /**
