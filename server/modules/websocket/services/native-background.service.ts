@@ -1,4 +1,4 @@
-import { getClaudeSDKBackgroundTasks, isClaudeSDKSessionAlive } from '@/modules/providers/list/claude/claude-runtime.provider.js';
+import { getClaudeSDKLiveBackgroundTasks, isClaudeSDKSessionAlive } from '@/modules/providers/index.js';
 
 /** What the native client may learn about one session's background jobs. */
 export type NativeBackgroundSnapshot =
@@ -10,10 +10,12 @@ export type BackgroundRuntime = {
   alive: (providerSessionId: string) => boolean;
 };
 
-/** Claude's SDK is the only runtime that tracks background jobs: `task_started` adds a
- * task, `task_notification` and stop_task remove it. Nothing else is inventoried. */
+/** Claude's SDK is the only runtime that inventories background jobs. This reads its
+ * `background_tasks_changed` level signal (replace semantics), not the start/notification
+ * edges: the edges also bracket long FOREGROUND commands and a missed bookend would wedge
+ * a stale entry. Task ids equal the receipts' `agentId` / `backgroundTaskId`. */
 export const claudeBackgroundRuntime: BackgroundRuntime = {
-  tasks: id => getClaudeSDKBackgroundTasks(id),
+  tasks: id => getClaudeSDKLiveBackgroundTasks(id),
   alive: id => isClaudeSDKSessionAlive(id),
 };
 
