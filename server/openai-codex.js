@@ -27,7 +27,7 @@ import { notifyRunFailed, notifyRunStopped } from './modules/notifications/index
 import { cancelRateLimitWake, scheduleRateLimitWake } from './services/rate-limit-wake.service.js';
 import { recordSessionActivity, recordSessionEnd } from './services/session-restore.service.js';
 import { planTaskContinuation } from './modules/task-continuation/index.js';
-import { broadcastSessionUpdate, generateInitialSessionTitle, scheduleSessionRecap, rewindCodexTurn } from './modules/providers/index.js';
+import { broadcastSessionUpdate, generateInitialSessionTitle, scheduleSessionRecap, rewindCodexTurn, registerCodexRevertedHistoryReader, markCodexRevertedHistory } from './modules/providers/index.js';
 import { buildCodexTokenBudget, CODEX_AUTO_COMPACT_LIMIT, readLatestCodexTokenBudget } from './shared/codex-token-usage.js';
 import { toCodexAppServerSandboxPolicy } from './shared/codex-sandbox-policy.js';
 import { createCompleteMessage, createNormalizedMessage } from './shared/utils.js';
@@ -245,6 +245,47 @@ function transformCodexItem(item) {
       return null;
   }
 }
+
+// A paginated revert writes a new rollout containing history_base references.
+// Let Codex resolve that chain; parsing the superseded JSONL resurrects removed turns.
+registerCodexRevertedHistoryReader(async (threadId, isPrivate) => {
+  const appServer = await getCodexAppServer({ private: isPrivate });
+  const messages = [];
+  let cursor;
+  const seenCursors = new Set();
+  do {
+    const page = await appServer.request('thread/turns/list', {
+      threadId, limit: 100, sortDirection: 'asc', itemsView: 'full', ...(cursor ? { cursor } : {}),
+    });
+    if (!Array.isArray(page.data)) throw new Error('Codex did not return conversation history.');
+    for (const turn of page.data) {
+      let firstUser = true;
+      const timestamp = new Date((turn.startedAt || 0) * 1000).toISOString();
+      for (const item of turn.items || []) {
+        if (item.type === 'userMessage') {
+          const content = (item.content || []).filter(part => part.type === 'text').map(part => part.text).join('\n');
+          const images = (item.content || []).flatMap(part => {
+            if (part.type === 'localImage') return [{ path: part.path }];
+            if (part.type === 'image') return part.url?.startsWith('data:') ? [{ data: part.url }] : [{ path: part.url }];
+            return [];
+          });
+          messages.push({ type: 'user', id: item.id, uuid: firstUser ? `codex-turn-${turn.id}` : undefined,
+            timestamp, message: { role: 'user', content }, ...(images.length ? { images } : {}) });
+          firstUser = false;
+        } else if (item.type === 'contextCompaction') {
+          messages.push({ type: 'compact_boundary', uuid: item.id, timestamp });
+        } else {
+          const transformed = transformCodexItem(item);
+          if (transformed) messages.push({ ...transformed, timestamp });
+        }
+      }
+    }
+    cursor = page.nextCursor;
+    if (cursor && seenCursors.has(cursor)) throw new Error('Codex returned a repeated history cursor.');
+    if (cursor) seenCursors.add(cursor);
+  } while (cursor);
+  return messages;
+});
 
 const CODEX_SANDBOX_MODES = ['read-only', 'workspace-write', 'danger-full-access'];
 const CODEX_APPROVAL_POLICIES = ['untrusted', 'on-failure', 'on-request', 'never'];
@@ -567,7 +608,8 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
 
     if (options.rewind) {
       if (!sessionId || ephemeral) throw new Error('Editing requires an existing conversation.');
-      await rewindCodexTurn((method, params) => appServer.request(method, params), capturedSessionId, options.rewind);
+      await rewindCodexTurn((method, params) => appServer.request(method, params), capturedSessionId, options.rewind,
+        () => markCodexRevertedHistory(capturedSessionId));
       options = { ...options, rewind: undefined };
       // The UI must replace its snapshot immediately, including if the new turn fails.
       sendMessage(ws, { kind: 'native.session-state', sessionId: capturedSessionId, provider: 'codex' });

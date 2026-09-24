@@ -13,6 +13,7 @@ for (const [anchor, count] of [['codex-turn-one', 3], ['codex-turn-two', 2], ['c
       return { thread: { id: 'thread', turns: ['one', 'two', 'three'].map(id => ({ id, status: 'completed' })) } };
     }, 'thread', anchor);
     assert.deepEqual(calls, [
+      { method: 'thread/read', threadId: 'thread', includeTurns: false },
       { method: 'thread/read', threadId: 'thread', includeTurns: true },
       { method: 'thread/rollback', threadId: 'thread', numTurns: count },
     ]);
@@ -36,4 +37,27 @@ test('Codex rollback failure is propagated to the runtime', async () => {
     if (method === 'thread/rollback') throw new Error('Rollback refused');
     return { thread: { id: 'thread', turns: [{ id: 'one', status: 'failed' }] } };
   }, 'thread', 'codex-turn-one'), /Rollback refused/);
+});
+
+for (const id of ['first', 'middle', 'last']) {
+  test(`paginated edit of ${id} uses the exact turn without legacy hydration or rollback`, async () => {
+    const calls: AnyRecord[] = [];
+    let marked = false;
+    assert.equal(await rewindCodexTurn(async (method, params) => {
+      calls.push({method,...params});
+      if (method === 'thread/read') return {thread:{id:'thread',historyMode:'paginated',status:{type:'idle'},turns:[]}};
+      assert.ok(marked, 'Canonical history routing must be durable before provider mutation');
+      assert.equal(method,'thread/revert'); return {thread:{id:'thread',turns:[]}};
+    }, 'thread', `codex-turn-${id}`, () => { marked = true; }), 'paginated');
+    assert.deepEqual(calls,[{method:'thread/read',threadId:'thread',includeTurns:false},{method:'thread/revert',threadId:'thread',beforeTurnId:id}]);
+  });
+}
+test('paginated stale anchor rejection never falls back to legacy rollback', async () => {
+  const methods: string[] = [];
+  await assert.rejects(rewindCodexTurn(async method => {
+    methods.push(method);
+    if(method === 'thread/read') return {thread:{id:'thread',historyMode:'paginated',status:{type:'idle'}}};
+    throw new Error('Turn does not exist');
+  },'thread','codex-turn-missing'),/Turn does not exist/);
+  assert.deepEqual(methods,['thread/read','thread/revert']);
 });
