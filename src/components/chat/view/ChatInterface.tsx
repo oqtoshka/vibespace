@@ -19,8 +19,10 @@ import { useSubagents } from '../hooks/useSubagents';
 import { useSessionActiveModel } from '../hooks/useSessionActiveModel';
 import { BackgroundTasksProvider } from '../context/BackgroundTasksContext';
 import { useSessionStore } from '../../../stores/useSessionStore';
+import { sessionLaunchOptionsWith } from '../../../utils/launchOptionMarks';
 
 import ChatMessagesPane from './subcomponents/ChatMessagesPane';
+import LaunchOptionBanner from './subcomponents/LaunchOptionBanner';
 import ChatComposer from './subcomponents/ChatComposer';
 import CommandResultModal from './subcomponents/CommandResultModal';
 import BtwPanel from './subcomponents/BtwPanel';
@@ -480,9 +482,14 @@ function ChatInterface({
   const effectiveLaunchOptions: Record<string, unknown> = selectedSession?.launchOptions !== undefined
     ? selectedSession.launchOptions ?? {}
     : launchOptionValues;
-  const launchOptionBadges = sessionExists
-    ? launchOptionDeclarations.filter((option) => option.badge && effectiveLaunchOptions[option.id])
+  // An option with a banner shows the banner instead of its thin badge row.
+  const launchOptionBanners = sessionExists
+    ? sessionLaunchOptionsWith(launchOptionDeclarations, effectiveLaunchOptions, 'banner', effectivePrivateMode)
     : [];
+  const launchOptionBadges = sessionExists
+    ? launchOptionDeclarations.filter((option) => option.badge && !launchOptionBanners.includes(option) && effectiveLaunchOptions[option.id])
+    : [];
+  const bannerSessionId = selectedSession?.id || currentSessionId || null;
 
   return (
     <PermissionContext.Provider value={permissionContextValue}>
@@ -500,6 +507,9 @@ function ChatInterface({
             </span>
           </div>
         )}
+        {launchOptionBanners.map((option) => (
+          <LaunchOptionBanner key={option.id} option={option} sessionId={bannerSessionId} />
+        ))}
         {launchOptionBadges.map((option) => (
           <div
             key={option.id}

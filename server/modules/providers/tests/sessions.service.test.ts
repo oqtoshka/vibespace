@@ -151,10 +151,21 @@ test('recent sessions map project metadata and preserve database pagination', { 
         projectDisplayName: 'Recent Project',
         sessionTitle: 'Newer conversation',
         lastActivity: '2026-08-01T11:00:00.000Z',
+        isPrivate: false,
+        launchOptions: null,
       }],
       total: 2,
       hasMore: true,
     });
+  });
+});
+
+test('recent sessions carry the launch options a session was created with', { concurrency: false }, async () => {
+  await withIsolatedDatabase(() => {
+    sessionsDb.createAppSession('app-briefed', 'claude', '/tmp/recent-options', false, false, 'Briefed', { 'acme.review': true });
+    const [conversation] = sessionsService.listRecentSessions(5, 0).conversations;
+    assert.equal(conversation.sessionId, 'app-briefed');
+    assert.deepEqual(conversation.launchOptions, { 'acme.review': true });
   });
 });
 

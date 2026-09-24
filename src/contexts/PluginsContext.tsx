@@ -1,6 +1,7 @@
 import { createContext, type ReactNode, useCallback, useContext, useEffect, useState } from 'react';
 
 import { authenticatedFetch } from '../utils/api';
+import type { LaunchOptionDeclaration } from '../types/app';
 
 export type Plugin = {
   name: string;
@@ -33,6 +34,11 @@ export type PluginSessionAction = {
 
 type PluginsContextValue = {
   plugins: Plugin[];
+  /**
+   * Launch options host plugins declared (the same list the composer shows),
+   * so the session list and the chat can decorate sessions started with one.
+   */
+  launchOptions: LaunchOptionDeclaration[];
   loading: boolean;
   pluginsError: string | null;
   refreshPlugins: () => Promise<void>;
@@ -54,10 +60,20 @@ export function usePlugins() {
 
 export function PluginsProvider({ children }: { children: ReactNode }) {
   const [plugins, setPlugins] = useState<Plugin[]>([]);
+  const [launchOptions, setLaunchOptions] = useState<LaunchOptionDeclaration[]>([]);
   const [loading, setLoading] = useState(true);
   const [pluginsError, setPluginsError] = useState<string | null>(null);
 
   const refreshPlugins = useCallback(async () => {
+    // Declared by host modules at boot; refreshed with the plugin list so a
+    // toggled plugin's marks follow it. A failure keeps the previous list.
+    void authenticatedFetch('/api/providers/capabilities')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((body) => {
+        const declared = body?.data?.launchOptions;
+        if (Array.isArray(declared)) setLaunchOptions(declared);
+      })
+      .catch(() => undefined);
     try {
       const res = await authenticatedFetch('/api/plugins');
       if (res.ok) {
@@ -161,7 +177,7 @@ export function PluginsProvider({ children }: { children: ReactNode }) {
   }, [refreshPlugins]);
 
   return (
-    <PluginsContext.Provider value={{ plugins, loading, pluginsError, refreshPlugins, installPlugin, uninstallPlugin, updatePlugin, togglePlugin }}>
+    <PluginsContext.Provider value={{ plugins, launchOptions, loading, pluginsError, refreshPlugins, installPlugin, uninstallPlugin, updatePlugin, togglePlugin }}>
       {children}
     </PluginsContext.Provider>
   );

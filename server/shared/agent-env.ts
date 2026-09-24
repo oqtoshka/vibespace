@@ -141,8 +141,54 @@ export type LaunchOptionDeclaration = {
   /** Shown in the header of a session that was started with the option. */
   badge?: string;
   badgeHint?: string;
+  /**
+   * How a session started with the option is marked in the session list: a
+   * ring and a corner glyph on its avatar plus `label` as a word beside the
+   * title, `hint` as the tooltip. Never hue alone — the word always shows.
+   */
+  marker?: LaunchOptionMarker;
+  /**
+   * A persistent banner at the top of such a session's chat, replacing the
+   * thin header badge. It never blocks the composer.
+   */
+  banner?: LaunchOptionBanner;
+  /**
+   * Leave private sessions undecorated: the declaring plugin ignores the
+   * option there (e.g. it reports to an external board a private session
+   * never reaches), so marking them would point at nothing.
+   */
+  inertWhenPrivate?: boolean;
   /** Providers the option applies to; all of them when omitted. */
   providers?: string[];
+  /**
+   * The plugin that declared the option. Set by the plugin host, never by the
+   * plugin itself: the client resolves `banner.actionId` against this plugin's
+   * manifest `sessionActions`.
+   */
+  pluginName?: string;
+};
+
+/** See `LaunchOptionDeclaration.marker`. */
+export type LaunchOptionMarker = {
+  /** One or two words, e.g. `review`. */
+  label: string;
+  /** The tooltip, e.g. what the mark means and where to read the session instead. */
+  hint?: string;
+};
+
+/**
+ * See `LaunchOptionDeclaration.banner`. The link, when there is one, is a
+ * session action the same plugin already contributes through its manifest
+ * (`sessionActions[].id`): the client resolves it through that action's own
+ * authenticated endpoint, so a banner cannot point anywhere the session menu
+ * could not.
+ */
+export type LaunchOptionBanner = {
+  text: string;
+  /** A `sessionActions[].id` of the declaring plugin. */
+  actionId?: string;
+  /** The link text; the action's own label when omitted. */
+  actionLabel?: string;
 };
 
 const launchOptionDeclarations = new Map<string, LaunchOptionDeclaration>();
@@ -154,7 +200,20 @@ export function registerLaunchOption(declaration: LaunchOptionDeclaration): () =
   if (!declaration || !LAUNCH_OPTION_ID.test(declaration.id) || typeof declaration.label !== 'string' || !declaration.label.trim()) {
     throw new Error('A launch option needs an id ([a-z0-9._-]) and a label');
   }
-  launchOptionDeclarations.set(declaration.id, { ...declaration });
+  const { marker, banner } = declaration;
+  if (marker !== undefined && (!isShortText(marker?.label, 32) || !isOptionalText(marker.hint, 200))) {
+    throw new Error(`Launch option ${declaration.id}: a marker needs a label (≤32 chars) and an optional hint (≤200)`);
+  }
+  if (banner !== undefined && (!isShortText(banner?.text, 240)
+    || !isOptionalText(banner.actionLabel, 64)
+    || (banner.actionId !== undefined && !LAUNCH_OPTION_ID.test(banner.actionId)))) {
+    throw new Error(`Launch option ${declaration.id}: a banner needs text (≤240 chars), an optional action id and label`);
+  }
+  launchOptionDeclarations.set(declaration.id, {
+    ...declaration,
+    ...(marker ? { marker: { ...marker } } : {}),
+    ...(banner ? { banner: { ...banner } } : {}),
+  });
   return () => {
     launchOptionDeclarations.delete(declaration.id);
   };
@@ -162,6 +221,15 @@ export function registerLaunchOption(declaration: LaunchOptionDeclaration): () =
 
 export function listLaunchOptions(): LaunchOptionDeclaration[] {
   return [...launchOptionDeclarations.values()].map((declaration) => ({ ...declaration }));
+}
+
+/** A non-blank string no longer than `max`. */
+function isShortText(value: unknown, max: number): value is string {
+  return typeof value === 'string' && value.trim().length > 0 && value.length <= max;
+}
+
+function isOptionalText(value: unknown, max: number): boolean {
+  return value === undefined || isShortText(value, max);
 }
 
 /**
