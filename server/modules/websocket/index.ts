@@ -6,6 +6,8 @@ export {
   serverAbortRun,
   serverEnqueueMessage,
   serverEnqueueMessageChecked,
+  // idle-only admission: PluginHost.enqueueMessageIfIdle (the Janitor's owner check).
+  serverEnqueueMessageIfIdle,
   // peer outbox: used by server/index.js to expose PluginHost.peerOutbox.
   admitPeerMessage,
   getPeerMessage,
