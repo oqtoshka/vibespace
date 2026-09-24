@@ -32,6 +32,7 @@ import {
   PromptInputButton,
   PromptInputSubmit,
 } from '../../../../shared/view/ui';
+import { isMacOsDesktop } from '../../../../utils/platform';
 
 import CommandMenu from './CommandMenu';
 import ActivityIndicator from './ActivityIndicator';
@@ -391,13 +392,19 @@ export default function ChatComposer({
   // button stops without sending, while this button stops, transcribes, and
   // sends (or queues) the take.
   const canQueueDraft = !isRecording && isLoading && Boolean(input.trim());
+  // Name the real chord: users on Ctrl+Enter mode kept pressing Enter and
+  // getting a new line because the hint vanished as soon as they typed.
+  const sendKey = sendByCtrlEnter ? `${isMacOsDesktop() ? '⌘' : 'Ctrl'}+Enter` : 'Enter';
+  const isTyping = Boolean(input.trim());
   const submitHint = canQueueDraft
     ? hasQueuedDraft
-      ? t('input.hintText.updateQueued', { defaultValue: 'Enter to update queued message' })
-      : t('input.hintText.queue', { defaultValue: 'Enter to queue your next message' })
-    : sendByCtrlEnter
-      ? t('input.hintText.ctrlEnter')
-      : t('input.hintText.enter');
+      ? t('input.hintText.updateQueued', { key: sendKey, defaultValue: '{{key}} to update queued message' })
+      : t('input.hintText.queue', { key: sendKey, defaultValue: '{{key}} to queue your next message' })
+    : isTyping
+      ? t('input.hintText.send', { key: sendKey, defaultValue: '{{key}} to send' })
+      : sendByCtrlEnter
+        ? t('input.hintText.ctrlEnter', { key: sendKey })
+        : t('input.hintText.enter');
   const submitAriaLabel = canQueueDraft
     ? hasQueuedDraft
       ? t('input.queue.update', { defaultValue: 'Update queued message' })
@@ -925,8 +932,8 @@ export default function ChatComposer({
               to nothing, the toolbar takes its natural width and clips only as
               a last resort, and the actions never shrink at all. */}
           <div
-            className={`hidden min-w-0 flex-1 basis-0 truncate whitespace-nowrap text-right text-xs text-muted-foreground/50 transition-opacity duration-200 lg:block ${
-              input.trim() && !canQueueDraft ? 'opacity-0' : 'opacity-100'
+            className={`hidden min-w-0 flex-1 basis-0 truncate whitespace-nowrap text-right text-xs transition-colors duration-200 sm:block ${
+              sendByCtrlEnter && isTyping ? 'text-muted-foreground' : 'text-muted-foreground/50'
             }`}
             title={submitHint}
           >
@@ -984,7 +991,11 @@ export default function ChatComposer({
               }
               disabled={isLoading ? false : isRecording ? false : isTranscribing ? true : !input.trim()}
               aria-label={submitAriaLabel}
-              title={submitAriaLabel}
+              title={
+                !canQueueDraft && !isLoading && !isRecording
+                  ? `${submitAriaLabel} (${sendKey})`
+                  : submitAriaLabel
+              }
               className="h-10 w-10 sm:h-10 sm:w-10"
             >
               {isTranscribing ? (
