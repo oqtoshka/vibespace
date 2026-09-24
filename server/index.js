@@ -30,7 +30,7 @@ import { closeSessionsWatcher, initializeSessionsWatcher, providerRuntimeService
 import { getSubagentConversation } from '@/modules/providers/list/claude/claude-sessions.provider.js';
 import { createWebSocketServer } from '@/modules/websocket/index.js';
 import { chatRunRegistry } from '@/modules/websocket/services/chat-run-registry.service.js';
-import { registerChatDependenciesAtBoot, serverAbortRun, serverEnqueueMessage, serverEnqueueMessageChecked, admitPeerMessage, getPeerMessage } from '@/modules/websocket/index.js';
+import { registerChatDependenciesAtBoot, serverAbortRun, serverEnqueueMessage, serverEnqueueMessageChecked, admitPeerMessage, getPeerMessage, startPeerOutboxSweeper } from '@/modules/websocket/index.js';
 import { forgetRateLimitWake, startRateLimitWakeLoop } from '@/services/rate-limit-wake.service.js';
 import { cancelSessionRecap } from '@/modules/providers/index.js';
 import { forgetSession as forgetRestoreEntry, restoreInterruptedSessions } from '@/services/session-restore.service.js';
@@ -2706,6 +2706,9 @@ async function startServer() {
     try {
         // Initialize authentication database
         await initializeDatabase();
+        // Needs the `peer_outbox` table, so strictly after initializeDatabase();
+        // its first pass re-attempts rows a restart left pending.
+        startPeerOutboxSweeper();
         // Operator-owned initial project registrations are idempotent at boot.
         for (const projectPath of (process.env.VS_DEFAULT_PROJECTS || '').split(',').filter(Boolean)) {
           if (!projectsDb.getProjectPath(projectPath)) {

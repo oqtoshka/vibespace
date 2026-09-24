@@ -1055,7 +1055,10 @@ export function handleChatConnection(
  */
 export function registerChatDependenciesAtBoot(dependencies: ChatWebSocketDependencies): void {
   ensureQueueDrainingRegistered(dependencies);
-  startPeerOutboxSweeper();
+  // The peer outbox sweeper is NOT started here: this runs at module load in
+  // server/index.js, before initializeDatabase() has created `peer_outbox`, and
+  // a sweep against the missing table threw at boot. startServer() starts it
+  // once the schema exists.
 }
 
 /**
@@ -1364,7 +1367,7 @@ let peerOutboxSweeper: ReturnType<typeof setInterval> | null = null;
  * Starts the single host-owned sweeper (idempotent, unref'd so it never holds
  * the process open) and runs one pass immediately — which is what re-attempts
  * rows left pending by a restart. Returns a stop function. Consumer:
- * registerChatDependenciesAtBoot.
+ * server/index.js startServer(), after initializeDatabase().
  */
 export function startPeerOutboxSweeper(intervalMs: number = PEER_OUTBOX_SWEEP_MS): () => void {
   if (!peerOutboxSweeper) {
@@ -1375,7 +1378,11 @@ export function startPeerOutboxSweeper(intervalMs: number = PEER_OUTBOX_SWEEP_MS
     }, intervalMs);
     peerOutboxSweeper.unref?.();
   }
-  sweepPeerOutbox();
+  // Same guard as the interval: a failed pass leaves rows pending for the next
+  // tick, it never throws into the caller (boot).
+  try { sweepPeerOutbox(); } catch (error) {
+    console.error('[Chat] Peer outbox sweep failed', { error: error instanceof Error ? error.message : String(error) });
+  }
   return stopPeerOutboxSweeper;
 }
 

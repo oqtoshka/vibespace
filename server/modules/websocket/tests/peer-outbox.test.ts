@@ -2,7 +2,7 @@ import './peer-outbox-env.js';
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { copyFileSync, mkdtempSync } from 'node:fs';
+import { copyFileSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -231,6 +231,27 @@ test('restart: a fresh process dispatches pending rows and never replays a dispa
     chatRunRegistry.completeRun('recipient', { exitCode: 0 });
   });
   assert.equal(await legacyDatabaseFingerprint(), legacyBefore, 'database/auth.db untouched');
+});
+
+test('a first boot on an empty database registers the chat dependencies before the schema exists', () => {
+  // server/index.js registers the chat dependencies at module load and only
+  // later runs initializeDatabase(). A sweep started from that registration hit
+  // the missing `peer_outbox` table and killed the process at boot.
+  const freshDir = mkdtempSync(path.join(tmpdir(), 'peer-outbox-boot-'));
+  const freshDb = path.join(freshDir, 'auth.db');
+  writeFileSync(freshDb, '', { flag: 'wx' });
+  const child = spawnSync(process.execPath, [
+    path.join(here, '../../../../node_modules/tsx/dist/cli.mjs'),
+    '--tsconfig', path.join(here, '../../../tsconfig.json'),
+    path.join(here, 'peer-outbox-boot-child.ts'),
+  ], {
+    env: { ...process.env, DATABASE_PATH: freshDb, PEER_OUTBOX_KEEP_DATABASE_PATH: '1' },
+    encoding: 'utf8',
+    timeout: 60_000,
+  });
+  assert.equal(child.status, 0, child.stderr);
+  const line = child.stdout.trim().split('\n').at(-1) ?? '{}';
+  assert.deepEqual(JSON.parse(line), { booted: true, table: true });
 });
 
 test('dispatchPeerOutbox waits for the ordinary queue and an idle recipient', async () => {
