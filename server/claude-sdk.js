@@ -1371,6 +1371,17 @@ function buildOpenTasksNudge(open) {
 async function handleTaskMessage(session, message) {
   if (!message || message.type !== 'system') return;
 
+  if (message.subtype === 'background_tasks_changed' && Array.isArray(message.tasks)) {
+    // REPLACE semantics: the payload is the whole live set after the change.
+    session.liveBackgroundTasks = new Map(message.tasks
+      .filter((task) => task && typeof task.task_id === 'string' && task.task_id)
+      .map((task) => [task.task_id, {
+        description: typeof task.description === 'string' ? task.description : '',
+        taskType: typeof task.task_type === 'string' ? task.task_type : '',
+      }]));
+    return;
+  }
+
   if (message.subtype === 'task_started' && message.task_id) {
     // `background` is set true once the task survives a turn boundary (see
     // settleTurn). Foreground subagents complete before their parent turn ends,
@@ -2400,6 +2411,13 @@ async function startPersistentSession(command, options, ws) {
     sessionCreatedSent: false,
     currentTurn: null,
     pendingTasks: new Map(),
+    // The SDK's level signal (`background_tasks_changed`): the full set of live
+    // BACKGROUND tasks, replaced wholesale on every membership change. Unlike the
+    // task_started/task_notification edges in pendingTasks it never lists a long
+    // foreground command, and a missed bookend cannot leave a stale entry. The level
+    // is per CLI process and nothing is emitted at startup, so it starts empty with
+    // the session (one session object == one query instance == one CLI process).
+    liveBackgroundTasks: new Map(),
     // uuid -> { content, onDelivered, onCancelled } for messages fed into a
     // running turn (see "Mid-turn user messages" above).
     injectedCommands: new Map(),
@@ -2758,6 +2776,26 @@ function getClaudeSDKBackgroundTasks(sessionId) {
 }
 
 /**
+ * The live background-task set as the SDK's `background_tasks_changed` level signal
+ * last reported it for this session's CLI process. Task ids are the same namespace
+ * as the tool receipts: an async Agent's `agentId` and a background Bash command's
+ * `backgroundTaskId` (verified against SDK 0.3.219 / CLI 2.1.219). Empty when the
+ * session is not live in memory — callers must check isClaudeSDKSessionAlive first
+ * rather than read an empty list as "everything finished".
+ * @param {string} sessionId - App/provider session identifier
+ * @returns {Array<{taskId: string, description: string, taskType: string}>}
+ */
+function getClaudeSDKLiveBackgroundTasks(sessionId) {
+  const session = getSession(sessionId);
+  if (!session || !session.liveBackgroundTasks) return [];
+  const out = [];
+  for (const [taskId, task] of session.liveBackgroundTasks.entries()) {
+    out.push({ taskId, description: task.description, taskType: task.taskType });
+  }
+  return out;
+}
+
+/**
  * Cancels a single background bash job by its task id, without touching the
  * model's turn or the session. Uses the SDK's `stopTask` control request
  * (`{subtype:"stop_task"}`) — the same mechanism Claude Code's KillShell uses —
@@ -2868,6 +2906,7 @@ export {
   abortClaudeSDKSession,
   stopClaudeSDKTask,
   getClaudeSDKBackgroundTasks,
+  getClaudeSDKLiveBackgroundTasks,
   isClaudeSDKSessionActive,
   isClaudeSDKSessionAlive,
   getActiveClaudeSDKSessions,

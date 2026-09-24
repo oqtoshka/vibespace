@@ -26,3 +26,6 @@ export { assertOpenCodeServerModel } from './services/opencode-server-model.serv
 export { permissionPreferencesService } from './services/permission-preferences.service.js';
 
 export { scheduleSessionRecap, cancelSessionRecap, generateSessionRecap } from './services/session-recap.service.js';
+
+// Native chat (websocket) answers `native.background` from Claude's live background-task set.
+export { getClaudeSDKLiveBackgroundTasks, isClaudeSDKSessionAlive } from './list/claude/claude-runtime.provider.js';
