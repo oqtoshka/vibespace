@@ -2,6 +2,7 @@ import { useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import JSZip from 'jszip';
 import { api } from '../../../utils/api';
+import { downloadProjectFile } from '../../../utils/downloadProjectFile';
 import type { FileTreeNode } from '../types/types';
 import type { Project } from '../../../types/app';
 
@@ -259,7 +260,8 @@ export function useFileTreeOperations({
     anchor.click();
     document.body.removeChild(anchor);
 
-    URL.revokeObjectURL(url);
+    // Revoking synchronously can cancel the download before the browser reads it.
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
   }, []);
 
   // Download file or folder
@@ -286,16 +288,10 @@ export function useFileTreeOperations({
   const downloadSingleFile = useCallback(async (item: FileTreeNode) => {
     if (!selectedProject) return;
 
-    // Use the binary streaming endpoint so downloads preserve raw bytes.
-    const response = await api.readFileBlob(selectedProject.projectId, item.path);
-
-    if (!response.ok) {
-      throw new Error('Failed to download file');
-    }
-
-    const blob = await response.blob();
-    triggerBrowserDownload(blob, item.name);
-  }, [selectedProject, triggerBrowserDownload]);
+    // Let the browser stream the raw bytes into its own download manager so a
+    // large file shows progress at once instead of after a silent full fetch.
+    await downloadProjectFile(selectedProject.projectId, item.path, item.name);
+  }, [selectedProject]);
 
   // Download folder as ZIP
   const downloadFolderAsZip = useCallback(async (folder: FileTreeNode) => {
