@@ -9,6 +9,7 @@ import { closeConnection, initializeDatabase, sessionsDb } from '@/modules/datab
 import { chatRunRegistry } from '@/modules/websocket/services/chat-run-registry.service.js';
 import {
   handleChatConnection,
+  pluginHostEnqueueMessage,
   registerChatDependenciesAtBoot,
   serverAbortRun,
   serverEnqueueMessage,
@@ -101,11 +102,17 @@ function buildDependencies(harness: Harness): unknown {
       getPendingApprovalsForSession: () => [],
     },
     injectFns: {
-      codex: (
-        providerSessionId: string,
-        content: string,
-        options: Record<string, unknown>,
-      ) => new Promise<string | null>((resolve, reject) => {
+      claude: (...args: [string, string, Record<string, unknown>]) => inject(...args),
+      codex: (...args: [string, string, Record<string, unknown>]) => inject(...args),
+    },
+  };
+
+  function inject(
+    providerSessionId: string,
+    content: string,
+    options: Record<string, unknown>,
+  ): Promise<string | null> {
+    return new Promise<string | null>((resolve, reject) => {
         const attempt: Attempt = {
           providerSessionId,
           content,
@@ -132,9 +139,8 @@ function buildDependencies(harness: Harness): unknown {
         if (harness.autoSettle) {
           attempt.settle(harness.autoSettle);
         }
-      }),
-    },
-  };
+    });
+  }
 }
 
 /**
@@ -176,12 +182,12 @@ async function withIsolatedDatabase(runTest: (harness: Harness) => Promise<void>
 }
 
 /** A session with a live turn, the state an operator answers a card in. */
-function startWorkingSession(sessionId: string): void {
-  sessionsDb.createSession(sessionId, 'codex', '/workspace/demo', 'Security');
+function startWorkingSession(sessionId: string, provider: 'codex' | 'claude' = 'codex'): void {
+  sessionsDb.createSession(sessionId, provider, '/workspace/demo', 'Security');
   // The live run carries the provider session id the injection addresses.
   const run = chatRunRegistry.startRun({
     appSessionId: sessionId,
-    provider: 'codex',
+    provider,
     providerSessionId: `provider-${sessionId}`,
     connection: new FakeConnection() as never,
     userId: 1,
@@ -269,6 +275,83 @@ test('a decision answer reaches a working session as a mid-turn steer, not a que
       queueOf('session-working'), [],
       'the delivered message is no longer pending for any client',
     );
+  });
+});
+
+/**
+ * The failure the operator hit on 1.38.75, reproduced end to end from the
+ * plugin's side: the Mission Control decision route calls the host's
+ * `enqueueMessage(sessionId, message, { deliverMidTurn: true, permissionMode })`
+ * against a Claude session in a long turn. A host that dropped the flag queued
+ * the answer for the drain, so it reached the agent only when the turn ended —
+ * sixteen minutes later in the live session — while typed messages sent in the
+ * same window were steered in at once.
+ */
+test('an answer through the plugin host steers a working Claude turn, like a typed message', async () => {
+  await withIsolatedDatabase(async (harness) => {
+    startWorkingSession('session-claude-card', 'claude');
+    harness.autoSettle = { kind: 'accept' };
+
+    const accepted = pluginHostEnqueueMessage(
+      'session-claude-card',
+      'Decisions from Mission Control\n\n1. Release now?\nAnswer: yes',
+      { deliverMidTurn: true, permissionMode: 'bypassPermissions' },
+    );
+    assert.equal(accepted, true);
+    await settle();
+
+    assert.equal(harness.attempts.length, 1, 'the running turn is steered, not queued behind');
+    assert.equal(harness.attempts[0]?.providerSessionId, 'provider-session-claude-card');
+    assert.equal(harness.attempts[0]?.options.permissionMode, 'bypassPermissions', 'the session keeps its mode');
+    assert.equal('deliverMidTurn' in (harness.attempts[0]?.options ?? {}), false, 'the delivery flag never reaches the runtime');
+    assert.deepEqual(queueOf('session-claude-card'), [], 'nothing is left waiting for the turn to end');
+
+    chatRunRegistry.completeRun('session-claude-card', { exitCode: 0 });
+    await letPendingWorkRun();
+    assert.deepEqual(harness.drainedRuns, [], 'and the end of the turn does not send it again');
+  });
+});
+
+test('a card answer and a typed message take the same path into a running turn', async () => {
+  await withIsolatedDatabase(async (harness) => {
+    startWorkingSession('session-parity', 'claude');
+    harness.autoSettle = { kind: 'accept' };
+    const socket = connect();
+
+    await sendFrame(socket, {
+      type: 'chat.queue-add',
+      sessionId: 'session-parity',
+      id: 'typed-1',
+      content: 'typed while it works',
+      options: { permissionMode: 'bypassPermissions' },
+    });
+    pluginHostEnqueueMessage('session-parity', 'answered on the card', {
+      deliverMidTurn: true,
+      permissionMode: 'bypassPermissions',
+    });
+    await letPendingWorkRun();
+
+    assert.deepEqual(
+      harness.attempts.map((attempt) => attempt.content),
+      ['typed while it works', 'answered on the card'],
+      'both are steered into the turn',
+    );
+    assert.deepEqual(queueOf('session-parity'), [], 'neither waits in the queue');
+    assert.deepEqual(harness.drainedRuns, []);
+  });
+});
+
+test('a plugin prompt without the flag still waits for the turn (a queued task, a resume)', async () => {
+  await withIsolatedDatabase(async (harness) => {
+    startWorkingSession('session-plugin-task', 'claude');
+
+    pluginHostEnqueueMessage('session-plugin-task', 'start the queued task', { permissionMode: 'default' });
+    // A truthy non-boolean is not the flag.
+    pluginHostEnqueueMessage('session-plugin-task', 'still a turn of its own', { deliverMidTurn: 'yes' });
+    await letPendingWorkRun();
+
+    assert.equal(harness.attempts.length, 0, 'no steer is attempted');
+    assert.equal(queueOf('session-plugin-task').length, 2, 'both wait for the running turn');
   });
 });
 
