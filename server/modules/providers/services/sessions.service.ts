@@ -64,7 +64,7 @@ type ArchivedSessionListItem = {
 
 type RecentSessionListItem = Pick<
   ArchivedSessionListItem,
-  'sessionId' | 'provider' | 'projectId' | 'projectDisplayName' | 'sessionTitle' | 'lastActivity'
+  'sessionId' | 'provider' | 'projectId' | 'projectDisplayName' | 'sessionTitle' | 'lastActivity' | 'isPrivate' | 'launchOptions'
 >;
 
 type RecentSessionsPage = {
@@ -318,6 +318,9 @@ export const sessionsService = {
         projectDisplayName: resolveProjectDisplayName(projectPath, project?.custom_project_name),
         sessionTitle: session.custom_name?.trim() || session.session_id,
         lastActivity: session.updated_at ?? session.created_at ?? null,
+        // So the feed can mark a session started with a plugin launch option.
+        isPrivate: Boolean(session.is_private),
+        launchOptions: parseStoredLaunchOptions(session.launch_options),
       };
     });
 

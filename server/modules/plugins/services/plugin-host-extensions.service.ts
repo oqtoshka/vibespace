@@ -398,7 +398,9 @@ function buildHost(name: string, pluginDir: string, deps: HostExtensionDependenc
       return unregister;
     },
     registerLaunchOption: (declaration) => {
-      const unregister = registerLaunchOption(declaration);
+      // Stamped here, not trusted from the plugin: a banner's action id is
+      // looked up in this plugin's own manifest and nobody else's.
+      const unregister = registerLaunchOption({ ...declaration, pluginName: name });
       state.unregisterContributors.push(unregister);
       return unregister;
     },

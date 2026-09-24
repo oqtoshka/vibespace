@@ -7,7 +7,7 @@ import test from 'node:test';
 
 import express from 'express';
 
-import { collectAgentEnv } from '@/shared/agent-env.js';
+import { collectAgentEnv, listLaunchOptions } from '@/shared/agent-env.js';
 import {
   activateHostExtensions,
   activeHostExtensionNames,
@@ -154,6 +154,25 @@ test('activates enabled host modules: routes mount, env contributors apply, shut
   } finally {
     await deactivateHostExtensions();
     resetSessionMetadataEventsForTests();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a declared launch option is stamped with the declaring plugin, whatever the plugin claims', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vs-host-option-'));
+  const plugin = writePlugin(root, 'opt', 'acme-options', `export function activate(host) {
+    host.registerLaunchOption({ id: 'acme.review', label: 'review', pluginName: 'someone-else',
+      marker: { label: 'review' }, banner: { text: 'Read it on the board.', actionId: 'open-board' } });
+  }`);
+  try {
+    await activateHostExtensions(deps(root, [plugin]).deps);
+    const [option] = listLaunchOptions();
+    assert.equal(option.pluginName, 'acme-options');
+    assert.deepEqual(option.banner, { text: 'Read it on the board.', actionId: 'open-board' });
+    await deactivateHostExtensions();
+    assert.deepEqual(listLaunchOptions(), [], 'dropped with the plugin');
+  } finally {
+    await deactivateHostExtensions();
     fs.rmSync(root, { recursive: true, force: true });
   }
 });

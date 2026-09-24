@@ -30,7 +30,11 @@ export type ArchivedSessionListItem = {
 export type RecentConversationListItem = Pick<
   ArchivedSessionListItem,
   'sessionId' | 'provider' | 'projectId' | 'projectDisplayName' | 'sessionTitle' | 'lastActivity' | 'avatarUrl'
->;
+> & {
+  isPrivate?: boolean;
+  /** The plugin-declared launch options the session was created with. */
+  launchOptions?: Record<string, unknown> | null;
+};
 
 export type DeleteProjectConfirmation = {
   project: Project;

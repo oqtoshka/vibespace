@@ -163,3 +163,24 @@ test('launch options: only declared ids are kept, values are true or a small obj
   assert.deepEqual(parseStoredLaunchOptions('{"acme.review":true}'), { 'acme.review': true });
   for (const cell of [null, '', '{}', '[]', 'not json', 7]) assert.equal(parseStoredLaunchOptions(cell), null);
 });
+
+test('launch options: a marker and a banner are validated at registration and listed as declared', async () => {
+  const { listLaunchOptions, registerLaunchOption } = await import('@/shared/agent-env.js');
+  assert.throws(() => registerLaunchOption({ id: 'acme.review', label: 'review', marker: { label: ' ' } }), /marker/);
+  assert.throws(() => registerLaunchOption({ id: 'acme.review', label: 'review', marker: { label: 'x'.repeat(33) } }), /marker/);
+  assert.throws(() => registerLaunchOption({ id: 'acme.review', label: 'review', banner: { text: '' } }), /banner/);
+  assert.throws(() => registerLaunchOption({ id: 'acme.review', label: 'review', banner: { text: 'Read it elsewhere', actionId: 'Not An Id' } }), /banner/);
+  assert.deepEqual(listLaunchOptions(), [], 'a refused declaration registers nothing');
+
+  const marker = { label: 'review', hint: 'Reviewed on the board' };
+  const banner = { text: 'This session is reviewed on the board.', actionId: 'open-board', actionLabel: 'Open the board' };
+  const unregister = registerLaunchOption({ id: 'acme.review', label: 'review', marker, banner });
+  try {
+    marker.label = 'mutated';
+    const [listed] = listLaunchOptions();
+    assert.deepEqual(listed.marker, { label: 'review', hint: 'Reviewed on the board' }, 'the registry keeps its own copy');
+    assert.deepEqual(listed.banner, banner);
+  } finally {
+    unregister();
+  }
+});

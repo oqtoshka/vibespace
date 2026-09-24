@@ -83,7 +83,18 @@ export interface LaunchOptionDeclaration {
   offHint?: string;
   badge?: string;
   badgeHint?: string;
+  /** How a session started with the option is marked in the session list. */
+  marker?: { label: string; hint?: string };
+  /**
+   * A persistent banner at the top of such a session's chat. `actionId` names
+   * one of the declaring plugin's `sessionActions`; its URL is the link.
+   */
+  banner?: { text: string; actionId?: string; actionLabel?: string };
+  /** No marker or banner on a private session: the plugin ignores the option there. */
+  inertWhenPrivate?: boolean;
   providers?: string[];
+  /** The declaring plugin, stamped by the server. */
+  pluginName?: string;
 }
 
 export interface ProjectSessionMeta {

@@ -7,7 +7,10 @@ import { cn } from '../../../../lib/utils';
 import type { ProjectSession } from '../../../../types/app';
 import type { RecentConversationListItem } from '../../types/types';
 import { formatCompactAge } from '../../utils/utils';
+import { usePlugins } from '../../../../contexts/PluginsContext';
+import { sessionLaunchOptionsWith } from '../../../../utils/launchOptionMarks';
 
+import LaunchOptionMark from './LaunchOptionMark';
 import SidebarSessionAvatar from './SidebarSessionAvatar';
 
 type SidebarRecentConversationsProps = {
@@ -59,6 +62,7 @@ export default function SidebarRecentConversations({
   onRetry,
   t,
 }: SidebarRecentConversationsProps) {
+  const { launchOptions } = usePlugins();
   if (isLoading && conversations.length === 0) {
     return <RecentConversationSkeleton loadingLabel={t('recent.loading', 'Loading recent conversations')} />;
   }
@@ -104,6 +108,7 @@ export default function SidebarRecentConversations({
         {conversations.map((conversation) => {
           const isSelected = String(selectedSession?.id ?? '') === conversation.sessionId;
           const age = formatCompactAge(conversation.lastActivity, currentTime);
+          const markedOptions = sessionLaunchOptionsWith(launchOptions, conversation.launchOptions, 'marker', Boolean(conversation.isPrivate));
 
           const handleClick = (event: MouseEvent<HTMLAnchorElement>) => {
             if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) {
@@ -134,6 +139,7 @@ export default function SidebarRecentConversations({
                 provider={conversation.provider}
                 avatarUrl={conversation.avatarUrl}
                 className={isSelected ? 'ring-primary/40' : undefined}
+                marker={markedOptions[0]?.marker ?? null}
               />
 
               <span className="min-w-0 flex-1">
@@ -141,6 +147,9 @@ export default function SidebarRecentConversations({
                   {conversation.sessionTitle}
                 </span>
                 <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[10px] leading-3 text-muted-foreground">
+                  {markedOptions.map((option) => (
+                    <LaunchOptionMark key={option.id} label={option.marker!.label} hint={option.marker!.hint} />
+                  ))}
                   <span className="truncate">{conversation.projectDisplayName}</span>
                   {age && (
                     <>

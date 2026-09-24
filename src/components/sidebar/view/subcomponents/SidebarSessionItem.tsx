@@ -6,13 +6,17 @@ import type { TFunction } from 'i18next';
 import { ActionMenu, Badge, Dialog, DialogContent, DialogTitle, Tooltip, buttonVariants } from '../../../../shared/view/ui';
 import { cn } from '../../../../lib/utils';
 import type { Project, ProjectSession, LLMProvider } from '../../../../types/app';
-import { api, authenticatedFetch } from '../../../../utils/api';
+import { api } from '../../../../utils/api';
 import { copyTextToClipboard } from '../../../../utils/clipboard';
 import type { SessionWithProvider } from '../../types/types';
 import { createSessionViewModel, formatCompactAge } from '../../utils/utils';
 import LLMProviderLogo from '../../../llm-provider-logo/LLMProviderLogo';
 import { usePlugins, type PluginSessionAction } from '../../../../contexts/PluginsContext';
+import { resolvePluginSessionActionUrl } from '../../../../utils/pluginSessionActions';
 
+import { sessionLaunchOptionsWith } from '../../../../utils/launchOptionMarks';
+
+import LaunchOptionMark from './LaunchOptionMark';
 import SidebarSessionAvatar from './SidebarSessionAvatar';
 
 type SidebarSessionItemProps = {
@@ -90,7 +94,10 @@ export default function SidebarSessionItem({
   onDeleteSession,
   t,
 }: SidebarSessionItemProps) {
-  const { plugins } = usePlugins();
+  const { plugins, launchOptions } = usePlugins();
+  // Plugin launch options this session was started with that mark it in the list.
+  const markedOptions = sessionLaunchOptionsWith(launchOptions, session.launchOptions, 'marker', Boolean(session.isPrivate));
+  const avatarMarker = markedOptions[0]?.marker ?? null;
   const sessionView = createSessionViewModel(session, currentTime, t);
   const privateLabel = t('session.private', { defaultValue: 'private' });
   const isSelected = selectedSession?.id === session.id;
@@ -181,21 +188,11 @@ export default function SidebarSessionItem({
 
     await Promise.all(contributedSessionActions.map(async ({ key, action }) => {
       try {
-        const endpoint = action.endpoint.replace('{sessionId}', encodeURIComponent(session.id));
-        const response = await authenticatedFetch(endpoint);
-        const payload = await response.json();
-        const rawUrl = payload?.url;
-        if (!response.ok || typeof rawUrl !== 'string') {
-          throw new Error('Session action is unavailable');
-        }
-        const url = new URL(rawUrl);
-        if (url.protocol !== 'https:' && url.protocol !== 'http:') {
-          throw new Error('Session action returned an unsafe URL');
-        }
+        const url = await resolvePluginSessionActionUrl(action, session.id);
         if (requestId !== sessionActionRequestRef.current) return;
         setSessionActionStates((states) => ({
           ...states,
-          [key]: { status: 'ready', url: url.toString() },
+          [key]: { status: 'ready', url },
         }));
       } catch {
         if (requestId !== sessionActionRequestRef.current) return;
@@ -322,6 +319,7 @@ export default function SidebarSessionItem({
               provider={session.__provider}
               avatarUrl={session.avatarUrl}
               className={cn('h-8 w-8', isSelected && 'ring-primary/40')}
+              marker={avatarMarker}
             />
 
             <div className="min-w-0 flex-1">
@@ -351,6 +349,9 @@ export default function SidebarSessionItem({
                   </Badge>
                 )}
                 {session.isPrivate && <PrivateMark label={privateLabel} />}
+                {markedOptions.map((option) => (
+                  <LaunchOptionMark key={option.id} label={option.marker!.label} hint={option.marker!.hint} />
+                ))}
               </div>
             </div>
 
@@ -558,6 +559,7 @@ export default function SidebarSessionItem({
               provider={session.__provider}
               avatarUrl={session.avatarUrl}
               className={cn('h-7 w-7', isSelected && 'ring-primary/40')}
+              marker={avatarMarker}
             />
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-2">
@@ -594,6 +596,9 @@ export default function SidebarSessionItem({
               <div className="mt-0.5 flex items-center gap-1.5">
                 {sessionView.messageCount > 0 && <Badge variant="secondary" className="px-1 py-0 text-xs">{sessionView.messageCount}</Badge>}
                 {session.isPrivate && <PrivateMark label={privateLabel} />}
+                {markedOptions.map((option) => (
+                  <LaunchOptionMark key={option.id} label={option.marker!.label} hint={option.marker!.hint} />
+                ))}
               </div>
             </div>
           </div>
