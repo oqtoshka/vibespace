@@ -309,6 +309,11 @@ function buildRuntimeOptions(
   // and the session shows as processing again.
   if (provider === 'claude') {
     runtimeOptions.acquireResumeRun = () => chatRunRegistry.startResumeRun(appSessionId);
+    // A resume or nudge refused by a turn-admission reservation waits for it
+    // to end instead of being dropped (or, worse, running without a run while
+    // a host mutation holds the session).
+    runtimeOptions.isTurnAdmissionReserved = () => chatRunRegistry.isAdmissionReserved(appSessionId);
+    runtimeOptions.whenTurnAdmissionFree = () => chatRunRegistry.whenAdmissionFree(appSessionId);
   }
 
   return runtimeOptions;
@@ -443,13 +448,17 @@ function ensureQueueDrainingRegistered(dependencies: ChatWebSocketDependencies):
     return;
   }
   drainHandlerRegistered = true;
-  chatRunRegistry.setRunCompleteHandler((appSessionId) => {
+  const drainAfterAdmission = (appSessionId: string) => {
     // drainQueue starts its run synchronously, so the outbox dispatch below
     // sees the session busy and waits for the next completion: the ordinary
     // queue always goes first.
     void drainQueue(appSessionId);
     tryDispatchPeerOutbox(appSessionId);
-  });
+  };
+  chatRunRegistry.setRunCompleteHandler(drainAfterAdmission);
+  // A turn-admission reservation refuses the drain and the outbox like a
+  // running turn does, but ends without a `complete`: its end re-drains.
+  chatRunRegistry.setAdmissionReleasedHandler(drainAfterAdmission);
 }
 
 /**
@@ -513,6 +522,18 @@ async function handleChatSend(
   });
 
   if (!run) {
+    if (!chatRunRegistry.isProcessing(sessionId) && chatRunRegistry.isAdmissionReserved(sessionId)) {
+      // No run is active: a host integration holds the session's turn
+      // admission for a few seconds (resource cleanup). The client re-queues
+      // the message and the reservation's end drains it.
+      sendProtocolError(
+        ws,
+        'RUN_ADMISSION_RESERVED',
+        `Session "${sessionId}" is paused for a moment while a resource cleanup finishes; the message will be sent after it.`,
+        sessionId
+      );
+      return;
+    }
     sendProtocolError(
       ws,
       'RUN_IN_PROGRESS',
