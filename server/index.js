@@ -30,7 +30,7 @@ import { closeSessionsWatcher, initializeSessionsWatcher, providerRuntimeService
 import { getSubagentConversation } from '@/modules/providers/list/claude/claude-sessions.provider.js';
 import { createWebSocketServer } from '@/modules/websocket/index.js';
 import { chatRunRegistry } from '@/modules/websocket/services/chat-run-registry.service.js';
-import { registerChatDependenciesAtBoot, serverAbortRun, serverEnqueueMessage, serverEnqueueMessageChecked, serverEnqueueMessageIfIdle, admitPeerMessage, getPeerMessage, startPeerOutboxSweeper } from '@/modules/websocket/index.js';
+import { registerChatDependenciesAtBoot, serverAbortRun, serverEnqueueMessage, serverEnqueueMessageChecked, pluginHostEnqueueMessage, serverEnqueueMessageIfIdle, admitPeerMessage, getPeerMessage, startPeerOutboxSweeper } from '@/modules/websocket/index.js';
 import { forgetRateLimitWake, startRateLimitWakeLoop } from '@/services/rate-limit-wake.service.js';
 import { cancelSessionRecap } from '@/modules/providers/index.js';
 import { forgetSession as forgetRestoreEntry, restoreInterruptedSessions } from '@/services/session-restore.service.js';
@@ -2838,18 +2838,12 @@ async function startServer() {
                         return null;
                     }
                 },
-                // `deliverMidTurn` is a delivery instruction, not a runtime
-                // option: strip it here so it never reaches a provider's spawn
-                // options. A plugin sets it for an operator-authored message
-                // (a Mission Control decision answer) that should reach a
-                // working agent the moment it is submitted, the way a composer
-                // message does — rather than queue behind the whole turn.
-                enqueueMessage: (sessionId, prompt, options) => {
-                    const { deliverMidTurn, ...runtimeOptions } = options ?? {};
-                    return serverEnqueueMessage(sessionId, prompt, runtimeOptions, {
-                        deliverMidTurn: deliverMidTurn === true,
-                    });
-                },
+                // A plugin sets `deliverMidTurn` for an operator-authored
+                // message (a Mission Control decision answer) that should reach
+                // a working agent the moment it is submitted, the way a
+                // composer message does — rather than queue behind the whole
+                // turn. The wrapper strips it before the runtime options.
+                enqueueMessage: (sessionId, prompt, options) => pluginHostEnqueueMessage(sessionId, prompt, options),
     enqueueMessageChecked: (sessionId, prompt, options) => serverEnqueueMessageChecked(sessionId, prompt, options),
     enqueueMessageIfIdle: (sessionId, providerSessionId, prompt, options) => serverEnqueueMessageIfIdle(sessionId, providerSessionId, prompt, options),
     peerOutbox: { admit: (input) => admitPeerMessage(input), get: (senderSessionId, requestId) => getPeerMessage(senderSessionId, requestId) },

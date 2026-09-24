@@ -1387,6 +1387,28 @@ export function serverEnqueueMessage(
 }
 
 /**
+ * The plugin host's `enqueueMessage`, exactly as plugins call it.
+ *
+ * A plugin asks for composer semantics with `options.deliverMidTurn: true` (the
+ * Mission Control decision answer does). That key is a delivery instruction,
+ * not a runtime option: it is lifted out here and never reaches a provider's
+ * spawn options. This lives beside `serverEnqueueMessage` rather than inline in
+ * the boot wiring so the whole plugin-to-runtime path is testable — a host that
+ * ignored the flag once let every Overview answer wait out the running turn
+ * while typed messages were steered into it.
+ */
+export function pluginHostEnqueueMessage(
+  sessionId: string,
+  prompt: string,
+  options: AnyRecord | null | undefined = {},
+): boolean {
+  const { deliverMidTurn, ...runtimeOptions } = options ?? {};
+  return serverEnqueueMessage(sessionId, prompt, runtimeOptions, {
+    deliverMidTurn: deliverMidTurn === true,
+  });
+}
+
+/**
  * Plugin-host background follow-ups (the Janitor's owner check) use this instead
  * of joining an operator's queue. It observes, synchronously with the enqueue, a
  * completed last run bound to the expected native session, an empty queue, no
