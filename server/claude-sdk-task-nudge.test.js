@@ -282,3 +282,43 @@ test('a session with no task ledger is reaped exactly as before', async () => {
     __setClaudeQueryImpl(null);
   }
 });
+
+// A turn-admission reservation (the Janitor's cleanup lease) holds the session
+// when it goes idle with open tasks: the nudge must wait for the lease to end —
+// neither fed to the model under it, nor dropped, nor the session reaped.
+test('an open-task nudge waits for a turn-admission reservation, then runs', async () => {
+  const sessionId = 'nudge-reserved-1';
+  writeTask(sessionId, 1, 'pending', 'held open');
+
+  const received = [];
+  const respond = function* (i) {
+    yield assistantText(`turn ${i}`, sessionId);
+  };
+  __setClaudeQueryImpl(scriptedRuntime(sessionId, respond, received));
+
+  let reserved = true;
+  let waiters = [];
+  const release = () => { reserved = false; const w = waiters; waiters = []; for (const wake of w) wake(); };
+  try {
+    await queryClaudeSDK('start', {
+      sessionId,
+      ephemeral: false,
+      isTurnAdmissionReserved: () => reserved,
+      whenTurnAdmissionFree: () => (reserved ? new Promise((resolve) => waiters.push(resolve)) : Promise.resolve()),
+    }, makeRecordingWriter());
+
+    await waitUntil(() => waiters.length === 1, 'the nudge to park on the reservation');
+    await delay(300); // several idle windows
+    assert.equal(received.some(isNudge), false, 'held: no nudge was fed to the model');
+    assert.equal(isClaudeSDKSessionAlive(sessionId), true, 'held: the reaper left the parked session alone');
+
+    release();
+    await waitUntil(() => received.some(isNudge), 'the nudge after the release');
+    writeTask(sessionId, 1, 'completed', 'held open');
+    await waitUntil(() => !isClaudeSDKSessionAlive(sessionId), 'the session to be reaped once the ledger closes');
+  } finally {
+    release();
+    await abortClaudeSDKSession(sessionId).catch(() => {});
+    __setClaudeQueryImpl(null);
+  }
+});
