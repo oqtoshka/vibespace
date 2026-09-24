@@ -1,23 +1,7 @@
 import assert from 'node:assert/strict';
-import { createHmac } from 'node:crypto';
 import test from 'node:test';
-import { scopeNativeCommand, validNativeCapability } from '../services/native-chat-policy.service.js';
 
-test('native capability binds one session and rejects malformed/other-session credentials', () => {
-  const token = createHmac('sha256', 'fixture').update('mission-control:vibespace-session:v1:one').digest('base64url');
-  assert.equal(validNativeCapability('one', token, 'fixture'), true);
-  assert.equal(validNativeCapability('two', token, 'fixture'), false);
-  assert.equal(validNativeCapability('one', [token], 'fixture'), false);
-  assert.equal(validNativeCapability('../one', token, 'fixture'), false);
-  assert.equal(validNativeCapability('one', 'bad', 'fixture'), false);
-});
-test('untrusted capability headers always reject malformed bytes without throwing', () => {
-  // Same JS character length as the 43-char signature, different UTF-8 byte length.
-  for (const supplied of ['é'.repeat(43), 'a'.repeat(42) + 'é', '\0'.repeat(43),
-    ' '.repeat(43), 'a'.repeat(44), 'a'.repeat(100_000), null, undefined, 42, {}]) {
-    assert.doesNotThrow(() => assert.equal(validNativeCapability('one', supplied, 'fixture'), false));
-  }
-});
+import { scopeNativeCommand } from '../services/native-chat-policy.service.js';
 
 test('native commands cannot target other sessions or inject runtime options', () => {
   assert.throws(() => scopeNativeCommand({ type: 'chat.abort', sessionId: 'other' }, 'one'));

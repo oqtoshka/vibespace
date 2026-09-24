@@ -509,6 +509,21 @@ export default function ChatComposer({
                         {t('input.queue.nextStep', { defaultValue: 'next step' })}
                       </span>
                     )}
+                    {/* Unresolved: handed over, never acknowledged. The server
+                        will not re-send it (it may already be running), so the
+                        card has to say that out loud — removing it hands the
+                        text back here to send again deliberately. */}
+                    {!queued.delivered && queued.deliveryUnresolved && (
+                      <span
+                        className="flex-shrink-0 whitespace-nowrap text-[10px] uppercase tracking-wide text-amber-500"
+                        title={t('input.queue.unconfirmedHint', {
+                          defaultValue:
+                            'The agent never confirmed this message. It is not sent again automatically — remove it to put the text back in the composer.',
+                        })}
+                      >
+                        {t('input.queue.unconfirmed', { defaultValue: 'unconfirmed' })}
+                      </span>
+                    )}
                     {queued.imageCount > 0 && (
                       <span className="flex-shrink-0 opacity-70">
                         {queued.imageCount}

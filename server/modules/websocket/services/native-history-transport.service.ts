@@ -5,10 +5,10 @@ const CHUNK_BYTES = 1024 * 1024;
 
 /** Application frames stay below the edge/iOS WebSocket message limit. Await
  * writes so a page of inline tool images cannot overflow the socket buffer. */
-export async function sendNativeHistory(ws: WebSocket, payload: Record<string, unknown>, chunked: boolean): Promise<void> {
+export async function sendNativeHistory(ws: WebSocket, payload: Record<string, unknown>, chunked: boolean, authorized: () => boolean = () => true): Promise<void> {
   const bytes = Buffer.from(JSON.stringify(payload));
   const write = (value: string) => new Promise<void>((resolve, reject) => {
-    if (ws.readyState !== 1) { reject(new Error('Chat disconnected')); return; }
+    if (!authorized() || ws.readyState !== 1) { reject(new Error('Chat disconnected')); return; }
     ws.send(value, error => error ? reject(error) : resolve());
   });
   if (!chunked || bytes.length <= CHUNK_BYTES) { await write(bytes.toString()); return; }

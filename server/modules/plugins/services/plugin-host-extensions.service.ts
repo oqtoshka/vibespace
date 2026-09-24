@@ -4,6 +4,7 @@ import crypto from 'node:crypto';
 
 import express, { type RequestHandler, type Router } from 'express';
 
+import { authorizeSessionCapability } from '@/modules/session-capabilities/index.js';
 import {
   subscribeSessionMetadataChanges,
   type SessionMetadataChange,
@@ -220,7 +221,22 @@ export type PluginHost = {
   getDefaultPermissionMode?: (provider: string) => string | null;
   /**
    * Pushes a prompt into a session through the server-owned queue, so a run
-   * starts with no browser attached. Returns false if the session vanished.
+   * starts with no browser attached. Returns false if the session vanished or
+   * its queue is full — in both cases nothing was taken, so a caller that
+   * persists a receipt must record a refusal rather than an acceptance.
+   *
+   * `options.deliverMidTurn: true` asks for composer semantics instead: when
+   * the session is working, the prompt is steered into the running turn rather
+   * than queued behind it. Set it for anything the operator just wrote and
+   * expects the agent to see now (a Mission Control decision answer); leave it
+   * off for a prompt that means "start a turn" (a queued task, a supervisor
+   * resume). The host strips the key before the rest of `options` reaches the
+   * runtime, and the return value still means "VibeSpace owns this message",
+   * not "the model has read it".
+   *
+   * That ownership lives in memory only: a message accepted here and not yet
+   * delivered is gone if the server restarts, and a durable receipt on the
+   * caller's side does not bring it back.
    */
   enqueueMessage: (
     sessionId: string,
@@ -266,6 +282,8 @@ export type PluginHost = {
    * secret without ever seeing the secret itself.
    */
   hmacSha256: (input: string) => string;
+  /** Private integration routes delegate v2 authentication to core; false never permits legacy fallback. */
+  verifySessionCapability: (sessionId: string, supplied: unknown) => boolean;
   /** See shared/agent-env.ts — add variables to agent-spawned processes. */
   registerAgentEnvContributor: (contributor: AgentEnvContributor) => () => void;
   /** See shared/agent-env.ts — add instructions and MCP servers to a session's launch. */
@@ -368,6 +386,7 @@ function buildHost(name: string, pluginDir: string, deps: HostExtensionDependenc
     peerOutbox: deps.peerOutbox,
     hmacSha256: (input) =>
       crypto.createHmac('sha256', deps.getSigningSecret()).update(input).digest('base64url'),
+    verifySessionCapability: authorizeSessionCapability,
     registerAgentEnvContributor: (contributor) => {
       const unregister = registerAgentEnvContributor(contributor);
       state.unregisterContributors.push(unregister);

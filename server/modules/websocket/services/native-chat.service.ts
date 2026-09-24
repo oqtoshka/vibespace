@@ -3,7 +3,8 @@ import { randomUUID } from 'node:crypto';
 
 import type { WebSocket } from 'ws';
 
-import { appConfigDb, sessionsDb, userDb } from '@/modules/database/index.js';
+import { sessionsDb, userDb } from '@/modules/database/index.js';
+import { sessionCapabilityExpiry } from '@/modules/session-capabilities/index.js';
 import { sessionsService, permissionPreferencesService } from '@/modules/providers/index.js';
 import { nativeModelOptions, nativePermissionOptions, setNativePermissionSelection, setNativeSelection, resolveNativeAttachments } from '@/modules/native-control/index.js';
 import { isImageAttachmentDescriptor } from '@/shared/index.js';
@@ -12,8 +13,9 @@ import type { AuthenticatedWebSocketRequest } from '@/shared/index.js';
 
 import { handleChatConnection } from './chat-websocket.service.js';
 import { chatRunRegistry } from './chat-run-registry.service.js';
-import { scopeNativeCommand, validNativeCapability } from './native-chat-policy.service.js';
+import { scopeNativeCommand } from './native-chat-policy.service.js';
 import { nativeBackgroundSnapshot } from './native-background.service.js';
+import { NativeCapabilityLease } from './native-capability-lease.service.js';
 import { sendNativeHistory } from './native-history-transport.service.js';
 import { nativeHistoryWithReceipts, retainNativeSend } from './native-send-journal.service.js';
 
@@ -30,14 +32,21 @@ export function handleNativeChat(ws: WebSocket, request: AuthenticatedWebSocketR
   dependencies: Parameters<typeof handleChatConnection>[2]): void {
   const sessionId = new URL(request.url ?? '/', 'http://localhost').pathname.slice('/native-chat/'.length);
   const user = userDb.getSingleActiveUser();
-  if (!user || request.headers.origin || !validNativeCapability(sessionId,
-    request.headers['x-vibespace-session-capability'], appConfigDb.getOrCreateJwtSecret())) {
+  const credential = request.headers['x-vibespace-session-capability'];
+  const expires = sessionCapabilityExpiry(sessionId, credential);
+  if (!user || request.headers.origin || expires === null) {
     ws.close(4403, 'Native chat authentication failed'); return;
   }
   const row = sessionsDb.getSessionById(sessionId);
-  if (!row || row.is_private || row.is_side) { ws.close(4404, 'Session no longer exists'); return; }
+  if (!row || row.is_private !== 0 || row.is_side !== 0) { ws.close(4404, 'Session no longer exists'); return; }
+  const lease = new NativeCapabilityLease(credential, expires, value => {
+    const current = sessionsDb.getSessionById(sessionId);
+    return current && current.is_private === 0 && current.is_side === 0 && userDb.getSingleActiveUser()
+      ? sessionCapabilityExpiry(sessionId, value) : null;
+  }, () => ws.close(1012, 'Session authorization expired; reconnect'));
+  ws.on('close', () => lease.stop());
   const send = (payload: Record<string, unknown>) => {
-    if (ws.readyState === 1 && ws.bufferedAmount < 12 * 1024 * 1024) ws.send(JSON.stringify({ ...payload, sessionId }));
+    if (lease.active() && ws.readyState === 1 && ws.bufferedAmount < 12 * 1024 * 1024) ws.send(JSON.stringify({ ...payload, sessionId }));
   };
   const facade = new EventEmitter() as EventEmitter & { readyState: number; send: (raw: string) => void };
   const pendingSends = new Map<string, { content: string; options: { images?: unknown[]; files?: unknown[] } }>();
@@ -78,8 +87,10 @@ export function handleNativeChat(ws: WebSocket, request: AuthenticatedWebSocketR
   ws.on('message', async raw => {
     let requestId: unknown;
     try {
+      if (!lease.active()) return;
       if (raw.toString().length > 6 * 1024 * 1024) throw new Error('Payload too large');
       const data = JSON.parse(raw.toString());
+      if (data.type === 'native.renew') { lease.renew(data.capability); return; }
       requestId = typeof data.requestId === 'string' ? data.requestId.slice(0, 100) : undefined;
       const current = sessionsDb.getSessionById(sessionId);
       if (!current || current.is_private || current.is_side) throw new Error('Session no longer exists');
@@ -94,7 +105,7 @@ export function handleNativeChat(ws: WebSocket, request: AuthenticatedWebSocketR
           const run = chatRunRegistry.getRun(sessionId);
           await sendNativeHistory(ws, { kind: 'native.history', sessionId, requestId, ...page, runId: run?.startedAt ?? null,
             running: run?.status === 'running', archived: Boolean(current.isArchived),
-            replay: run?.status === 'running' ? chatRunRegistry.replayEvents(sessionId, 0) : [] }, data.chunked === true);
+            replay: run?.status === 'running' ? chatRunRegistry.replayEvents(sessionId, 0) : [] }, data.chunked === true, () => lease.active());
         } finally { historyBusy = false; }
         return;
       }

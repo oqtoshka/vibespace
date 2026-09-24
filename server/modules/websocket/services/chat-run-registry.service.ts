@@ -89,6 +89,25 @@ export type QueuedMessage = {
    * started (or cancelled) — and cancelling it means cancelling it there.
    */
   deliveredUuid?: string | null;
+  /**
+   * Set while a mid-turn delivery attempt for this item is in flight, i.e. for
+   * the whole `await injectFn(...)` window during which we do not yet know
+   * whether the runtime takes the message. Until that answer arrives the item
+   * is nobody's to send: `deliveredUuid` is not set yet, so without this flag a
+   * turn completing mid-injection would drain the very message being injected
+   * and the agent would get it twice.
+   */
+  midTurnAttemptInFlight?: boolean;
+  /**
+   * Set when a delivery attempt ended without an answer either way — it threw
+   * after the request had left, or it outran its deadline. The runtime may or
+   * may not be acting on the message, so re-sending it could execute the same
+   * instruction twice; it stays in the queue, undrainable and labelled for the
+   * operator, until the attempt's late answer settles ownership or the operator
+   * removes it and decides for themselves. Never set for a definite refusal:
+   * that one simply goes back to the drain.
+   */
+  deliveryUnresolved?: boolean;
 };
 
 /** Why a queued message left the queue without being sent. */
@@ -109,9 +128,21 @@ export type QueueRemoval = {
 const queues = new Map<string, QueuedMessage[]>();
 
 /**
+ * Whether the server-owned queue is still the thing responsible for sending an
+ * item as its own turn. False for a message the runtime already took
+ * (`deliveredUuid`), for one a mid-turn delivery attempt is currently deciding
+ * on (`midTurnAttemptInFlight`), and for one whose attempt ended with no
+ * answer (`deliveryUnresolved`) — draining any of them risks running the same
+ * instruction twice.
+ */
+function isServerOwned(item: QueuedMessage): boolean {
+  return !item.deliveredUuid && !item.midTurnAttemptInFlight && !item.deliveryUnresolved;
+}
+
+/**
  * Mirror of the client cap so a runaway loop can't grow the queue unbounded.
- * Exported for `serverEnqueueMessageChecked`, which refuses at the cap instead
- * of letting `enqueue` evict the oldest item silently.
+ * Exported for `serverEnqueueMessageChecked`, which refuses at the cap before
+ * anything is queued.
  */
 export const MAX_QUEUED_MESSAGES = 20;
 
@@ -137,6 +168,7 @@ function toClientQueued(item: QueuedMessage): {
   imageCount: number;
   createdAt: number;
   delivered: boolean;
+  deliveryUnresolved: boolean;
 } {
   return {
     id: item.id,
@@ -146,6 +178,11 @@ function toClientQueued(item: QueuedMessage): {
     // Drives the queue card's wording: a delivered message goes in at the
     // agent's next step, an undelivered one waits for the whole run.
     delivered: Boolean(item.deliveredUuid),
+    // The third state: handed to the runtime, which never said whether it took
+    // it. The card says so, because the server deliberately will not decide
+    // for the operator by re-sending an instruction that may already be
+    // running.
+    deliveryUnresolved: Boolean(item.deliveryUnresolved),
   };
 }
 
@@ -700,23 +737,40 @@ export const chatRunRegistry = {
     };
   },
 
-  /** Client-facing snapshot of the pending queue for a session (for subscribe). */
-  getQueueForClient(appSessionId: string): Array<{ id: string; content: string; imageCount: number; createdAt: number }> {
+  /**
+   * Client-facing snapshot of the pending queue for a session (for subscribe).
+   * Same shape the `queue_updated` broadcast carries, delivery state included.
+   */
+  getQueueForClient(appSessionId: string): Array<ReturnType<typeof toClientQueued>> {
     return (queues.get(appSessionId) ?? []).map(toClientQueued);
   },
 
   /**
    * Appends a message to a session's queue (deduping by id so a retried add is
-   * idempotent) and broadcasts the new queue to all clients. Enforces the cap.
+   * idempotent) and broadcasts the new queue to all clients.
+   *
+   * Returns true when the queue holds the message — including the idempotent
+   * re-add of an id already there. Returns false when the session is already
+   * holding `MAX_QUEUED_MESSAGES`: the queue is left exactly as it was and the
+   * new message is refused, so the caller can tell whoever sent it. The cap
+   * used to drop the oldest entry instead, which silently threw away an
+   * operator's answer (and could have thrown away one a delivery attempt was
+   * mid-flight on) with nothing anywhere saying so.
    */
-  enqueue(appSessionId: string, item: QueuedMessage): void {
+  enqueue(appSessionId: string, item: QueuedMessage): boolean {
     const queue = queues.get(appSessionId) ?? [];
     if (queue.some((existing) => existing.id === item.id)) {
-      return;
+      return true;
     }
-    const next = [...queue, item].slice(-MAX_QUEUED_MESSAGES);
-    queues.set(appSessionId, next);
+    if (queue.length >= MAX_QUEUED_MESSAGES) {
+      // Re-broadcast unchanged so a client that optimistically drew the card
+      // takes it back off the list.
+      broadcastQueue(appSessionId);
+      return false;
+    }
+    queues.set(appSessionId, [...queue, item]);
     broadcastQueue(appSessionId);
+    return true;
   },
 
   /**
@@ -747,10 +801,80 @@ export const chatRunRegistry = {
   },
 
   /**
+   * Reserves one queued message for a mid-turn delivery attempt, so the drain
+   * cannot also send it while the runtime is still deciding. Used by
+   * `chat-websocket.service.ts` (composer `chat.queue-add` and the plugin
+   * host's `serverEnqueueMessage`) for the length of one `injectFn` call.
+   *
+   * Returns false when the item is not ours to attempt — it is gone (Stop
+   * cleared the queue, or the drain already took it), the runtime already has
+   * it, another attempt holds the claim, or an earlier attempt left it
+   * unresolved. A false is the caller's signal to do nothing at all: something
+   * else owns the outcome.
+   *
+   * Deliberately does not broadcast. A claimed item is still pending for every
+   * client, exactly as it was a microsecond earlier; the card only changes when
+   * the attempt resolves.
+   */
+  claimForMidTurnDelivery(appSessionId: string, id: string): boolean {
+    const item = (queues.get(appSessionId) ?? []).find((entry) => entry.id === id);
+    if (!item || !isServerOwned(item)) {
+      return false;
+    }
+    item.midTurnAttemptInFlight = true;
+    return true;
+  },
+
+  /**
+   * Ends the reservation `claimForMidTurnDelivery` took, for a *definite*
+   * refusal only: the runtime answered that it did not take the message, so the
+   * item is the server's to send again as its own turn. Used by
+   * `chat-websocket.service.ts`. A no-op when the item has meanwhile left the
+   * queue.
+   *
+   * There is deliberately no release for "the attempt ended without an answer"
+   * — that is `markDeliveryUnresolved`, and it keeps the item undrainable.
+   */
+  releaseMidTurnClaim(appSessionId: string, id: string): void {
+    const item = (queues.get(appSessionId) ?? []).find((entry) => entry.id === id);
+    if (!item) {
+      return;
+    }
+    item.midTurnAttemptInFlight = false;
+    item.deliveryUnresolved = false;
+    broadcastQueue(appSessionId);
+  },
+
+  /**
+   * Records that a delivery attempt ended with no answer either way — it threw
+   * after the request had left, or it outran its deadline — and re-broadcasts
+   * so every client's card says so. Used by `chat-websocket.service.ts`.
+   *
+   * The item stays claimed: re-sending it could run the same instruction a
+   * second time, and this server does not get to make that call on the
+   * operator's behalf. It leaves this state when the attempt's late answer
+   * arrives (`markDelivered` or `releaseMidTurnClaim`) or when the operator
+   * removes the card and decides what to do with the text.
+   */
+  markDeliveryUnresolved(appSessionId: string, id: string): void {
+    const item = (queues.get(appSessionId) ?? []).find((entry) => entry.id === id);
+    if (!item || item.deliveredUuid) {
+      return;
+    }
+    item.midTurnAttemptInFlight = false;
+    item.deliveryUnresolved = true;
+    broadcastQueue(appSessionId);
+  },
+
+  /**
    * Records that the provider runtime took ownership of a queued message (it
    * will be folded into the running turn), and re-broadcasts so clients relabel
    * the card. The item stays in the queue — visible as pending — until the
    * runtime reports it started.
+   *
+   * Also the resolution of an unresolved attempt: an acknowledgement that
+   * arrives after the deadline still settles ownership on the runtime, and the
+   * item must stay out of the drain's reach.
    */
   markDelivered(appSessionId: string, id: string, deliveredUuid: string): void {
     const item = (queues.get(appSessionId) ?? []).find((entry) => entry.id === id);
@@ -758,6 +882,8 @@ export const chatRunRegistry = {
       return;
     }
     item.deliveredUuid = deliveredUuid;
+    item.midTurnAttemptInFlight = false;
+    item.deliveryUnresolved = false;
     broadcastQueue(appSessionId);
   },
 
@@ -790,15 +916,16 @@ export const chatRunRegistry = {
 
   /**
    * Pops the oldest message the server still owns (broadcasting the removal),
-   * or null. Messages already handed to the provider runtime are skipped —
-   * draining one would send its content a second time.
+   * or null. Messages already handed to the provider runtime — and ones a
+   * mid-turn delivery attempt is still deciding on — are skipped: draining
+   * either would send its content a second time.
    */
   dequeueNext(appSessionId: string): QueuedMessage | null {
     const queue = queues.get(appSessionId);
     if (!queue || queue.length === 0) {
       return null;
     }
-    const index = queue.findIndex((item) => !item.deliveredUuid);
+    const index = queue.findIndex(isServerOwned);
     if (index === -1) {
       return null;
     }
@@ -819,13 +946,17 @@ export const chatRunRegistry = {
    */
   requeueFront(appSessionId: string, item: QueuedMessage): void {
     const queue = queues.get(appSessionId) ?? [];
-    queues.set(appSessionId, [item, ...queue].slice(0, MAX_QUEUED_MESSAGES));
+    // No cap here on purpose: this message was already accepted and is only
+    // being put back. Trimming to the cap would drop a different accepted
+    // message to make room for it. The overflow is at most transient — the
+    // next `enqueue` is refused while the queue is over the cap.
+    queues.set(appSessionId, [item, ...queue]);
     broadcastQueue(appSessionId);
   },
 
   /** True when a message is waiting for the server to send it as its own turn. */
   hasQueued(appSessionId: string): boolean {
-    return (queues.get(appSessionId) ?? []).some((item) => !item.deliveredUuid);
+    return (queues.get(appSessionId) ?? []).some(isServerOwned);
   },
 
   /**
