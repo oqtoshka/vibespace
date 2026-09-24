@@ -7,7 +7,9 @@ export {
   getHostExtensionRouter,
   activeHostExtensionNames,
 } from './services/plugin-host-extensions.service.js';
-export type { HostRunView, PluginHost, PluginHostModule } from './services/plugin-host-extensions.service.js';
+export type { HostRunLease, HostRunView, PluginHost, PluginHostModule } from './services/plugin-host-extensions.service.js';
+// createPluginRunReservation: the server entrypoint's `host.runs.reserve` (the Janitor's cleanup lease).
+export { createPluginRunReservation } from './services/plugin-run-reservation.service.js';
 export {
   publishSessionMetadataChange,
   subscribeSessionMetadataChanges,

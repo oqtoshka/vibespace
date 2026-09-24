@@ -50,6 +50,43 @@ function deps(root: string, plugins: ReturnType<typeof writePlugin>[]) {
   };
 }
 
+test('optional idle-only enqueue is exposed without falling back to ordinary enqueue', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vs-host-idle-'));
+  const plugin = writePlugin(root, 'idle', 'idle', `export function activate(host) { globalThis.__idleEnqueue = host.enqueueMessageIfIdle; }`);
+  const invoke = (session: string, native: string, prompt: string) => session === 's' && native === 'n' && prompt === 'p';
+  try {
+    await activateHostExtensions({...deps(root, [plugin]).deps, enqueueMessageIfIdle: invoke});
+    assert.equal((globalThis as Record<string, unknown>).__idleEnqueue, invoke);
+    await deactivateHostExtensions();
+    await activateHostExtensions(deps(root, [plugin]).deps);
+    assert.equal((globalThis as Record<string, unknown>).__idleEnqueue, undefined);
+  } finally {
+    await deactivateHostExtensions();
+    delete (globalThis as Record<string, unknown>).__idleEnqueue;
+    fs.rmSync(root, {recursive: true, force: true});
+  }
+});
+
+test('a plugin completion subscription is dropped when the plugin stops', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vs-host-completed-'));
+  const plugin = writePlugin(root, 'done', 'done', `export function activate(host) { host.runs.onCompleted((id) => (globalThis.__completed ??= []).push(id)); }`);
+  const listeners = new Set<(id: string) => void>();
+  const base = deps(root, [plugin]).deps;
+  const onCompleted = (callback: (id: string) => void) => { listeners.add(callback); return () => { listeners.delete(callback); }; };
+  try {
+    await activateHostExtensions({...base, runs: {...base.runs, onCompleted}});
+    assert.equal(listeners.size, 1);
+    for (const listener of listeners) listener('known');
+    assert.deepEqual((globalThis as Record<string, unknown>).__completed, ['known']);
+    await deactivateHostExtensions();
+    assert.equal(listeners.size, 0, 'unsubscribed on stop');
+  } finally {
+    await deactivateHostExtensions();
+    delete (globalThis as Record<string, unknown>).__completed;
+    fs.rmSync(root, {recursive: true, force: true});
+  }
+});
+
 test('activates enabled host modules: routes mount, env contributors apply, shutdown hooks run', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vs-host-ext-'));
   const good = writePlugin(root, 'good', 'good', `

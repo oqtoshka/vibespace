@@ -30,7 +30,7 @@ import { closeSessionsWatcher, initializeSessionsWatcher, providerRuntimeService
 import { getSubagentConversation } from '@/modules/providers/list/claude/claude-sessions.provider.js';
 import { createWebSocketServer } from '@/modules/websocket/index.js';
 import { chatRunRegistry } from '@/modules/websocket/services/chat-run-registry.service.js';
-import { registerChatDependenciesAtBoot, serverAbortRun, serverEnqueueMessage, serverEnqueueMessageChecked, admitPeerMessage, getPeerMessage, startPeerOutboxSweeper } from '@/modules/websocket/index.js';
+import { registerChatDependenciesAtBoot, serverAbortRun, serverEnqueueMessage, serverEnqueueMessageChecked, serverEnqueueMessageIfIdle, admitPeerMessage, getPeerMessage, startPeerOutboxSweeper } from '@/modules/websocket/index.js';
 import { forgetRateLimitWake, startRateLimitWakeLoop } from '@/services/rate-limit-wake.service.js';
 import { cancelSessionRecap } from '@/modules/providers/index.js';
 import { forgetSession as forgetRestoreEntry, restoreInterruptedSessions } from '@/services/session-restore.service.js';
@@ -83,6 +83,7 @@ import {
     scanPlugins,
     getPluginsDir,
     pluginsRoutes,
+    createPluginRunReservation,
 } from '@/modules/plugins/index.js';
 import crypto from 'crypto';
 import { configureWebPush } from '@/modules/notifications/index.js';
@@ -2797,6 +2798,13 @@ async function startServer() {
                         return { status: run.status, providerSessionId: run.providerSessionId, lastAssistantText };
                     },
                     abort: (sessionId) => serverAbortRun(sessionId),
+                    // Turn-admission lease for the Janitor's cleanup (#119/#203); see
+                    // plugin-run-reservation.service.ts for why `coversAllRunStarts` is
+                    // true: native terminal turns are an operator-approved gap
+                    // (decision 2026-09-24), the Janitor acting only for VibeSpace
+                    // briefing sessions.
+                    reserve: createPluginRunReservation(chatRunRegistry),
+                    onCompleted: (callback) => chatRunRegistry.addRunCompleteListener((sessionId) => callback(sessionId)),
                 },
                 interactions: {
                     getPending: (sessionId) => getPendingApprovalsForSession(sessionId)
@@ -2832,6 +2840,7 @@ async function startServer() {
                 },
                 enqueueMessage: (sessionId, prompt, options) => serverEnqueueMessage(sessionId, prompt, options),
     enqueueMessageChecked: (sessionId, prompt, options) => serverEnqueueMessageChecked(sessionId, prompt, options),
+    enqueueMessageIfIdle: (sessionId, providerSessionId, prompt, options) => serverEnqueueMessageIfIdle(sessionId, providerSessionId, prompt, options),
     peerOutbox: { admit: (input) => admitPeerMessage(input), get: (senderSessionId, requestId) => getPeerMessage(senderSessionId, requestId) },
             }).catch((err) => {
                 console.error('[Plugins] host module activation failed:', err?.message || err);

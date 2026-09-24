@@ -1168,6 +1168,41 @@ export function serverEnqueueMessage(
   return true;
 }
 
+/**
+ * Plugin-host background follow-ups (the Janitor's owner check) use this instead
+ * of joining an operator's queue. It observes, synchronously with the enqueue, a
+ * completed last run bound to the expected native session, an empty queue, no
+ * turn-admission reservation and no pending permission. False means no admission
+ * — including unavailable evidence — never proof the session is dead.
+ * Business-specific completion/consent checks remain the plugin's responsibility.
+ */
+export function serverEnqueueMessageIfIdle(
+  sessionId: string,
+  expectedProviderSessionId: string,
+  content: string,
+  options: AnyRecord = {},
+): boolean {
+  try {
+    const dependencies = drainDependencies;
+    if (!dependencies || !expectedProviderSessionId || !content.trim()) return false;
+    const session = sessionsDb.getSessionById(sessionId);
+    const run = chatRunRegistry.getRun(sessionId);
+    if (!session || session.isArchived || session.is_private !== 0
+      || session.provider_session_id !== expectedProviderSessionId
+      || !run || run.status !== 'completed' || run.providerSessionId !== expectedProviderSessionId
+      || !dependencies.runtime.hasRuntime(session.provider as LLMProvider)
+      || chatRunRegistry.hasQueued(sessionId)
+      || chatRunRegistry.getQueueForClient(sessionId).length !== 0
+      || chatRunRegistry.isAdmissionReserved(sessionId)
+      || dependencies.runtime.getPendingApprovalsForSession(sessionId).length !== 0) return false;
+    // No await between the checks and server-owned queue admission: the drain
+    // takes the running turn synchronously, so a second follow-up cannot slip in.
+    return serverEnqueueMessage(sessionId, content, options);
+  } catch {
+    return false;
+  }
+}
+
 /*
  * Durable peer outbox.
  *

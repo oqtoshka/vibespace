@@ -61,9 +61,12 @@ export type HostSessionRow = {
   session_id: string;
   provider: string;
   provider_session_id: string | null;
+  /** JSON of the launch options VibeSpace stored at creation (null for disk-discovered sessions). */
+  launch_options?: string | null;
   project_path: string | null;
   is_private: number;
-  isArchived: boolean;
+  /** The raw SQLite integer (0/1) from `sessions.getById`; a boolean elsewhere. */
+  isArchived: boolean | 0 | 1;
 };
 
 /** What a host module may see of a session's run. */
@@ -71,6 +74,20 @@ export type HostRunView = {
   status: 'running' | 'completed';
   providerSessionId: string | null;
   lastAssistantText: string;
+};
+
+/** A turn-admission lease granted by `runs.reserve`. */
+export type HostRunLease = {
+  sessionId: string;
+  providerSessionId: string;
+  purpose: string;
+  resource: { id: string; generation: string };
+  /** Epoch ms, on this process's clock (the plugin runs in-process). */
+  expiresAt: number;
+  /** See `runs.reserve`: operator-approved, native terminal turns excepted. */
+  coversAllRunStarts: true;
+  /** Idempotent; only this lease's own token can end it. */
+  release: () => void;
 };
 
 /** A prompt a session is parked on until somebody answers it (a plan to approve, a question). */
@@ -156,6 +173,35 @@ export type PluginHost = {
     get: (sessionId: string) => HostRunView | null;
     /** Cancels a running turn as `chat.abort` would; false if nothing was running. */
     abort: (sessionId: string) => Promise<boolean>;
+    /**
+     * Holds the session's turn admission for a bounded mutation (the Janitor's
+     * resource cleanup): while the lease is held no VibeSpace turn starts —
+     * `chat.send` is refused as RUN_ADMISSION_RESERVED and re-queued by the
+     * client, the queue drain and the peer outbox wait, and a Claude background
+     * auto-resume or open-task nudge is parked — and its release or expiry
+     * re-drains all of them. Null when a run is active, anything is queued, a
+     * lease is already held, the TTL is not in (0, 60s], or the session is not
+     * bound to `providerSessionId`.
+     *
+     * `coversAllRunStarts: true` is an operator-approved attestation, not a
+     * technical absolute: a native CLI resumed from a terminal runs outside this
+     * process and cannot be refused. The operator accepted that gap on
+     * 2026-09-24 because the Janitor only ever acts for VibeSpace-created
+     * briefing sessions, which are driven from VibeSpace. Optional: absent on a
+     * host that predates it (the plugin then keeps cleanup disabled).
+     */
+    reserve?: (sessionId: string, input: {
+      providerSessionId: string;
+      purpose: string;
+      resource: { id: string; generation: string };
+      ttlMs: number;
+    }) => HostRunLease | null;
+    /**
+     * Run-completion hint for one session (fired after the queue drain). Never
+     * idle authority: a subscriber re-derives everything it acts on. Returns
+     * the unsubscribe. Optional: absent on a host that predates it.
+     */
+    onCompleted?: (callback: (sessionId: string) => void) => () => void;
   };
   /**
    * The prompts a session is parked on, and answering one from outside the
@@ -192,6 +238,18 @@ export type PluginHost = {
     prompt: string,
     options?: Record<string, unknown>,
   ) => CheckedEnqueueResult;
+  /**
+   * Admits a background follow-up only with an observed completed run bound to
+   * `expectedProviderSessionId`, an empty queue, no turn-admission reservation
+   * and no pending permission. False includes unavailable evidence. Optional:
+   * plugins must not fall back to an unconditional enqueue when it is absent.
+   */
+  enqueueMessageIfIdle?: (
+    sessionId: string,
+    expectedProviderSessionId: string,
+    prompt: string,
+    options?: Record<string, unknown>,
+  ) => boolean;
   /**
    * Durable, idempotent outbox for cross-session peer messages. `admit`
    * persists an accepted message keyed on (sender, requestId) and dispatches
@@ -245,6 +303,7 @@ export type HostExtensionDependencies = {
   getDefaultPermissionMode?: PluginHost['getDefaultPermissionMode'];
   enqueueMessage: PluginHost['enqueueMessage'];
   enqueueMessageChecked?: PluginHost['enqueueMessageChecked'];
+  enqueueMessageIfIdle?: PluginHost['enqueueMessageIfIdle'];
   peerOutbox?: PluginHost['peerOutbox'];
 };
 
@@ -292,11 +351,20 @@ function buildHost(name: string, pluginDir: string, deps: HostExtensionDependenc
         return unregister;
       },
     },
-    runs: deps.runs,
+    runs: {
+      ...deps.runs,
+      // A completion subscription is dropped with the plugin, like a contributor.
+      ...(deps.runs.onCompleted ? {onCompleted: (callback: (sessionId: string) => void) => {
+        const unregister = deps.runs.onCompleted!(callback);
+        state.unregisterContributors.push(unregister);
+        return unregister;
+      }} : {}),
+    },
     interactions: deps.interactions,
     getDefaultPermissionMode: deps.getDefaultPermissionMode,
     enqueueMessage: deps.enqueueMessage,
     enqueueMessageChecked: deps.enqueueMessageChecked,
+    enqueueMessageIfIdle: deps.enqueueMessageIfIdle,
     peerOutbox: deps.peerOutbox,
     hmacSha256: (input) =>
       crypto.createHmac('sha256', deps.getSigningSecret()).update(input).digest('base64url'),
