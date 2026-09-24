@@ -228,3 +228,32 @@ test('an idle OpenCode session is judged by its own todo list, not by Claude tas
     await fs.rm(home, { recursive: true, force: true });
   }
 });
+
+test('a restart-without-resume marker silences one boot and forgets the recorded sessions', async () => {
+  await recordSessionActivity({ sessionId: 's-quiet', cwd: '/proj', turnActive: true });
+  await fs.mkdir(path.join(tmp, 'data'), { recursive: true });
+  const marker = path.join(tmp, 'data', 'restart-without-resume');
+  await fs.writeFile(marker, '');
+  const calls = [];
+  assert.deepEqual(await restoreInterruptedSessions(spawnRecorder(calls)), []);
+  assert.equal(calls.length, 0);
+  await assert.rejects(fs.stat(marker), { code: 'ENOENT' }, 'the marker is consumed');
+
+  // The next boot has nothing left to wake.
+  await new Promise((r) => setTimeout(r, 700));
+  __resetSessionRestoreState();
+  assert.deepEqual(await restoreInterruptedSessions(spawnRecorder(calls)), []);
+  assert.equal(calls.length, 0);
+});
+
+test('a stale restart-without-resume marker is removed and ignored', async () => {
+  await recordSessionActivity({ sessionId: 's-stale-marker', cwd: '/proj', turnActive: true });
+  await fs.mkdir(path.join(tmp, 'data'), { recursive: true });
+  const marker = path.join(tmp, 'data', 'restart-without-resume');
+  await fs.writeFile(marker, '');
+  const old = new Date(Date.now() - 60 * 60 * 1000);
+  await fs.utimes(marker, old, old);
+  const calls = [];
+  assert.deepEqual(await restoreInterruptedSessions(spawnRecorder(calls)), ['s-stale-marker']);
+  await assert.rejects(fs.stat(marker), { code: 'ENOENT' });
+});
