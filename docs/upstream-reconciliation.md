@@ -301,3 +301,23 @@ Real Luna helper calls on both hosts generated a recap and two cumulative topics
 with exact original quotes; each covered all four fixture messages and preserved
 the foreground model as Astra. The macOS installed helper modules match the
 tested compiled build byte-for-byte. The Linux deployment pipeline passed.
+
+## Codex paginated edits — verified 2026-09-13, re-landed 2026-09-25
+
+Commit `b68fc1a2` fixes native edit-and-resend for persisted `history_mode: paginated`.
+It was first pushed on 2026-09-13 and lost when `main` was rewritten on 2026-09-14 to scrub
+deployment references; it was re-applied on top of the rewritten history on 2026-09-25.
+Codex 0.153.4 creates paginated threads by default; the earlier rollback smoke fixture omitted
+that metadata and exercised legacy history only. A live metadata-only read confirmed that a
+production thread was paginated. Its messages were not edited during QA.
+
+The runtime now selects `thread/revert(beforeTurnId)` for paginated history and retains
+`thread/rollback(numTurns)` for legacy history. Paginated replacement retains the thread ID
+but creates a new rollout with `history_base` references. Durable canonical-history routing
+is selected before attempting the revert, so stale files and restart/index races cannot
+resurrect discarded messages. History is hydrated through the provider's paginated API.
+
+Verification: focused regressions pass; one opt-in integration test (`MC_REAL_CODEX_TEST=1`)
+runs real Codex, reproduces the exact rollback error, then tests the actual revert service and
+history adapter, retained text/answer/image, discarded image, process restart and first-turn
+revert.
