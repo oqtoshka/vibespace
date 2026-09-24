@@ -218,9 +218,13 @@ export function useChatRealtimeHandlers({
               );
               return;
             }
-            // Surface the failure in the conversation and stop the spinner —
-            // the run never started (or was rejected), so no `complete` follows.
-            onSessionIdle?.(sid);
+            // A refused queue-add says nothing about the turn that is running:
+            // surface the refusal, but leave the spinner alone.
+            if (msg.code !== 'QUEUE_FULL') {
+              // Surface the failure in the conversation and stop the spinner —
+              // the run never started (or was rejected), so no `complete` follows.
+              onSessionIdle?.(sid);
+            }
             sessionStore.appendRealtime(sid, {
               id: `protocol_error_${Date.now()}`,
               sessionId: sid,

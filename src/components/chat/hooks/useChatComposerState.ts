@@ -109,6 +109,12 @@ export interface QueuedMessage {
    * at the agent's next step; false means it waits for the run to finish.
    */
   delivered?: boolean;
+  /**
+   * The server handed it to the runtime and never got an answer, so nobody can
+   * say whether the agent is acting on it. It is deliberately not re-sent —
+   * the card says so, and removing it puts the text back in the composer.
+   */
+  deliveryUnresolved?: boolean;
 }
 
 // Cap the pending queue so a runaway loop can't accumulate unbounded sends.
@@ -1231,7 +1237,13 @@ export function useChatComposerState({
     const onQueueUpdated = (event: Event) => {
       const detail = (event as CustomEvent<{
         sessionId?: string;
-        queue?: Array<{ id: string; content: string; imageCount?: number; delivered?: boolean }>;
+        queue?: Array<{
+          id: string;
+          content: string;
+          imageCount?: number;
+          delivered?: boolean;
+          deliveryUnresolved?: boolean;
+        }>;
         removed?: Array<{ id: string; content: string; reason?: string }>;
       }>).detail;
       if (!detail?.sessionId || detail.sessionId !== activeSessionId) {
@@ -1244,6 +1256,7 @@ export function useChatComposerState({
           content: item.content,
           imageCount: typeof item.imageCount === 'number' ? item.imageCount : 0,
           delivered: Boolean(item.delivered),
+          deliveryUnresolved: Boolean(item.deliveryUnresolved),
         })),
       );
 

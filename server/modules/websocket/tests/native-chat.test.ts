@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { createHmac } from 'node:crypto';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import path from 'node:path';
 import test, { mock } from 'node:test';
 
 import { appConfigDb, closeConnection, initializeDatabase, sessionsDb, userDb } from '@/modules/database/index.js';
+import { issueSessionCapability } from '@/modules/session-capabilities/index.js';
 import { providerModelsService } from '@/modules/providers/index.js';
 
 import { connectedClients } from '../services/websocket-state.service.js';
@@ -32,6 +32,7 @@ test('native session isolation, history, stream, permissions and duplicate recei
   const directory = await mkdtemp(path.join(tmpdir(), 'native-chat-'));
   const previous = process.env.DATABASE_PATH;
   closeConnection(); process.env.DATABASE_PATH = path.join(directory, 'auth.db');
+  await writeFile(process.env.DATABASE_PATH, '');
   await initializeDatabase();
   const sockets: Socket[] = [];
   try {
@@ -52,7 +53,6 @@ test('native session isolation, history, stream, permissions and duplicate recei
       id: fileId, sessionId: 'native-one', path: filePath,
       name: 'notes.txt', mimeType: 'text/plain', size: 42,
     }));
-    const secret = appConfigDb.getOrCreateJwtSecret();
     let calls = 0; let answers = 0;
     let lastOptions: unknown;
     const dependencies = { runtime: {
@@ -68,7 +68,7 @@ test('native session isolation, history, stream, permissions and duplicate recei
     const open = (tokenSession: string, target = 'native-one') => {
       const socket = new Socket(); sockets.push(socket);
       handleNativeChat(socket as never, { url: '/native-chat/' + target, headers: {
-        'x-vibespace-session-capability': createHmac('sha256', secret).update('mission-control:vibespace-session:v1:' + tokenSession).digest('base64url'),
+        'x-vibespace-session-capability': issueSessionCapability(tokenSession),
       } } as never, dependencies);
       return socket;
     };
