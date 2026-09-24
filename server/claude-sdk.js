@@ -471,7 +471,13 @@ function mapCliOptionsToSDK(options = {}) {
     scope: 'session',
     private: Boolean(options.private),
     ephemeral: Boolean(options.ephemeral),
-    sessionId: options.sessionId ?? null,
+    // The app (VibeSpace) session id, as the Codex and OpenCode launches pass
+    // it. Past normalizeQueryOptions `options.sessionId` is the provider-native
+    // id — undefined on a brand-new session and Claude's own id on a resume —
+    // so a contributor minting a per-session credential got nothing, or one
+    // for an id no session row carries. Legacy direct callers have no app id;
+    // for them the provider id is the only identity there is.
+    sessionId: options.appSessionId ?? options.sessionId ?? null,
     launchOptions: options.launchOptions ?? null,
   };
   const launchExtras = options.ephemeral

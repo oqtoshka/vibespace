@@ -85,3 +85,23 @@ test('a non-private, non-ephemeral turn gets nothing from an opt-out contributor
 
   assert.equal(options.env.TEST_OPT_OUT, undefined);
 });
+
+// Contributors are told which *conversation* a spawn serves: the app session
+// id, the same one the Codex and OpenCode launches pass. A brand-new session
+// has no provider id yet, and a resumed one has Claude's own id, which no
+// session row is keyed by — a per-session credential minted for either is
+// useless (the project-peer capability was scrubbed or wrong for every
+// Claude session VibeSpace itself created).
+test('contributors see the app session id, not the provider-native one', async () => {
+  seen.length = 0;
+  await optionsForTurn({ appSessionId: 'app-new' });
+  assert.equal(seen.at(-1).sessionId, 'app-new', 'a brand-new session');
+
+  seen.length = 0;
+  await optionsForTurn({ appSessionId: 'app-resumed', providerSessionId: 'claude-native-id' });
+  assert.equal(seen.at(-1).sessionId, 'app-resumed', 'a resumed session');
+
+  seen.length = 0;
+  await optionsForTurn({ sessionId: 'legacy-direct' });
+  assert.equal(seen.at(-1).sessionId, 'legacy-direct', 'a legacy caller keeps its only id');
+});
