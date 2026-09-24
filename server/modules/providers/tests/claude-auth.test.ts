@@ -20,6 +20,15 @@ type CheckCredentialsResult = {
 const checkCredentials = (auth: ClaudeProviderAuth): Promise<CheckCredentialsResult> =>
   (auth as unknown as { checkCredentials: () => Promise<CheckCredentialsResult> }).checkCredentials();
 
+// The Keychain read is stubbed in every test: on a Mac the real `Claude Code-credentials`
+// item would otherwise decide the outcome instead of the temp HOME.
+const withKeychain = (secret: string | null): ClaudeProviderAuth => {
+  const auth = new ClaudeProviderAuth();
+  (auth as unknown as { readKeychainCredentials: () => Promise<string | null> })
+    .readKeychainCredentials = async () => secret;
+  return auth;
+};
+
 const ENV_KEYS = ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'] as const;
 
 const withEnv = async (
@@ -84,7 +93,7 @@ test('checkCredentials: CLAUDE_CODE_OAUTH_TOKEN set is authenticated via environ
     });
 
     await withEnv({ CLAUDE_CODE_OAUTH_TOKEN: 'test-oauth-token' }, async () => {
-      const status = await checkCredentials(new ClaudeProviderAuth());
+      const status = await checkCredentials(withKeychain(null));
       assert.equal(status.authenticated, true);
       assert.equal(status.method, 'environment');
     });
@@ -99,7 +108,7 @@ test('checkCredentials: CLAUDE_CODE_OAUTH_TOKEN configured via settings.json env
     });
 
     await withEnv({}, async () => {
-      const status = await checkCredentials(new ClaudeProviderAuth());
+      const status = await checkCredentials(withKeychain(null));
       assert.equal(status.authenticated, true);
       assert.equal(status.method, 'environment');
     });
@@ -114,7 +123,7 @@ test('checkCredentials: no CLAUDE_CODE_OAUTH_TOKEN, valid credentials file falls
     });
 
     await withEnv({}, async () => {
-      const status = await checkCredentials(new ClaudeProviderAuth());
+      const status = await checkCredentials(withKeychain(null));
       assert.equal(status.authenticated, true);
       assert.equal(status.method, 'credentials_file');
       assert.equal(status.email, 'someone@example.com');
@@ -129,7 +138,7 @@ test('checkCredentials: no CLAUDE_CODE_OAUTH_TOKEN, expired credentials file rep
     });
 
     await withEnv({}, async () => {
-      const status = await checkCredentials(new ClaudeProviderAuth());
+      const status = await checkCredentials(withKeychain(null));
       assert.equal(status.authenticated, false);
       assert.match(status.error ?? '', /expired/i);
     });
@@ -141,10 +150,60 @@ test('checkCredentials: ANTHROPIC_API_KEY takes precedence over CLAUDE_CODE_OAUT
     await withEnv(
       { ANTHROPIC_API_KEY: 'test-api-key', CLAUDE_CODE_OAUTH_TOKEN: 'test-oauth-token' },
       async () => {
-        const status = await checkCredentials(new ClaudeProviderAuth());
+        const status = await checkCredentials(withKeychain(null));
         assert.equal(status.authenticated, true);
         assert.equal(status.method, 'api_key');
       },
     );
+  });
+});
+
+test('checkCredentials: a macOS Keychain login counts as signed in, with the e-mail from ~/.claude.json', async () => {
+  await withTempHome(async (homeDir) => {
+    await writeFile(path.join(homeDir, '.claude.json'), JSON.stringify({ oauthAccount: { emailAddress: 'keychain@example.com' } }));
+    await withEnv({}, async () => {
+      const status = await checkCredentials(withKeychain(JSON.stringify({
+        claudeAiOauth: { accessToken: 'kc-token', refreshToken: 'kc-refresh', expiresAt: Date.now() + 60_000 },
+      })));
+      assert.equal(status.authenticated, true);
+      assert.equal(status.method, 'keychain');
+      assert.equal(status.email, 'keychain@example.com');
+    });
+  });
+});
+
+test('checkCredentials: an expired access token with a refresh token is still signed in', async () => {
+  await withTempHome(async () => {
+    await withEnv({}, async () => {
+      const status = await checkCredentials(withKeychain(JSON.stringify({
+        claudeAiOauth: { accessToken: 'old', refreshToken: 'refresh', expiresAt: 1_000_000_000_000 },
+      })));
+      assert.equal(status.authenticated, true);
+      assert.equal(status.method, 'keychain');
+    });
+  });
+});
+
+test('checkCredentials: an unreadable Keychain item falls back to the credentials file', async () => {
+  await withTempHome(async (homeDir) => {
+    await writeCredentialsFile(homeDir, {
+      claudeAiOauth: { accessToken: 'file-token', expiresAt: Date.now() + 60_000 },
+      email: 'file@example.com',
+    });
+    await withEnv({}, async () => {
+      const status = await checkCredentials(withKeychain('not json'));
+      assert.equal(status.authenticated, true);
+      assert.equal(status.method, 'credentials_file');
+    });
+  });
+});
+
+test('checkCredentials: no Keychain item and no file reports the missing login', async () => {
+  await withTempHome(async () => {
+    await withEnv({}, async () => {
+      const status = await checkCredentials(withKeychain(null));
+      assert.equal(status.authenticated, false);
+      assert.match(status.error ?? '', /not authenticated/i);
+    });
   });
 });

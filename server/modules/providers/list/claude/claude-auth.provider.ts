@@ -1,3 +1,4 @@
+import { execFile } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -19,6 +20,9 @@ type ClaudeCredentialsStatus = {
 const hasErrorCode = (error: unknown, code: string): boolean => (
   error instanceof Error && 'code' in error && error.code === code
 );
+
+/** The Keychain item Claude Code keeps its OAuth login in on macOS. */
+const KEYCHAIN_SERVICE = 'Claude Code-credentials';
 
 export class ClaudeProviderAuth implements IProviderAuth {
   /**
@@ -108,38 +112,21 @@ export class ClaudeProviderAuth implements IProviderAuth {
       return { authenticated: true, email: 'OAuth Token (long-lived)', method: 'environment' };
     }
 
+    // On macOS Claude Code keeps its login in the Keychain and writes no credentials file,
+    // so the file alone reported a signed-in Mac as signed out.
+    const keychain = await this.readKeychainCredentials();
+    if (keychain !== null) {
+      try {
+        return await this.statusFromCredentials(JSON.parse(keychain), 'keychain', missingCredentialsError);
+      } catch {
+        // An unreadable Keychain item falls through to the file, as Claude Code does.
+      }
+    }
+
     try {
       const credPath = path.join(os.homedir(), '.claude', '.credentials.json');
       const content = await readFile(credPath, 'utf8');
-      const creds = readObjectRecord(JSON.parse(content)) ?? {};
-      const oauth = readObjectRecord(creds.claudeAiOauth);
-      const accessToken = readOptionalString(oauth?.accessToken);
-
-      if (accessToken) {
-        const expiresAt = typeof oauth?.expiresAt === 'number' ? oauth.expiresAt : undefined;
-        const email = readOptionalString(creds.email) ?? readOptionalString(creds.user) ?? null;
-        if (!expiresAt || Date.now() < expiresAt) {
-          return {
-            authenticated: true,
-            email,
-            method: 'credentials_file',
-          };
-        }
-
-        return {
-          authenticated: false,
-          email: null,
-          method: null,
-          error: 'Claude login has expired. Run claude /login again.',
-        };
-      }
-
-      return {
-        authenticated: false,
-        email: null,
-        method: null,
-        error: missingCredentialsError,
-      };
+      return await this.statusFromCredentials(JSON.parse(content), 'credentials_file', missingCredentialsError);
     } catch (error) {
       let errorMessage = 'Unable to read Claude credentials. Run claude /login again.';
 
@@ -156,5 +143,69 @@ export class ClaudeProviderAuth implements IProviderAuth {
         error: errorMessage,
       };
     }
+  }
+
+  /**
+   * Judges one stored OAuth login. An expired access token with a refresh token is still
+   * signed in: Claude Code refreshes it on its next request.
+   */
+  private async statusFromCredentials(
+    parsed: unknown,
+    method: string,
+    missingCredentialsError: string,
+  ): Promise<ClaudeCredentialsStatus> {
+    const creds = readObjectRecord(parsed) ?? {};
+    const oauth = readObjectRecord(creds.claudeAiOauth);
+    const accessToken = readOptionalString(oauth?.accessToken);
+
+    if (!accessToken) {
+      return { authenticated: false, email: null, method: null, error: missingCredentialsError };
+    }
+
+    const expiresAt = typeof oauth?.expiresAt === 'number' ? oauth.expiresAt : undefined;
+    const refreshable = Boolean(readOptionalString(oauth?.refreshToken));
+    if (expiresAt && Date.now() >= expiresAt && !refreshable) {
+      return {
+        authenticated: false,
+        email: null,
+        method: null,
+        error: 'Claude login has expired. Run claude /login again.',
+      };
+    }
+
+    const email = readOptionalString(creds.email)
+      ?? readOptionalString(creds.user)
+      ?? await this.readAccountEmail();
+    return { authenticated: true, email, method };
+  }
+
+  /**
+   * The signed-in account's e-mail, which Claude Code records in ~/.claude.json rather
+   * than beside the token.
+   */
+  private async readAccountEmail(): Promise<string | null> {
+    try {
+      const content = await readFile(path.join(os.homedir(), '.claude.json'), 'utf8');
+      const account = readObjectRecord(readObjectRecord(JSON.parse(content))?.oauthAccount);
+      return readOptionalString(account?.emailAddress) ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * The Keychain item's secret on macOS, or null elsewhere, when it is absent, or when the
+   * Keychain cannot be read. The secret goes to stdout of a child and is never logged.
+   */
+  private readKeychainCredentials(): Promise<string | null> {
+    if (process.platform !== 'darwin') return Promise.resolve(null);
+    return new Promise(resolve => {
+      execFile(
+        'security',
+        ['find-generic-password', '-s', KEYCHAIN_SERVICE, '-w'],
+        { timeout: 5000, encoding: 'utf8' },
+        (error, stdout) => resolve(error ? null : stdout.trim() || null),
+      );
+    });
   }
 }
