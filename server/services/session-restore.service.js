@@ -12,6 +12,13 @@
  *
  * VIBESPACE_SESSION_RESTORE=0 disables the boot pass (recording always runs —
  * it is what makes the next boot able to decide).
+ *
+ * A quiet restart skips the pass for one boot only: create
+ * <dataDir>/restart-without-resume right before restarting (or boot with
+ * VIBESPACE_RESTART_WITHOUT_RESUME=1). The boot consumes the marker, resumes
+ * nothing, and forgets the recorded sessions so a later restart does not wake
+ * them either. Pending usage-limit wakes are untouched — they fire at their
+ * own reset time, exactly as if the server had never restarted.
  */
 import { promises as fs } from 'fs';
 import path from 'path';
@@ -29,6 +36,11 @@ const RESTORE_ENABLED = !['0', 'false', 'off'].includes((process.env.VIBESPACE_S
 // the feature being disabled) — skip them rather than waking ancient sessions.
 const RESTORE_MAX_AGE_MS = parseInt(process.env.VIBESPACE_SESSION_RESTORE_MAX_AGE_MS, 10) || 24 * 60 * 60 * 1000;
 
+// A marker older than this is a restart that never happened (the operator
+// changed their mind); it must not silence some unrelated crash-restart later.
+const QUIET_RESTART_MAX_AGE_MS = 15 * 60 * 1000;
+const QUIET_RESTART_ENV = ['1', 'true', 'on'].includes((process.env.VIBESPACE_RESTART_WITHOUT_RESUME || '').trim().toLowerCase());
+
 const CONTINUATION_PROMPT = [
   '[session supervisor] The vibespace server was restarted while this session was',
   'active, and any turn that was running was cut off (an unexplained "[Request',
@@ -39,6 +51,7 @@ const CONTINUATION_PROMPT = [
 ].join(' ');
 
 const stateFile = () => path.join(getDataDir(), 'active-agent-sessions.json');
+const quietRestartMarker = () => path.join(getDataDir(), 'restart-without-resume');
 // Read-only migration source. Deployments that already have Claude restore
 // state must not lose it when the registry becomes provider-neutral.
 const legacyStateFile = () => path.join(getDataDir(), 'active-claude-sessions.json');
@@ -156,6 +169,21 @@ export async function forgetSession(sessionId) {
   return true;
 }
 
+/**
+ * Whether this boot is a quiet restart. Consumes the marker file either way,
+ * so it silences exactly one boot; a stale marker is removed and ignored.
+ */
+async function consumeQuietRestart() {
+  let markerFresh = false;
+  try {
+    const { mtimeMs } = await fs.stat(quietRestartMarker());
+    markerFresh = Date.now() - mtimeMs <= QUIET_RESTART_MAX_AGE_MS;
+    await fs.rm(quietRestartMarker(), { force: true });
+    if (!markerFresh) console.log('[session restore] ignoring a stale restart-without-resume marker');
+  } catch { /* no marker */ }
+  return QUIET_RESTART_ENV || markerFresh;
+}
+
 /** The supervisor prompt for one entry, with the re-ask rider when a hard
  * kill destroyed an interactive prompt the user never answered. */
 function buildContinuationPrompt(entry) {
@@ -191,6 +219,14 @@ export async function restoreInterruptedSessions(spawn, hooks = {}) {
   // hook, for deployments that launch index.js directly) — run it once.
   if (bootPassDone) return [];
   bootPassDone = true;
+  const quiet = await consumeQuietRestart();
+  if (quiet) {
+    const skipped = [...entries.keys()];
+    entries.clear();
+    scheduleWrite();
+    console.log(`[session restore] restart without resume: not resuming ${skipped.length} recorded session(s)${skipped.length ? `: ${skipped.join(', ')}` : ''}`);
+    return [];
+  }
   if (!RESTORE_ENABLED) return [];
   await loadRateLimitWakes();
   const candidates = [...entries.values()];
