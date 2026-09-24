@@ -3,7 +3,8 @@ import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { isOfficeFile } from '../../../../../shared/office-formats';
-import { api, authenticatedFetch } from '../../../../utils/api';
+import { authenticatedFetch } from '../../../../utils/api';
+import { downloadProjectFile } from '../../../../utils/downloadProjectFile';
 import { useFileDiskVersion } from '../../../../hooks/useFileDiskVersion';
 import type { CodeEditorFile } from '../../types/types';
 
@@ -93,15 +94,13 @@ export default function CodeEditorPdfView({
   const handleDownload = async () => {
     if (downloading || !projectId) return;
     setDownloading(true);
-    let originalUrl: string | undefined;
     try {
-      let url = objectUrl;
       if (office) {
-        const response = await api.readFileBlob(projectId, filePath);
-        if (!response.ok) throw new Error(t('office.downloadFailed'));
-        originalUrl = URL.createObjectURL(await response.blob());
-        url = originalUrl;
+        // The original document streams through the browser's download manager.
+        await downloadProjectFile(projectId, filePath, file.name);
+        return;
       }
+      const url = objectUrl;
       if (!url) return;
       const anchor = document.createElement('a');
       anchor.href = url;
@@ -112,7 +111,6 @@ export default function CodeEditorPdfView({
     } catch {
       setErrorMessage(t('office.downloadFailed'));
     } finally {
-      if (originalUrl) setTimeout(() => URL.revokeObjectURL(originalUrl!), 1000);
       setDownloading(false);
     }
   };

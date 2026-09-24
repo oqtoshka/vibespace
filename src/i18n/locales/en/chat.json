@@ -283,5 +283,11 @@
   "chat": {
     "private": "private",
     "privateHint": "not reported to external boards, no notifications, no recap"
+  },
+  "fileAttachment": {
+    "open": "Open",
+    "download": "Download",
+    "downloadFailed": "Could not download the file. Try again.",
+    "notFound": "File not found"
   }
 }

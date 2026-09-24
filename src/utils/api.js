@@ -155,6 +155,7 @@ export const storeAuthToken = (token) => {
 let nativeViewerTransport = null;
 /** @param {(url: string, options: RequestInit) => Promise<Response>} transport */
 export const setNativeViewerTransport = (transport) => { nativeViewerTransport = transport; };
+export const hasNativeViewerTransport = () => nativeViewerTransport !== null;
 export const authenticatedFetch = (url, options = {}) => {
   if (nativeViewerTransport) return nativeViewerTransport(url, options);
   const token = getStoredAuthToken();
