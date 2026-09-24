@@ -9,4 +9,6 @@ export {
   // peer outbox: used by server/index.js to expose PluginHost.peerOutbox.
   admitPeerMessage,
   getPeerMessage,
+  // peer outbox: started by server/index.js startServer() once the schema exists.
+  startPeerOutboxSweeper,
 } from './services/chat-websocket.service.js';
