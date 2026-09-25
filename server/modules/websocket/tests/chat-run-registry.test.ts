@@ -384,3 +384,39 @@ test('a drained (sent) message is not reported as removed', async () => {
     assert.deepEqual(connection.frames.at(-1)?.removed, []);
   });
 });
+
+test('each run tags its events with its own run id, since seq restarts per run', async () => {
+  await withIsolatedDatabase(() => {
+    sessionsDb.createAppSession('app-run-10', 'opencode', '/workspace/demo');
+    const connection = new FakeConnection();
+
+    const firstRun = chatRunRegistry.startRun({
+      appSessionId: 'app-run-10',
+      provider: 'opencode',
+      providerSessionId: null,
+      connection,
+      userId: null,
+    });
+    assert.ok(firstRun);
+    firstRun.writer.send({ kind: 'stream_delta', provider: 'opencode', sessionId: 'x', content: 'a' });
+    firstRun.writer.send({ kind: 'complete', provider: 'opencode', sessionId: 'x', exitCode: 0 });
+
+    const secondRun = chatRunRegistry.startRun({
+      appSessionId: 'app-run-10',
+      provider: 'opencode',
+      providerSessionId: null,
+      connection,
+      userId: null,
+    });
+    assert.ok(secondRun);
+    secondRun.writer.send({ kind: 'stream_delta', provider: 'opencode', sessionId: 'x', content: 'b' });
+
+    assert.notEqual(firstRun.runId, secondRun.runId);
+    const deltas = connection.frames.filter((frame) => frame.kind === 'stream_delta');
+    assert.deepEqual(deltas.map((frame) => [frame.seq, frame.runId]), [
+      [1, firstRun.runId],
+      [1, secondRun.runId],
+    ]);
+    assert.equal(chatRunRegistry.getRun('app-run-10')?.runId, secondRun.runId);
+  });
+});

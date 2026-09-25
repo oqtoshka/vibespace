@@ -126,10 +126,11 @@
     "send": "Send",
     "stop": "Stop",
     "hintText": {
-      "ctrlEnter": "Ctrl+Enter to send • Shift+Enter for new line • Tab to change modes • / for slash commands",
+      "ctrlEnter": "{{key}} to send • Enter for new line • Tab to change modes • / for slash commands",
       "enter": "Enter to send • Shift+Enter for new line • Tab to change modes • / for slash commands",
-      "queue": "Enter to queue your next message",
-      "updateQueued": "Enter to update queued message"
+      "queue": "{{key}} to queue your next message",
+      "updateQueued": "{{key}} to update queued message",
+      "send": "{{key}} to send"
     },
     "clickToChangeMode": "Click to change permission mode (or press Tab in input)",
     "showAllCommands": "Show all commands",
@@ -283,5 +284,11 @@
   "chat": {
     "private": "private",
     "privateHint": "not reported to external boards, no notifications, no recap"
+  },
+  "fileAttachment": {
+    "open": "Open",
+    "download": "Download",
+    "downloadFailed": "Could not download the file. Try again.",
+    "notFound": "File not found"
   }
 }

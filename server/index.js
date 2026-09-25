@@ -1329,26 +1329,35 @@ app.get('/api/projects/:projectId/files/content', authenticateToken, async (req,
         }
         const { resolved } = allowed;
 
-        // Check if file exists
+        let stats;
         try {
-            await fsPromises.access(resolved);
+            stats = await fsPromises.stat(resolved);
         } catch (error) {
             return res.status(404).json({ error: 'File not found' });
         }
+        if (!stats.isFile()) {
+            return res.status(404).json({ error: 'File not found' });
+        }
 
-        // Get file extension and set appropriate content type
+        // `?download=1` asks the browser to save rather than render. The client
+        // navigates to this URL so the browser's own download manager streams
+        // it, instead of buffering the whole file into a Blob first.
+        if (req.query.download) {
+            res.attachment(path.basename(resolved));
+        }
+
+        // sendFile sets Content-Length (download progress), supports Range
+        // (resumable downloads, media seeking) and answers HEAD without a body.
         const mimeType = mime.lookup(resolved) || 'application/octet-stream';
-        res.setHeader('Content-Type', mimeType);
-
-        // Stream the file
-        const fileStream = fs.createReadStream(resolved);
-        fileStream.pipe(res);
-
-        fileStream.on('error', (error) => {
+        res.sendFile(resolved, {
+            dotfiles: 'allow',
+            headers: { 'Content-Type': mimeType },
+            lastModified: true,
+        }, (error) => {
+            if (!error) return;
+            if (error.code === 'ECONNABORTED' || res.headersSent) return;
             console.error('Error streaming file:', error);
-            if (!res.headersSent) {
-                res.status(500).json({ error: 'Error reading file' });
-            }
+            res.status(500).json({ error: 'Error reading file' });
         });
 
     } catch (error) {

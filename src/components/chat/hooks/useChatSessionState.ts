@@ -8,6 +8,7 @@ import type { SessionStore, NormalizedMessage, ContextUsage } from '../../../sto
 import { SESSION_MESSAGES_PAGE_SIZE } from '../../../stores/sessionMessagePagination';
 import type { ChatMessage } from '../types/types';
 import { getIntrinsicMessageKey } from '../utils/messageKeys';
+import { replayPosition, type ReplayCursorMap } from '../utils/chatReplayCursor';
 import { createMessageHistoryRefreshCoordinator } from '../utils/messageHistoryRefreshCoordinator';
 import { createCachedDiffCalculator, type DiffCalculator } from '../utils/messageTransforms';
 
@@ -56,7 +57,7 @@ interface UseChatSessionStateArgs {
   /** When each session's `chat.subscribe` was last sent; guards stale idle acks. */
   statusCheckSentAtRef: MutableRefObject<Map<string, number>>;
   /** Highest live seq observed per session; sent as `lastSeq` on subscribe. */
-  lastSeqRef: MutableRefObject<Map<string, number>>;
+  replayCursorRef: MutableRefObject<ReplayCursorMap>;
   sessionStore: SessionStore;
 }
 
@@ -219,7 +220,7 @@ export function useChatSessionState({
   onSessionIdle,
   resetStreamingState,
   statusCheckSentAtRef,
-  lastSeqRef,
+  replayCursorRef,
   sessionStore,
 }: UseChatSessionStateArgs) {
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(selectedSession?.id || null);
@@ -901,10 +902,10 @@ export function useChatSessionState({
       type: 'chat.subscribe',
       sessions: [{
         sessionId: selectedSession.id,
-        lastSeq: lastSeqRef.current.get(selectedSession.id) ?? 0,
+        ...replayPosition(replayCursorRef.current, selectedSession.id),
       }],
     });
-  }, [lastSeqRef, selectedProject, selectedSession, sendMessage, statusCheckSentAtRef, ws]);
+  }, [replayCursorRef, selectedProject, selectedSession, sendMessage, statusCheckSentAtRef, ws]);
 
   // Main session loading effect — store-based
   useEffect(() => {

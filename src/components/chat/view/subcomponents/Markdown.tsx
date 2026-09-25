@@ -7,6 +7,7 @@ import rehypeKatex from 'rehype-katex';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneDark, oneLight } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { useTranslation } from 'react-i18next';
+import { Download, FileText } from 'lucide-react';
 
 import { normalizeInlineCodeFences } from '../../utils/chatFormatting';
 import { authenticatedFetch } from '../../../../utils/api';
@@ -19,6 +20,8 @@ import {
 } from '../../../../utils/generatedImageArtifacts';
 import { resolveMarkdownLinkPath } from '../../../../utils/markdownLinks';
 import { projectFileExists } from '../../../../utils/projectFileLookup';
+import { downloadProjectFile } from '../../../../utils/downloadProjectFile';
+import { ATTACHMENT_LINK_ATTRIBUTE, remarkWorkspaceFileLinks, workspacePathFromHref } from '../../../../utils/remarkWorkspaceFileLinks';
 import { usePaletteOps } from '../../../../contexts/PaletteOpsContext';
 import { useTheme } from '../../../../contexts/ThemeContext';
 import MermaidDiagram from '../../../markdown/MermaidDiagram';
@@ -264,7 +267,8 @@ function extractInlinePathCandidate(raw: string, projectPath?: string | null): s
     return null;
   }
 
-  let cleaned = stripLineSuffix(trimmed).replace(/\\/g, '/');
+  // `MEDIA:<path>` is the attachment convention agents carry over from Telegram.
+  let cleaned = stripLineSuffix(trimmed.replace(/^MEDIA:/, '')).replace(/\\/g, '/');
   if (isExternalHref(cleaned) || /["'`<>|()]/.test(cleaned)) {
     return null;
   }
@@ -359,6 +363,75 @@ function InlineCode({ codeText, className, children, ...props }: InlineCodeProps
     >
       {children}
     </code>
+  );
+}
+
+type FileAttachmentProps = {
+  href: string;
+  projectId: string | null;
+  onOpen: (() => void) | null;
+};
+
+/**
+ * A file the agent attached to its reply (`MEDIA:<path>`): opens in the
+ * in-app viewer and downloads through the browser's own download manager.
+ */
+function FileAttachment({ href, projectId, onOpen }: FileAttachmentProps) {
+  const { t } = useTranslation('chat');
+  const [downloading, setDownloading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const fileName = href.split('/').filter(Boolean).pop() || href;
+
+  const handleDownload = async () => {
+    if (!projectId || downloading) {
+      return;
+    }
+    setDownloading(true);
+    setError(null);
+    try {
+      await downloadProjectFile(projectId, href, fileName);
+    } catch (downloadError) {
+      setError(
+        downloadError instanceof Error && downloadError.message === 'File not found'
+          ? t('fileAttachment.notFound', 'File not found')
+          : t('fileAttachment.downloadFailed', 'Could not download the file. Try again.'),
+      );
+    } finally {
+      setDownloading(false);
+    }
+  };
+
+  return (
+    <span className="my-1 inline-flex max-w-full flex-col align-middle not-italic">
+      <span className="inline-flex max-w-full items-center gap-2 rounded-lg border border-border bg-muted/40 px-2.5 py-1.5 text-sm">
+        <FileText className="h-4 w-4 shrink-0 text-muted-foreground" aria-hidden />
+        {onOpen ? (
+          <button
+            type="button"
+            className="min-w-0 truncate text-left font-medium text-blue-600 hover:underline dark:text-blue-400"
+            title={t('fileAttachment.open', 'Open')}
+            onClick={onOpen}
+          >
+            {fileName}
+          </button>
+        ) : (
+          <span className="min-w-0 truncate font-medium">{fileName}</span>
+        )}
+        {projectId && (
+          <button
+            type="button"
+            className="shrink-0 rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-50"
+            title={t('fileAttachment.download', 'Download')}
+            aria-label={t('fileAttachment.download', 'Download')}
+            disabled={downloading}
+            onClick={handleDownload}
+          >
+            <Download className={`h-4 w-4 ${downloading ? 'animate-pulse' : ''}`} />
+          </button>
+        )}
+      </span>
+      {error && <span className="mt-0.5 text-xs text-red-600 dark:text-red-400">{error}</span>}
+    </span>
   );
 }
 
@@ -533,10 +606,13 @@ function MarkdownBase({
 }: MarkdownProps) {
   const content = normalizeInlineCodeFences(String(children ?? ''));
   const remarkPlugins = useMemo(
-    () => (breaks
-      ? [remarkGfm, [remarkMath, { singleDollarTextMath: false }], remarkBreaks]
-      : [remarkGfm, [remarkMath, { singleDollarTextMath: false }]]) as any,
-    [breaks],
+    () => [
+      remarkGfm,
+      [remarkMath, { singleDollarTextMath: false }],
+      [remarkWorkspaceFileLinks, { projectRoot: projectPath }],
+      ...(breaks ? [remarkBreaks] : []),
+    ] as any,
+    [breaks, projectPath],
   );
   const rehypePlugins = useMemo(() => [rehypeKatex], []);
   const { openFileInEditor } = usePaletteOps();
@@ -576,7 +652,27 @@ function MarkdownBase({
         }
         return <img src={src} alt={alt || ''} className="my-2 max-w-full rounded-lg" loading="lazy" />;
       },
-      a: ({ href, children: linkChildren }: { href?: string; children?: React.ReactNode }) => {
+      a: ({
+        href,
+        children: linkChildren,
+        [ATTACHMENT_LINK_ATTRIBUTE]: attachment,
+      }: {
+        href?: string;
+        children?: React.ReactNode;
+        [ATTACHMENT_LINK_ATTRIBUTE]?: string;
+      }) => {
+        if (attachment && href) {
+          const openFile = onFileOpen ?? openFileInEditor;
+          const filePath = workspacePathFromHref(href);
+          return (
+            <FileAttachment
+              href={filePath}
+              projectId={projectId}
+              onOpen={openFile ? () => openFile(filePath) : null}
+            />
+          );
+        }
+
         const artifactPath = resolveGeneratedImageArtifactPath(href);
         if (artifactPath) {
           return (
@@ -607,7 +703,8 @@ function MarkdownBase({
         // Chat messages have no source file, so relative links resolve against
         // the project root. Preserve absolute paths so the editor can pass them
         // to the server's configured-workspace path validator unchanged.
-        const internalPath = onFileOpen ? resolveMarkdownLinkPath(href, null, true) : null;
+        // Agents often cite `path:line`; the viewer wants the bare path.
+        const internalPath = onFileOpen && href ? resolveMarkdownLinkPath(stripLineSuffix(href), null, true) : null;
         if (internalPath) {
           return (
             <a
