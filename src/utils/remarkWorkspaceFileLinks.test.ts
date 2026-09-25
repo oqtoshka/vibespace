@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { ATTACHMENT_LINK_ATTRIBUTE, remarkWorkspaceFileLinks } from './remarkWorkspaceFileLinks';
+import { ATTACHMENT_LINK_ATTRIBUTE, remarkWorkspaceFileLinks, workspacePathFromHref } from './remarkWorkspaceFileLinks';
 
 type Node = { type: string; value?: string; url?: string; children?: Node[]; data?: any };
 
@@ -53,4 +53,34 @@ test('without a project root only MEDIA lines are linked', () => {
   const nodes = run(paragraph(text('/workspace/out/a.txt MEDIA:/tmp/b.txt')), null);
   assert.equal(nodes.length, 2);
   assert.equal(nodes[1].url, '/tmp/b.txt');
+});
+
+// react-markdown percent-encodes non-ASCII link URLs on the way to the DOM, so
+// the `a` renderer receives `%D0%9C…` for a Cyrillic file name.
+test('a Cyrillic MEDIA path reaches the link renderer decodable back to the real path', async () => {
+  const { default: ReactMarkdown } = await import('react-markdown');
+  const React = await import('react');
+  const { renderToStaticMarkup } = await import('react-dom/server');
+  const seen: string[] = [];
+  const raw: string[] = [];
+  renderToStaticMarkup(
+    React.createElement(ReactMarkdown, {
+      remarkPlugins: [[remarkWorkspaceFileLinks, { projectRoot: '/workspace' }]],
+      components: {
+        a: ({ href }: { href?: string }) => {
+          raw.push(href ?? '');
+          seen.push(workspacePathFromHref(href ?? ''));
+          return null;
+        },
+      },
+      children: 'MEDIA:/workspace/Мир_главное 17.pptx\n\nи /workspace/out/Бюджет.xlsx.',
+    } as any),
+  );
+  assert.match(raw[0], /%D0%9C/);
+  assert.deepEqual(seen, ['/workspace/Мир_главное 17.pptx', '/workspace/out/Бюджет.xlsx']);
+});
+
+test('workspacePathFromHref keeps a literal percent sign it cannot decode', () => {
+  assert.equal(workspacePathFromHref('/workspace/100%.txt'), '/workspace/100%.txt');
+  assert.equal(workspacePathFromHref('/workspace/a%20b.txt'), '/workspace/a b.txt');
 });
