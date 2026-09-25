@@ -15,7 +15,9 @@ process.env.CLAUDE_CONFIG_DIR = configDir;
 const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'vibespace-model-home-'));
 process.env.HOME = homeDir;
 
-const { queryClaudeSDK, abortClaudeSDKSession, __setClaudeQueryImpl } = await import('./claude-sdk.js');
+const {
+  queryClaudeSDK, abortClaudeSDKSession, isClaudeSDKSessionAlive, __setClaudeQueryImpl,
+} = await import('./claude-sdk.js');
 
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -159,6 +161,117 @@ test('a pick that matches the requested-but-never-applied model still switches t
     writeModelOverride(sessionId, 'opus');
     await queryClaudeSDK('next', { sessionId, resume: true, model: 'opus', ephemeral: false }, makeRecordingWriter());
     assert.deepEqual(setModelCalls, ['opus'], 'the pick must reach the runtime');
+  } finally {
+    await abortClaudeSDKSession(sessionId).catch(() => {});
+    __setClaudeQueryImpl(null);
+  }
+});
+
+function clearModelOverrides() {
+  fs.rmSync(path.join(homeDir, '.vibespace', 'provider-session-active-model-changes.json'), { force: true });
+}
+
+// The bug this guards: a stored "Default (recommended)" pick is already in
+// effect the moment a live instance starts (no `--model` flag), but the session
+// object did not remember that, and `init` reports the concrete model — so the
+// first turn of every new instance (idle resume, server restart) re-applied it
+// as `setModel(undefined)`, which the SDK writes into the transcript as a user
+// `/model default` + "Set model to …" pair the chat then shows.
+test('a Default pick already in effect is never re-applied by a new live instance', async () => {
+  const sessionId = 'model-switch-default-in-effect';
+  clearModelOverrides();
+  writeModelOverride(sessionId, 'default');
+
+  const received = [];
+  const setModelCalls = [];
+  const runtimeModel = { value: 'claude-opus-5-5' };
+  const starts = [];
+  const runtime = scriptedRuntime(sessionId, runtimeModel, received, setModelCalls);
+  __setClaudeQueryImpl((args) => { starts.push(args.options?.model); return runtime(args); });
+
+  try {
+    // Two consecutive live instances of the same conversation, as after an idle
+    // reap or a restart; each takes a follow-up turn.
+    for (let instance = 0; instance < 2; instance += 1) {
+      await queryClaudeSDK('resume', { sessionId, resume: true, ephemeral: false }, makeRecordingWriter());
+      await queryClaudeSDK('next', { sessionId, resume: true, ephemeral: false }, makeRecordingWriter());
+      // Let the idle reaper close this instance, so the next pass starts a new one.
+      await waitUntil(() => !isClaudeSDKSessionAlive(sessionId), 'the idle reaper to close the instance');
+    }
+    assert.equal(starts.length, 2, 'each pass must run in its own live instance');
+    assert.deepEqual(setModelCalls, [], 'the default in effect must not be pushed again');
+  } finally {
+    await abortClaudeSDKSession(sessionId).catch(() => {});
+    __setClaudeQueryImpl(null);
+  }
+});
+
+test('an explicit pick made mid-session on a Default session still switches the model', async () => {
+  const sessionId = 'model-switch-default-then-pick';
+  clearModelOverrides();
+  writeModelOverride(sessionId, 'default');
+
+  const received = [];
+  const setModelCalls = [];
+  const runtimeModel = { value: 'claude-opus-5-5' };
+  __setClaudeQueryImpl(scriptedRuntime(sessionId, runtimeModel, received, setModelCalls));
+
+  try {
+    await queryClaudeSDK('resume', { sessionId, resume: true, ephemeral: false }, makeRecordingWriter());
+    writeModelOverride(sessionId, 'fable');
+    await queryClaudeSDK('next', { sessionId, resume: true, ephemeral: false }, makeRecordingWriter());
+    await queryClaudeSDK('again', { sessionId, resume: true, ephemeral: false }, makeRecordingWriter());
+    assert.deepEqual(setModelCalls, ['fable'], 'the pick must reach the runtime exactly once');
+  } finally {
+    await abortClaudeSDKSession(sessionId).catch(() => {});
+    __setClaudeQueryImpl(null);
+  }
+});
+
+test('switching from an explicit pick back to Default applies once', async () => {
+  const sessionId = 'model-switch-pick-then-default';
+  clearModelOverrides();
+  writeModelOverride(sessionId, 'fable');
+
+  const received = [];
+  const setModelCalls = [];
+  // Launched with `--model fable`, so the runtime reports Fable.
+  const runtimeModel = { value: 'claude-fable-5' };
+  __setClaudeQueryImpl(scriptedRuntime(sessionId, runtimeModel, received, setModelCalls));
+
+  try {
+    await queryClaudeSDK('resume', { sessionId, resume: true, ephemeral: false }, makeRecordingWriter());
+    await queryClaudeSDK('next', { sessionId, resume: true, ephemeral: false }, makeRecordingWriter());
+    assert.deepEqual(setModelCalls, [], 'the pick in effect must not be re-applied');
+
+    writeModelOverride(sessionId, 'default');
+    await queryClaudeSDK('back to default', { sessionId, resume: true, ephemeral: false }, makeRecordingWriter());
+    await queryClaudeSDK('again', { sessionId, resume: true, ephemeral: false }, makeRecordingWriter());
+    assert.deepEqual(setModelCalls, [undefined], 'Default must be applied exactly once');
+  } finally {
+    await abortClaudeSDKSession(sessionId).catch(() => {});
+    __setClaudeQueryImpl(null);
+  }
+});
+
+test('a concrete pick the CLI reset across a compaction is re-applied', async () => {
+  const sessionId = 'model-switch-compaction-reset';
+  clearModelOverrides();
+  writeModelOverride(sessionId, 'fable');
+
+  const received = [];
+  const setModelCalls = [];
+  const runtimeModel = { value: 'claude-fable-5' };
+  __setClaudeQueryImpl(scriptedRuntime(sessionId, runtimeModel, received, setModelCalls));
+
+  try {
+    await queryClaudeSDK('resume', { sessionId, resume: true, ephemeral: false }, makeRecordingWriter());
+    // A compaction drops the runtime back onto another model; the next `init`
+    // says so.
+    runtimeModel.value = 'claude-opus-5-5';
+    await queryClaudeSDK('after compaction', { sessionId, resume: true, ephemeral: false }, makeRecordingWriter());
+    await queryClaudeSDK('next', { sessionId, resume: true, ephemeral: false }, makeRecordingWriter());
+    assert.deepEqual(setModelCalls, ['fable'], 'the pick must be re-applied after the reset');
   } finally {
     await abortClaudeSDKSession(sessionId).catch(() => {});
     __setClaudeQueryImpl(null);
