@@ -121,7 +121,8 @@ test('native side question gateway: own credential, send and stop only, read-onl
     assert.equal(runs.length, 0);
 
     // A send runs read-only, off the board, forked from the parent, whatever the client asked.
-    await side.input({ type: 'chat.send', clientMsgId: 'ask-1', content: 'What did we decide?',
+    // The frame is the phone's own shape, empty attachment list included.
+    await side.input({ type: 'chat.send', clientMsgId: 'ask-1', requestId: 'ask-1', id: 'ask-1', content: 'What did we decide?', attachments: [],
       options: { permissionMode: 'bypassPermissions', toolsSettings: { skipPermissions: true } } });
     assert.equal(runs.length, 1);
     const claudeRun = runs[0];
