@@ -153,10 +153,19 @@ function validateConfiguredBackend(config: ResolvedVoiceConfig): VoiceServiceRes
   return null;
 }
 
-function createTranscriptionFormData(audio: VoiceAudioUpload, sttModel: string): FormData {
+/**
+ * Longest vocabulary prompt forwarded to a transcription backend. The caller
+ * (Mission Control) already caps its glossary at 1,500 characters; this is the
+ * owner's own bound, so a larger header can never become an unbounded upload.
+ */
+export const MAX_TRANSCRIPTION_PROMPT_LENGTH = 2_000;
+
+function createTranscriptionFormData(audio: VoiceAudioUpload, sttModel: string, prompt?: string): FormData {
   const formData = new FormData();
   formData.append('file', new Blob([audio.bytes], { type: audio.mimeType }), audio.fileName);
   formData.append('model', sttModel);
+  const hint = prompt?.trim().slice(0, MAX_TRANSCRIPTION_PROMPT_LENGTH);
+  if (hint) formData.append('prompt', hint);
   return formData;
 }
 
@@ -213,7 +222,7 @@ export function createVoiceService(dependencies: VoiceServiceDependencies): Voic
           {
             method: 'POST',
             headers: authorizationHeader(config.apiKey),
-            body: createTranscriptionFormData(input.audio, config.sttModel),
+            body: createTranscriptionFormData(input.audio, config.sttModel, input.prompt),
           },
         );
         const responseText = await response.text();

@@ -38,6 +38,9 @@ test('federation credentials, idempotent creation, registered projects and sessi
       assert.deepEqual(await nativeControlService.transcribe(Buffer.from('spoken fixture')), { text: 'spoken fixture' });
       assert.equal(transcribe.mock.calls[0].arguments[0].userId, Number(userDb.getSingleActiveUser()!.id));
       assert.equal(transcribe.mock.calls[0].arguments[0].audio.mimeType, 'audio/mp4');
+      assert.equal('prompt' in transcribe.mock.calls[0].arguments[0], false);
+      await nativeControlService.transcribe(Buffer.from('hinted'), 'VibeSpace, Mission Control.');
+      assert.equal(transcribe.mock.calls.at(-1)!.arguments[0].prompt, 'VibeSpace, Mission Control.');
       await assert.rejects(nativeControlService.transcribe(Buffer.alloc(0)), /between 1 byte and 8 MiB/);
       await nativeControlService.transcribe(Buffer.alloc(6 * 1024 * 1024));
       await assert.rejects(nativeControlService.transcribe(Buffer.alloc(8 * 1024 * 1024 + 1)), /between 1 byte and 8 MiB/);
@@ -52,6 +55,17 @@ test('federation credentials, idempotent creation, registered projects and sessi
       assert.equal(response.status, 200);
       assert.deepEqual(await response.json(), { text: 'route fixture' });
       assert.deepEqual(routeTranscribe.mock.calls[0].arguments[0], Buffer.from('route fixture'));
+      assert.equal(routeTranscribe.mock.calls[0].arguments[1], undefined);
+      const hinted = await fetch(`http://127.0.0.1:${port}/native/transcribe`, { method: 'POST',
+        headers: { 'content-type': 'audio/mp4', 'x-mc-federation-token': 'x'.repeat(40), 'x-mc-stt-prompt': encodeURIComponent('VibeSpace, Кванта.') },
+        body: Buffer.from('hinted') });
+      assert.equal(hinted.status, 200); await hinted.arrayBuffer();
+      assert.equal(routeTranscribe.mock.calls.at(-1)!.arguments[1], 'VibeSpace, Кванта.');
+      const malformed = await fetch(`http://127.0.0.1:${port}/native/transcribe`, { method: 'POST',
+        headers: { 'content-type': 'audio/mp4', 'x-mc-federation-token': 'x'.repeat(40), 'x-mc-stt-prompt': '%E0%A4%A' },
+        body: Buffer.from('malformed') });
+      assert.equal(malformed.status, 200); await malformed.arrayBuffer();
+      assert.equal(routeTranscribe.mock.calls.at(-1)!.arguments[1], undefined);
       const searchResponse = await fetch(`http://127.0.0.1:${port}/native/search/sessions?q=legacy&archived=all&matchType=phrase&limit=7`, {
         headers: { 'x-mc-federation-token': 'x'.repeat(40) },
       });

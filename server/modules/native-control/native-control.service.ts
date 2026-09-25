@@ -139,7 +139,7 @@ export const nativeControlService = {
   async search(input: Parameters<typeof sessionConversationsSearchService.searchPage>[0]) {
     return sessionConversationsSearchService.searchPage(input);
   },
-  async transcribe(bytes: Buffer) {
+  async transcribe(bytes: Buffer, prompt?: string) {
     const user = userDb.getSingleActiveUser();
     if (!user) throw new Error('Operator is unavailable');
     if (!Buffer.isBuffer(bytes) || bytes.length === 0 || bytes.length > 8 * 1024 * 1024) {
@@ -148,6 +148,7 @@ export const nativeControlService = {
     const result = await voiceService.transcribe({
       userId: Number(user.id),
       audio: { bytes, mimeType: 'audio/mp4', fileName: 'recording.m4a' },
+      ...(prompt ? { prompt } : {}),
     });
     if (!result.ok) throw new Error(result.error);
     return result.value;

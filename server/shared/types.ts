@@ -1382,6 +1382,11 @@ export type VoiceService = {
     userId: number;
     audio: VoiceAudioUpload;
     presetId?: string;
+    /**
+     * Vocabulary hint forwarded to the transcription model as its `prompt`
+     * (Mission Control's operator glossary). Empty or absent sends none.
+     */
+    prompt?: string;
   }): Promise<VoiceServiceResult<{ text: string }>>;
   synthesizeSpeech(input: {
     userId: number;

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { createVoiceService } from '../voice.service.js';
+import { createVoiceService, MAX_TRANSCRIPTION_PROMPT_LENGTH } from '../voice.service.js';
 
 const defaults = {
   presetLabel: 'OpenAI',
@@ -115,6 +115,31 @@ test('transcribes with injected fetch and user credential/model overrides', asyn
   assert.equal(requestedUrl, 'https://voice.example/v1/audio/transcriptions');
   assert.equal((requestedOptions?.headers as Record<string, string>).Authorization, 'Bearer request-key');
   assert.equal((requestedOptions?.body as FormData).get('model'), 'custom-whisper');
+});
+
+test('forwards a vocabulary prompt only when one is given, bounded by the owner cap', async () => {
+  const bodies: FormData[] = [];
+  const service = createVoiceService({
+    defaults,
+    transcriptionPresets: [],
+    loadUserOverrides: () => ({}),
+    timeoutMs: 1_000,
+    fetchBackend: async (_url, options) => {
+      bodies.push(options?.body as FormData);
+      return new Response(JSON.stringify({ text: 'ok' }), { status: 200 });
+    },
+  });
+  const audio = { bytes: Buffer.from('audio'), mimeType: 'audio/mp4', fileName: 'recording.m4a' };
+
+  await service.transcribe({ userId: 1, audio, prompt: 'VibeSpace, Mission Control, Кванта.' });
+  await service.transcribe({ userId: 1, audio });
+  await service.transcribe({ userId: 1, audio, prompt: '   ' });
+  await service.transcribe({ userId: 1, audio, prompt: 'x'.repeat(5_000) });
+
+  assert.equal(bodies[0].get('prompt'), 'VibeSpace, Mission Control, Кванта.');
+  assert.equal(bodies[1].get('prompt'), null);
+  assert.equal(bodies[2].get('prompt'), null);
+  assert.equal((bodies[3].get('prompt') as string).length, MAX_TRANSCRIPTION_PROMPT_LENGTH);
 });
 
 test('routes a selected transcription preset to its server-owned backend and model', async () => {
