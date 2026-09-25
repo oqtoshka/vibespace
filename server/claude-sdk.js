@@ -2448,6 +2448,18 @@ async function startPersistentSession(command, options, ws) {
     // actually runs on is whatever its transcript says — the runtime's first
     // `init` corrects this (see runSessionLoop).
     model: resolvedModel || options.model || CLAUDE_FALLBACK_MODELS.DEFAULT,
+    // The pick this CLI process was launched with, so applyPendingModelSwitch
+    // never re-applies what is already in effect. Without the seed a stored
+    // "Default" pick was pushed again as `setModel(undefined)` by every new live
+    // instance (idle resume, server restart), and the SDK wrote each one into
+    // the transcript as a user `/model default` + "Set model to …" pair.
+    // Mirrors mapCliOptionsToSDK: a concrete value went out as `--model`; an
+    // explicit "default", or no model on a brand-new conversation, sent no flag
+    // and so runs the CLI's own default. A resume with no pick sent no flag
+    // either, but that keeps the *transcript's* model, not the default — so it
+    // seeds nothing, and a later "Default" pick still takes.
+    appliedModelOverride: resolvedModel
+      || (options.resume === true ? null : CLAUDE_FALLBACK_MODELS.DEFAULT),
     // Kept on the session so reuseSession can apply mid-session permission mode
     // switches (canUseTool reads permissionMode from this same object).
     sdkOptions,
