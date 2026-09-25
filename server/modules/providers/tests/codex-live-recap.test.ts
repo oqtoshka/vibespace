@@ -31,6 +31,8 @@ rl.on('line', line => {
   send({ id: req.id, result: { thread: { id: req.params.threadId || 'helper-' + process.pid + '-' + (++serial) } } });
  }
  if (req.method === 'model/list') send({ id: req.id, result: { data: [] } });
+ if (req.method === 'config/read') send({ id: req.id, result: { config: {} } });
+ if (req.method === 'thread/unsubscribe') send({ id: req.id, result: { status: 'unsubscribed' } });
  if (req.method === 'turn/start') {
   const threadId = req.params.threadId;
   const helper = threadId !== 'live';

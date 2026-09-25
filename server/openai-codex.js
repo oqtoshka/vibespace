@@ -38,6 +38,71 @@ const CODEX_METADATA_MODEL = 'gpt-5.6-luna';
 
 const activeCodexSessions = new Map();
 
+// Title/recap helpers run on one long-lived app-server. Every thread it loads
+// starts its own copy of each configured MCP server (Playwright via npm,
+// mc-reporter, …) and keeps it until the thread is unloaded, so helpers are
+// bounded three ways: they start with MCP disabled, the thread is released as
+// soon as the helper turn ends, and only a few run at once. The 2026-09-12
+// incident had one private app-server holding 613 such children.
+const CODEX_BACKGROUND_HELPER_CONCURRENCY = 2;
+// Housekeeping RPCs around a helper must not stall it for the full 30 s default.
+const CODEX_HELPER_HOUSEKEEPING_TIMEOUT_MS = 5_000;
+let runningBackgroundHelpers = 0;
+const waitingBackgroundHelpers = [];
+
+async function acquireBackgroundHelperSlot() {
+  if (runningBackgroundHelpers < CODEX_BACKGROUND_HELPER_CONCURRENCY) {
+    runningBackgroundHelpers += 1;
+    return;
+  }
+  // The releasing helper hands its slot straight to the next waiter.
+  await new Promise((resolve) => waitingBackgroundHelpers.push(resolve));
+}
+
+function releaseBackgroundHelperSlot() {
+  const next = waitingBackgroundHelpers.shift();
+  if (next) {
+    next();
+  } else {
+    runningBackgroundHelpers -= 1;
+  }
+}
+
+/**
+ * A config overlay turning off every MCP server Codex would load for `cwd`
+ * (user and project config alike). A helper only reads the text it is handed,
+ * so it needs none of them. Best effort: if the config cannot be read the
+ * helper still runs, and is still released afterwards.
+ */
+async function readHelperMcpOverrides(appServer, cwd) {
+  try {
+    const response = await appServer.request('config/read', { cwd }, CODEX_HELPER_HOUSEKEEPING_TIMEOUT_MS);
+    const names = Object.keys(response?.config?.mcp_servers || {});
+    if (names.length === 0) return null;
+    return Object.fromEntries(names.map((name) => [name, { enabled: false }]));
+  } catch (error) {
+    console.warn('[Codex] Could not read MCP config for a background helper:', error?.message || error);
+    return null;
+  }
+}
+
+/**
+ * Unload a helper thread from the shared app-server. Without this the thread —
+ * and every MCP child it spawned — lives as long as the app-server does.
+ * `thread/unsubscribe` is per connection, so it is only safe for a thread this
+ * call started itself: a resumed thread may be carrying someone's live turn.
+ */
+async function releaseEphemeralThread(appServer, threadId) {
+  try {
+    await appServer.request('thread/unsubscribe', { threadId }, CODEX_HELPER_HOUSEKEEPING_TIMEOUT_MS);
+  } catch (error) {
+    // A closed transport already took the thread (and its children) with it.
+    if (!appServer.closed) {
+      console.warn(`[Codex] Failed to release helper thread ${threadId}:`, error?.message || error);
+    }
+  }
+}
+
 // Latest account-wide rate-limit snapshot from the app-server
 // (`account/rateLimits/updated` is sparse: merge, never replace). Consulted
 // when a turn fails on `usageLimitExceeded` to find out when to resume.
@@ -432,6 +497,7 @@ function queueCodexRecap({ sessionId, cwd, locale, ws }) {
       ...helperOptions,
       permissionMode: 'default',
       ephemeral: true,
+      backgroundHelper: true,
     }, writer),
     onRecap: (result) => {
       sendMessage(ws, createNormalizedMessage({
@@ -471,6 +537,9 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
     ephemeral = false,
     private: isPrivate = false,
     launchOptions = null,
+    // Title/recap generation: no MCP servers, bounded concurrency (see
+    // CODEX_BACKGROUND_HELPER_CONCURRENCY). Only meaningful with `ephemeral`.
+    backgroundHelper = false,
   } = options;
 
   // The app-server is shared between sessions, so a per-session launch cannot
@@ -513,6 +582,7 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
         permissionMode: 'plan',
         ephemeral: true,
         private: true,
+        backgroundHelper: true,
       }, writer),
     });
   }
@@ -576,31 +646,47 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
     cancelRateLimitWake(sessionId).catch(() => {});
   }
 
+  // Set once this call has started a thread it alone owns; released in `finally`.
+  let ephemeralThread = null;
+  let holdsHelperSlot = false;
+
   try {
+    if (backgroundHelper && ephemeral) {
+      await acquireBackgroundHelperSlot();
+      holdsHelperSlot = true;
+    }
     // A private session is hosted by the app-server spawned with the private-variant env (see collectAgentEnv),
     // so the presence reporter's hooks exit before reading anything about it.
     // Ephemeral title/recap helpers have no user, rollout, or viewer and must
     // never appear as empty presence-board sessions. Host them on the same
     // private-variant app-server variant private sessions use.
     const appServer = await getCodexAppServer({ private: isPrivate || ephemeral });
+    const helperMcpOverrides = backgroundHelper && ephemeral && !sessionId
+      ? await readHelperMcpOverrides(appServer, workingDirectory)
+      : null;
+    const threadConfig = {
+      // Compact at the same point claude sessions do (see CODEX_AUTO_COMPACT_LIMIT).
+      // Only a thread being loaded takes config, so a resume re-applies it after
+      // an app-server restart.
+      ...(CODEX_AUTO_COMPACT_LIMIT ? {
+        model_auto_compact_token_limit: CODEX_AUTO_COMPACT_LIMIT,
+        model_auto_compact_token_limit_scope: 'total',
+      } : {}),
+      ...(helperMcpOverrides ? { mcp_servers: helperMcpOverrides } : {}),
+    };
     const threadOptions = {
       cwd: workingDirectory,
       model: resolvedModel,
       sandbox: sandboxMode,
       approvalPolicy: appServerApprovalPolicy,
-      // Compact at the same point claude sessions do (see CODEX_AUTO_COMPACT_LIMIT).
-      // Only a thread being loaded takes config, so a resume re-applies it after
-      // an app-server restart.
-      ...(CODEX_AUTO_COMPACT_LIMIT ? {
-        config: {
-          model_auto_compact_token_limit: CODEX_AUTO_COMPACT_LIMIT,
-          model_auto_compact_token_limit_scope: 'total',
-        },
-      } : {}),
+      ...(Object.keys(threadConfig).length > 0 ? { config: threadConfig } : {}),
     };
     const threadResponse = sessionId
       ? await appServer.request('thread/resume', { threadId: sessionId, ...threadOptions })
       : await appServer.request('thread/start', { ...threadOptions, ephemeral });
+    if (ephemeral && !sessionId && threadResponse?.thread?.id) {
+      ephemeralThread = { appServer, threadId: threadResponse.thread.id };
+    }
     capturedSessionId = threadResponse?.thread?.id || sessionId || null;
     if (!capturedSessionId) {
       throw new Error('Codex app-server did not return a thread id');
@@ -924,6 +1010,15 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
       if (session) {
         session.status = session.status === 'aborted' ? 'aborted' : 'completed';
       }
+    }
+    if (ephemeralThread) {
+      // Nobody can steer, abort or reopen a finished helper, so drop it from the
+      // registry too rather than keeping one entry per helper forever.
+      activeCodexSessions.delete(ephemeralThread.threadId);
+      await releaseEphemeralThread(ephemeralThread.appServer, ephemeralThread.threadId);
+    }
+    if (holdsHelperSlot) {
+      releaseBackgroundHelperSlot();
     }
     if (capturedSessionId && !ephemeral) {
       const session = activeCodexSessions.get(capturedSessionId);
