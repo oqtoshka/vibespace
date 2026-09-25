@@ -30,7 +30,9 @@ const TRAILING_PUNCTUATION = /[.,;:!?»”]+$/;
 const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 const buildPattern = (projectRoot: string | null): RegExp => {
-  const media = String.raw`MEDIA:\s*(${PATH_CHARS})`;
+  // A MEDIA line names one file and runs to the end of the line, so file
+  // names with spaces (`Отчёт за март.pptx`) survive.
+  const media = String.raw`MEDIA:[ \t]*([^\n<>"\`]*[^\s<>"\`])`;
   if (!projectRoot) {
     return new RegExp(media, 'g');
   }
@@ -103,4 +105,17 @@ export function remarkWorkspaceFileLinks(options: { projectRoot?: string | null 
   return (tree: MdNode) => {
     walk(tree, pattern);
   };
+}
+
+/**
+ * The file path behind a link href. Markdown rendering percent-encodes
+ * non-ASCII URLs (`Мир.pptx` → `%D0%9C…`), and the file API wants the real
+ * name. A stray `%` that is not an escape is kept as is.
+ */
+export function workspacePathFromHref(href: string): string {
+  try {
+    return decodeURIComponent(href);
+  } catch {
+    return href;
+  }
 }

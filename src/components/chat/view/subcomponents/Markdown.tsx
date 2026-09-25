@@ -21,7 +21,7 @@ import {
 import { resolveMarkdownLinkPath } from '../../../../utils/markdownLinks';
 import { projectFileExists } from '../../../../utils/projectFileLookup';
 import { downloadProjectFile } from '../../../../utils/downloadProjectFile';
-import { ATTACHMENT_LINK_ATTRIBUTE, remarkWorkspaceFileLinks } from '../../../../utils/remarkWorkspaceFileLinks';
+import { ATTACHMENT_LINK_ATTRIBUTE, remarkWorkspaceFileLinks, workspacePathFromHref } from '../../../../utils/remarkWorkspaceFileLinks';
 import { usePaletteOps } from '../../../../contexts/PaletteOpsContext';
 import { useTheme } from '../../../../contexts/ThemeContext';
 import MermaidDiagram from '../../../markdown/MermaidDiagram';
@@ -663,11 +663,12 @@ function MarkdownBase({
       }) => {
         if (attachment && href) {
           const openFile = onFileOpen ?? openFileInEditor;
+          const filePath = workspacePathFromHref(href);
           return (
             <FileAttachment
-              href={href}
+              href={filePath}
               projectId={projectId}
-              onOpen={openFile ? () => openFile(href) : null}
+              onOpen={openFile ? () => openFile(filePath) : null}
             />
           );
         }
