@@ -432,16 +432,18 @@ export async function generateSessionRecap({
   if (result.recap) {
     sessionsDb.updateSessionRecap(rowId, result.recap, total);
   }
-  // 'ai' never overwrites a name the user set by hand — that ranking lives in
-  // shouldReplaceSessionName and updateSessionCustomName honours it via
-  // name_source, so a manual rename survives every later regeneration.
-  if (result.title && session.name_source !== 'user') {
-    sessionsDb.updateSessionCustomName(rowId, result.title, 'ai');
-  }
+  // 'ai' never overwrites a name the user set by hand. `session` was read
+  // before the helper ran, which can take minutes, so a rename made meanwhile
+  // is only visible in `current` — and updateSessionCustomName refuses the
+  // write against a 'user' row anyway, so a manual rename survives every
+  // later regeneration.
+  const titled = result.title && current.name_source !== 'user'
+    ? sessionsDb.updateSessionCustomName(rowId, result.title, 'ai')
+    : false;
 
   onRecap?.({
     sessionId: rowId,
-    title: result.title || null,
+    title: titled ? result.title : null,
     recap: result.recap || null,
   });
   return more;

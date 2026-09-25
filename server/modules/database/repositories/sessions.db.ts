@@ -36,7 +36,11 @@ const SESSION_ROW_COLUMNS =
   'session_id, provider, provider_session_id, project_path, jsonl_path, custom_name, name_source, recap, recap_message_count, topic_memory, model, effort, isArchived, is_side, is_private, launch_options, created_at, updated_at';
 
 /**
- * SQL predicate: a transcript sync must not rename an app-created session.
+ * SQL predicate: a transcript sync must keep the stored name.
+ *
+ * A name the user chose (`name_source = 'user'`, set by a rename in the app,
+ * in Mission Control or by a plugin) is never replaced by any automatic
+ * source — a sync, a generated title, a recap. Only another rename replaces it.
  *
  * An app session (`session_id` differs from the provider id) is named from its
  * first message the moment it is created, and a later sync of the same
@@ -45,12 +49,14 @@ const SESSION_ROW_COLUMNS =
  * title (`name_source = 'provider'`), which is exactly what `name_source`
  * exists to let through. `nameArg`/`sourceArg` are the incoming values as SQL
  * expressions (a `?` placeholder or `excluded.<column>`); `prefix` qualifies
- * the existing row's columns in an upsert.
+ * the existing row's columns in an upsert. The user clause adds no
+ * placeholder, so callers bind the same parameters as before.
  */
 const KEEP_APP_SESSION_NAME_SQL = (nameArg: string, sourceArg: string = nameArg, prefix = ''): string =>
-  `${nameArg} IS NOT NULL AND ${prefix}custom_name IS NOT NULL
+  `COALESCE(${prefix}name_source, '') = 'user'
+   OR (${nameArg} IS NOT NULL AND ${prefix}custom_name IS NOT NULL
    AND ${prefix}provider_session_id IS NOT NULL AND ${prefix}session_id <> ${prefix}provider_session_id
-   AND COALESCE(${sourceArg}, 'derived') <> 'provider'`;
+   AND COALESCE(${sourceArg}, 'derived') <> 'provider')`;
 
 const SQLITE_UTC_TIMESTAMP_REGEX = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
 
@@ -391,17 +397,26 @@ export const sessionsDb = {
     return row?.permission_mode ?? null;
   },
 
+  /**
+   * Stores a session name with its provenance. A rename (`'user'`) always
+   * lands; any automatic source is refused when the row already carries a
+   * user-chosen name, whatever the caller read earlier — a recap or title
+   * helper that started before the rename must not race it back. Returns
+   * whether the name was written.
+   */
   updateSessionCustomName(
     sessionId: string,
     customName: string,
     nameSource: SessionNameSource = 'user'
-  ): void {
+  ): boolean {
     const db = getConnection();
-    db.prepare(
+    const result = db.prepare(
       `UPDATE sessions
        SET custom_name = ?, name_source = ?
-       WHERE session_id = ?`
-    ).run(customName, nameSource, sessionId);
+       WHERE session_id = ?
+         AND (? = 'user' OR COALESCE(name_source, '') <> 'user')`
+    ).run(customName, nameSource, sessionId, nameSource);
+    return result.changes > 0;
   },
 
   /**
