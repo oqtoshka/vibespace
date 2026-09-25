@@ -251,6 +251,45 @@ type SessionRow = NonNullable<ReturnType<typeof sessionsDb.getSessionById>>;
  * images, …). Shared by the live `chat.send` path and the server-initiated
  * queue drain so both start runs identically.
  */
+/**
+ * Everything that changes the workspace. A side question only reads, so this
+ * list is denied whatever the client sent; it is the browser `/btw` list plus
+ * the other editing tools.
+ */
+export const SIDE_SESSION_DISALLOWED_TOOLS = ['Edit', 'MultiEdit', 'Write', 'NotebookEdit', 'Bash', 'Task', 'KillShell', 'KillBash'];
+
+/**
+ * Server-enforced read-only execution for `is_side` rows (the browser `/btw`
+ * and Mission Control's native side questions alike — FEAT-SESSION-030). The
+ * row decides, never the client: plan mode, the deny list, no permission
+ * bypass, and the private-variant env so a side spawn never reports to a
+ * presence board. A native side question also names its parent; a Claude side
+ * session's first turn forks the parent's provider session.
+ */
+function applySideSessionPolicy(runtimeOptions: AnyRecord, session: SessionRow, provider: LLMProvider): void {
+  const clientTools = (runtimeOptions.toolsSettings ?? {}) as AnyRecord;
+  const clientDenied = Array.isArray(clientTools.disallowedTools)
+    ? clientTools.disallowedTools.filter((tool: unknown): tool is string => typeof tool === 'string')
+    : [];
+  runtimeOptions.permissionMode = 'plan';
+  runtimeOptions.toolsSettings = {
+    allowedTools: [],
+    disallowedTools: [...new Set([...SIDE_SESSION_DISALLOWED_TOOLS, ...clientDenied])],
+    skipPermissions: false,
+  };
+  runtimeOptions.skipPermissions = false;
+  runtimeOptions.private = true;
+  runtimeOptions.sideSession = true;
+  delete runtimeOptions.forkFrom;
+  if (provider === 'claude' && !session.provider_session_id) {
+    const parentId = sessionsDb.getSideParent(session.session_id);
+    const parent = parentId ? sessionsDb.getSessionById(parentId) : null;
+    if (parent && parent.provider === 'claude' && parent.is_private === 0 && parent.provider_session_id) {
+      runtimeOptions.forkFrom = parent.provider_session_id;
+    }
+  }
+}
+
 function buildRuntimeOptions(
   session: SessionRow,
   clientOptions: AnyRecord,
@@ -302,6 +341,8 @@ function buildRuntimeOptions(
     // that transport; internal one-shot helpers keep using the lighter CLI.
     enableMidTurnInjection: provider === 'opencode',
   };
+
+  if (session.is_side) applySideSessionPolicy(runtimeOptions, session, provider);
 
   // Claude background-job auto-resume: when a `run_in_background` job finishes
   // after its turn, the persistent session opens its OWN run for the resumed

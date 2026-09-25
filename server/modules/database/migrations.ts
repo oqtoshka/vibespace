@@ -506,6 +506,19 @@ const addSessionLaunchOptions = (db: Database): void => {
 };
 
 /**
+ * Links a native side question to the session it was asked from. Rows that
+ * predate native side questions have no parent, which is what NULL says.
+ */
+const addSessionParentSessionId = (db: Database): void => {
+  if (!tableExists(db, 'sessions')) {
+    return;
+  }
+
+  const columnNames = getTableInfo(db, 'sessions').map((column) => column.name);
+  addColumnToTableIfNotExists(db, 'sessions', columnNames, 'parent_session_id', 'TEXT');
+};
+
+/**
  * Adds the `model` column that records which model each session runs with.
  *
  * Left NULL for pre-existing rows on purpose: the model resolver falls back to
@@ -607,6 +620,7 @@ export const runMigrations = (db: Database) => {
     addSessionIsSide(db);
     addSessionIsPrivate(db);
     addSessionLaunchOptions(db);
+    addSessionParentSessionId(db);
     addSessionModelColumn(db);
     addSessionEffortColumn(db);
     addSessionPermissionModeColumn(db);

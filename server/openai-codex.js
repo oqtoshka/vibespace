@@ -392,7 +392,13 @@ function readCodexOptionOverride(name, allowed) {
  * @param {string} permissionMode - 'default', 'acceptEdits', or 'bypassPermissions'
  * @returns {object} - { sandboxMode, approvalPolicy }
  */
-function mapPermissionModeToCodexOptions(permissionMode) {
+export function mapPermissionModeToCodexOptions(permissionMode, { readOnly = false } = {}) {
+  // A side question only reads. Codex has no plan mode, so the guarantee is the
+  // read-only sandbox with no approvals to ask for — and no env override may
+  // widen it (Mission Control FEAT-SESSION-030).
+  if (readOnly) {
+    return { sandboxMode: 'read-only', approvalPolicy: 'never' };
+  }
   const options = (() => {
     switch (permissionMode) {
       case 'acceptEdits':
@@ -537,6 +543,7 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
     ephemeral = false,
     private: isPrivate = false,
     launchOptions = null,
+    sideSession = false,
     // Title/recap generation: no MCP servers, bounded concurrency (see
     // CODEX_BACKGROUND_HELPER_CONCURRENCY). Only meaningful with `ephemeral`.
     backgroundHelper = false,
@@ -562,7 +569,7 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
 
   const workingDirectory = cwd || projectPath || process.cwd();
 
-  const { sandboxMode, approvalPolicy } = mapPermissionModeToCodexOptions(permissionMode);
+  const { sandboxMode, approvalPolicy } = mapPermissionModeToCodexOptions(permissionMode, { readOnly: Boolean(sideSession) });
   // app-server removed the legacy `on-failure` spelling from its wire schema;
   // `on-request` is the closest supported interactive policy.
   const appServerApprovalPolicy = approvalPolicy === 'on-failure' ? 'on-request' : approvalPolicy;

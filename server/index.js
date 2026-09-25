@@ -67,7 +67,7 @@ import providerRoutes from './modules/providers/provider.routes.js';
 import { voiceRoutes } from '@/modules/voice/index.js';
 import browserUseRoutes from './modules/browser-use/browser-use.routes.js';
 import { nativeWorkspaceRoutes } from './modules/native-workspace/index.js';
-import { nativeControlRoutes } from './modules/native-control/index.js';
+import { nativeControlRoutes, registerSideRunControl, startSideQuestionSweeper } from './modules/native-control/index.js';
 import { assetsRoutes } from './modules/assets/index.js';
 import browserUseMcpRoutes from './modules/browser-use/browser-use-mcp.routes.js';
 import { browserUseService } from './modules/browser-use/browser-use.service.js';
@@ -2710,6 +2710,13 @@ async function startServer() {
         // Needs the `peer_outbox` table, so strictly after initializeDatabase();
         // its first pass re-attempts rows a restart left pending.
         startPeerOutboxSweeper();
+        // Native side questions: close/sweep abort only the side session's own
+        // run, and unpromoted ones idle for 24 hours are removed hourly.
+        registerSideRunControl({
+          abort: (sessionId) => serverAbortRun(sessionId),
+          isRunning: (sessionId) => chatRunRegistry.isProcessing(sessionId),
+        });
+        startSideQuestionSweeper();
         // Operator-owned initial project registrations are idempotent at boot.
         for (const projectPath of (process.env.VS_DEFAULT_PROJECTS || '').split(',').filter(Boolean)) {
           if (!projectsDb.getProjectPath(projectPath)) {
