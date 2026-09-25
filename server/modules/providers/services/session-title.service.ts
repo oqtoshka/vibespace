@@ -106,7 +106,7 @@ async function runInitialTitleGeneration(input: InitialSessionTitleInput): Promi
   const current = sessionsDb.getSessionById(session.session_id);
   if (!current || (current.custom_name && current.name_source !== 'derived')) return null;
 
-  sessionsDb.updateSessionCustomName(session.session_id, title, 'ai');
+  if (!sessionsDb.updateSessionCustomName(session.session_id, title, 'ai')) return null;
   (input.onTitle ?? broadcastSessionUpdate)(session.session_id, title);
   return title;
 }
