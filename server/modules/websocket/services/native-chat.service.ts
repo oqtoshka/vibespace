@@ -204,7 +204,9 @@ export function handleNativeChat(ws: WebSocket, request: AuthenticatedWebSocketR
         // Preserve descriptors until the shared runtime boundary. Flattening
         // them into <files_input> here discarded MIME information, so a native
         // PNG reached providers and history as a generic downloadable file.
-        const attachments = data.attachments === undefined
+        // A side send with attachments was refused above; the phone still sends
+        // `attachments: []`, and the resolver's session guard rejects side rows.
+        const attachments = side || data.attachments === undefined
           ? []
           : resolveNativeAttachments(sessionId, data.attachments);
         command.options = {
