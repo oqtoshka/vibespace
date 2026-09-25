@@ -28,9 +28,13 @@ type ChatRunStatus = 'running' | 'completed';
  * - `lastSeq` / `events`: the per-run event log. Every live event gets a
  *   monotonically increasing `seq` and is buffered so a reconnecting client
  *   can replay exactly the events it missed via `chat.subscribe`.
+ * - `runId`: `seq` restarts at 1 for every run, so a position is only
+ *   meaningful together with the run it belongs to. Clients echo it back on
+ *   `chat.subscribe`; a position from another run replays from the start.
  */
 type ChatRun = {
   appSessionId: string;
+  runId: string;
   provider: LLMProvider;
   providerSessionId: string | null;
   status: ChatRunStatus;
@@ -283,6 +287,7 @@ function decorateAndRecordEvent(run: ChatRun, message: NormalizedMessage): Norma
     ...message,
     sessionId: run.appSessionId,
     seq: run.lastSeq,
+    runId: run.runId,
   };
 
   if (message.kind === 'complete') {
@@ -470,6 +475,7 @@ function createBroadcastRun(appSessionId: string): ChatRun | null {
 
   const run: ChatRun = {
     appSessionId,
+    runId: randomUUID(),
     provider,
     providerSessionId,
     status: 'running',
@@ -523,6 +529,7 @@ export const chatRunRegistry = {
 
     const run: ChatRun = {
       appSessionId: input.appSessionId,
+      runId: randomUUID(),
       provider: input.provider,
       providerSessionId: input.providerSessionId,
       status: 'running',

@@ -12,6 +12,7 @@ import type { LLMProvider } from '../../../types/app';
 import { useChatProviderState } from '../hooks/useChatProviderState';
 import { useChatSessionState } from '../hooks/useChatSessionState';
 import { useChatRealtimeHandlers } from '../hooks/useChatRealtimeHandlers';
+import { replayPosition, type ReplayCursorMap } from '../utils/chatReplayCursor';
 import { useChatComposerState } from '../hooks/useChatComposerState';
 import { useBackgroundTasks } from '../hooks/useBackgroundTasks';
 import { useBtwSession } from '../hooks/useBtwSession';
@@ -63,7 +64,7 @@ function ChatInterface({
   // Highest live `seq` observed per session. Written by the realtime handler
   // on every sequenced frame, read whenever a `chat.subscribe` is sent so the
   // server replays only the events this client actually missed.
-  const lastSeqRef = useRef(new Map<string, number>());
+  const replayCursorRef = useRef<ReplayCursorMap>(new Map());
 
   const resetStreamingState = useCallback(() => {
     if (streamTimerRef.current) {
@@ -157,7 +158,7 @@ function ChatInterface({
     onSessionIdle,
     resetStreamingState,
     statusCheckSentAtRef,
-    lastSeqRef,
+    replayCursorRef,
     sessionStore,
   });
 
@@ -339,7 +340,7 @@ function ChatInterface({
       type: 'chat.subscribe',
       sessions: [{
         sessionId: selectedSession.id,
-        lastSeq: lastSeqRef.current.get(selectedSession.id) ?? 0,
+        ...replayPosition(replayCursorRef.current, selectedSession.id),
       }],
     });
   }, [isActive, requestLatestMessages, selectedProject, selectedSession, sendMessage]);
@@ -361,7 +362,7 @@ function ChatInterface({
     onPermissionModeResolved: handlePermissionModeResolved,
     streamTimerRef,
     accumulatedStreamRef,
-    lastSeqRef,
+    replayCursorRef,
     statusCheckSentAtRef,
     onSessionProcessing,
     onSessionIdle,
@@ -380,9 +381,16 @@ function ChatInterface({
       return undefined;
     }
     const recover = () => {
-      if (document.visibilityState === 'visible') {
-        void handleWebSocketReconnect();
+      if (document.visibilityState !== 'visible') {
+        return;
       }
+      // Returning to the tab fires both visibilitychange and focus; one
+      // resubscribe is enough.
+      const lastSentAt = statusCheckSentAtRef.current.get(selectedSession.id) ?? 0;
+      if (Date.now() - lastSentAt < 2000) {
+        return;
+      }
+      void handleWebSocketReconnect();
     };
     document.addEventListener('visibilitychange', recover);
     window.addEventListener('focus', recover);

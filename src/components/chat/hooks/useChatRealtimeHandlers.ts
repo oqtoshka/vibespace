@@ -8,6 +8,7 @@ import type { MarkSessionIdle, MarkSessionProcessing } from '../../../hooks/useS
 import type { PendingPermissionRequest } from '../types/types';
 import type { ProjectSession, LLMProvider } from '../../../types/app';
 import type { SessionStore, NormalizedMessage, ContextUsage } from '../../../stores/useSessionStore';
+import { acceptSequencedEvent, type ReplayCursorMap } from '../utils/chatReplayCursor';
 
 const isActionablePermissionRequest = (request: { toolName?: unknown } | null | undefined): boolean => {
   return request?.toolName !== 'ExitPlanMode' && request?.toolName !== 'exit_plan_mode';
@@ -41,12 +42,13 @@ interface UseChatRealtimeHandlersArgs {
    */
   accumulatedStreamRef: MutableRefObject<Map<string, string>>;
   /**
-   * Highest live `seq` observed per session. Essential for reconnect catch-up:
-   * `chat.subscribe` sends this value as `lastSeq` so the server replays only
-   * the events this client actually missed. Written here on every sequenced
-   * frame; read wherever a `chat.subscribe` is sent (session open, reconnect).
+   * Replay position (run id + highest live `seq`) per session. Essential for
+   * reconnect catch-up: `chat.subscribe` sends it so the server replays only
+   * the events this client actually missed, and replayed events already
+   * applied are dropped here. Written on every sequenced frame; read wherever
+   * a `chat.subscribe` is sent (session open, reconnect, tab refocus).
    */
-  lastSeqRef: MutableRefObject<Map<string, number>>;
+  replayCursorRef: MutableRefObject<ReplayCursorMap>;
   /** When each session's `chat.subscribe` was last sent; guards stale idle acks. */
   statusCheckSentAtRef: MutableRefObject<Map<string, number>>;
   onSessionProcessing?: MarkSessionProcessing;
@@ -82,7 +84,7 @@ export function useChatRealtimeHandlers({
   onPermissionModeResolved,
   streamTimerRef,
   accumulatedStreamRef,
-  lastSeqRef,
+  replayCursorRef,
   statusCheckSentAtRef,
   onSessionProcessing,
   onSessionIdle,
@@ -117,11 +119,14 @@ export function useChatRealtimeHandlers({
       const activeViewSessionId = activeViewSessionIdRef.current;
       const sid = (typeof msg.sessionId === 'string' && msg.sessionId) || activeViewSessionId;
 
-      // Record replay progress for every sequenced live event.
+      // Record replay progress for every sequenced live event, and drop one
+      // this client already applied: a resubscribe (reconnect, tab refocus)
+      // replays the running run, and appended `stream_delta` text would
+      // otherwise show up twice until a refresh reloaded history.
       if (sid && typeof msg.seq === 'number') {
-        const known = lastSeqRef.current.get(sid) ?? 0;
-        if (msg.seq > known) {
-          lastSeqRef.current.set(sid, msg.seq);
+        const runId = typeof msg.runId === 'string' ? msg.runId : null;
+        if (!acceptSequencedEvent(replayCursorRef.current, sid, msg.seq, runId)) {
+          return;
         }
       }
 
@@ -465,7 +470,7 @@ export function useChatRealtimeHandlers({
     onPermissionModeResolved,
     streamTimerRef,
     accumulatedStreamRef,
-    lastSeqRef,
+    replayCursorRef,
     statusCheckSentAtRef,
     onSessionProcessing,
     onSessionIdle,

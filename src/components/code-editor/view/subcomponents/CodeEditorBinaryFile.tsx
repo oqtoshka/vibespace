@@ -1,3 +1,6 @@
+import { Download } from 'lucide-react';
+import { useState } from 'react';
+import { downloadProjectFile } from '../../../../utils/downloadProjectFile';
 import type { CodeEditorFile } from '../../types/types';
 
 type CodeEditorBinaryFileProps = {
@@ -8,6 +11,8 @@ type CodeEditorBinaryFileProps = {
   onToggleFullscreen: () => void;
   title: string;
   message: string;
+  downloadLabel: string;
+  downloadFailedLabel: string;
 };
 
 export default function CodeEditorBinaryFile({
@@ -18,7 +23,39 @@ export default function CodeEditorBinaryFile({
   onToggleFullscreen,
   title,
   message,
+  downloadLabel,
+  downloadFailedLabel,
 }: CodeEditorBinaryFileProps) {
+  const [downloading, setDownloading] = useState(false);
+  const [downloadError, setDownloadError] = useState<string | null>(null);
+  const canDownload = Boolean(file.projectId);
+
+  const handleDownload = async () => {
+    if (!file.projectId || downloading) return;
+    setDownloading(true);
+    setDownloadError(null);
+    try {
+      await downloadProjectFile(file.projectId, file.path, file.name);
+    } catch {
+      setDownloadError(downloadFailedLabel);
+    } finally {
+      setDownloading(false);
+    }
+  };
+
+  const downloadIconButton = canDownload ? (
+    <button
+      type="button"
+      onClick={handleDownload}
+      disabled={downloading}
+      className="flex items-center justify-center rounded-md p-1.5 text-gray-600 hover:bg-gray-100 hover:text-gray-900 disabled:opacity-50 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-white"
+      title={downloadLabel}
+      aria-label={downloadLabel}
+    >
+      <Download className="h-4 w-4" />
+    </button>
+  ) : null;
+
   const binaryContent = (
     <div className="flex h-full w-full flex-col items-center justify-center bg-background p-8 text-muted-foreground">
       <div className="flex max-w-md flex-col items-center gap-4 text-center">
@@ -31,12 +68,29 @@ export default function CodeEditorBinaryFile({
           <h3 className="mb-2 text-lg font-medium text-foreground">{title}</h3>
           <p className="text-sm text-muted-foreground">{message}</p>
         </div>
-        <button
-          onClick={onClose}
-          className="mt-4 rounded-md bg-primary px-4 py-2 text-sm text-primary-foreground transition-colors hover:bg-primary/90"
-        >
-          Close
-        </button>
+        {downloadError && <p className="text-sm text-destructive">{downloadError}</p>}
+        <div className="mt-4 flex gap-2">
+          {canDownload && (
+            <button
+              type="button"
+              onClick={handleDownload}
+              disabled={downloading}
+              className="inline-flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-60"
+            >
+              <Download className="h-4 w-4" />
+              {downloadLabel}
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={onClose}
+            className={canDownload
+              ? 'rounded-md border border-border px-4 py-2 text-sm text-foreground transition-colors hover:bg-muted'
+              : 'rounded-md bg-primary px-4 py-2 text-sm text-primary-foreground transition-colors hover:bg-primary/90'}
+          >
+            Close
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -48,16 +102,19 @@ export default function CodeEditorBinaryFile({
           <div className="flex min-w-0 flex-1 items-center gap-2">
             <h3 className="truncate text-sm font-medium text-gray-900 dark:text-white">{file.name}</h3>
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="flex items-center justify-center rounded-md p-1.5 text-gray-600 hover:bg-gray-100 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-white"
-            title="Close"
-          >
-            <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-            </svg>
-          </button>
+          <div className="flex shrink-0 items-center gap-0.5">
+            {downloadIconButton}
+            <button
+              type="button"
+              onClick={onClose}
+              className="flex items-center justify-center rounded-md p-1.5 text-gray-600 hover:bg-gray-100 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-white"
+              title="Close"
+            >
+              <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
         </div>
         {binaryContent}
       </div>
@@ -80,6 +137,7 @@ export default function CodeEditorBinaryFile({
             <h3 className="truncate text-sm font-medium text-gray-900 dark:text-white">{file.name}</h3>
           </div>
           <div className="flex shrink-0 items-center gap-0.5">
+            {downloadIconButton}
             <button
               type="button"
               onClick={onToggleFullscreen}
