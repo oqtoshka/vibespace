@@ -52,6 +52,12 @@ rl.on('line', (line) => {
     case 'thread/resume':
       send({ id: message.id, result: { thread: { id: message.params.threadId } } });
       break;
+    case 'config/read':
+      send({ id: message.id, result: { config: {} } });
+      break;
+    case 'thread/unsubscribe':
+      send({ id: message.id, result: { status: 'unsubscribed' } });
+      break;
     case 'turn/start':
       activeTurnId = 'turn-' + (++turnCounter);
       send({ id: message.id, result: { turn: { id: activeTurnId, status: 'inProgress', items: [] } } });
