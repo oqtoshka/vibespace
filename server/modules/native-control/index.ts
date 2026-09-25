@@ -5,3 +5,7 @@ export { nativeModelOptions, nativePermissionOptions, setNativePermissionSelecti
 
 // Native workspace reuses the private federation authentication boundary.
 export { authenticateNativeControl } from './native-control.service.js';
+
+// Composition root injects run control and starts the sweep; the websocket
+// send path reads a side row's parent context.
+export { registerSideRunControl, sideSessionContext, startSideQuestionSweeper } from './side-questions.service.js';

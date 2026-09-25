@@ -2,6 +2,7 @@ import express from 'express';
 
 import type { LLMProvider } from '@/shared/index.js';
 
+import { sideQuestionsService } from './side-questions.service.js';
 import { authenticateNativeControl, nativeControlService, nativeModelOptions, nativePermissionOptions } from './native-control.service.js';
 
 const router = express.Router();
@@ -52,6 +53,10 @@ router.get('/search/sessions', route(async (req, res) => {
     cursor: one(req.query.cursor),
   }));
 }));
+// Side questions (FEAT-SESSION-030): create under a parent, promote, close.
+router.post('/sessions/:id/side', route((req, res) => { res.json(sideQuestionsService.create(String(req.params.id), req.body)); }));
+router.post('/sessions/:id/promote', route((req, res) => { res.json(sideQuestionsService.promote(String(req.params.id))); }));
+router.delete('/sessions/:id/side', route(async (req, res) => { res.json(await sideQuestionsService.close(String(req.params.id))); }));
 router.get('/sessions/:id', route((req, res) => { res.json(nativeControlService.describe(String(req.params.id))); }));
 router.get('/sessions/:id/owner-capability', route((req, res) => {
   res.json(nativeControlService.ownerCapability(String(req.params.id)));

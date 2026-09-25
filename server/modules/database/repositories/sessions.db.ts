@@ -697,6 +697,33 @@ export const sessionsDb = {
     ).run(isArchived ? 1 : 0, sessionId);
   },
 
+  /** Native side questions record the session they were asked from. */
+  setSideParent(sessionId: string, parentSessionId: string): void {
+    getConnection().prepare('UPDATE sessions SET parent_session_id = ? WHERE session_id = ? AND is_side = 1')
+      .run(parentSessionId, sessionId);
+  },
+
+  getSideParent(sessionId: string): string | null {
+    const row = getConnection().prepare('SELECT parent_session_id FROM sessions WHERE session_id = ?')
+      .get(sessionId) as { parent_session_id: string | null } | undefined;
+    return row?.parent_session_id ?? null;
+  },
+
+  /** A side question's turn keeps it out of the 24-hour sweep. */
+  touchSideSession(sessionId: string): void {
+    getConnection().prepare('UPDATE sessions SET updated_at = CURRENT_TIMESTAMP WHERE session_id = ? AND is_side = 1')
+      .run(sessionId);
+  },
+
+  /** Unpromoted native side questions with no turn since the cutoff (SQLite UTC timestamps). */
+  listStaleSideSessions(olderThan: Date): SessionRow[] {
+    const cutoff = olderThan.toISOString().replace('T', ' ').slice(0, 19);
+    return getConnection().prepare(
+      `SELECT ${SESSION_ROW_COLUMNS} FROM sessions
+       WHERE is_side = 1 AND parent_session_id IS NOT NULL AND updated_at < ?`,
+    ).all(cutoff) as SessionRow[];
+  },
+
   deleteSessionById(sessionId: string): boolean {
     const db = getConnection();
     return db.prepare('DELETE FROM sessions WHERE session_id = ?').run(sessionId).changes > 0;

@@ -531,6 +531,14 @@ function mapCliOptionsToSDK(options = {}) {
   // Map resume session
   if (sessionId) {
     sdkOptions.resume = sessionId;
+  } else if (typeof options.forkFrom === 'string' && options.forkFrom) {
+    // A native side question's first turn forks the parent conversation: the
+    // SDK copies the parent transcript into a NEW session id, so the parent's
+    // file and its live turn are never touched (Mission Control FEAT-SESSION-030).
+    // The parent's live process is not reused either — this session is keyed
+    // by the side row's own app id.
+    sdkOptions.resume = options.forkFrom;
+    sdkOptions.forkSession = true;
   }
 
   return sdkOptions;
@@ -1872,6 +1880,13 @@ function makeCanUseTool(session, sdkOptions, emitNotification) {
       }
     }
 
+    // A side question only reads: anything the allow list did not already
+    // admit is denied on the spot instead of parking a prompt nobody on the
+    // side panel can answer (and nobody on the parent should see).
+    if (session.options?.sideSession) {
+      return { behavior: 'deny', message: 'A side question is read-only; this tool is not available here' };
+    }
+
     const requestId = createRequestId();
     session.writer.send(createNormalizedMessage({ kind: 'permission_request', requestId, toolName, input, sessionId: sid(), provider: 'claude' }));
     emitNotification(createNotificationEvent({
@@ -2756,10 +2771,17 @@ async function queryClaudeSDK(command, rawOptions = {}, ws, context = undefined)
     const liveKey = sessionId || options.appSessionId;
     if (liveKey) {
       const existing = getSession(liveKey);
-      if (existing && !existing.ended && existing.input && !existing.input.closed) {
+      if (existing && !existing.ended && existing.input && !existing.input.closed
+          && Boolean(existing.options?.sideSession) === Boolean(options.sideSession)) {
         return await reuseSession(existing, command, options, ws);
       }
-      if (existing) {
+      if (existing && !existing.ended && existing.input && !existing.input.closed) {
+        // A promoted side question: its live process was spawned read-only and
+        // off the board. Respawn it (resuming its own transcript) so the next
+        // turn runs as the ordinary session it has become.
+        endSession(existing, 'side-session-promoted');
+        removeSession(liveKey);
+      } else if (existing) {
         // A dead/closing session still lingering in the map — drop it.
         removeSession(liveKey);
       }

@@ -154,6 +154,9 @@ CREATE TABLE IF NOT EXISTS sessions (
     -- declaring plugin's business. Decided at creation and never changed,
     -- exactly like is_private. NULL when none were chosen.
     launch_options TEXT,
+    -- The session a side question was asked from, for native side questions
+    -- (FEAT-SESSION-030). Kept after promotion as provenance; NULL otherwise.
+    parent_session_id TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (session_id),
