@@ -24,8 +24,17 @@ router.get('/models/:provider', route(async (req, res) => {
   const provider = req.params.provider as LLMProvider;
   res.json({ ...await nativeModelOptions(provider), ...nativePermissionOptions(provider) });
 }));
+/**
+ * Mission Control relays the operator's transcription glossary as a
+ * percent-encoded `x-mc-stt-prompt` header. A malformed encoding is dropped
+ * rather than failing the recording: the hint is optional, the audio is not.
+ */
+const sttPrompt = (value: unknown): string | undefined => {
+  if (typeof value !== 'string' || !value) return undefined;
+  try { return decodeURIComponent(value).trim() || undefined; } catch { return undefined; }
+};
 router.post('/transcribe', express.raw({ type: 'audio/mp4', limit: '8mb' }), route(async (req, res) => {
-  res.json(await nativeControlService.transcribe(req.body));
+  res.json(await nativeControlService.transcribe(req.body, sttPrompt(req.headers['x-mc-stt-prompt'])));
 }));
 router.post('/sessions', route(async (req, res) => { res.json(await nativeControlService.create(req.body)); }));
 router.get('/search/sessions', route(async (req, res) => {
