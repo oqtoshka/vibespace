@@ -17,6 +17,7 @@ import {
   type AgentLaunchContributor,
   type LaunchOptionDeclaration,
 } from '@/shared/agent-env.js';
+import { registerTaskLedgerSource, type TaskLedgerSource } from '@/shared/task-ledger-sources.js';
 import type {
   CheckedEnqueueResult,
   PeerAdmissionInput,
@@ -295,6 +296,12 @@ export type PluginHost = {
    * host shows and stores it; contributors read it from `context.launchOptions`.
    */
   registerLaunchOption?: (declaration: LaunchOptionDeclaration) => () => void;
+  /**
+   * See shared/task-ledger-sources.ts — answer for a session's task list when
+   * the plugin keeps it outside the runtime; the session supervisor then nudges
+   * on that list instead of the runtime's own.
+   */
+  registerTaskLedgerSource?: (source: TaskLedgerSource) => () => void;
   /** Runs on server shutdown and on deactivation, in registration order. */
   onShutdown: (callback: () => void | Promise<void>) => void;
 };
@@ -403,6 +410,11 @@ function buildHost(name: string, pluginDir: string, deps: HostExtensionDependenc
       // Stamped here, not trusted from the plugin: a banner's action id is
       // looked up in this plugin's own manifest and nobody else's.
       const unregister = registerLaunchOption({ ...declaration, pluginName: name });
+      state.unregisterContributors.push(unregister);
+      return unregister;
+    },
+    registerTaskLedgerSource: (source) => {
+      const unregister = registerTaskLedgerSource(source);
       state.unregisterContributors.push(unregister);
       return unregister;
     },
