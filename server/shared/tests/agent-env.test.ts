@@ -139,6 +139,20 @@ test('collectAgentLaunchExtras concatenates instructions, merges MCP servers, su
   }
 });
 
+test('collectAgentLaunchExtras: a disallowed tool leaves the session and the allow list', async () => {
+  const { collectAgentLaunchExtras, registerAgentLaunchContributor } = await import('@/shared/agent-env.js');
+  const unregisterA = registerAgentLaunchContributor(() => ({ allowedTools: ['mcp__a__plan', 'TodoWrite'], disallowedTools: ['TaskCreate', 'TodoWrite', 'TaskCreate', ''] }));
+  const unregisterB = registerAgentLaunchContributor(() => ({ disallowedTools: ['TaskUpdate'] }));
+  try {
+    const extras = collectAgentLaunchExtras({ provider: 'claude', scope: 'session' });
+    assert.deepEqual(extras.disallowedTools, ['TaskCreate', 'TodoWrite', 'TaskUpdate']);
+    assert.deepEqual(extras.allowedTools, ['mcp__a__plan']);
+  } finally {
+    unregisterA();
+    unregisterB();
+  }
+});
+
 test('launch options: only declared ids are kept, values are true or a small object, strict refuses the unknown', async () => {
   const { listLaunchOptions, normalizeLaunchOptions, parseStoredLaunchOptions, registerLaunchOption } = await import('@/shared/agent-env.js');
   assert.throws(() => registerLaunchOption({ id: 'Bad Id', label: 'x' }));

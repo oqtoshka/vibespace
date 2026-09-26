@@ -283,6 +283,13 @@ export type AgentLaunchExtras = {
    * to a tool the operator never configured and cannot see coming.
    */
   allowedTools?: string[];
+  /**
+   * Exact built-in tool names the session must not have at all — removed from
+   * the model's context, not merely prompted for. For a plugin that replaces
+   * one of the harness's own facilities with its tools (a task list kept
+   * somewhere else, say) and cannot let the agent keep two of them.
+   */
+  disallowedTools?: string[];
 };
 export type AgentLaunchContributor = (context: AgentEnvContext) => AgentLaunchExtras | null | undefined | void;
 
@@ -301,10 +308,16 @@ export function registerAgentLaunchContributor(contributor: AgentLaunchContribut
  * are concatenated in registration order, MCP servers merged (later wins on a
  * name clash). A throwing contributor is logged and skipped, never fatal.
  */
-export function collectAgentLaunchExtras(context: AgentEnvContext): { instructions: string; mcpServers: Record<string, unknown>; allowedTools: string[] } {
+export function collectAgentLaunchExtras(context: AgentEnvContext): {
+  instructions: string;
+  mcpServers: Record<string, unknown>;
+  allowedTools: string[];
+  disallowedTools: string[];
+} {
   const blocks: string[] = [];
   let mcpServers: Record<string, unknown> = {};
   const allowedTools = new Set<string>();
+  const disallowedTools = new Set<string>();
   for (const contributor of agentLaunchContributors) {
     let extra: AgentLaunchExtras | null | undefined | void;
     try {
@@ -319,8 +332,16 @@ export function collectAgentLaunchExtras(context: AgentEnvContext): { instructio
     if (Array.isArray(extra.allowedTools)) {
       for (const tool of extra.allowedTools) if (typeof tool === 'string' && tool) allowedTools.add(tool);
     }
+    if (Array.isArray(extra.disallowedTools)) {
+      for (const tool of extra.disallowedTools) if (typeof tool === 'string' && tool) disallowedTools.add(tool);
+    }
   }
-  return { instructions: blocks.join('\n\n'), mcpServers, allowedTools: [...allowedTools] };
+  return {
+    instructions: blocks.join('\n\n'),
+    mcpServers,
+    allowedTools: [...allowedTools].filter((tool) => !disallowedTools.has(tool)),
+    disallowedTools: [...disallowedTools],
+  };
 }
 
 /**
