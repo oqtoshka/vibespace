@@ -172,6 +172,7 @@ export default tseslint.config(
             "server/shared/claude-task-ledger.ts",
             "server/shared/codex-plan-ledger.js",
             "server/shared/waiting-on-user.ts",
+            "server/shared/task-ledger-sources.ts",
             "server/shared/opencode-failure.ts",
             "server/shared/opencode-token-usage.ts",
             "server/shared/cursor-todo-ledger.ts",

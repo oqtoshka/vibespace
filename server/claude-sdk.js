@@ -35,6 +35,7 @@ import { providerAuthService } from './modules/providers/services/provider-auth.
 import { createCompleteMessage, createNormalizedMessage, resolveConfiguredContextWindow } from './shared/utils.js';
 import { rememberContextUsage } from './shared/context-usage-cache.js';
 import { readOpenClaudeTasks } from './shared/claude-task-ledger.js';
+import { readExternalTaskLedger } from './shared/task-ledger-sources.js';
 import { scheduleSessionRecap } from './modules/providers/index.js';
 import { recordSessionActivity, recordSessionEnd, recordPendingInteraction } from './services/session-restore.service.js';
 import { scheduleRateLimitWake, cancelRateLimitWake, isRateLimitWakePending } from './services/rate-limit-wake.service.js';
@@ -436,7 +437,7 @@ function mapCliOptionsToSDK(options = {}) {
   // but being explicit ensures forward compatibility and clarity.
   sdkOptions.tools = { type: 'preset', preset: 'claude_code' };
 
-  sdkOptions.disallowedTools = settings.disallowedTools || [];
+  sdkOptions.disallowedTools = [...(settings.disallowedTools || [])];
 
   // Map model. Valid values: sonnet, opus, haiku, opusplan, opus[1m], fable.
   //
@@ -481,7 +482,7 @@ function mapCliOptionsToSDK(options = {}) {
     launchOptions: options.launchOptions ?? null,
   };
   const launchExtras = options.ephemeral
-    ? { instructions: '', mcpServers: {}, allowedTools: [] }
+    ? { instructions: '', mcpServers: {}, allowedTools: [], disallowedTools: [] }
     : collectAgentLaunchExtras(launchContext);
   sdkOptions.pluginMcpServers = launchExtras.mcpServers;
   // Tools a plugin vouches for — its own MCP server's, normally — join the
@@ -489,6 +490,12 @@ function mapCliOptionsToSDK(options = {}) {
   for (const tool of launchExtras.allowedTools) {
     if (!sdkOptions.allowedTools.includes(tool)) sdkOptions.allowedTools.push(tool);
   }
+  // Tools a plugin takes away — a built-in it replaces with its own — leave
+  // the session entirely, whatever the operator's allow list says.
+  for (const tool of launchExtras.disallowedTools) {
+    if (!sdkOptions.disallowedTools.includes(tool)) sdkOptions.disallowedTools.push(tool);
+  }
+  sdkOptions.allowedTools = sdkOptions.allowedTools.filter((tool) => !launchExtras.disallowedTools.includes(tool));
 
   // Map system prompt configuration
   const vibespacePreamble = [buildVibespaceSystemPrompt(cwd), launchExtras.instructions]
@@ -1200,7 +1207,10 @@ async function maybeContinueOpenTasks(session) {
     return false;
   }
 
-  const open = await readOpenClaudeTasks(session.sessionId);
+  // A plugin that keeps this session's task list elsewhere (and took the
+  // native task tools away) answers instead of the runtime's own ledger.
+  const external = readExternalTaskLedger({ provider: 'claude', sessionId: session.sessionId });
+  const open = external ? external.open : await readOpenClaudeTasks(session.sessionId);
   if (open.length === 0) return false;
 
   // A task marked waitingOnUser is parked on input only the user can give —
@@ -1230,7 +1240,8 @@ async function maybeContinueOpenTasks(session) {
   // Stall detection: a nudge that produced no tool calls AND left the ledger
   // untouched did nothing. Two of those in a row mean nudging isn't helping.
   const nudges = session.taskNudges;
-  const fingerprint = actionable.map((t) => `${t.id}:${t.status}`).join(',');
+  // The subject is part of the fingerprint: parking an item by renaming it is progress.
+  const fingerprint = actionable.map((t) => `${t.id}:${t.status}:${t.subject}`).join(',');
   if (nudges.count > 0 && fingerprint === nudges.fingerprint && session.toolUseCount === nudges.toolCount) {
     nudges.stalls += 1;
   } else {
@@ -1260,7 +1271,7 @@ async function maybeContinueOpenTasks(session) {
   ensureRunForServerStartedTurn(session, 'Resuming — open tasks remain');
   console.log(`[claude tasks] session ${session.sessionId}: idle with ${actionable.length} open task(s) — nudging (${nudges.count}/${TASK_NUDGE_MAX})`);
   await applyPendingModelSwitch(session);
-  session.input.push(makeUserMessage(buildOpenTasksNudge(actionable)));
+  session.input.push(makeUserMessage(buildOpenTasksNudge(actionable, external)));
   return true;
 }
 
@@ -1366,7 +1377,15 @@ function scheduleWakeForRateLimitedTurn(session) {
   return true;
 }
 
-function buildOpenTasksNudge(open) {
+function buildOpenTasksNudge(open, external = null) {
+  if (external) {
+    return [
+      `[session supervisor] Automated check: this session went idle, but its ${external.listName} still has open items:`,
+      ...open.map((t) => `- #${t.id} [${t.status}] ${t.subject}`),
+      '',
+      external.guidance,
+    ].join('\n');
+  }
   return [
     '[session supervisor] Automated check: this session went idle, but its task list still has open items:',
     ...open.map((t) => `- #${t.id} [${t.status}] ${t.subject}`),
