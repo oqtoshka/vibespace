@@ -1,4 +1,4 @@
-import { readCodexPlanState, readCursorTaskState, readOpenCodeTaskState, WAITING_ON_USER_MARKER } from '../../../shared/index.js';
+import { readCodexPlanState, readCursorTaskState, readExternalTaskLedger, readOpenCodeTaskState, WAITING_ON_USER_MARKER } from '../../../shared/index.js';
 import { notifyRunFailed } from '../../notifications/index.js';
 
 type LedgerItem = { id: string | number; status: string; subject: string; waitingOnUser?: boolean };
@@ -41,7 +41,15 @@ const LEDGERS: Record<string, Ledger> = {
 // fires, so the map only ever holds sessions mid-continuation.
 const states = new Map<string, ContinuationState>();
 
-function buildOpenTasksNudge(open: LedgerItem[], { listName, closeHow }: Ledger) {
+function buildOpenTasksNudge(open: LedgerItem[], { listName, closeHow, guidance }: Ledger & { guidance?: string }) {
+  if (guidance) {
+    return [
+      `[session supervisor] Automated check: this turn ended, but your ${listName} still has open items:`,
+      ...open.map((t) => `- #${t.id} [${t.status}] ${t.subject}`),
+      '',
+      guidance,
+    ].join('\n');
+  }
   return [
     `[session supervisor] Automated check: this turn ended, but your ${listName} still has open items:`,
     ...open.map((t) => `- #${t.id} [${t.status}] ${t.subject}`),
@@ -63,10 +71,16 @@ function buildOpenTasksNudge(open: LedgerItem[], { listName, closeHow }: Ledger)
  * give-up paths notify the user before returning null.
  */
 export function planTaskContinuation({ provider, sessionId, cwd = null, userId = null, sessionName = null }: { provider: string; sessionId: string; cwd?: string | null; userId?: string | number | null; sessionName?: string | null }) {
-  const ledger = LEDGERS[provider];
-  if (!TASK_NUDGE_ENABLED || !ledger || !sessionId) return null;
+  const native = LEDGERS[provider];
+  if (!TASK_NUDGE_ENABLED || !native || !sessionId) return null;
 
-  const { open, activity } = ledger.read(sessionId, { cwd });
+  // A plugin that keeps this session's task list elsewhere answers instead of
+  // the runtime's own ledger (shared/task-ledger-sources.ts).
+  const external = readExternalTaskLedger({ provider: provider as 'codex' | 'opencode' | 'cursor', sessionId });
+  const ledger = external
+    ? { ...native, listName: external.listName, guidance: external.guidance }
+    : native;
+  const { open, activity } = external ?? native.read(sessionId, { cwd });
   const key = `${provider}:${sessionId}`;
   if (open.length === 0) {
     states.delete(key);
