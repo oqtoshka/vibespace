@@ -1121,7 +1121,20 @@ function handleChatSubscribe(
     // replaying them (e.g. after a page reload where the client's lastSeq is
     // 0) would duplicate messages the history fetch already returned.
     if (isProcessing) {
+      // A `permission_request` is a live prompt, not a transcript row: the
+      // authoritative list of unanswered ones is the snapshot above. Replaying
+      // an already-answered request resurrects its card on the reconnecting
+      // client, which then cannot dismiss it — the runtime rejects any second
+      // response for a request it has already resolved.
+      const stillPending = new Set(pendingPermissions.map((permission) => (
+        permission && typeof permission === 'object' && 'requestId' in permission
+          ? String((permission as AnyRecord).requestId)
+          : ''
+      )));
       for (const event of chatRunRegistry.replayEvents(sessionId, replayAfter)) {
+        if (event.kind === 'permission_request' && !stillPending.has(String(event.requestId ?? ''))) {
+          continue;
+        }
         sendJson(ws, event);
       }
     }
