@@ -8,6 +8,8 @@ import { downloadProjectFile } from '../../../../utils/downloadProjectFile';
 import { useFileDiskVersion } from '../../../../hooks/useFileDiskVersion';
 import type { CodeEditorFile } from '../../types/types';
 
+import PdfPages from './PdfPages';
+
 type CodeEditorPdfViewProps = {
   file: CodeEditorFile;
   isSidebar: boolean;
@@ -17,12 +19,12 @@ type CodeEditorPdfViewProps = {
 };
 
 /**
- * Renders a PDF inline using the browser's native PDF viewer.
+ * Renders a PDF inline, every page stacked vertically (see PdfPages).
  *
  * The file bytes are fetched through the authenticated blob endpoint
- * (`GET /api/projects/:id/files/content`) and turned into an object URL — an
- * `<iframe src>` can't carry the app's Bearer token, so we can't point it at the
- * API directly. The object URL is revoked on unmount / when the file changes.
+ * (`GET /api/projects/:id/files/content`), or converted from an office document
+ * by `/api/office-preview`. The object URL only backs the Download button and is
+ * revoked on unmount / when the file changes.
  */
 export default function CodeEditorPdfView({
   file,
@@ -37,6 +39,7 @@ export default function CodeEditorPdfView({
   const [downloading, setDownloading] = useState(false);
   const [loadedKey, setLoadedKey] = useState('');
   const [objectUrl, setObjectUrl] = useState<string | null>(null);
+  const [pdfBytes, setPdfBytes] = useState<ArrayBuffer | null>(null);
   const [status, setStatus] = useState<'loading' | 'loaded' | 'error'>('loading');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const objectUrlRef = useRef<string | null>(null);
@@ -72,6 +75,7 @@ export default function CodeEditorPdfView({
         const url = URL.createObjectURL(blob);
         objectUrlRef.current = url;
         setObjectUrl(url);
+        setPdfBytes(bytes);
         setLoadedKey(sourceKey);
         setStatus('loaded');
       } catch (error) {
@@ -130,12 +134,16 @@ export default function CodeEditorPdfView({
           {t(office ? 'office.loading' : 'filePreview.loading')}
         </div>
       ) : (
-        <iframe
-          key={objectUrl ?? ''}
-          src={objectUrl ?? ''}
-          title={file.name}
-          className="h-full w-full border-0"
-        />
+        pdfBytes && (
+          <PdfPages
+            data={pdfBytes}
+            title={file.name}
+            onError={message => {
+              setStatus('error');
+              setErrorMessage(message);
+            }}
+          />
+        )
       )}
     </div>
   );
