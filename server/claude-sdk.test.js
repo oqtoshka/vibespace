@@ -7,9 +7,14 @@ import {
   isClaudeSDKSessionActive,
   isClaudeSDKSessionAlive,
   __setClaudeQueryImpl,
+  __setNativeWakeGraceMs,
   __setRewindHistoryImpl,
 } from './claude-sdk.js';
 import { __getSessionRestoreEntry } from './services/session-restore.service.js';
+
+// Most fakes below model a runtime that does not wake the agent itself, so the
+// fallback delivery must fire — immediately, for the test.
+__setNativeWakeGraceMs(0);
 
 const delay = (ms) => new Promise((resolve) => { setTimeout(resolve, ms); });
 
@@ -48,6 +53,13 @@ const assistantText = (text, sessionId) => ({
   session_id: sessionId,
   message: { role: 'assistant', content: [{ type: 'text', text }] },
 });
+// A main-thread assistant turn that launches background job toolu_1 — the
+// notification is only the main thread's business when its tool_use is.
+const launchBackground = (text, sessionId) => ({
+  type: 'assistant',
+  session_id: sessionId,
+  message: { role: 'assistant', content: [{ type: 'text', text }, { type: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: 'poll', run_in_background: true } }] },
+});
 const resultMsg = (sessionId) => ({ type: 'result', subtype: 'success', session_id: sessionId });
 const taskStarted = (taskId, sessionId) => ({ type: 'system', subtype: 'task_started', task_id: taskId, description: 'poll host', session_id: sessionId });
 const taskNotification = (taskId, sessionId) => ({
@@ -65,7 +77,7 @@ function makeFakeQuery(sessionId, captured) {
       // the turn while the job is still running.
       const first = await reader.next();
       captured.firstUserMessage = first.value;
-      yield assistantText('launching background poll', sessionId);
+      yield launchBackground('launching background poll', sessionId);
       yield taskStarted('t1', sessionId);
       yield resultMsg(sessionId);
 
@@ -140,7 +152,7 @@ test('a turn that dies mid-stream still emits its terminal complete', async () =
     const reader = prompt[Symbol.asyncIterator]();
     const gen = (async function* () {
       await reader.next();
-      yield assistantText('launching background poll', sessionId);
+      yield launchBackground('launching background poll', sessionId);
       yield taskStarted('t1', sessionId);
       yield resultMsg(sessionId);                 // turn 1 settles → complete #1
 
@@ -232,7 +244,7 @@ test('stop interrupts the turn but keeps the session and its background job aliv
     const reader = prompt[Symbol.asyncIterator]();
     const gen = (async function* () {
       await reader.next();
-      yield assistantText('launched background job, still working', sessionId);
+      yield launchBackground('launched background job, still working', sessionId);
       yield taskStarted('t1', sessionId);
       await interruptedResult;             // stay mid-turn until the stop interrupts us
       yield resultMsg(sessionId);          // interrupt ends the turn (job t1 still running)
@@ -456,6 +468,190 @@ test('isClaudeSDKSessionActive reflects an in-flight turn, not mere liveness', a
     released();
     await turn;
     assert.equal(isClaudeSDKSessionActive(sessionId), false, 'session is idle after the turn');
+  } finally {
+    await abortClaudeSDKSession(sessionId).catch(() => {});
+    __setClaudeQueryImpl(null);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Task notifications: one per child task, only the parent's own, no echo of
+// what the runtime already delivered.
+// ---------------------------------------------------------------------------
+
+// A fake whose script is a list of steps; every message the session pushes
+// after the first user turn is recorded in `pushed`.
+function makeScriptedQuery(steps, pushed) {
+  return ({ prompt }) => {
+    const reader = prompt[Symbol.asyncIterator]();
+    const gen = (async function* () {
+      await reader.next();
+      (async () => {
+        for (;;) {
+          const next = await reader.next();
+          if (next.done) return;
+          pushed.push(next.value);
+        }
+      })().catch(() => {});
+      for (const step of steps) {
+        if (typeof step === 'function') await step();
+        else yield step;
+      }
+      await new Promise(() => {}); // stay alive like a real session
+    })();
+    gen.interrupt = async () => {};
+    gen.setModel = async () => {};
+    gen.setPermissionMode = async () => {};
+    return gen;
+  };
+}
+
+const notification = (sessionId, fields) => ({
+  type: 'system', subtype: 'task_notification', output_file: '/tmp/out.txt',
+  status: 'completed', summary: 'done', session_id: sessionId, ...fields,
+});
+
+test('when the runtime wakes the agent itself, VibeSpace adds no second notification but opens the run', async () => {
+  const sessionId = 'native-wake-1';
+  const pushed = [];
+  __setNativeWakeGraceMs(150);
+  __setClaudeQueryImpl(makeScriptedQuery([
+    launchBackground('launching background poll', sessionId),
+    taskStarted('t1', sessionId),
+    resultMsg(sessionId),
+    () => delay(20),
+    notification(sessionId, { task_id: 't1', tool_use_id: 'toolu_1' }),
+    // The runtime's own wake: a fresh init, then the resumed turn.
+    { type: 'system', subtype: 'init', session_id: sessionId, model: 'claude-opus-5-5' },
+    assistantText('woken by the runtime', sessionId),
+    resultMsg(sessionId),
+  ], pushed));
+  const resumeWriter = makeRecordingWriter();
+  let acquired = 0;
+  const writer = makeRecordingWriter();
+
+  try {
+    await queryClaudeSDK('watch the host', {
+      sessionId, ephemeral: false,
+      acquireResumeRun: () => { acquired += 1; return resumeWriter; },
+    }, writer);
+    await resumeWriter.waitFor((msgs) => msgs.some((m) => m.kind === 'complete'), 'resumed turn settles');
+    assert.ok(resumeWriter.messages.some((m) => JSON.stringify(m).includes('woken by the runtime')),
+      'the runtime-started turn streams under its own run');
+    assert.equal(acquired, 1, 'exactly one resume run');
+    await delay(250); // past the grace window
+    assert.deepEqual(pushed, [], 'nothing was pushed on top of the runtime\'s own notification');
+  } finally {
+    __setNativeWakeGraceMs(0);
+    await abortClaudeSDKSession(sessionId).catch(() => {});
+    __setClaudeQueryImpl(null);
+  }
+});
+
+test("a subagent's own background task never wakes the parent", async () => {
+  const sessionId = 'child-task-1';
+  const pushed = [];
+  __setClaudeQueryImpl(makeScriptedQuery([
+    launchBackground('launching an agent', sessionId), // main thread: toolu_1
+    // The subagent's own Bash call streams with parent_tool_use_id set.
+    {
+      type: 'assistant', session_id: sessionId, parent_tool_use_id: 'toolu_1',
+      message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_child', name: 'Bash', input: { command: 'make test' } }] },
+    },
+    resultMsg(sessionId),
+    () => delay(20),
+    notification(sessionId, { task_id: 'bchild', tool_use_id: 'toolu_child', summary: 'make test' }),
+    notification(sessionId, { task_id: 'bunknown', tool_use_id: 'toolu_never_seen' }),
+  ], pushed));
+  const writer = makeRecordingWriter();
+
+  try {
+    await queryClaudeSDK('delegate the tests', { sessionId, ephemeral: false }, writer);
+    await delay(80);
+    assert.deepEqual(pushed, [], 'no notification was forwarded to the parent');
+    assert.equal(isClaudeSDKSessionActive(sessionId), false, 'the parent stays idle');
+  } finally {
+    await abortClaudeSDKSession(sessionId).catch(() => {});
+    __setClaudeQueryImpl(null);
+  }
+});
+
+test('a repeated task_notification for the same (task id, tool-use id) is delivered once', async () => {
+  const sessionId = 'dup-notification-1';
+  const pushed = [];
+  __setClaudeQueryImpl(makeScriptedQuery([
+    launchBackground('launching background poll', sessionId),
+    taskStarted('t1', sessionId),
+    resultMsg(sessionId),
+    () => delay(20),
+    notification(sessionId, { task_id: 't1', tool_use_id: 'toolu_1' }),
+    notification(sessionId, { task_id: 't1', tool_use_id: 'toolu_1' }),
+    () => delay(40),
+    assistantText('resumed', sessionId),
+    resultMsg(sessionId),
+    () => delay(20),
+    notification(sessionId, { task_id: 't1', tool_use_id: 'toolu_1' }),
+  ], pushed));
+  const writer = makeRecordingWriter();
+
+  try {
+    await queryClaudeSDK('watch the host', { sessionId, ephemeral: false }, writer);
+    await delay(150);
+    assert.equal(pushed.length, 1, 'one delivery for one completion');
+    assert.match(pushed[0].message.content, /<task-id>t1<\/task-id>/);
+    assert.match(pushed[0].message.content, /<tool-use-id>toolu_1<\/tool-use-id>/);
+  } finally {
+    await abortClaudeSDKSession(sessionId).catch(() => {});
+    __setClaudeQueryImpl(null);
+  }
+});
+
+test('a task that is started again may notify again (an agent resumed with SendMessage)', async () => {
+  const sessionId = 'renotify-1';
+  const pushed = [];
+  __setClaudeQueryImpl(makeScriptedQuery([
+    launchBackground('launching an agent', sessionId),
+    taskStarted('a1', sessionId),
+    resultMsg(sessionId),
+    () => delay(20),
+    notification(sessionId, { task_id: 'a1', tool_use_id: 'toolu_1', summary: 'first report' }),
+    () => delay(40),
+    assistantText('asking it for more', sessionId),
+    taskStarted('a1', sessionId),
+    resultMsg(sessionId),
+    () => delay(20),
+    notification(sessionId, { task_id: 'a1', tool_use_id: 'toolu_1', summary: 'second report' }),
+  ], pushed));
+  const writer = makeRecordingWriter();
+
+  try {
+    await queryClaudeSDK('delegate', { sessionId, ephemeral: false }, writer);
+    await delay(200);
+    assert.equal(pushed.length, 2);
+    assert.match(pushed[1].message.content, /second report/);
+  } finally {
+    await abortClaudeSDKSession(sessionId).catch(() => {});
+    __setClaudeQueryImpl(null);
+  }
+});
+
+test('a stopped task does not wake the agent', async () => {
+  const sessionId = 'stopped-task-1';
+  const pushed = [];
+  __setClaudeQueryImpl(makeScriptedQuery([
+    launchBackground('launching a monitor', sessionId),
+    taskStarted('t1', sessionId),
+    resultMsg(sessionId),
+    () => delay(20),
+    notification(sessionId, { task_id: 't1', tool_use_id: 'toolu_1', status: 'stopped' }),
+  ], pushed));
+  const writer = makeRecordingWriter();
+
+  try {
+    await queryClaudeSDK('watch the host', { sessionId, ephemeral: false }, writer);
+    await delay(80);
+    assert.deepEqual(pushed, []);
+    assert.equal(isClaudeSDKSessionActive(sessionId), false);
   } finally {
     await abortClaudeSDKSession(sessionId).catch(() => {});
     __setClaudeQueryImpl(null);

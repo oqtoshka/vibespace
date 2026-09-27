@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { queryClaudeSDK, abortClaudeSDKSession, __setClaudeQueryImpl } from './claude-sdk.js';
+import { queryClaudeSDK, abortClaudeSDKSession, __setClaudeQueryImpl, __setNativeWakeGraceMs } from './claude-sdk.js';
+
+// These fakes model a runtime that does not wake the agent itself, so the
+// fallback delivery must fire — immediately, for the test.
+__setNativeWakeGraceMs(0);
 
 // A turn-admission reservation (a host cleanup holding the session for a few
 // seconds) refuses the background auto-resume run. The resume must wait for the
@@ -25,6 +29,13 @@ function makeWriter() {
 const assistantText = (text, sessionId) => ({
   type: 'assistant', session_id: sessionId, message: { role: 'assistant', content: [{ type: 'text', text }] },
 });
+// A main-thread assistant turn that launches background job toolu_1 — the
+// notification is only the main thread's business when its tool_use is.
+const launchBackground = (text, sessionId) => ({
+  type: 'assistant',
+  session_id: sessionId,
+  message: { role: 'assistant', content: [{ type: 'text', text }, { type: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: 'poll', run_in_background: true } }] },
+});
 const resultMsg = (sessionId) => ({ type: 'result', subtype: 'success', session_id: sessionId });
 
 function makeFakeQuery(sessionId, captured) {
@@ -32,7 +43,7 @@ function makeFakeQuery(sessionId, captured) {
     const reader = prompt[Symbol.asyncIterator]();
     const gen = (async function* () {
       await reader.next();
-      yield assistantText('launching background poll', sessionId);
+      yield launchBackground('launching background poll', sessionId);
       yield { type: 'system', subtype: 'task_started', task_id: 't1', description: 'poll', session_id: sessionId };
       yield resultMsg(sessionId);
       yield {

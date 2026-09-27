@@ -69,6 +69,80 @@ function parseTaskNotification(content: string): ParsedTaskNotification | null {
   };
 }
 
+type TaskNotificationEntry = {
+  taskId?: string;
+  toolUseId?: string;
+  status: string;
+  summary?: string;
+  result: string;
+};
+
+function parseTaskNotificationBlocks(content: string): TaskNotificationEntry[] {
+  return [...content.matchAll(/<task-notification>([\s\S]*?)<\/task-notification>/g)].map((block) => {
+    const body = block[1];
+    return {
+      taskId: body.match(/<task-id>([^<]*)<\/task-id>/)?.[1]?.trim() || undefined,
+      toolUseId: body.match(/<tool-use-id>([^<]*)<\/tool-use-id>/)?.[1]?.trim() || undefined,
+      status: body.match(/<status>([^<]*)<\/status>/)?.[1]?.trim() || 'completed',
+      summary: body.match(/<summary>([^<]*)<\/summary>/)?.[1]?.trim(),
+      result: extractTaskResult(body),
+    };
+  });
+}
+
+/** One child task = one (task id, tool-use id) pair; null when either is missing. */
+function taskNotificationKey(entry: { taskId?: string; toolUseId?: string }): string | null {
+  return entry.taskId && entry.toolUseId ? `${entry.taskId}\u0000${entry.toolUseId}` : null;
+}
+
+type TaskNotificationPlan = {
+  /** key -> the (message index, block index) whose card survives. */
+  survivor: Map<string, { messageIndex: number; blockIndex: number }>;
+  /** key -> every entry for that task, in transcript order. */
+  group: Map<string, TaskNotificationEntry[]>;
+  /** Tool-use ids issued inside a subagent (its own Bash/Monitor calls). */
+  childToolIds: Set<string>;
+};
+
+/**
+ * One card per child task in the parent chat.
+ *
+ * The same completion reaches the transcript more than once: the Claude runtime
+ * wakes the parent with its own `<task-notification>`, VibeSpace (before it
+ * stopped injecting) pushed a second copy, and an agent resumed with
+ * SendMessage notifies again under the same task id. Every copy after the first
+ * rendered as another card plus another copy of the agent's result. Here each
+ * (task id, tool-use id) keeps only its LAST notification — the one carrying the
+ * final status — and the earlier ones fold into it.
+ *
+ * Notifications for a subagent's own tool calls (its background shells) were
+ * forwarded to the parent too; they belong to the child's thread, not here.
+ */
+function planTaskNotifications(messages: NormalizedMessage[]): TaskNotificationPlan {
+  const survivor: TaskNotificationPlan['survivor'] = new Map();
+  const group: TaskNotificationPlan['group'] = new Map();
+  const childToolIds = new Set<string>();
+
+  messages.forEach((msg, messageIndex) => {
+    if (Array.isArray(msg.subagentTools)) {
+      for (const tool of msg.subagentTools as Array<{ toolId?: unknown }>) {
+        if (tool && typeof tool.toolId === 'string') childToolIds.add(tool.toolId);
+      }
+    }
+    if (msg.kind !== 'text' || msg.role !== 'user' || !msg.content?.includes('<task-notification>')) return;
+    parseTaskNotificationBlocks(msg.content).forEach((entry, blockIndex) => {
+      const key = taskNotificationKey(entry);
+      if (!key) return;
+      survivor.set(key, { messageIndex, blockIndex });
+      const entries = group.get(key);
+      if (entries) entries.push(entry);
+      else group.set(key, [entry]);
+    });
+  });
+
+  return { survivor, group, childToolIds };
+}
+
 /**
  * Convert NormalizedMessage[] from the session store into ChatMessage[]
  * that the existing UI components expect.
@@ -93,7 +167,9 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
     }
   }
 
-  for (const msg of messages) {
+  const notificationPlan = planTaskNotifications(messages);
+
+  for (const [messageIndex, msg] of messages.entries()) {
     const sharedMetadata = {
       // Carry the source id through so the UI can derive a stable React key
       // (getIntrinsicMessageKey prefers `id`). Without it, text/thinking rows
@@ -125,20 +201,33 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
           // missed those, leaking raw XML into the transcript). A message can
           // batch several completions — capture them all; a block with no
           // closing tag (truncated) is handled by the single-shot fallback.
-          const notifBlocks = [...content.matchAll(/<task-notification>([\s\S]*?)<\/task-notification>/g)];
+          const notifBlocks = parseTaskNotificationBlocks(content);
           const fallbackNotif = notifBlocks.length === 0 ? parseTaskNotification(content) : null;
           if (notifBlocks.length > 0 || fallbackNotif) {
-            const taskNotifications = notifBlocks.length > 0
-              ? notifBlocks.map((block) => {
-                  const body = block[1];
-                  return {
-                    taskId: body.match(/<task-id>([^<]*)<\/task-id>/)?.[1]?.trim(),
-                    status: body.match(/<status>([^<]*)<\/status>/)?.[1]?.trim() || 'completed',
-                    summary: body.match(/<summary>([^<]*)<\/summary>/)?.[1]?.trim(),
-                    result: extractTaskResult(body),
-                  };
+            let folded = 0;
+            const taskNotifications: TaskNotificationEntry[] = notifBlocks.length > 0
+              ? notifBlocks.flatMap((entry, blockIndex) => {
+                  if (entry.toolUseId && notificationPlan.childToolIds.has(entry.toolUseId)) return [];
+                  const key = taskNotificationKey(entry);
+                  if (!key) {
+                    folded += 1;
+                    return [entry];
+                  }
+                  const survivor = notificationPlan.survivor.get(key);
+                  if (survivor?.messageIndex !== messageIndex || survivor.blockIndex !== blockIndex) return [];
+                  // The surviving (last) notification: keep its status, but take
+                  // the latest result any copy carried — the runtime's copy has
+                  // the agent's report, a later bare copy may not.
+                  const entries = notificationPlan.group.get(key) ?? [entry];
+                  folded += entries.length;
+                  const result = entry.result
+                    || [...entries].reverse().find((candidate) => candidate.result)?.result
+                    || '';
+                  return [{ ...entry, result }];
                 })
               : [{ taskId: undefined, ...fallbackNotif! }];
+            // Every block was superseded by a later copy (or belongs to a child).
+            if (taskNotifications.length === 0) continue;
             const last = taskNotifications[taskNotifications.length - 1];
             converted.push({
               type: 'assistant',
@@ -148,6 +237,8 @@ export function normalizedToChatMessages(messages: NormalizedMessage[]): ChatMes
               taskStatus: last.status,
               taskId: taskNotifications[0].taskId,
               taskNotifications,
+              // How many notifications this card stands for (1 = no duplicates).
+              taskNotificationCount: notifBlocks.length > 0 ? folded : 1,
               ...sharedMetadata,
             });
             // Render each agent's result as a normal assistant message so its
