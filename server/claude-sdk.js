@@ -74,6 +74,13 @@ let queryImpl = query;
 function __setClaudeQueryImpl(fn) {
   queryImpl = fn || query;
 }
+// How long a background-task completion waits for the Claude runtime to wake the
+// agent on its own before VibeSpace delivers the notification itself (see
+// handleTaskNotification). The runtime starts its turn within milliseconds.
+let nativeWakeGraceMs = parseInt(process.env.CLAUDE_NATIVE_WAKE_GRACE_MS, 10) || 3000;
+function __setNativeWakeGraceMs(ms) {
+  nativeWakeGraceMs = Number.isFinite(ms) && ms >= 0 ? ms : 3000;
+}
 let rewindHistoryImpl = (sessionId, messageUuid) => sessionsService.rewindHistory(sessionId, messageUuid);
 function __setRewindHistoryImpl(fn) {
   rewindHistoryImpl = fn || ((sessionId, messageUuid) => sessionsService.rewindHistory(sessionId, messageUuid));
@@ -1422,6 +1429,9 @@ async function handleTaskMessage(session, message) {
   }
 
   if (message.subtype === 'task_started' && message.task_id) {
+    // A (re)started task may legitimately complete again — e.g. an agent resumed
+    // with SendMessage — so its next notification is a new event, not a repeat.
+    forgetTaskNotifications(session, message.task_id);
     // `background` is set true once the task survives a turn boundary (see
     // settleTurn). Foreground subagents complete before their parent turn ends,
     // so they never get marked and never trigger a (spurious) auto-resume.
@@ -1434,24 +1444,7 @@ async function handleTaskMessage(session, message) {
   }
 
   if (message.subtype === 'task_notification' && message.task_id) {
-    const task = session.pendingTasks.get(message.task_id);
-    session.pendingTasks.delete(message.task_id);
-
-    // Inject (auto-resume) only for genuine background jobs: either the task
-    // outlived a turn (marked background), or it completed while no turn was
-    // running (which a foreground subagent never does).
-    const isBackground = (task && task.background) || session.turnActive === false;
-    if (isBackground && !session.ended && !session.input.closed) {
-      const text = buildTaskNotificationMessage(message);
-      // A turn-admission reservation (a host cleanup holding the session for a
-      // few seconds) refuses the resume run. Wait for it to end instead of
-      // dropping the resume, or running it with no run under the cleanup.
-      if (isTurnAdmissionHeld(session)) {
-        deferUntilTurnAdmitted(session, 'background task finished', () => resumeForBackgroundTask(session, message, text));
-        return;
-      }
-      await resumeForBackgroundTask(session, message, text);
-    }
+    await handleTaskNotification(session, message);
     return;
   }
 
@@ -1462,6 +1455,115 @@ async function handleTaskMessage(session, message) {
       return;
     }
   }
+}
+
+const FALLBACK_WAKE_STATUSES = new Set(['completed', 'failed']);
+
+function taskNotificationKey(message) {
+  return `${message.task_id}\u0000${message.tool_use_id || ''}`;
+}
+
+function forgetTaskNotifications(session, taskId) {
+  const prefix = `${taskId}\u0000`;
+  for (const key of session.handledTaskNotifications) {
+    if (key.startsWith(prefix)) session.handledTaskNotifications.delete(key);
+  }
+}
+
+/**
+ * Records the tool-use ids the main thread issues. A task_notification whose
+ * tool_use_id is not among them belongs to a subagent's own tool call (its
+ * background shells, monitors, nested agents): the runtime delivers that to the
+ * subagent, and it is none of the parent's business.
+ */
+function trackMainThreadToolUses(session, message) {
+  if (message?.type !== 'assistant' || message.parent_tool_use_id) return;
+  const content = message.message?.content;
+  if (!Array.isArray(content)) return;
+  for (const block of content) {
+    if (block?.type === 'tool_use' && typeof block.id === 'string') {
+      session.mainThreadToolUseIds.add(block.id);
+    }
+  }
+}
+
+/**
+ * A background task settled.
+ *
+ * The Claude runtime wakes the agent itself: it queues its own
+ * `<task-notification>` and starts a turn for it (visible as a `system/init`
+ * right after this event), or folds it into the turn already running. VibeSpace
+ * used to push a second, preamble-wrapped copy on top, so the model read every
+ * completion twice and the chat showed two cards. It also pushed notifications
+ * for a subagent's OWN tool calls into the parent, which the runtime never does
+ * — the parent chat filled with a child agent's progress.
+ *
+ * Now VibeSpace only makes sure the runtime's turn runs under a chat-run (so the
+ * session shows as processing and its output is sequenced), and delivers the
+ * notification itself only as a fallback when the runtime does not wake within
+ * a grace window — once per (task id, tool-use id), for the main thread's own
+ * tasks, and never for a task that was deliberately stopped.
+ */
+async function handleTaskNotification(session, message) {
+  session.pendingTasks.delete(message.task_id);
+
+  const key = taskNotificationKey(message);
+  if (session.handledTaskNotifications.has(key)) {
+    console.log(`[claude bg] session ${session.sessionId}: duplicate task_notification for ${message.task_id} — ignored`);
+    return;
+  }
+  session.handledTaskNotifications.add(key);
+
+  // Mid-turn, the runtime folds the notification into the running turn itself.
+  const idle = session.turnActive === false && !session.awaitingResult;
+  if (!idle || session.ended || session.input.closed) return;
+
+  const ownTask = !message.tool_use_id || session.mainThreadToolUseIds.has(message.tool_use_id);
+  // Fallback delivery only for the main thread's own jobs that ran to an end.
+  // Completing while no turn runs is what a foreground task never does.
+  const fallback = ownTask && FALLBACK_WAKE_STATUSES.has(message.status || 'completed')
+    ? buildTaskNotificationMessage(message)
+    : null;
+
+  const wake = { message, fallback, timer: null };
+  session.pendingNativeWakes.set(key, wake);
+  clearIdleTimer(session);
+  wake.timer = setTimeout(() => {
+    if (session.pendingNativeWakes.get(key) !== wake) return;
+    session.pendingNativeWakes.delete(key);
+    if (session.ended || session.input.closed) return;
+    if (!wake.fallback || session.turnActive || session.awaitingResult) {
+      if (!session.turnActive && !session.awaitingResult && !session.deferredTurns) armIdleTimer(session);
+      return;
+    }
+    console.log(`[claude bg] session ${session.sessionId}: runtime did not wake for task ${message.task_id} — delivering the notification`);
+    // A turn-admission reservation (a host cleanup holding the session for a
+    // few seconds) refuses the resume run. Wait for it to end instead of
+    // dropping the resume, or running it with no run under the cleanup.
+    if (isTurnAdmissionHeld(session)) {
+      deferUntilTurnAdmitted(session, 'background task finished', () => resumeForBackgroundTask(session, message, wake.fallback));
+      return;
+    }
+    resumeForBackgroundTask(session, message, wake.fallback).catch((error) => {
+      console.warn(`[claude bg] session ${session.sessionId}: background resume failed:`, error?.message || error);
+    });
+  }, nativeWakeGraceMs);
+  wake.timer.unref?.();
+}
+
+/**
+ * The runtime started a turn on its own after a background task settled. Opens
+ * the chat-run that turn streams into and cancels the fallback deliveries.
+ */
+function noteRuntimeTurnStart(session, message) {
+  if (session.pendingNativeWakes.size === 0) return;
+  const startsTurn = message?.type === 'assistant'
+    || (message?.type === 'system' && message.subtype === 'init');
+  if (!startsTurn) return;
+  for (const wake of session.pendingNativeWakes.values()) clearTimeout(wake.timer);
+  session.pendingNativeWakes.clear();
+  if (session.ended || session.input.closed) return;
+  ensureRunForServerStartedTurn(session, 'Resuming — background task finished');
 }
 
 /**
@@ -2034,6 +2136,11 @@ async function runSessionLoop(session) {
 
       const sid = session.sessionId || session.options.sessionId || null;
 
+      // A turn the runtime opened itself for a finished background task — give
+      // it a chat-run before its first message fans out.
+      noteRuntimeTurnStart(session, message);
+      trackMainThreadToolUses(session, message);
+
       // Any assistant output means a turn is in flight — (re)arm the settle
       // guard so this turn's `result` is honored, including queued resume turns
       // that begin after a previous turn already settled.
@@ -2538,6 +2645,14 @@ async function startPersistentSession(command, options, ws) {
     // is per CLI process and nothing is emitted at startup, so it starts empty with
     // the session (one session object == one query instance == one CLI process).
     liveBackgroundTasks: new Map(),
+    // Tool-use ids issued by the main thread (not a subagent) — see
+    // handleTaskNotification.
+    mainThreadToolUseIds: new Set(),
+    // (task id, tool-use id) pairs whose task_notification was already handled.
+    handledTaskNotifications: new Set(),
+    // key -> { message, fallback, timer }: completions waiting for the runtime
+    // to wake the agent on its own.
+    pendingNativeWakes: new Map(),
     // uuid -> { content, onDelivered, onCancelled } for messages fed into a
     // running turn (see "Mid-turn user messages" above).
     injectedCommands: new Map(),
@@ -3043,5 +3158,6 @@ export {
   reconnectSessionWriter,
   TOOL_APPROVAL_TIMEOUT_MS,
   __setClaudeQueryImpl,
-  __setRewindHistoryImpl
+  __setRewindHistoryImpl,
+  __setNativeWakeGraceMs
 };
