@@ -122,7 +122,7 @@ test('scheduled wake runs against the real host contract', { skip: !PLUGIN_ROOT 
         return run ? { status: run.status, providerSessionId: run.providerSessionId, lastAssistantText: '' } : null;
       },
       abort: async () => false,
-      onCompleted: (callback: (sessionId: string) => void) => chatRunRegistry.onCompleted(callback),
+      onCompleted: (callback: (sessionId: string) => void) => chatRunRegistry.addRunCompleteListener((sessionId) => callback(sessionId)),
     },
     interactions: { getPending: () => [], resolve: () => false },
     enqueueMessage: (id: string, prompt: string, options?: Record<string, unknown>) => serverEnqueueMessage(id, prompt, options),
