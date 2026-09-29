@@ -45,7 +45,7 @@
     "build:server": "node -e \"require('node:fs').rmSync('dist-server.next', { recursive: true, force: true })\" && tsc -p server/tsconfig.json && tsc-alias -p server/tsconfig.json && node scripts/promote-dist-server.mjs",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p server/tsconfig.json",
-    "test": "tsx --tsconfig server/tsconfig.json --test \"server/**/*.test.ts\" \"server/**/*.test.js\"",
+    "test": "tsx --tsconfig server/tsconfig.json --test \"server/**/*.test.ts\" \"server/**/*.test.js\" \"scripts/**/*.test.mjs\"",
     "test:peer-integration": "tsx --tsconfig server/tsconfig.json --test server/modules/websocket/tests/peer-message-delivery.integration.ts server/modules/websocket/tests/janitor-cleanup.integration.ts",
     "test:client": "tsx --test \"src/**/*.test.ts\" \"src/**/*.test.tsx\"",
     "lint": "eslint src/ server/",
