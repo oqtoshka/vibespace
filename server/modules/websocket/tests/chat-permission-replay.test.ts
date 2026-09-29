@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { createHmac } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { appConfigDb, closeConnection, initializeDatabase, sessionsDb, userDb } from '@/modules/database/index.js';
+import { closeConnection, initializeDatabase, sessionsDb, userDb } from '@/modules/database/index.js';
 import { chatRunRegistry } from '../services/chat-run-registry.service.js';
+import { issueSessionCapability } from '@/modules/session-capabilities/index.js';
 import { handleNativeChat } from '../services/native-chat.service.js';
 
 class Socket extends EventEmitter {
@@ -37,7 +37,6 @@ test('subscribe replays a permission request only while it is still pending', as
   try {
     userDb.createUser('replay-owner', 'fixture');
     sessionsDb.createAppSession('replay-one', 'claude', '/tmp/permission-replay-fixture');
-    const secret = appConfigDb.getOrCreateJwtSecret();
     let pending: unknown[] = [{ requestId: 'ask-1', toolName: 'AskUserQuestion', input: { questions: [] } }];
     const dependencies = { runtime: {
       hasRuntime: () => true,
@@ -49,8 +48,7 @@ test('subscribe replays a permission request only while it is still pending', as
     const open = () => {
       const socket = new Socket(); sockets.push(socket);
       handleNativeChat(socket as never, { url: '/native-chat/replay-one', headers: {
-        'x-vibespace-session-capability': createHmac('sha256', secret)
-          .update('mission-control:vibespace-session:v1:replay-one').digest('base64url'),
+        'x-vibespace-session-capability': issueSessionCapability('replay-one'),
       } } as never, dependencies);
       return socket;
     };

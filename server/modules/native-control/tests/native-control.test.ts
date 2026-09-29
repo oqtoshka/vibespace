@@ -96,8 +96,8 @@ test('federation credentials, idempotent creation, registered projects and sessi
     await assert.rejects(nativeControlService.createProject(null), /Invalid project request/);
     const input = { requestId: randomUUID(), projectId, provider: 'codex' as const, title: 'Native fixture' };
     const first = await nativeControlService.create(input);
-    assert.equal(first.model, 'gpt-5.6-sol');
-    assert.equal(first.effort, 'high');
+    assert.equal(first.model, 'gpt-6-sol');
+    assert.equal(first.effort, 'medium');
     assert.equal(first.permissionMode, 'bypassPermissions');
     appConfigDb.set(`permission-default:${userDb.getSingleActiveUser()!.id}:codex`, 'bypassPermissions');
     assert.equal(nativePermissionOptions('codex', first.sessionId).permissionMode, 'bypassPermissions');
@@ -109,7 +109,7 @@ test('federation credentials, idempotent creation, registered projects and sessi
     await assert.rejects(nativeControlService.create({ ...input, requestId: randomUUID(), projectId: '/etc' }), /Project/);
     await assert.rejects(nativeControlService.create({ ...input, requestId: randomUUID(), model: 'invented' }), /model/i);
     // The phone sends its "Default" choice as an empty string.
-    assert.equal((await nativeControlService.create({ ...input, requestId: randomUUID(), model: '' })).model, 'gpt-5.6-sol');
+    assert.equal((await nativeControlService.create({ ...input, requestId: randomUUID(), model: '' })).model, 'gpt-6-sol');
     await assert.rejects(nativeControlService.create({ ...input, requestId: randomUUID(), permissionMode: 'invented' }), /permission/i);
     const catalog = mock.method(providerModelsService, 'getProviderModels', async () => ({ models: {
       DEFAULT: 'fixture-model', OPTIONS: [{ value: 'fixture-model', label: 'Fixture', effort: { default: 'low', values: [{ value: 'low' }, { value: 'ultra' }] } }],
