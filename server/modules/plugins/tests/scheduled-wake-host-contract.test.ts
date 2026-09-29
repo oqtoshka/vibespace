@@ -25,6 +25,7 @@ import type express from 'express';
 
 import { closeConnection, initializeDatabase, sessionsDb } from '@/modules/database/index.js';
 import { activateHostExtensions, deactivateHostExtensions } from '@/modules/plugins/index.js';
+import { __clearTaskContinuationState, __setTaskLedgerReader, planTaskContinuation } from '@/modules/task-continuation/index.js';
 import {
   chatRunRegistry,
   registerChatDependenciesAtBoot,
@@ -36,6 +37,10 @@ import {
 const PLUGIN_ROOT = process.env.MC_SCHEDULER_PLUGIN_ROOT;
 const SCALE = 1000;
 const STEP_LEAD_MS = 60_000; // virtual: the step falls due one minute after it is parked
+
+type LedgerModule = {
+  missionControlTaskLedger: (context: { provider: string; sessionId: string }, options: { read: (id: string) => unknown }) => unknown;
+};
 
 type WakeModule = {
   createScheduledPlanWake: (options: Record<string, unknown>) => { start(): { started: boolean; stop(): void } };
@@ -71,6 +76,7 @@ async function waitFor(check: () => boolean, timeoutMs = 3000) {
 test('scheduled wake runs against the real host contract', { skip: !PLUGIN_ROOT && 'MC_SCHEDULER_PLUGIN_ROOT not set' }, async (t) => {
   const pluginRoot = path.resolve(PLUGIN_ROOT!.replace(/^~(?=\/)/, os.homedir()));
   const wakeModule = await import(pathToFileURL(path.join(pluginRoot, 'host', 'scheduled-plan-wake.js')).href) as WakeModule;
+  const ledgerModule = await import(pathToFileURL(path.join(pluginRoot, 'host', 'mission-control-ledger.js')).href) as LedgerModule;
 
   const previousDb = process.env.DATABASE_PATH;
   const temporary = await mkdtemp(path.join(os.tmpdir(), 'vs-wake-contract-'));
@@ -135,18 +141,21 @@ test('scheduled wake runs against the real host contract', { skip: !PLUGIN_ROOT 
   const setTimer = (fn: () => void, ms: number) => setTimeout(fn, Math.max(0, ms / SCALE));
   const wakes: Array<{ stop(): void }> = [];
 
-  function park(id: string) {
-    sessionsDb.createSession(id, 'claude', '/workspace/fixture', id);
+  function park(id: string, { provider = 'claude', beforeCompletion }: { provider?: string; beforeCompletion?: (read: ReturnType<typeof ledger>) => boolean } = {}) {
+    sessionsDb.createSession(id, provider, '/workspace/fixture', id);
     sessionsDb.setSessionPermissionMode(id, 'bypassPermissions');
-    const run = chatRunRegistry.startRun({ appSessionId: id, provider: 'claude', providerSessionId: id,
+    const run = chatRunRegistry.startRun({ appSessionId: id, provider, providerSessionId: id,
       connection: { readyState: 1, send() {} }, userId: null } as Parameters<typeof chatRunRegistry.startRun>[0]);
     assert.ok(run);
     const file = path.join(temporary, `${id}-wakes.json`);
+    const read = ledger(now() + STEP_LEAD_MS);
     const wake = wakeModule.createScheduledPlanWake({
-      host, read: ledger(now() + STEP_LEAD_MS), file, now, setTimer, clearTimer: clearTimeout,
+      host, read, file, now, setTimer, clearTimer: clearTimeout,
     }).start();
     assert.equal(wake.started, true, 'the real host offers what the wake needs');
     wakes.push(wake);
+    // A per-turn runtime (Codex) withholds `complete` while its supervisor continues the turn.
+    if (beforeCompletion && !beforeCompletion(read)) return file;
     // The turn that parked the step ends through the registry, which notifies the plugin.
     chatRunRegistry.completeRun(id, { exitCode: 0 });
     return file;
@@ -179,6 +188,38 @@ test('scheduled wake runs against the real host contract', { skip: !PLUGIN_ROOT 
       await settle(150); // > 4 virtual retry periods
       assert.equal(turns.length, before + 1, 'an accepted CheckedEnqueueResult is not retried as a refusal');
       assert.deepEqual(keyState(file, 'wake-evicted'), ['queued']);
+    });
+    await t.test('codex: a card-only scheduled step ends the turn despite a stale native plan, so the wake is armed', async () => {
+      // Live failure 2026-09-29 (s155): the host had no registerTaskLedgerSource, so the Codex
+      // continuation read the session's stale native update_plan (#112–115), resumed the turn and
+      // withheld `complete`; onCompleted never fired and the wake never saw the parked step.
+      const before = turns.length;
+      __setTaskLedgerReader('codex', () => ({ activity: 1, open: [
+        { id: 112, status: 'pending', subject: 'stale native item' },
+        { id: 113, status: 'in_progress', subject: 'another stale item' },
+      ] }));
+      let unregister: (() => void) | undefined;
+      try {
+        const file = park('wake-codex', { provider: 'codex', beforeCompletion: (read) => {
+          // As the plugin's activate() does: only when the host offers the hook.
+          if (typeof host.registerTaskLedgerSource === 'function') {
+            unregister = (host.registerTaskLedgerSource as (s: unknown) => () => void)(
+              (context: { provider: string; sessionId: string }) => ledgerModule.missionControlTaskLedger(context, { read: (id: string) => read(id, new Date(now())) }));
+          }
+          // What openai-codex.js asks at turn end: null ends the turn with `complete`.
+          const continuation = planTaskContinuation({ provider: 'codex', sessionId: 'wake-codex' });
+          assert.equal(continuation, null, 'the parked card step is not nudged and the stale native plan is not read');
+          return continuation === null;
+        } });
+        assert.ok(await waitFor(() => fs.existsSync(file) && keyState(file, 'wake-codex').length === 1), 'completion reached the wake and it recorded the step');
+        assert.ok(await waitFor(() => turns.length === before + 1), 'the step fell due and the wake was delivered');
+        assert.match(turns[before].content, /Проверить сборку/);
+        assert.deepEqual(keyState(file, 'wake-codex'), ['queued']);
+      } finally {
+        unregister?.();
+        __setTaskLedgerReader('codex', null);
+        __clearTaskContinuationState();
+      }
     });
   } finally {
     for (const wake of wakes) wake.stop();
