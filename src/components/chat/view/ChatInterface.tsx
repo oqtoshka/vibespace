@@ -18,6 +18,7 @@ import { useBackgroundTasks } from '../hooks/useBackgroundTasks';
 import { useBtwSession } from '../hooks/useBtwSession';
 import { useSubagents } from '../hooks/useSubagents';
 import { useSessionActiveModel } from '../hooks/useSessionActiveModel';
+import { sessionModelForSend, useReconnectEpoch } from '../utils/sessionModelLoad';
 import { BackgroundTasksProvider } from '../context/BackgroundTasksContext';
 import { useSessionStore } from '../../../stores/useSessionStore';
 import { sessionLaunchOptionsWith } from '../../../utils/launchOptionMarks';
@@ -50,7 +51,8 @@ function ChatInterface({
   onShowAllTasks,
 }: ChatInterfaceProps) {
   const { tasksEnabled, isTaskMasterInstalled } = useTasksSettings();
-  const { subscribe } = useWebSocket();
+  const { subscribe, isConnected } = useWebSocket();
+  const reconnectEpoch = useReconnectEpoch(isConnected);
   const { t } = useTranslation('chat');
 
   const sessionStore = useSessionStore();
@@ -86,6 +88,7 @@ function ChatInterface({
     currentProviderEffort,
     currentProviderEffortOptions,
     currentProviderModel,
+    sessionSelectionResolved,
     opencodeModel,
     setOpenCodeModel,
     permissionMode,
@@ -106,6 +109,7 @@ function ChatInterface({
   } = useChatProviderState({
     selectedSession,
     selectedProject,
+    reconnectEpoch,
   });
 
   const {
@@ -203,11 +207,16 @@ function ChatInterface({
   // toolbar and used for /btw side questions. An existing session can be
   // pinned to something other than the picker default, and the server owns
   // that override, so the default is only a fallback here.
-  const { activeModel: activeProviderModel, refresh: refreshActiveProviderModel } = useSessionActiveModel({
+  const {
+    activeModel: activeProviderModel,
+    resolved: activeProviderModelResolved,
+    refresh: refreshActiveProviderModel,
+  } = useSessionActiveModel({
     provider,
     sessionId: currentSessionId || selectedSession?.id || null,
     fallbackModel: providerDefaultModel,
     isProcessing,
+    reconnectEpoch,
   });
 
   // Picking a model for a live session writes a server-side override rather
@@ -307,7 +316,11 @@ function ChatInterface({
     cursorModel,
     claudeModel,
     codexModel,
-    effort: currentProviderEffort,
+    // The open session's own model, or null while it is still being read so
+    // the send leaves the server's record alone. Brand-new chats send the
+    // per-provider default.
+    sessionModel: sessionModelForSend(Boolean(selectedSession?.id), sessionSelectionResolved, currentProviderModel),
+    effort: sessionSelectionResolved ? currentProviderEffort : undefined,
     opencodeModel,
     isLoading: isProcessing,
     canAbortSession,
@@ -625,7 +638,7 @@ function ChatInterface({
           tokenBudget={tokenBudget}
           contextUsage={contextUsage}
           onShowTokenUsage={showCostModal}
-          activeModel={activeProviderModel}
+          activeModel={activeProviderModelResolved ? activeProviderModel : ''}
           providerModelOptions={providerModelCatalog[provider]?.OPTIONS ?? []}
           onShowModels={showModelsModal}
           backgroundTasks={backgroundTasks}

@@ -341,6 +341,41 @@ test('a card answer and a typed message take the same path into a running turn',
   });
 });
 
+/**
+ * The drift the operator hit on 1.38.84: they switched a Codex session to
+ * GPT-6.1 while a GPT-6 turn ran and typed "continue". The message was steered
+ * into the running turn, which cannot change models, so GPT-6 answered while
+ * the composer showed GPT-6.1. A steer must neither rewrite the session's
+ * recorded choice from the composer's options, nor hide from the runtime which
+ * model the session is on now, so the runtime can decline the steer.
+ */
+test('a steered message leaves the session\'s model and effort alone and tells the runtime which model it is on', async () => {
+  await withIsolatedDatabase(async (harness) => {
+    startWorkingSession('session-model');
+    sessionsDb.setSessionModel('session-model', 'gpt-6.1-sol');
+    sessionsDb.setSessionEffort('session-model', 'high');
+    harness.autoSettle = { kind: 'accept' };
+    const socket = connect();
+
+    await sendFrame(socket, {
+      type: 'chat.queue-add',
+      sessionId: 'session-model',
+      id: 'typed-continue',
+      content: 'continue',
+      // A composer still showing the old selection.
+      options: { model: 'gpt-6-sol', effort: 'low' },
+    });
+    await letPendingWorkRun();
+
+    assert.equal(harness.attempts.length, 1);
+    const resolveIntendedModel = harness.attempts[0]?.options.resolveIntendedModel as () => Promise<string | undefined>;
+    assert.equal(await resolveIntendedModel(), 'gpt-6.1-sol', 'the runtime learns the session\'s model from the server, not the composer');
+    const row = sessionsDb.getSessionById('session-model');
+    assert.equal(row?.model, 'gpt-6.1-sol', 'the steer did not overwrite the model');
+    assert.equal(row?.effort, 'high', 'nor the effort');
+  });
+});
+
 test('a plugin prompt without the flag still waits for the turn (a queued task, a resume)', async () => {
   await withIsolatedDatabase(async (harness) => {
     startWorkingSession('session-plugin-task', 'claude');

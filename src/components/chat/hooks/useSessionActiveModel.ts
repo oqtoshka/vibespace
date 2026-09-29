@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { authenticatedFetch } from '../../../utils/api';
+import { loadUntilSettled } from '../utils/sessionModelLoad';
 import type { LLMProvider } from '../../../types/app';
 
 type SessionActiveModelResponse = {
@@ -21,6 +22,8 @@ type UseSessionActiveModelArgs = {
    * readout is re-read once the run finishes and the transcript catches up.
    */
   isProcessing: boolean;
+  /** Bumps when the chat socket reconnects; the readout is read again then. */
+  reconnectEpoch?: number;
 };
 
 /**
@@ -37,8 +40,10 @@ export function useSessionActiveModel({
   sessionId,
   fallbackModel,
   isProcessing,
-}: UseSessionActiveModelArgs): { activeModel: string; refresh: () => void } {
-  const [sessionModel, setSessionModel] = useState<string | null>(null);
+  reconnectEpoch = 0,
+}: UseSessionActiveModelArgs): { activeModel: string; resolved: boolean; refresh: () => void } {
+  // Keyed by session, so another session's answer is never shown for this one.
+  const [answer, setAnswer] = useState<{ sessionId: string; model: string | null } | null>(null);
   const [refreshToken, setRefreshToken] = useState(0);
 
   const refresh = useCallback(() => {
@@ -61,31 +66,38 @@ export function useSessionActiveModel({
     if (!normalizedSessionId) {
       // A brand-new conversation has no session to ask about — the provider
       // default is the truthful answer.
-      setSessionModel(null);
+      setAnswer(null);
       return undefined;
     }
 
     let cancelled = false;
 
     void (async () => {
-      try {
+      // Retried until it answers; meanwhile the readout shows nothing rather
+      // than the per-provider default, which may not be this session's model.
+      const body = await loadUntilSettled(async () => {
         const response = await authenticatedFetch(
           `/api/providers/${provider}/sessions/${encodeURIComponent(normalizedSessionId)}/active-model`,
         );
-        const body = (await response.json()) as SessionActiveModelResponse;
-        if (cancelled || !response.ok || !body.success || !body.data?.model) {
-          return;
+        if (response.status >= 500) {
+          throw new Error(`active-model answered ${response.status}`);
         }
-        setSessionModel(body.data.model);
-      } catch {
-        // Keep whatever is on screen; the fallback already covers this.
-      }
+        return (await response.json()) as SessionActiveModelResponse;
+      }, { isCancelled: () => cancelled });
+      if (!body || cancelled) return;
+      setAnswer({ sessionId: normalizedSessionId, model: body.success ? body.data?.model || null : null });
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [provider, sessionId, refreshToken]);
+  }, [provider, sessionId, refreshToken, reconnectEpoch]);
 
-  return { activeModel: sessionModel || fallbackModel, refresh };
+  const normalizedSessionId = sessionId?.trim() || null;
+  const currentAnswer = normalizedSessionId && answer?.sessionId === normalizedSessionId ? answer : null;
+  return {
+    activeModel: currentAnswer?.model || fallbackModel,
+    resolved: !normalizedSessionId || currentAnswer !== null,
+    refresh,
+  };
 }
