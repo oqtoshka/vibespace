@@ -4,16 +4,36 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import {
+// A turn records its session and queues a recap, so it needs a schema. Without its own
+// database the runtime opens the checkout's legacy database/auth.db, which is bare. Set
+// before import: loading the runtime already opens the connection.
+const previousDatabasePath = process.env.DATABASE_PATH;
+const databaseRoot = await mkdtemp(path.join(os.tmpdir(), 'codex-steering-db-'));
+process.env.DATABASE_PATH = path.join(databaseRoot, 'auth.db');
+
+const { closeConnection } = await import('./modules/database/connection.js');
+const { initializeDatabase } = await import('./modules/database/init-db.js');
+const {
   injectCodexMessage,
   isCodexSessionActive,
   queryCodex,
-} from './openai-codex.js';
-import { stopCodexAppServer } from './services/codex-app-server.service.js';
-import {
+} = await import('./openai-codex.js');
+const { stopCodexAppServer } = await import('./services/codex-app-server.service.js');
+const {
   __clearTaskContinuationState,
   __setTaskLedgerReader,
-} from './modules/task-continuation/index.js';
+} = await import('./modules/task-continuation/index.js');
+
+test.before(() => initializeDatabase());
+test.after(async () => {
+  closeConnection();
+  if (previousDatabasePath === undefined) {
+    delete process.env.DATABASE_PATH;
+  } else {
+    process.env.DATABASE_PATH = previousDatabasePath;
+  }
+  await rm(databaseRoot, { recursive: true, force: true });
+});
 
 async function waitFor(check, message) {
   const deadline = Date.now() + 5_000;

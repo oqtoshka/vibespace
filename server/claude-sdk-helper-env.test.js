@@ -53,7 +53,7 @@ test('an ephemeral helper turn is tagged for contributors and not persisted', as
   assert.equal(options.env.PATH, process.env.PATH);
   assert.equal(options.persistSession, false);
   assert.deepEqual(seen.at(-1), {
-    provider: 'claude', scope: 'session', private: false, ephemeral: true, sessionId: 'helper-env',
+    provider: 'claude', scope: 'session', private: false, ephemeral: true, sessionId: 'helper-env', launchOptions: null,
   });
 });
 
