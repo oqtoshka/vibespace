@@ -1,18 +1,27 @@
 import assert from 'node:assert/strict';
-import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { registerAgentEnvContributor } from '../../../../shared/agent-env.js';
-import {
+// A run records its session and reads custom models, so it needs a schema. Without its own
+// database the runtime opens the checkout's legacy database/auth.db, which is bare. Set
+// before import: loading the runtime already opens the connection.
+const previousDatabasePath = process.env.DATABASE_PATH;
+const databaseRoot = await mkdtemp(path.join(os.tmpdir(), 'opencode-runtime-db-'));
+process.env.DATABASE_PATH = path.join(databaseRoot, 'auth.db');
+
+const { closeConnection } = await import('../../../database/connection.js');
+const { initializeDatabase } = await import('../../../database/init-db.js');
+const { registerAgentEnvContributor } = await import('../../../../shared/agent-env.js');
+const {
   opencodeRuntime,
   injectOpenCodeMessage,
   isOpenCodeSessionActive,
   resolveOpenCodePermissionOptions,
   spawnOpenCode,
-} from './opencode-runtime.provider.js';
-import { OpenCodeSessionsProvider } from './opencode-sessions.provider.js';
+} = await import('./opencode-runtime.provider.js');
+const { OpenCodeSessionsProvider } = await import('./opencode-sessions.provider.js');
 
 // Stands in for a host plugin (e.g. a presence reporter's opt-out): the runtime's
 // job is to tag the spawn correctly and merge what contributors return.
@@ -20,6 +29,39 @@ const unregisterContributor = registerAgentEnvContributor((context) =>
   context.ephemeral || context.private ? { VS_TEST_OPT_OUT: '1' } : null,
 );
 test.after(() => unregisterContributor());
+
+// Each test puts its fake opencode first on PATH and restores PATH when it is done. A spawn
+// that outlives its test (a retry after a failure) then resolved the real CLI and opened a
+// real "Greeting" session in the user's OpenCode. A tripwire stays ahead of the real binary
+// for the whole file, so a stray spawn fails the file instead.
+const tripwireDir = path.join(databaseRoot, 'tripwire-bin');
+const tripwireLog = path.join(databaseRoot, 'tripwire.log');
+const previousPath = process.env.PATH;
+if (process.platform !== 'win32') {
+  await mkdir(tripwireDir);
+  await writeFile(
+    path.join(tripwireDir, 'opencode'),
+    `#!/bin/sh\necho "$@" >> ${JSON.stringify(tripwireLog)}\nexit 1\n`,
+    { mode: 0o755 },
+  );
+  process.env.PATH = `${tripwireDir}${path.delimiter}${previousPath || ''}`;
+}
+
+test.before(() => initializeDatabase());
+test.after(async () => {
+  // Let exit handlers that record the session finish before the connection closes.
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  process.env.PATH = previousPath;
+  const stray = await readFile(tripwireLog, 'utf8').catch(() => '');
+  assert.equal(stray, '', 'a test spawned opencode without its fake on PATH');
+  closeConnection();
+  if (previousDatabasePath === undefined) {
+    delete process.env.DATABASE_PATH;
+  } else {
+    process.env.DATABASE_PATH = previousDatabasePath;
+  }
+  await rm(databaseRoot, { recursive: true, force: true });
+});
 
 const sessionsProvider = new OpenCodeSessionsProvider();
 const runtimeContext = {
