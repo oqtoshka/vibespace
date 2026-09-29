@@ -2,6 +2,7 @@ import { ENABLED_PROVIDERS, DEFAULT_PROVIDER, OPENCODE_DEFAULT_MODEL } from '../
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { authenticatedFetch } from '../../../utils/api';
+import { loadUntilSettled } from '../utils/sessionModelLoad';
 import type { PendingPermissionRequest, PermissionMode } from '../types/types';
 import type {
   LaunchOptionDeclaration,
@@ -73,6 +74,8 @@ type ProviderCapabilitiesApiResponse = {
 interface UseChatProviderStateArgs {
   selectedSession: ProjectSession | null;
   selectedProject: Project | null;
+  /** Bumps when the chat socket reconnects; the session's model is read again then. */
+  reconnectEpoch?: number;
 }
 
 type ProviderModelsApiResponse = {
@@ -120,7 +123,7 @@ const getSessionSelectionKey = (provider: LLMProvider, sessionId: string): strin
   `${provider}:${sessionId}`
 );
 
-export function useChatProviderState({ selectedSession, selectedProject: _selectedProject }: UseChatProviderStateArgs) {
+export function useChatProviderState({ selectedSession, selectedProject: _selectedProject, reconnectEpoch = 0 }: UseChatProviderStateArgs) {
   const [permissionMode, setPermissionMode] = useState<PermissionMode>('default');
   const permissionSyncRevision = useRef(0);
   /**
@@ -613,50 +616,48 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     const targetProvider = selectedSessionProvider;
     const targetSessionKey = getSessionSelectionKey(targetProvider, selectedSessionId);
 
+    const isStale = () => (
+      cancelled
+      || sessionSelectionLoadRequestIdRef.current !== requestId
+      || selectedSessionKeyRef.current !== targetSessionKey
+    );
+
     const loadSessionSelection = async () => {
-      try {
+      // Retried until it answers: giving up would leave the composer on the
+      // per-provider default, and a send records its model on the session.
+      const body = await loadUntilSettled(async () => {
         const response = await authenticatedFetch(
           `/api/providers/${targetProvider}/sessions/${encodeURIComponent(selectedSessionId)}/active-model`,
         );
-        const body = (await response.json()) as SessionSelectionApiResponse;
-        if (
-          cancelled
-          || sessionSelectionLoadRequestIdRef.current !== requestId
-          || selectedSessionKeyRef.current !== targetSessionKey
-        ) {
-          return;
+        if (response.status >= 500) {
+          throw new Error(`active-model answered ${response.status}`);
         }
-
-        const resolvedModel = body.data?.model?.trim();
-        const resolvedEffort = body.data?.effort?.trim() || null;
-        setSessionSelection({
-          provider: targetProvider,
-          sessionId: selectedSessionId,
-          model: body.success && resolvedModel && body.data?.source !== 'default' ? resolvedModel : null,
-          effort: body.success ? resolvedEffort : null,
-        });
-      } catch (error) {
-        if (
-          !cancelled
-          && sessionSelectionLoadRequestIdRef.current === requestId
-          && selectedSessionKeyRef.current === targetSessionKey
-        ) {
-          console.error('Error loading the session model and reasoning effort:', error);
-          setSessionSelection({
-            provider: targetProvider,
-            sessionId: selectedSessionId,
-            model: null,
-            effort: null,
-          });
-        }
+        return (await response.json()) as SessionSelectionApiResponse;
+      }, {
+        isCancelled: isStale,
+        onError: (error, attempt) => {
+          if (attempt === 0) console.error('Error loading the session model and reasoning effort; retrying:', error);
+        },
+      });
+      if (!body || isStale()) {
+        return;
       }
+
+      const resolvedModel = body.data?.model?.trim();
+      const resolvedEffort = body.data?.effort?.trim() || null;
+      setSessionSelection({
+        provider: targetProvider,
+        sessionId: selectedSessionId,
+        model: body.success && resolvedModel && body.data?.source !== 'default' ? resolvedModel : null,
+        effort: body.success ? resolvedEffort : null,
+      });
     };
 
     void loadSessionSelection();
     return () => {
       cancelled = true;
     };
-  }, [selectedSessionId, selectedSessionProvider]);
+  }, [selectedSessionId, selectedSessionProvider, reconnectEpoch]);
 
   /**
    * Applies a model choice.
@@ -796,6 +797,10 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
   // The open session's model wins over the per-provider default, so switching
   // sessions shows (and sends) what each session actually runs with.
   const currentProviderModel = sessionModel ?? providerModels[provider];
+  // Until the open session's own selection has been read, the composer must
+  // not send a model or effort: the server records what a send carries, and
+  // the per-provider default would overwrite the session's real choice.
+  const sessionSelectionResolved = !selectedSessionId || activeSessionSelection !== null;
   const currentProviderEffortOptions = useMemo(() => {
     return getEffortOptionsForModel(provider, currentProviderModel);
   }, [currentProviderModel, getEffortOptionsForModel, provider]);
@@ -938,6 +943,7 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     currentProviderEffortOptions,
     currentProviderModel,
     currentProviderModelOptions,
+    sessionSelectionResolved,
     opencodeModel,
     setOpenCodeModel,
     permissionMode,

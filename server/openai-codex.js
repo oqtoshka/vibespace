@@ -735,6 +735,9 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
       threadId: capturedSessionId,
       writer: ws,
       status: 'running',
+      // What this turn actually runs on. A steer joins this turn, so it can
+      // never switch the model; injectCodexMessage compares against it.
+      model: resolvedModel || threadResponse?.model || null,
       turnId: null,
       turnReady,
       resolveTurnReady,
@@ -1062,6 +1065,20 @@ export async function injectCodexMessage(sessionId, command, options = {}) {
 
   const turnId = session.turnId || await session.turnReady;
   if (!turnId || session.status !== 'running') {
+    return null;
+  }
+
+  // `turn/steer` cannot change the model. When the session has since been
+  // switched to another one (the composer's picker, a `/model`), steering
+  // would run the message on the old model while the UI shows the new one.
+  // Decline instead: the message stays queued and starts its own turn, on
+  // the chosen model, once this one ends.
+  const intendedModel = await options.resolveIntendedModel?.();
+  if (session.status !== 'running') {
+    return null;
+  }
+  if (intendedModel && session.model && intendedModel !== session.model) {
+    console.log(`[Codex] Not steering into turn ${turnId}: it runs ${session.model}, the session is now on ${intendedModel}; the message waits for its own turn`);
     return null;
   }
 

@@ -54,6 +54,12 @@ interface UseChatComposerStateArgs {
   claudeModel: string;
   codexModel: string;
   opencodeModel: string;
+  /**
+   * The open session's model. `null` while it is still being read: the send
+   * then carries no model and the server keeps the one it recorded. Omitted
+   * for a brand-new conversation, which starts on the per-provider default.
+   */
+  sessionModel?: string | null;
   /** Composer-level reasoning-effort preference for the active provider ('default' when unset). */
   effort?: string;
   isLoading: boolean;
@@ -274,6 +280,7 @@ export function useChatComposerState({
   claudeModel,
   codexModel,
   opencodeModel,
+  sessionModel,
   effort,
   isLoading,
   canAbortSession,
@@ -774,6 +781,9 @@ export function useChatComposerState({
   // Composer-level model preference for the active provider. Sent with every
   // turn (live send or queued) as an option; the backend resolves the rest.
   const activeModel = useMemo(() => {
+    if (sessionModel !== undefined) {
+      return sessionModel ?? undefined;
+    }
     switch (provider) {
       case 'cursor':
         return cursorModel;
@@ -784,7 +794,7 @@ export function useChatComposerState({
       default:
         return claudeModel;
     }
-  }, [provider, cursorModel, codexModel, opencodeModel, claudeModel]);
+  }, [provider, cursorModel, codexModel, opencodeModel, claudeModel, sessionModel]);
 
   const getToolsSettings = useCallback(() => {
     try {

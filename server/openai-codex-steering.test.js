@@ -248,6 +248,60 @@ test('Codex messages sent mid-turn use turn/steer and render as a live user turn
   }
 });
 
+test('Codex will not steer a message into a turn running another model than the session is now on', async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'codex-steer-model-'));
+  const executable = path.join(tempRoot, 'fake-codex');
+  const capturePath = path.join(tempRoot, 'requests.jsonl');
+  const previousPath = process.env.VIBESPACE_CODEX_PATH;
+  const previousCapture = process.env.VIBESPACE_CODEX_CAPTURE;
+  const writer = { isWebSocketWriter: true, send() {}, setSessionId() {} };
+
+  try {
+    await createFakeCodex(executable);
+    process.env.VIBESPACE_CODEX_PATH = executable;
+    process.env.VIBESPACE_CODEX_CAPTURE = capturePath;
+
+    const runningQuery = queryCodex('Start the task', {
+      cwd: tempRoot,
+      model: 'gpt-6-sol',
+      permissionMode: 'acceptEdits',
+    }, writer);
+    await waitFor(() => isCodexSessionActive('codex-thread-1'), 'the fake Codex turn never became active');
+
+    // The operator switched the session to GPT-6.1 while this GPT-6 turn runs:
+    // a steer would answer on GPT-6, so the message must wait for its own turn.
+    const declined = await injectCodexMessage('codex-thread-1', 'continue', {
+      clientUserMessageId: 'queued-switch',
+      cwd: tempRoot,
+      resolveIntendedModel: async () => 'gpt-6.1-sol',
+    });
+    assert.equal(declined, null);
+    assert.equal(isCodexSessionActive('codex-thread-1'), true, 'declining must leave the running turn alone');
+
+    const steered = await injectCodexMessage('codex-thread-1', 'Focus on tests first.', {
+      clientUserMessageId: 'queued-same',
+      cwd: tempRoot,
+      resolveIntendedModel: async () => 'gpt-6-sol',
+    });
+    await runningQuery;
+    assert.equal(steered, 'queued-same');
+
+    const steers = (await readFile(capturePath, 'utf8'))
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line))
+      .filter((request) => request.method === 'turn/steer');
+    assert.deepEqual(steers.map((request) => request.params.clientUserMessageId), ['queued-same']);
+  } finally {
+    stopCodexAppServer();
+    if (previousPath === undefined) delete process.env.VIBESPACE_CODEX_PATH;
+    else process.env.VIBESPACE_CODEX_PATH = previousPath;
+    if (previousCapture === undefined) delete process.env.VIBESPACE_CODEX_CAPTURE;
+    else process.env.VIBESPACE_CODEX_CAPTURE = previousCapture;
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test('Codex resumes the same thread while its plan has open tasks', async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'codex-continuation-'));
   const executable = path.join(tempRoot, 'fake-codex');

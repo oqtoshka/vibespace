@@ -835,6 +835,15 @@ async function tryDeliverToRunningTurn(
   }
 
   const runtimeOptions = buildRuntimeOptions(session, item.options ?? {}, provider, appSessionId);
+  // The model the session is on now (a pending switch, else the row), read
+  // from the server's record, never the composer's options, which may still
+  // show a stale selection. A runtime that cannot change models mid-turn
+  // declines when its running turn is on another one, so the message runs as
+  // its own turn instead. Lazy: nothing may be awaited between the claim and
+  // the injection call.
+  const resolveIntendedModel = () => providerModelsService
+    .resolveResumeModel(provider, appSessionId, null, { resuming: true })
+    .catch(() => undefined);
   // A runtime may report the message started before (or instead of) answering
   // the call — Codex fires `onDelivered` inside `turn/steer`. That callback is
   // itself proof of delivery, so a later throw cannot turn it into a doubt.
@@ -845,6 +854,7 @@ async function tryDeliverToRunningTurn(
     item.id,
     injectFn(providerSessionId, item.content, {
       ...runtimeOptions,
+      resolveIntendedModel,
       clientUserMessageId: item.id,
       // Delivered: the runtime now owns the message and streams the bubble.
       onDelivered: () => {
