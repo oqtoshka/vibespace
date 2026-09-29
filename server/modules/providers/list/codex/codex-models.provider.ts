@@ -38,6 +38,22 @@ export const CODEX_PREDEFINED_MODELS: ProviderModelsDefinition = {
       },
     },
     {
+      value: 'gpt-6.1-sol',
+      label: 'GPT-6.1 Sol',
+      description: 'Latest workhorse model for coding and everyday work.',
+      effort: {
+        default: 'medium',
+        values: [
+          { value: 'low' },
+          { value: 'medium' },
+          { value: 'high' },
+          { value: 'xhigh' },
+          { value: 'max' },
+          { value: 'ultra' },
+        ],
+      },
+    },
+    {
       value: 'gpt-6-sol',
       label: 'GPT-6 Sol',
       description: 'Workhorse model for coding and everyday work.',
@@ -143,7 +159,7 @@ export const CODEX_PREDEFINED_MODELS: ProviderModelsDefinition = {
       },
     },
   ],
-  DEFAULT: 'gpt-6-sol',
+  DEFAULT: 'gpt-6.1-sol',
 };
 
 const CODEX_CONFIG_PATH = path.join(os.homedir(), '.codex', 'config.toml');
