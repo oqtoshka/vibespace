@@ -37,7 +37,18 @@ test('the Codex catalog offers GPT-6 Sol and Luna with the supported effort leve
     luna?.effort?.values.map((effort) => effort.value),
     ['low', 'medium', 'high', 'xhigh', 'max'],
   );
-  assert.equal(CODEX_PREDEFINED_MODELS.DEFAULT, 'gpt-6-sol');
+});
+
+test('the Codex catalog offers GPT-6.1 Sol as the default with every supported effort', () => {
+  const sol = CODEX_PREDEFINED_MODELS.OPTIONS.find((model) => model.value === 'gpt-6.1-sol');
+
+  assert.equal(sol?.label, 'GPT-6.1 Sol');
+  assert.equal(sol?.effort?.default, 'medium');
+  assert.deepEqual(
+    sol?.effort?.values.map((effort) => effort.value),
+    ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+  );
+  assert.equal(CODEX_PREDEFINED_MODELS.DEFAULT, 'gpt-6.1-sol');
 });
 
 test('the bundled Codex CLI knows the GPT-6 Sol and Luna model metadata', () => {
@@ -45,6 +56,16 @@ test('the bundled Codex CLI knows the GPT-6 Sol and Luna model metadata', () => 
   const [major, minor] = version.split('.').map(Number);
 
   assert.ok(major > 0 || minor >= 155, `bundled @openai/codex ${version} predates 0.155.0`);
+});
+
+test('the bundled Codex CLI knows the GPT-6.1 Sol model metadata', () => {
+  const { version } = require('@openai/codex/package.json') as { version: string };
+  const [major, minor, patch] = version.split('.').map(Number);
+
+  assert.ok(
+    major > 0 || minor > 159 || (minor === 159 && patch >= 1),
+    `bundled @openai/codex ${version} predates 0.159.1`,
+  );
 });
 
 test('the Codex catalog fingerprint invalidates persisted catalogs from older releases', async () => {
