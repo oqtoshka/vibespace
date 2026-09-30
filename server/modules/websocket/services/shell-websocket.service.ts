@@ -38,10 +38,16 @@ type PtySessionEntry = {
   // (see pending-cli-sessions.service). Null when the shell resumed an
   // existing provider session or runs no agent at all.
   releasePendingCliSession: (() => void) | null;
+  // Set by the PTY's onExit; a killed session whose PTY never reports exit
+  // is escalated to SIGKILL (see killPtySession).
+  exited: boolean;
 };
 
 const ptySessionsMap = new Map<string, PtySessionEntry>();
 const PTY_SESSION_TIMEOUT = 30 * 60 * 1000;
+// SIGHUP (node-pty's default) is ignorable; a CLI that ignores it would keep
+// its PTY master and every pipe of its children open for the server's life.
+const PTY_KILL_GRACE_MS = 5_000;
 const SHELL_URL_PARSE_BUFFER_LIMIT = 32768;
 const ANSI_ESCAPE_SEQUENCE_REGEX = /\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\))/g;
 const TRAILING_URL_PUNCTUATION_REGEX = /[)\]}>.,;:!?]+$/;
@@ -127,7 +133,80 @@ type ShellWebSocketDependencies = {
   ) => () => void;
   /** Test seam: replaces `pty.spawn`. */
   spawnPty?: typeof pty.spawn;
+  /** Test seam: how long a detached PTY survives (default 30 min). */
+  ptySessionTimeoutMs?: number;
+  /** Test seam: SIGHUP -> SIGKILL grace for a killed PTY (default 5 s). */
+  ptyKillGraceMs?: number;
 };
+
+/**
+ * Removes a PTY session and kills its process: SIGHUP first, then SIGKILL
+ * after the grace unless the PTY reported exit. Only the recorded PTY of this
+ * entry is ever signalled.
+ */
+function killPtySession(key: string, session: PtySessionEntry, graceMs: number): void {
+  if (session.timeoutId) {
+    clearTimeout(session.timeoutId);
+    session.timeoutId = null;
+  }
+  session.releasePendingCliSession?.();
+  session.releasePendingCliSession = null;
+  if (ptySessionsMap.get(key) === session) {
+    ptySessionsMap.delete(key);
+  }
+  if (session.exited) {
+    return;
+  }
+  try {
+    session.pty.kill();
+  } catch {
+    // Already gone.
+  }
+  if (os.platform() === 'win32') {
+    return;
+  }
+  const escalate = setTimeout(() => {
+    if (session.exited) {
+      return;
+    }
+    try {
+      session.pty.kill('SIGKILL');
+    } catch {
+      // Already gone.
+    }
+  }, graceMs);
+  escalate.unref?.();
+}
+
+/**
+ * Detaches `ws` from a session it owns and arms the idle timeout. A session
+ * owned by another socket (a reconnect already won) is left alone.
+ */
+function detachPtySession(
+  key: string,
+  ws: WebSocket,
+  timeoutMs: number,
+  graceMs: number,
+): void {
+  const session = ptySessionsMap.get(key);
+  if (!session || session.ws !== ws) {
+    return;
+  }
+
+  session.ws = null;
+  if (session.timeoutId) {
+    clearTimeout(session.timeoutId);
+  }
+  session.timeoutId = setTimeout(() => {
+    // A reconnect may win just as this timer becomes runnable. Re-check the
+    // active socket so a queued cleanup can never kill a reattached PTY.
+    if (ptySessionsMap.get(key) !== session || session.ws !== null) {
+      return;
+    }
+    killPtySession(key, session, graceMs);
+  }, timeoutMs);
+  session.timeoutId.unref?.();
+}
 
 /**
  * Reads a string field from untyped payloads and falls back when absent.
@@ -322,6 +401,8 @@ export function handleShellConnection(
   let ptySessionKey: string | null = null;
   let urlDetectionBuffer = '';
   const announcedAuthUrls = new Set<string>();
+  const sessionTimeoutMs = dependencies.ptySessionTimeoutMs ?? PTY_SESSION_TIMEOUT;
+  const killGraceMs = dependencies.ptyKillGraceMs ?? PTY_KILL_GRACE_MS;
 
   ws.on('message', async (rawMessage) => {
     try {
@@ -365,17 +446,21 @@ export function handleShellConnection(
           .replace(/[^a-zA-Z0-9_-]/g, '')
           .slice(0, 24);
         const shellSuffix = sanitizedShellId ? `_sh_${sanitizedShellId}` : '';
-        ptySessionKey = `${projectPath}_${sessionId ?? 'default'}${commandSuffix}${shellSuffix}`;
+        const nextSessionKey = `${projectPath}_${sessionId ?? 'default'}${commandSuffix}${shellSuffix}`;
+
+        // Re-init on the same socket for another session: the one this socket
+        // owned so far would otherwise keep a dead `ws` forever — no close
+        // ever detaches it, so its idle timeout never arms and its PTY leaks.
+        if (ptySessionKey && ptySessionKey !== nextSessionKey) {
+          detachPtySession(ptySessionKey, ws, sessionTimeoutMs, killGraceMs);
+        }
+        ptySessionKey = nextSessionKey;
+        shellProcess = null;
 
         if (isLoginCommand || forceRestart) {
           const oldSession = ptySessionsMap.get(ptySessionKey);
           if (oldSession) {
-            if (oldSession.timeoutId) {
-              clearTimeout(oldSession.timeoutId);
-            }
-            oldSession.releasePendingCliSession?.();
-            oldSession.pty.kill();
-            ptySessionsMap.delete(ptySessionKey);
+            killPtySession(ptySessionKey, oldSession, killGraceMs);
           }
         }
 
@@ -471,23 +556,26 @@ export function handleShellConnection(
             ? (dependencies.registerPendingCliSession?.(provider, sessionId, resolvedProjectPath) ?? null)
             : null;
 
-        ptySessionsMap.set(ptySessionKey, {
-          pty: shellProcess,
+        // Captured per spawn: the connection's key and process are mutable
+        // (re-init), and a callback of an older PTY must only ever touch the
+        // entry it was spawned for.
+        const spawnedKey = ptySessionKey;
+        const spawnedPty = shellProcess;
+        const spawnedEntry: PtySessionEntry = {
+          pty: spawnedPty,
           ws,
           buffer: [],
           timeoutId: null,
           projectPath,
           sessionId,
           releasePendingCliSession,
-        });
+          exited: false,
+        };
+        ptySessionsMap.set(spawnedKey, spawnedEntry);
 
-        shellProcess.onData((chunk) => {
-          if (!ptySessionKey) {
-            return;
-          }
-
-          const session = ptySessionsMap.get(ptySessionKey);
-          if (!session) {
+        spawnedPty.onData((chunk) => {
+          const session = ptySessionsMap.get(spawnedKey);
+          if (session !== spawnedEntry) {
             return;
           }
 
@@ -557,17 +645,25 @@ export function handleShellConnection(
           }
         });
 
-        shellProcess.onExit((exitCode) => {
-          if (!ptySessionKey) {
+        spawnedPty.onExit((exitCode) => {
+          spawnedEntry.exited = true;
+          if (spawnedEntry.timeoutId) {
+            clearTimeout(spawnedEntry.timeoutId);
+            spawnedEntry.timeoutId = null;
+          }
+          if (shellProcess === spawnedPty) {
+            shellProcess = null;
+          }
+
+          const session = ptySessionsMap.get(spawnedKey);
+          if (session !== spawnedEntry) {
+            // Already killed (and removed) or replaced by a newer PTY.
+            spawnedEntry.releasePendingCliSession?.();
+            spawnedEntry.releasePendingCliSession = null;
             return;
           }
 
-          const session = ptySessionsMap.get(ptySessionKey);
-          if (session && session.pty !== shellProcess) {
-            return;
-          }
-
-          if (session && session.ws && session.ws.readyState === WebSocket.OPEN) {
+          if (session.ws && session.ws.readyState === WebSocket.OPEN) {
             session.ws.send(
               JSON.stringify({
                 type: 'output',
@@ -578,13 +674,9 @@ export function handleShellConnection(
             );
           }
 
-          if (session?.timeoutId) {
-            clearTimeout(session.timeoutId);
-          }
-
-          session?.releasePendingCliSession?.();
-          ptySessionsMap.delete(ptySessionKey);
-          shellProcess = null;
+          session.releasePendingCliSession?.();
+          session.releasePendingCliSession = null;
+          ptySessionsMap.delete(spawnedKey);
         });
 
         let welcomeMsg = `\x1b[36mStarting terminal in: ${projectPath}\x1b[0m\r\n`;
@@ -631,12 +723,7 @@ export function handleShellConnection(
         if (ptySessionKey) {
           const session = ptySessionsMap.get(ptySessionKey);
           if (session) {
-            if (session.timeoutId) {
-              clearTimeout(session.timeoutId);
-            }
-            session.releasePendingCliSession?.();
-            session.pty.kill();
-            ptySessionsMap.delete(ptySessionKey);
+            killPtySession(ptySessionKey, session, killGraceMs);
           }
           shellProcess = null;
         }
@@ -659,33 +746,9 @@ export function handleShellConnection(
     if (!ptySessionKey) {
       return;
     }
-
-    const session = ptySessionsMap.get(ptySessionKey);
-    if (!session) {
-      return;
-    }
-
     // Mobile networks can deliver an old socket's close after its replacement
     // has attached. Only the socket that currently owns the PTY may detach it.
-    if (session.ws !== ws) {
-      return;
-    }
-
-    session.ws = null;
-    if (session.timeoutId) {
-      clearTimeout(session.timeoutId);
-    }
-    session.timeoutId = setTimeout(() => {
-      // A reconnect may win just as this timer becomes runnable. Re-check the
-      // active socket so a queued cleanup can never kill a reattached PTY.
-      if (ptySessionsMap.get(ptySessionKey as string) !== session || session.ws !== null) {
-        return;
-      }
-
-      session.releasePendingCliSession?.();
-      session.pty.kill();
-      ptySessionsMap.delete(ptySessionKey as string);
-    }, PTY_SESSION_TIMEOUT);
+    detachPtySession(ptySessionKey, ws, sessionTimeoutMs, killGraceMs);
   });
 
   ws.on('error', (error) => {
