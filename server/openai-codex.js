@@ -103,6 +103,85 @@ async function releaseEphemeralThread(appServer, threadId) {
   }
 }
 
+/**
+ * Idle release of interactive threads (P6, 2026-09-29 pipe exhaustion).
+ *
+ * A thread stays loaded in the shared app-server — with every MCP server it
+ * started (npm Playwright MCP → Chrome, mc-reporter, …) and all their pipes —
+ * until it is unsubscribed. Helper threads are released at once (above);
+ * interactive ones used to stay loaded for the app-server's whole life, one set
+ * of MCP children per session ever opened. Every turn resumes its thread
+ * (`thread/resume`), so an idle thread can be unloaded safely once nothing in
+ * this process is using it; `unsubscribe` is per connection and this process
+ * owns the only connection, so the per-thread hold count is the whole truth.
+ *
+ * VIBESPACE_CODEX_THREAD_IDLE_MS: idle time before release; 0 disables.
+ */
+const CODEX_THREAD_IDLE_RELEASE_DEFAULT_MS = 10 * 60 * 1000;
+/** threadId -> { holds, appServer, timer, releasing } */
+const threadResidency = new Map();
+
+function codexThreadIdleReleaseMs() {
+  const raw = process.env.VIBESPACE_CODEX_THREAD_IDLE_MS;
+  if (raw === undefined || raw === '') return CODEX_THREAD_IDLE_RELEASE_DEFAULT_MS;
+  const value = Number(raw);
+  return Number.isFinite(value) && value >= 0 ? value : CODEX_THREAD_IDLE_RELEASE_DEFAULT_MS;
+}
+
+/**
+ * Pins a thread while this process uses it. Waits for an in-flight idle
+ * release of the same thread first, so a resume never races its unsubscribe.
+ * Returns an idempotent `release(appServer)`: the last release arms the idle timer.
+ */
+async function holdCodexThread(threadId) {
+  let entry = threadResidency.get(threadId);
+  if (!entry) {
+    entry = { holds: 0, appServer: null, timer: null, releasing: null };
+    threadResidency.set(threadId, entry);
+  }
+  entry.holds += 1;
+  if (entry.timer) {
+    clearTimeout(entry.timer);
+    entry.timer = null;
+  }
+  if (entry.releasing) await entry.releasing;
+  let released = false;
+  return (appServer) => {
+    if (released) return;
+    released = true;
+    if (appServer) entry.appServer = appServer;
+    entry.holds -= 1;
+    if (entry.holds > 0) return;
+    const idleMs = codexThreadIdleReleaseMs();
+    if (idleMs === 0 || !entry.appServer || entry.appServer.closed) {
+      if (threadResidency.get(threadId) === entry && !entry.releasing) threadResidency.delete(threadId);
+      return;
+    }
+    entry.timer = setTimeout(() => {
+      entry.timer = null;
+      if (entry.holds > 0 || entry.appServer.closed) {
+        if (entry.holds === 0 && threadResidency.get(threadId) === entry) threadResidency.delete(threadId);
+        return;
+      }
+      entry.releasing = releaseEphemeralThread(entry.appServer, threadId).finally(() => {
+        entry.releasing = null;
+        if (entry.holds === 0 && threadResidency.get(threadId) === entry) threadResidency.delete(threadId);
+      });
+    }, idleMs);
+    entry.timer.unref?.();
+  };
+}
+
+/** Threads currently loaded or pinned, for diagnostics and tests. */
+export function getCodexThreadResidency() {
+  return [...threadResidency.entries()].map(([threadId, entry]) => ({
+    threadId,
+    holds: entry.holds,
+    releasePending: Boolean(entry.timer),
+    releasing: Boolean(entry.releasing),
+  }));
+}
+
 // Latest account-wide rate-limit snapshot from the app-server
 // (`account/rateLimits/updated` is sparse: merge, never replace). Consulted
 // when a turn fails on `usageLimitExceeded` to find out when to resume.
@@ -314,7 +393,18 @@ function transformCodexItem(item) {
 // A paginated revert writes a new rollout containing history_base references.
 // Let Codex resolve that chain; parsing the superseded JSONL resurrects removed turns.
 registerCodexRevertedHistoryReader(async (threadId, isPrivate) => {
-  const appServer = await getCodexAppServer({ private: isPrivate });
+  // Reading may load the thread; pin it so an idle release cannot race the read.
+  const release = await holdCodexThread(threadId);
+  let appServer = null;
+  try {
+    appServer = await getCodexAppServer({ private: isPrivate });
+    return await readCodexRevertedHistory(appServer, threadId);
+  } finally {
+    release(appServer);
+  }
+});
+
+async function readCodexRevertedHistory(appServer, threadId) {
   const messages = [];
   let cursor;
   const seenCursors = new Set();
@@ -350,7 +440,7 @@ registerCodexRevertedHistoryReader(async (threadId, isPrivate) => {
     if (cursor) seenCursors.add(cursor);
   } while (cursor);
   return messages;
-});
+}
 
 const CODEX_SANDBOX_MODES = ['read-only', 'workspace-write', 'danger-full-access'];
 const CODEX_APPROVAL_POLICIES = ['untrusted', 'on-failure', 'on-request', 'never'];
@@ -655,6 +745,9 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
 
   // Set once this call has started a thread it alone owns; released in `finally`.
   let ephemeralThread = null;
+  // Any other thread this call loads is pinned while it runs, then idle-released.
+  let releaseThreadHold = null;
+  let threadAppServer = null;
   let holdsHelperSlot = false;
 
   try {
@@ -667,6 +760,8 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
     // Ephemeral title/recap helpers have no user, rollout, or viewer and must
     // never appear as empty presence-board sessions. Host them on the same
     // private-variant app-server variant private sessions use.
+    // A resumed thread is pinned before it is loaded (see holdCodexThread).
+    if (sessionId) releaseThreadHold = await holdCodexThread(sessionId);
     const appServer = await getCodexAppServer({ private: isPrivate || ephemeral });
     const helperMcpOverrides = backgroundHelper && ephemeral && !sessionId
       ? await readHelperMcpOverrides(appServer, workingDirectory)
@@ -695,7 +790,10 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
       : await appServer.request('thread/start', { ...threadOptions, ephemeral });
     if (ephemeral && !sessionId && threadResponse?.thread?.id) {
       ephemeralThread = { appServer, threadId: threadResponse.thread.id };
+    } else if (!sessionId && threadResponse?.thread?.id) {
+      releaseThreadHold = await holdCodexThread(threadResponse.thread.id);
     }
+    threadAppServer = appServer;
     capturedSessionId = threadResponse?.thread?.id || sessionId || null;
     if (!capturedSessionId) {
       throw new Error('Codex app-server did not return a thread id');
@@ -1032,6 +1130,7 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
     if (holdsHelperSlot) {
       releaseBackgroundHelperSlot();
     }
+    releaseThreadHold?.(threadAppServer);
     if (capturedSessionId && !ephemeral) {
       const session = activeCodexSessions.get(capturedSessionId);
       if (session?.status === 'aborted') {

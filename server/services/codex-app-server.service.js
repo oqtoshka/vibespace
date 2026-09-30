@@ -10,6 +10,10 @@ const REQUEST_TIMEOUT_MS = 30_000;
 // Timed-out requests remembered so a response that still arrives can be reported
 // (how big, how late) instead of silently dropped. Bounded: oldest forgotten first.
 const TIMED_OUT_MEMORY = 64;
+// How long a stopped app-server gets after SIGTERM before it is SIGKILLed. The
+// Node wrapper forwards SIGTERM to the native binary; a wedged one must not keep
+// its stdio pipes (and its MCP children's) alive for the server's lifetime.
+const stopGraceMs = () => Number(process.env.VIBESPACE_CODEX_STOP_GRACE_MS) || 5_000;
 
 /**
  * Resolve the same pinned Codex executable that @openai/codex-sdk used.
@@ -74,11 +78,18 @@ export class CodexAppServerClient {
       this.stderr = `${this.stderr}${chunk}`.slice(-4_000);
     });
 
-    const lines = readline.createInterface({ input: this.child.stdout, crlfDelay: Infinity });
-    lines.on('line', (line) => this.#handleLine(line));
+    // A write racing the child's exit raises EPIPE on stdin; without a listener
+    // that is an uncaught 'error' that takes the whole server down.
+    this.child.stdin?.on('error', () => {});
 
+    this.lines = readline.createInterface({ input: this.child.stdout, crlfDelay: Infinity });
+    this.lines.on('line', (line) => this.#handleLine(line));
+
+    this.exited = false;
     this.child.once('error', (error) => this.#close(error));
     this.child.once('exit', (code, signal) => {
+      this.exited = true;
+      if (this.killTimer) clearTimeout(this.killTimer);
       const detail = signal ? `signal ${signal}` : `code ${code ?? 1}`;
       const stderr = this.stderr.trim();
       this.#close(new Error(`Codex app-server exited with ${detail}${stderr ? `: ${stderr}` : ''}`));
@@ -242,10 +253,34 @@ export class CodexAppServerClient {
         // secondary listener failure.
       }
     }
+    this.#releaseStdio();
   }
 
+  /**
+   * Drops the parent's ends of the child's stdio pipes. Exit alone does not:
+   * the native codex (and anything it spawned) can outlive the Node wrapper and
+   * still hold the other ends, so the streams would never see EOF/close.
+   */
+  #releaseStdio() {
+    try { this.lines?.close(); } catch { /* already closed */ }
+    for (const stream of [this.child.stdin, this.child.stdout, this.child.stderr]) {
+      try { stream?.destroy(); } catch { /* already destroyed */ }
+    }
+  }
+
+  /**
+   * Stops the app-server: EOF on stdin, SIGTERM, and SIGKILL after
+   * the stop grace if the recorded child has not exited. Safe to call after the
+   * transport has already closed (a failed initialize) — the process may still
+   * be running then, and this is what reaps it.
+   */
   stop() {
-    if (this.closed) {
+    if (this.stopping) {
+      return;
+    }
+    this.stopping = true;
+    this.#close(new Error('Codex app-server stopped'));
+    if (this.exited || this.child.exitCode !== null || this.child.signalCode !== null) {
       return;
     }
     try {
@@ -253,6 +288,15 @@ export class CodexAppServerClient {
     } catch {
       // Process already exited.
     }
+    this.killTimer = setTimeout(() => {
+      if (this.exited || this.child.exitCode !== null || this.child.signalCode !== null) return;
+      try {
+        this.child.kill('SIGKILL');
+      } catch {
+        // Process already exited.
+      }
+    }, stopGraceMs());
+    this.killTimer.unref?.();
   }
 }
 
@@ -302,6 +346,10 @@ export async function getCodexAppServer(options = {}) {
     if (clients.get(variant) === entry) {
       clients.delete(variant);
     }
+    // A failed initialize (timeout, bad handshake) leaves the process running
+    // with its pipes open; forgetting it without stopping it orphaned one
+    // app-server per retry.
+    candidate.stop();
     throw error;
   });
   clients.set(variant, entry);
