@@ -8,7 +8,7 @@ import { appendFilesInputTag, appendImagesInputTag, normalizeAttachmentDescripto
 import { createProviderRuntimeContext, normalizeRuntimeOptions } from './shared/provider-runtime-context.js';
 import { readOpenCodeTokenUsage } from './shared/opencode-token-usage.js';
 import { buildAgentEnv, collectAgentEnv, collectAgentLaunchExtras } from './shared/agent-env.js';
-import { hasOpenCodeCompactSummary, sendOpenCodeContextUsage } from './shared/opencode-context.js';
+import { hasOpenCodeCompactSummary, hasOpenCodeSessionHistory, sendOpenCodeContextUsage } from './shared/opencode-context.js';
 import { runOpenCodeCompaction, runOpenCodeHttpTurn } from './services/opencode-http-runner.js';
 import { sessionsService } from './modules/providers/services/sessions.service.js';
 import { providerModelsService } from './modules/providers/services/provider-models.service.js';
@@ -313,6 +313,28 @@ async function spawnOpenCode(command, options = {}, ws, context = undefined) {
     });
   }
 
+  // A native side question's first turn forks the parent conversation
+  // (Mission Control threads): `run --session <parent> --fork` copies the
+  // parent's opencode.db history into a new session and answers there, so the
+  // parent's rows and any turn it is running are left alone. The fork's id
+  // arrives in the run's events and is announced as `session_created`, which
+  // makes it the side row's own provider session for every later turn. Only
+  // this CLI transport carries that history: the server engine keeps its own
+  // context, which a fork does not copy (measured on OpenCode 1.18.18).
+  let forkParent = null;
+  if (!options.sessionId && options.sideSession && !options.ephemeral
+    && typeof options.forkFrom === 'string' && options.forkFrom) {
+    if (hasOpenCodeSessionHistory(options.forkFrom) === false) {
+      console.warn(`[OpenCode side] parent session ${options.forkFrom} has no history in opencode.db to fork; `
+        + 'running fresh with the parent excerpt instead');
+      if (typeof options.sideExcerptFallback === 'string' && options.sideExcerptFallback) {
+        command = `${options.sideExcerptFallback}\n${command}`;
+      }
+    } else {
+      forkParent = options.forkFrom;
+    }
+  }
+
   return new Promise((resolve, reject) => {
     const { sessionId, projectPath, cwd, model, effort, sessionSummary, images, files, permissionMode } = options;
     const workingDir = cwd || projectPath || process.cwd();
@@ -463,6 +485,8 @@ async function spawnOpenCode(command, options = {}, ws, context = undefined) {
       args.push('--dir', workingDir);
       if (sessionId) {
         args.push('--session', sessionId);
+      } else if (forkParent) {
+        args.push('--session', forkParent, '--fork');
       }
       if (resolvedModel) {
         args.push('--model', resolvedModel);

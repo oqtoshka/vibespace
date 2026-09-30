@@ -634,6 +634,30 @@ export function hasOpenCodeCompactSummary(sessionId: string | null | undefined):
 }
 
 /**
+ * Whether opencode.db holds any message for a session: `true`, `false`, or
+ * `null` when the store cannot be read right now (missing, locked, schema
+ * drift). Used by the OpenCode runtime before `opencode run --session <id>
+ * --fork` for a native side question: a fork copies only these rows, so a
+ * parent with none has nothing to fork and the side falls back to the parent
+ * excerpt. `null` is not "no history" — the caller still tries the fork.
+ */
+export function hasOpenCodeSessionHistory(sessionId: string | null | undefined): boolean | null {
+  const dbPath = getOpenCodeDatabasePath();
+  if (!sessionId) return false;
+  if (!fsSync.existsSync(dbPath)) return null;
+
+  let db: InstanceType<typeof Database> | null = null;
+  try {
+    db = new Database(dbPath, { readonly: true, fileMustExist: true });
+    return Boolean(db.prepare('SELECT 1 FROM message WHERE session_id = ? LIMIT 1').get(sessionId));
+  } catch {
+    return null;
+  } finally {
+    db?.close();
+  }
+}
+
+/**
  * Builds the gauge reading for one OpenCode turn.
  *
  * `autoCompactThreshold` is an absolute token count, matching what the Claude

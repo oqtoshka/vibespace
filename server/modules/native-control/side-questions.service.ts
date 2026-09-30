@@ -41,9 +41,19 @@ type SideRunControl = {
 let runControl: SideRunControl | null = null;
 export function registerSideRunControl(next: SideRunControl): void { runControl = next; }
 
+/**
+ * Providers whose runtime forks the parent's provider session on a side
+ * question's first turn (Mission Control threads): Claude resumes it with the
+ * SDK's `forkSession`, Codex calls the app-server's `thread/fork`, OpenCode runs
+ * `opencode run --session <parent> --fork`. Each fork is a new provider session,
+ * so the parent's own transcript and live turn are never touched. Any other
+ * provider gets the quoted excerpt instead.
+ */
+const FORKING_PROVIDERS = new Set(['claude', 'codex', 'opencode']);
+
 function contextModeFor(sideProvider: string, parentProviderSessionId: string | null): SideContextMode {
   if (!parentProviderSessionId) return 'none';
-  return sideProvider === 'claude' ? 'fork' : 'excerpt';
+  return FORKING_PROVIDERS.has(sideProvider) ? 'fork' : 'excerpt';
 }
 
 /** Parent eligibility is checked on create and on every send: a parent that

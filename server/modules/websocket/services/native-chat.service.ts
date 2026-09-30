@@ -6,7 +6,7 @@ import type { WebSocket } from 'ws';
 import { sessionsDb, userDb } from '@/modules/database/index.js';
 import { sessionCapabilityExpiry, sideCapabilityExpiry } from '@/modules/session-capabilities/index.js';
 import { sessionsService, permissionPreferencesService } from '@/modules/providers/index.js';
-import { nativeModelOptions, nativePermissionOptions, setNativePermissionSelection, setNativeSelection, resolveNativeAttachments } from '@/modules/native-control/index.js';
+import { nativeModelOptions, nativePermissionOptions, setNativePermissionSelection, setNativeSelection, resolveNativeAttachments, sideSessionContext } from '@/modules/native-control/index.js';
 import { isImageAttachmentDescriptor } from '@/shared/index.js';
 import { voiceService } from '@/modules/voice/index.js';
 import type { AuthenticatedWebSocketRequest } from '@/shared/index.js';
@@ -31,22 +31,38 @@ class NativeChatError extends Error {
 const SIDE_ALLOWED = new Set(['native.history', 'native.background', 'native.options', 'chat.subscribe', 'chat.send', 'chat.abort']);
 
 /**
- * First side send for a provider that cannot fork: prefix the parent's recent
- * visible messages. Claude forks the parent instead (see the runtime policy in
- * chat-websocket), so it gets no excerpt. A parent that turned private, or
- * one with no conversation yet, contributes nothing.
+ * The parent excerpt for a side question's first send (FEAT-SESSION-030), or
+ * '' when there is nothing to quote: a parent that turned private, or one with
+ * no conversation yet, contributes nothing.
  */
-async function withParentExcerpt(sessionId: string, provider: string, content: string): Promise<string> {
-  if (provider === 'claude') return content;
+async function parentExcerpt(sessionId: string): Promise<string> {
   const parentId = sessionsDb.getSideParent(sessionId);
   const parent = parentId ? sessionsDb.getSessionById(parentId) : null;
-  if (!parent || parent.is_private !== 0 || !parent.provider_session_id) return content;
+  if (!parent || parent.is_private !== 0 || !parent.provider_session_id) return '';
   try {
     const page = await sessionsService.fetchHistory(parent.session_id, { limit: SIDE_EXCERPT_MAX_MESSAGES * 3, offset: 0 });
-    const excerpt = buildSideExcerpt(page.messages as { kind?: unknown; role?: unknown; content?: unknown }[], parent.jsonl_path);
-    return excerpt ? `${excerpt}\n${content}` : content;
+    return buildSideExcerpt(page.messages as { kind?: unknown; role?: unknown; content?: unknown }[], parent.jsonl_path);
   } catch {
-    return content;
+    return '';
+  }
+}
+
+/**
+ * Parent context for a side question's first send. A provider that cannot fork
+ * gets the excerpt as a prefix. Codex and OpenCode fork the parent instead (the
+ * runtime policy in chat-websocket sets `forkFrom`), so their text goes through
+ * untouched and the excerpt rides along only as the fallback their runtime
+ * uses if the fork fails. Claude forks with no fallback and needs no excerpt.
+ */
+async function applyParentContext(sessionId: string, provider: string, command: Record<string, unknown>): Promise<void> {
+  const mode = sideSessionContext(sessionId)?.contextMode;
+  if (mode === 'none' || !mode || provider === 'claude') return;
+  const excerpt = await parentExcerpt(sessionId);
+  if (!excerpt) return;
+  if (mode === 'excerpt') {
+    command.content = `${excerpt}\n${String(command.content)}`;
+  } else {
+    command.options = { ...(command.options as Record<string, unknown> | undefined), sideExcerptFallback: excerpt };
   }
 }
 
@@ -225,7 +241,7 @@ export function handleNativeChat(ws: WebSocket, request: AuthenticatedWebSocketR
       if (side && command.type === 'chat.send') {
         sessionsDb.touchSideSession(sessionId);
         if (!current.provider_session_id && !chatRunRegistry.isProcessing(sessionId)) {
-          command.content = await withParentExcerpt(sessionId, current.provider, String(command.content));
+          await applyParentContext(sessionId, current.provider, command);
         }
       }
       facade.emit('message', JSON.stringify(command));

@@ -634,6 +634,11 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
     private: isPrivate = false,
     launchOptions = null,
     sideSession = false,
+    // A native side question's first turn: the parent's Codex thread id to fork
+    // (Mission Control threads), and the parent excerpt to fall back on when
+    // the fork is refused. Both are set only by the server-side side policy.
+    forkFrom = null,
+    sideExcerptFallback = null,
     // Title/recap generation: no MCP servers, bounded concurrency (see
     // CODEX_BACKGROUND_HELPER_CONCURRENCY). Only meaningful with `ephemeral`.
     backgroundHelper = false,
@@ -783,11 +788,30 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
       approvalPolicy: appServerApprovalPolicy,
       ...(Object.keys(threadConfig).length > 0 ? { config: threadConfig } : {}),
     };
-    const threadResponse = sessionId
+    let threadResponse;
+    if (sessionId) {
       // Only the thread id is read back. Hydrating turns ships the whole history over
       // stdio, and a long session (hundreds of MB of rollout) blows the request timeout.
-      ? await appServer.request('thread/resume', { threadId: sessionId, ...threadOptions, excludeTurns: true })
-      : await appServer.request('thread/start', { ...threadOptions, ephemeral });
+      threadResponse = await appServer.request('thread/resume', { threadId: sessionId, ...threadOptions, excludeTurns: true });
+    } else if (sideSession && typeof forkFrom === 'string' && forkFrom && !ephemeral) {
+      // A side question forks the parent thread into a new one with the side's
+      // read-only sandbox and `never` approvals. The side is private, so this is
+      // the private-variant app-server: the parent's thread lives on the shared
+      // one, and the fork reads its rollout from disk without loading, resuming
+      // or interrupting it (a running parent is fine — measured on 0.159.1).
+      try {
+        threadResponse = await appServer.request('thread/fork', { threadId: forkFrom, ...threadOptions, excludeTurns: true });
+        if (!threadResponse?.thread?.id) throw new Error('no thread id in the fork response');
+      } catch (error) {
+        console.warn(`[codex side] thread/fork of ${forkFrom} failed (${error?.message || error}); starting a fresh thread with the parent excerpt instead`);
+        threadResponse = await appServer.request('thread/start', { ...threadOptions, ephemeral });
+        if (typeof sideExcerptFallback === 'string' && sideExcerptFallback) {
+          command = `${sideExcerptFallback}\n${command}`;
+        }
+      }
+    } else {
+      threadResponse = await appServer.request('thread/start', { ...threadOptions, ephemeral });
+    }
     if (ephemeral && !sessionId && threadResponse?.thread?.id) {
       ephemeralThread = { appServer, threadId: threadResponse.thread.id };
     } else if (!sessionId && threadResponse?.thread?.id) {
