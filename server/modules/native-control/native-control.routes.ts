@@ -3,7 +3,7 @@ import express from 'express';
 import type { LLMProvider } from '@/shared/index.js';
 
 import { sideQuestionsService } from './side-questions.service.js';
-import { authenticateNativeControl, nativeControlService, nativeModelOptions, nativePermissionOptions } from './native-control.service.js';
+import { applyNativeSessionSelection, authenticateNativeControl, nativeControlService, nativeModelOptions, nativePermissionOptions, nativeSessionSelection } from './native-control.service.js';
 
 const router = express.Router();
 router.use((req, res, next) => {
@@ -58,6 +58,9 @@ router.post('/sessions/:id/side', route((req, res) => { res.json(sideQuestionsSe
 router.post('/sessions/:id/promote', route((req, res) => { res.json(sideQuestionsService.promote(String(req.params.id))); }));
 router.delete('/sessions/:id/side', route(async (req, res) => { res.json(await sideQuestionsService.close(String(req.params.id))); }));
 router.get('/sessions/:id', route((req, res) => { res.json(nativeControlService.describe(String(req.params.id))); }));
+// Mission Control's web board has no chat socket; it reads and applies `native.select` here.
+router.get('/sessions/:id/selection', route(async (req, res) => { res.json(await nativeSessionSelection(String(req.params.id))); }));
+router.post('/sessions/:id/selection', route(async (req, res) => { res.json(await applyNativeSessionSelection(String(req.params.id), req.body)); }));
 router.get('/sessions/:id/owner-capability', route((req, res) => {
   res.json(nativeControlService.ownerCapability(String(req.params.id)));
 }));
