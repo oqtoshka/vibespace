@@ -28,3 +28,5 @@ export { getPluginPort } from './plugin-process.service.js';
 // scanPlugins/getPluginsDir/getPluginDir/validateManifest: plugin registry used by the
 // server entrypoint (host-extension activation) and the plugins routes.
 export { scanPlugins, getPluginsDir, getPluginDir, validateManifest } from './plugin-registry.service.js';
+// runRegistryChild: the bounded git/npm child runner, driven by the fd-observation churn test.
+export { runRegistryChild } from './plugin-registry.service.js';

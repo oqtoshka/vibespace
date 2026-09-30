@@ -23,6 +23,7 @@ import { recallContextUsage } from '@/shared/context-usage-cache.js';
 import { buildCodexTokenBudget } from '@/shared/codex-token-usage.js';
 import { getAdditionalFileRoots, validateAccessiblePath, validatePathInProject } from './utils/allowedPaths.js';
 import { janitorRoutes, startJanitorScheduler } from '@/modules/janitor/index.js';
+import { fdObservationRoutes, fdObserver } from '@/modules/fd-observation/index.js';
 import { workspacePolicy, workspacePolicyRoutes } from '@/modules/workspace-policy/index.js';
 import { buildFileAccessRoots, fileTreeRoutes } from '@/modules/file-tree/index.js';
 import { officePreviewRoutes } from '@/modules/office-preview/index.js';
@@ -277,6 +278,8 @@ app.use('/api/file-tree', authenticateToken, fileTreeRoutes);
 app.use('/api/office-preview', authenticateToken, officePreviewRoutes);
 app.use('/api/workspace-policy', authenticateToken, workspacePolicyRoutes);
 app.use('/api/janitor', authenticateToken, janitorRoutes);
+// Descriptor/child counts of this process (pipe exhaustion, 2026-09-29). Authenticated: it lists PIDs.
+app.use('/api/diagnostics', authenticateToken, fdObservationRoutes);
 // Deployments are manager-owned; local and worker-only installations have no runtime control.
 app.get('/api/apps', authenticateToken, (_req, res) => res.json({ enabled: false }));
 
@@ -2770,6 +2773,8 @@ async function startServer() {
             // server down. Must start before the sessions watcher, which is
             // the prime suspect for causing them.
             startEventLoopHealthMonitor();
+            // Bounded pipe/FD sampler; keeps the counts a restart would erase.
+            fdObserver.start();
 
             // Start watching the projects folder for changes
             await initializeSessionsWatcher();
