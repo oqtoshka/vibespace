@@ -142,6 +142,71 @@ export function validateManifest(manifest) {
 }
 
 const BUILD_TIMEOUT_MS = 60_000;
+const GIT_TIMEOUT_MS = 120_000;
+const NPM_INSTALL_TIMEOUT_MS = 300_000;
+const KILL_GRACE_MS = 5_000;
+const STDERR_TAIL_CHARS = 8_000;
+// A clone of a private repo must fail, not wait on a credential prompt forever.
+const GIT_ENV = { ...process.env, GIT_TERMINAL_PROMPT: '0' };
+
+/**
+ * Runs one registry child (git clone/pull, npm install/build) with bounded
+ * resources. Both output pipes are drained — an unread stdout blocks npm
+ * once it has written 64 KiB, and that child then holds its pipes for good.
+ * Only the stderr tail is kept. On timeout the recorded child gets SIGTERM,
+ * SIGKILL after the grace, and our pipe ends are destroyed so a grandchild
+ * still holding them cannot keep the promise (or the FDs) alive.
+ *
+ * Resolves `{ code, signal, stderr }`; rejects on spawn failure or timeout.
+ * Exported for the plugin registry's own tests.
+ */
+export function runRegistryChild(command, args, { cwd, env, timeoutMs, killGraceMs = KILL_GRACE_MS, label }) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
+    let stderr = '';
+    let settled = false;
+    let exited = false;
+
+    const releaseStreams = () => {
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+    };
+    const settle = (fn) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      fn();
+    };
+
+    child.stdout?.resume();
+    child.stderr?.setEncoding('utf8');
+    child.stderr?.on('data', (chunk) => {
+      stderr = `${stderr}${chunk}`.slice(-STDERR_TAIL_CHARS);
+    });
+
+    const timer = setTimeout(() => {
+      settle(() => {
+        try { child.kill('SIGTERM'); } catch { /* already gone */ }
+        const escalate = setTimeout(() => {
+          if (!exited) {
+            try { child.kill('SIGKILL'); } catch { /* already gone */ }
+          }
+        }, killGraceMs);
+        escalate.unref?.();
+        releaseStreams();
+        reject(new Error(`${label} timed out after ${timeoutMs}ms`));
+      });
+    }, timeoutMs);
+    timer.unref?.();
+
+    child.on('exit', () => { exited = true; });
+    child.on('close', (code, signal) => settle(() => resolve({ code, signal, stderr: stderr.trim() })));
+    child.on('error', (err) => settle(() => {
+      releaseStreams();
+      reject(new Error(`Failed to spawn ${label}: ${err.message}`));
+    }));
+  });
+}
 
 /** Run `npm run build` if the plugin's package.json declares a build script. */
 function runBuildIfNeeded(dir, packageJsonPath, onSuccess, onError) {
@@ -154,39 +219,25 @@ function runBuildIfNeeded(dir, packageJsonPath, onSuccess, onError) {
     return onSuccess(); // Unreadable package.json — skip build
   }
 
-  const buildProcess = spawn('npm', ['run', 'build'], {
+  runRegistryChild('npm', ['run', 'build'], { cwd: dir, timeoutMs: BUILD_TIMEOUT_MS, label: 'npm run build' })
+    .then(({ code, stderr }) => {
+      if (code !== 0) {
+        return onError(new Error(`npm run build failed (exit code ${code}): ${stderr}`));
+      }
+      onSuccess();
+    }, onError);
+}
+
+/** `npm install --ignore-scripts` in `dir`, bounded like every registry child. */
+function runNpmInstall(dir, name) {
+  return runRegistryChild('npm', ['install', '--ignore-scripts'], {
     cwd: dir,
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-
-  let stderr = '';
-  let settled = false;
-
-  const timer = setTimeout(() => {
-    if (settled) return;
-    settled = true;
-    buildProcess.removeAllListeners();
-    buildProcess.kill();
-    onError(new Error('npm run build timed out'));
-  }, BUILD_TIMEOUT_MS);
-
-  buildProcess.stderr.on('data', (data) => { stderr += data.toString(); });
-
-  buildProcess.on('close', (code) => {
-    if (settled) return;
-    settled = true;
-    clearTimeout(timer);
+    timeoutMs: NPM_INSTALL_TIMEOUT_MS,
+    label: `npm install for ${name}`,
+  }).then(({ code }) => {
     if (code !== 0) {
-      return onError(new Error(`npm run build failed (exit code ${code}): ${stderr.trim()}`));
+      throw new Error(`npm install for ${name} failed (exit code ${code})`);
     }
-    onSuccess();
-  });
-
-  buildProcess.on('error', (err) => {
-    if (settled) return;
-    settled = true;
-    clearTimeout(timer);
-    onError(new Error(`Failed to spawn build: ${err.message}`));
   });
 }
 
@@ -352,17 +403,14 @@ export function installPluginFromGit(url) {
       resolve(manifest);
     };
 
-    const gitProcess = spawn('git', ['clone', '--depth', '1', '--', url, tempDir], {
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-
-    let stderr = '';
-    gitProcess.stderr.on('data', (data) => { stderr += data.toString(); });
-
-    gitProcess.on('close', (code) => {
+    runRegistryChild('git', ['clone', '--depth', '1', '--', url, tempDir], {
+      env: GIT_ENV,
+      timeoutMs: GIT_TIMEOUT_MS,
+      label: 'git clone',
+    }).then(({ code, stderr }) => {
       if (code !== 0) {
         cleanupTemp();
-        return reject(new Error(`git clone failed (exit code ${code}): ${stderr.trim()}`));
+        return reject(new Error(`git clone failed (exit code ${code}): ${stderr}`));
       }
 
       // Validate manifest exists
@@ -397,31 +445,19 @@ export function installPluginFromGit(url) {
       // --ignore-scripts prevents postinstall hooks from executing arbitrary code.
       const packageJsonPath = path.join(tempDir, 'package.json');
       if (fs.existsSync(packageJsonPath)) {
-        const npmProcess = spawn('npm', ['install', '--ignore-scripts'], {
-          cwd: tempDir,
-          stdio: ['ignore', 'pipe', 'pipe'],
-        });
-
-        npmProcess.on('close', (npmCode) => {
-          if (npmCode !== 0) {
+        runNpmInstall(tempDir, repoName).then(
+          () => runBuildIfNeeded(tempDir, packageJsonPath, () => finalize(manifest), (err) => { cleanupTemp(); reject(err); }),
+          (err) => {
             cleanupTemp();
-            return reject(new Error(`npm install for ${repoName} failed (exit code ${npmCode})`));
-          }
-          runBuildIfNeeded(tempDir, packageJsonPath, () => finalize(manifest), (err) => { cleanupTemp(); reject(err); });
-        });
-
-        npmProcess.on('error', (err) => {
-          cleanupTemp();
-          reject(err);
-        });
+            reject(err);
+          },
+        );
       } else {
         finalize(manifest);
       }
-    });
-
-    gitProcess.on('error', (err) => {
+    }, (err) => {
       cleanupTemp();
-      reject(new Error(`Failed to spawn git: ${err.message}`));
+      reject(err);
     });
   });
 }
@@ -434,17 +470,14 @@ export function updatePluginFromGit(name) {
     }
 
     // Only fast-forward to avoid silent divergence
-    const gitProcess = spawn('git', ['pull', '--ff-only', '--'], {
+    runRegistryChild('git', ['pull', '--ff-only', '--'], {
       cwd: pluginDir,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-
-    let stderr = '';
-    gitProcess.stderr.on('data', (data) => { stderr += data.toString(); });
-
-    gitProcess.on('close', (code) => {
+      env: GIT_ENV,
+      timeoutMs: GIT_TIMEOUT_MS,
+      label: 'git pull',
+    }).then(({ code, stderr }) => {
       if (code !== 0) {
-        return reject(new Error(`git pull failed (exit code ${code}): ${stderr.trim()}`));
+        return reject(new Error(`git pull failed (exit code ${code}): ${stderr}`));
       }
 
       // Re-validate manifest after update
@@ -464,25 +497,14 @@ export function updatePluginFromGit(name) {
       // Re-run npm install if package.json exists
       const packageJsonPath = path.join(pluginDir, 'package.json');
       if (fs.existsSync(packageJsonPath)) {
-        const npmProcess = spawn('npm', ['install', '--ignore-scripts'], {
-          cwd: pluginDir,
-          stdio: ['ignore', 'pipe', 'pipe'],
-        });
-        npmProcess.on('close', (npmCode) => {
-          if (npmCode !== 0) {
-            return reject(new Error(`npm install for ${name} failed (exit code ${npmCode})`));
-          }
-          runBuildIfNeeded(pluginDir, packageJsonPath, () => resolve(manifest), (err) => reject(err));
-        });
-        npmProcess.on('error', (err) => reject(err));
+        runNpmInstall(pluginDir, name).then(
+          () => runBuildIfNeeded(pluginDir, packageJsonPath, () => resolve(manifest), (err) => reject(err)),
+          reject,
+        );
       } else {
         resolve(manifest);
       }
-    });
-
-    gitProcess.on('error', (err) => {
-      reject(new Error(`Failed to spawn git: ${err.message}`));
-    });
+    }, reject);
   });
 }
 
