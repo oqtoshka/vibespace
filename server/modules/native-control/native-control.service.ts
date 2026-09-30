@@ -73,6 +73,32 @@ export function setNativePermissionSelection(id: string, mode: unknown) {
   return permissionPreferencesService.update(Number(user.id), row.provider, id, { sessionMode: mode });
 }
 
+/**
+ * The per-session selection a browser board shows and changes (ADR-0030). It is the
+ * same state `native.select` writes over the chat socket, read and applied without a
+ * socket: model + effort from the provider catalog, the permission mode with its
+ * inherited default. Private and side sessions are refused by `session()`.
+ */
+export async function nativeSessionSelection(id: string) {
+  const row = session(id);
+  const provider = row.provider as LLMProvider;
+  const catalog = await nativeModelOptions(provider);
+  return { sessionId: id, ...catalog, model: row.model ?? null, effort: row.effort ?? null,
+    ...nativePermissionOptions(provider, id), archived: Boolean(row.isArchived) };
+}
+
+/** Applies a selection in `native.select` order: permission first (it needs no catalog
+ * lookup and must not be rolled back by a later model error), then model + effort. */
+export async function applyNativeSessionSelection(id: string, input: unknown) {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error('Invalid selection');
+  const { model, effort, permissionMode } = input as Record<string, unknown>;
+  if (model === undefined && permissionMode === undefined) throw new Error('Choose a model or a permission mode');
+  if (effort !== undefined && effort !== null && typeof effort !== 'string') throw new Error('Invalid reasoning effort');
+  if (permissionMode !== undefined) setNativePermissionSelection(id, permissionMode === '' ? null : permissionMode);
+  if (model !== undefined) await setNativeSelection(id, model, effort ?? '');
+  return nativeSessionSelection(id);
+}
+
 /** Native-control router owns the instance catalog; project paths are always resolved
  * from registered IDs and cannot be supplied by a client to escape into another cwd. */
 export const nativeControlService = {

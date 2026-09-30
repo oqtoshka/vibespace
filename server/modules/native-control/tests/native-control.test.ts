@@ -14,7 +14,7 @@ import { appConfigDb, closeConnection, getConnection, initializeDatabase, projec
 import { ensureImageAssetsDir } from '@/modules/assets/index.js';
 import { registerLaunchOption } from '@/shared/agent-env.js';
 
-import { authenticateNativeControl, nativeControlService, nativePermissionOptions, resolveNativeAttachments, setNativePermissionSelection, setNativeSelection } from '../native-control.service.js';
+import { applyNativeSessionSelection, authenticateNativeControl, nativeControlService, nativePermissionOptions, nativeSessionSelection, resolveNativeAttachments, setNativePermissionSelection, setNativeSelection } from '../native-control.service.js';
 import { nativeControlRoutes } from '../index.js';
 
 test('federation credentials, idempotent creation, registered projects and session-bound files', async () => {
@@ -121,6 +121,62 @@ test('federation credentials, idempotent creation, registered projects and sessi
       assert.equal((await setNativeSelection(first.sessionId, 'fixture-model', '')).effort, 'low');
       await assert.rejects(setNativeSelection(first.sessionId, 'fixture-model', 'made-up'), /does not support/);
     } finally { catalog.mock.restore(); change.mock.restore(); }
+    // ADR-0030: the web board reads and applies the same selection without a socket.
+    const selectionCatalog = mock.method(providerModelsService, 'getProviderModels', async () => ({ models: {
+      DEFAULT: 'fixture-model', OPTIONS: [
+        { value: 'fixture-model', label: 'Fixture', effort: { default: 'low', values: [{ value: 'low' }, { value: 'ultra' }] } },
+        { value: 'plain-model', label: 'Plain' },
+      ],
+    } }));
+    const selectionChange = mock.method(providerModelsService, 'changeActiveModel', async () => ({}) as never);
+    const selectionApp = express(); selectionApp.use(express.json()); selectionApp.use('/native', nativeControlRoutes);
+    const selectionServer = selectionApp.listen(0);
+    try {
+      const read = await nativeSessionSelection(first.sessionId);
+      assert.equal(read.sessionId, first.sessionId);
+      assert.equal(read.provider, 'codex');
+      assert.deepEqual(read.options.map(option => option.value), ['fixture-model', 'plain-model']);
+      assert.equal(read.defaultModel, 'fixture-model');
+      assert.ok(read.permissionModes.includes('default'));
+      assert.equal(read.archived, false);
+      const applied = await applyNativeSessionSelection(first.sessionId, { model: 'fixture-model', effort: 'ultra', permissionMode: 'default' });
+      assert.equal(applied.model, 'fixture-model');
+      assert.equal(applied.effort, 'ultra');
+      assert.equal(applied.sessionMode, 'default');
+      assert.equal(applied.permissionMode, 'default');
+      // An empty permission mode is "inherit the VibeSpace default", as on the phone.
+      const inherited = await applyNativeSessionSelection(first.sessionId, { permissionMode: '' });
+      assert.equal(inherited.sessionMode, null);
+      assert.equal(inherited.model, 'fixture-model');
+      await assert.rejects(applyNativeSessionSelection(first.sessionId, {}), /Choose a model or a permission mode/);
+      await assert.rejects(applyNativeSessionSelection(first.sessionId, { model: 'invented' }), /Choose a model/);
+      await assert.rejects(applyNativeSessionSelection(first.sessionId, { permissionMode: 'invented' }), /Invalid permission mode/);
+      await assert.rejects(applyNativeSessionSelection(first.sessionId, 'yes'), /Invalid selection/);
+      const port = (selectionServer.address() as AddressInfo).port;
+      const headers = { 'content-type': 'application/json', 'x-mc-federation-token': 'x'.repeat(40) };
+      const got = await fetch(`http://127.0.0.1:${port}/native/sessions/${first.sessionId}/selection`, { headers });
+      assert.equal(got.status, 200);
+      assert.equal((await got.json() as { model: string }).model, 'fixture-model');
+      const posted = await fetch(`http://127.0.0.1:${port}/native/sessions/${first.sessionId}/selection`, {
+        method: 'POST', headers, body: JSON.stringify({ model: 'plain-model', effort: '' }),
+      });
+      assert.equal(posted.status, 200);
+      const postedBody = await posted.json() as { model: string; effort: string };
+      assert.equal(postedBody.model, 'plain-model');
+      assert.equal(postedBody.effort, '');
+      const refused = await fetch(`http://127.0.0.1:${port}/native/sessions/${first.sessionId}/selection`, {
+        method: 'POST', headers: { ...headers, 'x-mc-federation-token': 'y'.repeat(40) }, body: '{"model":"plain-model"}',
+      });
+      assert.equal(refused.status, 403);
+      const badModel = await fetch(`http://127.0.0.1:${port}/native/sessions/${first.sessionId}/selection`, {
+        method: 'POST', headers, body: '{"model":"invented"}',
+      });
+      assert.equal(badModel.status, 400);
+      assert.match((await badModel.json() as { error: string }).error, /Choose a model/);
+    } finally {
+      selectionCatalog.mock.restore(); selectionChange.mock.restore();
+      await new Promise<void>((resolve, reject) => selectionServer.close(error => error ? reject(error) : resolve()));
+    }
     const second = await nativeControlService.create({ ...input, requestId: randomUUID() });
     const restricted = await nativeControlService.create({ ...input, requestId: randomUUID(), permissionMode: 'default' });
     assert.equal(nativePermissionOptions('codex', restricted.sessionId).sessionMode, 'default');
@@ -166,6 +222,8 @@ test('federation credentials, idempotent creation, registered projects and sessi
     await assert.rejects(nativeControlService.upload(first.sessionId, 'note', 'text/plain', Buffer.from('x')), /archived/);
     getConnection().prepare('UPDATE sessions SET is_private = 1 WHERE session_id = ?').run(second.sessionId);
     assert.throws(() => nativeControlService.describe(second.sessionId), /unavailable/);
+    await assert.rejects(nativeSessionSelection(second.sessionId), /unavailable/);
+    await assert.rejects(applyNativeSessionSelection(second.sessionId, { permissionMode: 'default' }), /unavailable/);
     userDb.createUser('another-user', 'unused');
     assert.equal(authenticateNativeControl('x'.repeat(40)), false);
   } finally {
