@@ -52,7 +52,7 @@ test('native side question gateway: own credential, send and stop only, read-onl
   await initializeDatabase();
   const sockets: Socket[] = [];
   const history = mock.method(sessionsService, 'fetchHistory', async (id: string) => ({
-    messages: id === 'codex-parent'
+    messages: ['codex-parent', 'opencode-parent', 'cursor-parent'].includes(id)
       ? [{ kind: 'text', role: 'user', content: 'PARENT_QUESTION' }, { kind: 'text', role: 'assistant', content: 'PARENT_ANSWER' }]
       : [],
     total: 0, hasMore: false, offset: 0, limit: 100,
@@ -67,6 +67,14 @@ test('native side question gateway: own credential, send and stop only, read-onl
     sessionsDb.assignProviderSessionId('codex-parent', 'codex-thread');
     sessionsDb.createAppSession('codex-side', 'codex', '/tmp/native-side-fixture', true);
     sessionsDb.setSideParent('codex-side', 'codex-parent');
+    sessionsDb.createAppSession('opencode-parent', 'opencode', '/tmp/native-side-fixture');
+    sessionsDb.assignProviderSessionId('opencode-parent', 'ses_parent');
+    sessionsDb.createAppSession('opencode-side', 'opencode', '/tmp/native-side-fixture', true);
+    sessionsDb.setSideParent('opencode-side', 'opencode-parent');
+    sessionsDb.createAppSession('cursor-parent', 'cursor', '/tmp/native-side-fixture');
+    sessionsDb.assignProviderSessionId('cursor-parent', 'cursor-chat');
+    sessionsDb.createAppSession('cursor-side', 'cursor', '/tmp/native-side-fixture', true);
+    sessionsDb.setSideParent('cursor-side', 'cursor-parent');
     sessionsDb.createAppSession('browser-btw', 'claude', '/tmp/native-side-fixture', true);
 
     const runs: { content: string; options: Record<string, unknown> }[] = [];
@@ -145,15 +153,42 @@ test('native side question gateway: own credential, send and stop only, read-onl
     await side.input({ type: 'chat.send', clientMsgId: 'ask-2', content: 'And then?' });
     assert.equal(runs.at(-1)!.options.forkFrom, undefined);
 
-    // Codex quotes the parent on the first turn only.
+    // Codex forks the parent thread; the excerpt rides along only as the
+    // fallback for a refused fork, never in the text.
     const codex = open('codex-side', issueSideCapability('codex-side'));
     await codex.input({ type: 'chat.send', clientMsgId: 'codex-1', content: 'Summarise' });
     const codexRun = runs.at(-1)!;
-    assert.match(codexRun.content, /PARENT_QUESTION[\s\S]*PARENT_ANSWER[\s\S]*Summarise$/);
-    assert.match(codexRun.content, /untrusted/);
+    assert.equal(codexRun.content, 'Summarise');
+    assert.equal(codexRun.options.forkFrom, 'codex-thread');
+    assert.match(String(codexRun.options.sideExcerptFallback), /PARENT_QUESTION[\s\S]*PARENT_ANSWER/);
+    assert.match(String(codexRun.options.sideExcerptFallback), /untrusted/);
     assert.equal(codexRun.options.permissionMode, 'plan');
     assert.equal(codexRun.options.private, true);
-    assert.equal(codexRun.options.forkFrom, undefined);
+
+    // OpenCode forks too, on the CLI transport that carries a fork's history.
+    const opencode = open('opencode-side', issueSideCapability('opencode-side'));
+    await opencode.input({ type: 'chat.send', clientMsgId: 'oc-1', content: 'Summarise' });
+    const opencodeRun = runs.at(-1)!;
+    assert.equal(opencodeRun.content, 'Summarise');
+    assert.equal(opencodeRun.options.forkFrom, 'ses_parent');
+    assert.equal(opencodeRun.options.enableMidTurnInjection, false);
+    assert.equal(opencodeRun.options.permissionMode, 'plan');
+    assert.match(String(opencodeRun.options.sideExcerptFallback), /PARENT_QUESTION/);
+    // Once the fork is the side's own session, it resumes that and forks nothing.
+    sessionsDb.assignProviderSessionId('opencode-side', 'ses_fork');
+    await opencode.input({ type: 'chat.send', clientMsgId: 'oc-2', content: 'More' });
+    assert.equal(runs.at(-1)!.content, 'More');
+    assert.equal(runs.at(-1)!.options.forkFrom, undefined);
+    assert.equal(runs.at(-1)!.options.sideExcerptFallback, undefined);
+
+    // A provider that cannot fork quotes the parent on the first turn.
+    const cursor = open('cursor-side', issueSideCapability('cursor-side'));
+    await cursor.input({ type: 'chat.send', clientMsgId: 'cursor-1', content: 'Summarise' });
+    const cursorRun = runs.at(-1)!;
+    assert.match(cursorRun.content, /PARENT_QUESTION[\s\S]*PARENT_ANSWER[\s\S]*Summarise$/);
+    assert.match(cursorRun.content, /untrusted/);
+    assert.equal(cursorRun.options.forkFrom, undefined);
+    assert.equal(cursorRun.options.sideExcerptFallback, undefined);
 
     // A parent that turns private revokes the side socket on the next frame.
     getConnection().prepare('UPDATE sessions SET is_private = 1 WHERE session_id = ?').run('codex-parent');

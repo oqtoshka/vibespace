@@ -400,6 +400,83 @@ test('spawnOpenCode emits session_created before normalized live messages for ne
   }
 });
 
+// A side question's first OpenCode turn forks the parent (Mission Control threads):
+// `run --session <parent> --fork` under the read-only plan agent, and the fork's id
+// becomes the side's session. A parent with no rows in opencode.db cannot be forked,
+// so that side runs fresh with the parent excerpt instead.
+test('an OpenCode side question forks the parent session read-only, or quotes it when there is nothing to fork', { concurrency: false }, async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'opencode-side-fork-'));
+  const argsCapturePath = path.join(tempRoot, 'opencode-args.json');
+  const pathKey = findEnvKey('PATH');
+  const previousPath = process.env[pathKey];
+  const previousArgsCapture = process.env.OPENCODE_ARGS_CAPTURE;
+  const originalHomedir = os.homedir;
+  const originalWarn = console.warn;
+  const warnings = [];
+  const messages = [];
+  const writer = {
+    userId: null,
+    sessionId: null,
+    send(message) { messages.push(message); },
+    setSessionId(sessionId) { this.sessionId = sessionId; },
+  };
+  const sideOptions = {
+    cwd: tempRoot,
+    permissionMode: 'plan',
+    private: true,
+    sideSession: true,
+    forkFrom: 'ses_parent',
+    sideExcerptFallback: 'PARENT EXCERPT',
+  };
+
+  try {
+    await createFakeOpenCodeExecutable(tempRoot);
+    process.env[pathKey] = `${tempRoot}${path.delimiter}${previousPath || ''}`;
+    process.env.OPENCODE_ARGS_CAPTURE = argsCapturePath;
+    os.homedir = () => tempRoot;
+    console.warn = (...args) => { warnings.push(args.join(' ')); };
+
+    const dbDir = path.join(tempRoot, '.local', 'share', 'opencode');
+    await mkdir(dbDir, { recursive: true });
+    const { default: Database } = await import('better-sqlite3');
+    const db = new Database(path.join(dbDir, 'opencode.db'));
+    db.exec('CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, data TEXT)');
+    db.prepare('INSERT INTO message (id, session_id, data) VALUES (?, ?, ?)').run('msg_1', 'ses_parent', '{}');
+    db.close();
+
+    await opencodeRuntime.run('What did we decide?', sideOptions, writer, runtimeContext);
+    const forked = JSON.parse(await readFile(argsCapturePath, 'utf8')).args;
+    const sessionAt = forked.indexOf('--session');
+    assert.deepEqual(forked.slice(sessionAt, sessionAt + 3), ['--session', 'ses_parent', '--fork']);
+    assert.deepEqual(forked.slice(forked.indexOf('--agent'), forked.indexOf('--agent') + 2), ['--agent', 'plan']);
+    assert.equal(forked.at(-1), 'What did we decide?', 'a forked side carries the parent, so no excerpt');
+    assert.equal(messages.find((message) => message.kind === 'session_created')?.newSessionId, 'open-live-1');
+
+    // A later turn resumes the side's own session and never forks again.
+    messages.length = 0;
+    await opencodeRuntime.run('And then?', { ...sideOptions, sessionId: 'open-live-1' }, writer, runtimeContext);
+    const resumed = JSON.parse(await readFile(argsCapturePath, 'utf8')).args;
+    assert.equal(resumed.includes('--fork'), false);
+    assert.deepEqual(resumed.slice(resumed.indexOf('--session'), resumed.indexOf('--session') + 2), ['--session', 'open-live-1']);
+
+    messages.length = 0;
+    await opencodeRuntime.run('What did we decide?', { ...sideOptions, forkFrom: 'ses_empty' }, writer, runtimeContext);
+    const fresh = JSON.parse(await readFile(argsCapturePath, 'utf8')).args;
+    assert.equal(fresh.includes('--fork'), false);
+    assert.equal(fresh.includes('--session'), false);
+    assert.match(fresh.at(-1), /^PARENT EXCERPT\s+What did we decide\?$/);
+    assert.ok(warnings.some((line) => line.includes('parent session ses_empty has no history')));
+  } finally {
+    console.warn = originalWarn;
+    os.homedir = originalHomedir;
+    if (previousPath === undefined) delete process.env[pathKey];
+    else process.env[pathKey] = previousPath;
+    if (previousArgsCapture === undefined) delete process.env.OPENCODE_ARGS_CAPTURE;
+    else process.env.OPENCODE_ARGS_CAPTURE = previousArgsCapture;
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test('resolveOpenCodePermissionOptions maps UI permission modes onto OpenCode controls', () => {
   assert.deepEqual(resolveOpenCodePermissionOptions('plan'), {
     args: ['--agent', 'plan'],

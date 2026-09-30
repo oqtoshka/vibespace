@@ -42,6 +42,12 @@ test('native side questions: create under a parent, refuse private, promote, clo
     const codexParent = randomUUID();
     sessionsDb.createAppSession(codexParent, 'codex', directory, false, false, 'Codex');
     sessionsDb.assignProviderSessionId(codexParent, 'codex-thread');
+    const opencodeParent = randomUUID();
+    sessionsDb.createAppSession(opencodeParent, 'opencode', directory, false, false, 'OpenCode');
+    sessionsDb.assignProviderSessionId(opencodeParent, 'ses_opencodeparent');
+    const cursorParent = randomUUID();
+    sessionsDb.createAppSession(cursorParent, 'cursor', directory, false, false, 'Cursor');
+    sessionsDb.assignProviderSessionId(cursorParent, 'cursor-chat');
     const freshParent = randomUUID();
     sessionsDb.createAppSession(freshParent, 'opencode', directory, false, false, 'Fresh');
 
@@ -84,7 +90,11 @@ test('native side questions: create under a parent, refuse private, promote, clo
       assert.notEqual(other.sessionId, created.sessionId);
 
       // Context mode per provider.
-      assert.equal(sideQuestionsService.create(codexParent, { requestId: randomUUID() }).contextMode, 'excerpt');
+      // Codex (app-server thread/fork) and OpenCode (run --fork) fork the parent;
+      // a provider whose runtime cannot fork gets the quoted excerpt.
+      assert.equal(sideQuestionsService.create(codexParent, { requestId: randomUUID() }).contextMode, 'fork');
+      assert.equal(sideQuestionsService.create(opencodeParent, { requestId: randomUUID() }).contextMode, 'fork');
+      assert.equal(sideQuestionsService.create(cursorParent, { requestId: randomUUID() }).contextMode, 'excerpt');
       assert.equal(sideQuestionsService.create(freshParent, { requestId: randomUUID() }).contextMode, 'none');
 
       // Refusals: private (MC_DISABLE) parent, a side as parent, archived, missing, bad input.

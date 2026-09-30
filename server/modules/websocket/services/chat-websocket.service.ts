@@ -4,6 +4,7 @@ import type { WebSocket } from 'ws';
 
 import { peerOutboxDb, sessionsDb } from '@/modules/database/index.js';
 import { providerModelsService, sessionsService } from '@/modules/providers/index.js';
+import { sideSessionContext } from '@/modules/native-control/index.js';
 import { chatRunRegistry, MAX_QUEUED_MESSAGES } from '@/modules/websocket/services/chat-run-registry.service.js';
 import {
   subscribeProjectFiles,
@@ -263,8 +264,11 @@ export const SIDE_SESSION_DISALLOWED_TOOLS = ['Edit', 'MultiEdit', 'Write', 'Not
  * and Mission Control's native side questions alike — FEAT-SESSION-030). The
  * row decides, never the client: plan mode, the deny list, no permission
  * bypass, and the private-variant env so a side spawn never reports to a
- * presence board. A native side question also names its parent; a Claude side
- * session's first turn forks the parent's provider session.
+ * presence board. A native side question also names its parent; the first turn
+ * of a Claude, Codex or OpenCode side session forks the parent's provider
+ * session (`forkFrom`). `sideExcerptFallback` — the parent excerpt the native
+ * gateway computed for a forking provider — survives only alongside `forkFrom`,
+ * for a runtime whose fork fails.
  */
 function applySideSessionPolicy(runtimeOptions: AnyRecord, session: SessionRow, provider: LLMProvider): void {
   const clientTools = (runtimeOptions.toolsSettings ?? {}) as AnyRecord;
@@ -280,14 +284,21 @@ function applySideSessionPolicy(runtimeOptions: AnyRecord, session: SessionRow, 
   runtimeOptions.skipPermissions = false;
   runtimeOptions.private = true;
   runtimeOptions.sideSession = true;
+  const excerptFallback = runtimeOptions.sideExcerptFallback;
   delete runtimeOptions.forkFrom;
-  if (provider === 'claude' && !session.provider_session_id) {
-    const parentId = sessionsDb.getSideParent(session.session_id);
-    const parent = parentId ? sessionsDb.getSessionById(parentId) : null;
-    if (parent && parent.provider === 'claude' && parent.is_private === 0 && parent.provider_session_id) {
-      runtimeOptions.forkFrom = parent.provider_session_id;
-    }
-  }
+  delete runtimeOptions.sideExcerptFallback;
+  const context = sideSessionContext(session.session_id);
+  if (!context) return;
+  // OpenCode's server engine keeps its own context and a fork copies none of
+  // it, so a native side question runs on the `opencode run` transport, where
+  // `--fork` carries the parent conversation and later turns resume the fork.
+  // A side question never steers, so it loses nothing by leaving the server.
+  if (provider === 'opencode') runtimeOptions.enableMidTurnInjection = false;
+  if (session.provider_session_id || context.contextMode !== 'fork' || !context.parentProviderSessionId) return;
+  const parent = sessionsDb.getSessionById(context.parentId);
+  if (!parent || parent.is_private !== 0 || parent.provider !== provider) return;
+  runtimeOptions.forkFrom = context.parentProviderSessionId;
+  if (typeof excerptFallback === 'string' && excerptFallback) runtimeOptions.sideExcerptFallback = excerptFallback;
 }
 
 function buildRuntimeOptions(
