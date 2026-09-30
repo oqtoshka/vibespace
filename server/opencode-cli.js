@@ -16,7 +16,7 @@ import { notifyRunFailed, notifyRunStopped } from './modules/notifications/index
 import { planTaskContinuation } from './modules/task-continuation/index.js';
 import { scheduleSessionRecap } from './modules/providers/index.js';
 import { broadcastSessionUpdate } from './modules/providers/index.js';
-import { createCompleteMessage, createNormalizedMessage, flattenPromptForWindowsShell, getOpenCodeHelperWorkspace, isDatabaseLockedError, stripAnsi } from './shared/utils.js';
+import { createCompleteMessage, createNormalizedMessage, flattenPromptForWindowsShell, terminateChild, getOpenCodeHelperWorkspace, isDatabaseLockedError, stripAnsi } from './shared/utils.js';
 
 // Every `opencode` process on this machine writes to one WAL database, so a
 // second run — or a terminal opencode, or this server's own catalog probe —
@@ -691,7 +691,7 @@ function abortOpenCodeSession(sessionId) {
   // The abort handler sends the terminal complete (aborted: true); flag the
   // process so its close handler does not emit a second one.
   process.aborted = true;
-  process.kill('SIGTERM');
+  terminateChild(process);
   // Registered under the provider id and the app id alike — drop every alias.
   for (const [key, handle] of activeOpenCodeProcesses.entries()) {
     if (handle === process) activeOpenCodeProcesses.delete(key);
