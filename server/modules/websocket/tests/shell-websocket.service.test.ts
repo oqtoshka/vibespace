@@ -24,6 +24,7 @@ function createFakePty() {
 
   return {
     killed: false,
+    signals: [] as string[],
     onData(listener: (data: string) => void) {
       dataListener = listener;
       return { dispose: () => undefined };
@@ -40,8 +41,9 @@ function createFakePty() {
     },
     write() {},
     resize() {},
-    kill() {
+    kill(signal?: string) {
       this.killed = true;
+      this.signals.push(signal ?? 'SIGHUP');
     },
   };
 }
@@ -116,4 +118,73 @@ test('shell output detects and normalizes a wrapped authentication URL', () => {
   });
 
   pty.emitExit();
+});
+
+function initMessage(sessionId: string) {
+  return JSON.stringify({
+    type: 'init',
+    projectPath: process.cwd(),
+    sessionId,
+    hasSession: false,
+    provider: 'plain-shell',
+    isPlainShell: true,
+    initialCommand: 'test-command',
+  });
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+test('re-init on one socket detaches the previous PTY so its idle timeout still fires', async () => {
+  const ptys = [createFakePty(), createFakePty()];
+  let spawned = 0;
+  const socket = createFakeSocket();
+  handleShellConnection(socket as never, {
+    resolveProviderSessionId: () => null,
+    spawnPty: () => ptys[spawned++] as never,
+    ptySessionTimeoutMs: 30,
+    ptyKillGraceMs: 30,
+  });
+
+  const stamp = Date.now();
+  socket.emit('message', initMessage(`reinit-a-${stamp}`));
+  socket.emit('message', initMessage(`reinit-b-${stamp}`));
+  assert.equal(spawned, 2);
+
+  await sleep(60);
+  assert.equal(ptys[0].killed, true, 'the abandoned PTY is reaped by its idle timeout');
+  assert.equal(ptys[1].killed, false, 'the PTY the socket still owns stays');
+
+  // The old PTY exiting late must not remove the socket's current session.
+  ptys[0].emitExit();
+  socket.frames.length = 0;
+  ptys[1].emitData('still-attached');
+  assert.equal(socket.frames.length, 1);
+  assert.match(socket.frames[0], /still-attached/);
+
+  socket.emit('message', JSON.stringify({ type: 'kill' }));
+  ptys[1].emitExit();
+});
+
+test('kill escalates to SIGKILL when the PTY ignores SIGHUP, and not after it exits', async () => {
+  const stubborn = createFakePty();
+  const polite = createFakePty();
+  const queue = [stubborn, polite];
+  const socket = createFakeSocket();
+  handleShellConnection(socket as never, {
+    resolveProviderSessionId: () => null,
+    spawnPty: () => queue.shift() as never,
+    ptyKillGraceMs: 30,
+  });
+
+  const stamp = Date.now();
+  socket.emit('message', initMessage(`kill-stubborn-${stamp}`));
+  socket.emit('message', JSON.stringify({ type: 'kill' }));
+  socket.emit('message', initMessage(`kill-polite-${stamp}`));
+  socket.emit('message', JSON.stringify({ type: 'kill' }));
+  polite.emitExit();
+
+  await sleep(60);
+  assert.deepEqual(stubborn.signals, ['SIGHUP', 'SIGKILL']);
+  assert.deepEqual(polite.signals, ['SIGHUP']);
+  stubborn.emitExit();
 });
