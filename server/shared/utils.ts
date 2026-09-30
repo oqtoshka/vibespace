@@ -1893,3 +1893,39 @@ export function readCodexPlanState(sessionId: string, root = codexSessionsRoot()
     ...s, waitingOnUser: isWaitingOnUserSubject(s.subject),
   })), activity };
 }
+
+/**
+ * Stops a child this process spawned: SIGTERM now, SIGKILL after `graceMs`
+ * unless it has exited by then. A CLI that ignores SIGTERM would otherwise keep
+ * running — with its stdio pipes and its own children's — after its session is
+ * forgotten. Only the given, recorded child is ever signalled.
+ *
+ * Used by the OpenCode and Cursor CLI abort paths (`server/opencode-cli.js`,
+ * `server/cursor-cli.js`).
+ */
+export function terminateChild(
+  child: { kill: (signal?: NodeJS.Signals) => boolean; exitCode: number | null; signalCode: NodeJS.Signals | null },
+  graceMs = 5_000,
+): void {
+  // `?? null`: test doubles and wrapped handles may leave these undefined.
+  const hasExited = () => (child.exitCode ?? null) !== null || (child.signalCode ?? null) !== null;
+  if (hasExited()) {
+    return;
+  }
+  try {
+    child.kill('SIGTERM');
+  } catch {
+    return;
+  }
+  const escalate = setTimeout(() => {
+    if (hasExited()) {
+      return;
+    }
+    try {
+      child.kill('SIGKILL');
+    } catch {
+      // Already gone.
+    }
+  }, graceMs);
+  escalate.unref?.();
+}

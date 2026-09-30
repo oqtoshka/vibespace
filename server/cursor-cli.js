@@ -10,7 +10,7 @@ import { createProviderRuntimeContext, normalizeRuntimeOptions } from './shared/
 import { notifyRunFailed, notifyRunStopped } from './modules/notifications/index.js';
 import { recordSessionActivity, recordSessionEnd } from './services/session-restore.service.js';
 import { planTaskContinuation } from './modules/task-continuation/index.js';
-import { createCompleteMessage, createNormalizedMessage, flattenPromptForWindowsShell } from './shared/utils.js';
+import { createCompleteMessage, createNormalizedMessage, flattenPromptForWindowsShell, terminateChild } from './shared/utils.js';
 
 // cross-spawn resolves .cmd shims/PATHEXT on Windows and delegates to
 // child_process.spawn everywhere else.
@@ -457,7 +457,7 @@ function abortCursorSession(sessionId) {
     // The abort handler sends the terminal complete (aborted: true); flag the
     // process so its close handler does not emit a second one.
     process.aborted = true;
-    process.kill('SIGTERM');
+    terminateChild(process);
     activeCursorProcesses.delete(sessionId);
     return true;
   }
