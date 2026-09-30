@@ -160,7 +160,17 @@ const GIT_ENV = { ...process.env, GIT_TERMINAL_PROMPT: '0' };
  * Resolves `{ code, signal, stderr }`; rejects on spawn failure or timeout.
  * Exported for the plugin registry's own tests.
  */
-export function runRegistryChild(command, args, { cwd, env, timeoutMs, killGraceMs = KILL_GRACE_MS, label }) {
+export function runRegistryChild(
+  command: string,
+  args: string[],
+  {
+    cwd,
+    env,
+    timeoutMs,
+    killGraceMs = KILL_GRACE_MS,
+    label,
+  }: { cwd?: string; env?: NodeJS.ProcessEnv; timeoutMs: number; killGraceMs?: number; label: string },
+): Promise<{ code: number | null; signal: NodeJS.Signals | null; stderr: string }> {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
     let stderr = '';
