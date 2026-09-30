@@ -7,6 +7,9 @@ import readline from 'node:readline';
 import crossSpawn from 'cross-spawn';
 
 const REQUEST_TIMEOUT_MS = 30_000;
+// Timed-out requests remembered so a response that still arrives can be reported
+// (how big, how late) instead of silently dropped. Bounded: oldest forgotten first.
+const TIMED_OUT_MEMORY = 64;
 
 /**
  * Resolve the same pinned Codex executable that @openai/codex-sdk used.
@@ -60,6 +63,7 @@ export class CodexAppServerClient {
       { stdio: ['pipe', 'pipe', 'pipe'], env },
     );
     this.pending = new Map();
+    this.timedOut = new Map();
     this.listeners = new Set();
     this.nextId = 1;
     this.closed = false;
@@ -106,6 +110,15 @@ export class CodexAppServerClient {
     return new Promise((resolve, reject) => {
       const timeout = setTimeout(() => {
         this.pending.delete(id);
+        const timedOutAt = Date.now();
+        this.timedOut.set(id, { method, timedOutAt });
+        if (this.timedOut.size > TIMED_OUT_MEMORY) {
+          this.timedOut.delete(this.timedOut.keys().next().value);
+        }
+        // The server's stderr carries no timestamps; without these a timeout cannot be
+        // lined up with the Codex logs or with what else the shared app-server was doing.
+        const thread = params?.threadId ? ` thread=${params.threadId}` : '';
+        console.error(`[Codex app-server] ${new Date(timedOutAt).toISOString()} ${method} id=${id}${thread} timed out after ${timeoutMs}ms`);
         reject(new Error(`Codex app-server ${method} timed out`));
       }, timeoutMs);
       timeout.unref?.();
@@ -146,6 +159,12 @@ export class CodexAppServerClient {
     if (message.id !== undefined && (message.result !== undefined || message.error !== undefined)) {
       const pending = this.pending.get(message.id);
       if (!pending) {
+        const late = this.timedOut.get(message.id);
+        if (late) {
+          this.timedOut.delete(message.id);
+          const now = Date.now();
+          console.error(`[Codex app-server] ${new Date(now).toISOString()} ${late.method} id=${message.id} answered ${now - late.timedOutAt}ms after its timeout (${Buffer.byteLength(line)} bytes, ${message.error ? 'error' : 'result'})`);
+        }
         return;
       }
       this.pending.delete(message.id);
