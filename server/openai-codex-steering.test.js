@@ -341,6 +341,10 @@ test('Codex resumes the same thread while its plan has open tasks', async () => 
       .trim()
       .split('\n')
       .map((line) => JSON.parse(line));
+    const resumes = requests.filter((request) => request.method === 'thread/resume');
+    assert.ok(resumes.length > 0);
+    assert.ok(resumes.every((request) => request.params.excludeTurns === true),
+      'a resume must not hydrate the whole history over stdio');
     const turns = requests.filter((request) => request.method === 'turn/start');
     assert.equal(turns.length, 2, 'one open plan produces exactly one continuation turn');
     assert.equal(turns[0].params.threadId, 'codex-thread-1');

@@ -689,7 +689,9 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
       ...(Object.keys(threadConfig).length > 0 ? { config: threadConfig } : {}),
     };
     const threadResponse = sessionId
-      ? await appServer.request('thread/resume', { threadId: sessionId, ...threadOptions })
+      // Only the thread id is read back. Hydrating turns ships the whole history over
+      // stdio, and a long session (hundreds of MB of rollout) blows the request timeout.
+      ? await appServer.request('thread/resume', { threadId: sessionId, ...threadOptions, excludeTurns: true })
       : await appServer.request('thread/start', { ...threadOptions, ephemeral });
     if (ephemeral && !sessionId && threadResponse?.thread?.id) {
       ephemeralThread = { appServer, threadId: threadResponse.thread.id };
