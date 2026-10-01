@@ -223,25 +223,55 @@ function resolveRecapLanguage(locale: string) {
   return RECAP_LANGUAGE_NAMES[baseLocale] ?? RECAP_LANGUAGE_NAMES.en;
 }
 
-function buildRecapPrompt(messages: RecapMessage[], locale = 'en') {
+/**
+ * Builds the summarising prompt.
+ *
+ * `currentTitle` is the AI title the session already shows (the first-message
+ * title or an earlier recap's). With one, the model is asked to keep it unless
+ * the subject has changed materially and to say so with `"title": null`:
+ * a title that moves on every recap is a tab the user can no longer find.
+ */
+function buildRecapPrompt(messages: RecapMessage[], locale = 'en', currentTitle: string | null = null) {
   const transcript = messages
     .map((message) => `${message.role === 'user' ? 'User' : 'Assistant'}: ${message.text}`)
     .join('\n\n')
     .slice(-RECAP_PROMPT_CHARS);
+
+  const titleRules = currentTitle
+    ? [
+      `The session's current title is ${JSON.stringify(currentTitle)}.`,
+      '',
+      'Reply with ONLY a JSON object, no prose and no code fence:',
+      '',
+      '{"title": null, "recap": "..."}',
+      '',
+      '- "title": null to keep the current title. Keep it unless the session\'s',
+      '  subject has changed materially. Ask: would someone looking for this tab',
+      '  still recognise it under the current title? If yes, keep it (null).',
+      '  Rewording, a more precise synonym, or a next step within the same',
+      '  subject is NOT a material change. Only when the subject itself has',
+      '  changed, give a new title: 2-4 words naming what this session is about,',
+      '  like a tab label. Use natural capitalization for that language, no',
+      '  trailing punctuation, no quotes. Name the subject, not the activity:',
+      '  "Dind Image Pruning", not "Fixing A Bug".',
+    ]
+    : [
+      'Reply with ONLY a JSON object, no prose and no code fence:',
+      '',
+      '{"title": "...", "recap": "..."}',
+      '',
+      `- "title": 2-4 words naming what this session is about, like a tab label.`,
+      '  Use natural capitalization for that language, no trailing punctuation,',
+      '  no quotes. Name the subject, not the',
+      '  activity: "Dind Image Pruning", not "Fixing A Bug".',
+    ];
 
   return [
     'Below is the tail of a coding session between a user and an AI assistant.',
     `Write both the title and recap in ${resolveRecapLanguage(locale)}. Follow the selected`,
     'interface language even when the transcript uses another language.',
     '',
-    'Reply with ONLY a JSON object, no prose and no code fence:',
-    '',
-    '{"title": "...", "recap": "..."}',
-    '',
-    `- "title": 2-4 words naming what this session is about, like a tab label.`,
-    '  Use natural capitalization for that language, no trailing punctuation,',
-    '  no quotes. Name the subject, not the',
-    '  activity: "Dind Image Pruning", not "Fixing A Bug".',
+    ...titleRules,
     `- "recap": 1-2 sentences (max ${MAX_RECAP_CHARS} characters) on what the`,
     '  session is doing and where it currently stands. Write it for someone',
     '  returning to this session after a break. Plain past/present tense, no',
@@ -253,6 +283,64 @@ function buildRecapPrompt(messages: RecapMessage[], locale = 'en') {
     transcript,
     '--- END TRANSCRIPT ---',
   ].join('\n');
+}
+
+/**
+ * Words that carry no subject in a 2-4 word tab label. Small on purpose: the
+ * guard below must only ever catch rewordings, so every word it ignores is a
+ * word that could otherwise have told two subjects apart.
+ */
+const TITLE_STOPWORDS = new Set([
+  'a', 'an', 'the', 'and', 'or', 'of', 'for', 'to', 'in', 'on', 'with', 'by', 'at', 'from', 'via', 'vs',
+  'и', 'в', 'во', 'на', 'для', 'с', 'со', 'по', 'о', 'об', 'к', 'из', 'от',
+]);
+
+/** Lowercased content words of a title, with a naive plural `s` folded away. */
+function titleWords(title: string) {
+  const words = title.normalize('NFKC').toLocaleLowerCase()
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter((word) => word && !TITLE_STOPWORDS.has(word))
+    .map((word) => (word.length > 3 && word.endsWith('s') && !word.endsWith('ss') ? word.slice(0, -1) : word));
+  return new Set(words);
+}
+
+/**
+ * Minimum share of shared content words (Jaccard: shared / all distinct) at
+ * which a new title counts as a rewording of the current one. 0.5 means half
+ * the words in the two titles together are common to both: "Dind Image
+ * Pruning" -> "Dind Image Cleanup" (2 of 4) is a rewording, while "Session
+ * Recap Titles" -> "Sidebar Drag Reorder" (0 of 6) is a new subject.
+ */
+const TITLE_REWORDING_OVERLAP = 0.5;
+
+/**
+ * Code-side guard behind the prompt's "keep the title" instruction: true when
+ * `candidate` is only a rewording of `current`, so the current title stays.
+ *
+ * Titles are compared as sets of content words (case, punctuation, stopwords
+ * and a plural `s` ignored, so "Recap Titles" and "recap title" are equal).
+ * A rewording is either of:
+ * - one title's content words containing the other's, when the shorter has at
+ *   least two (a single generic word is too weak to pin a subject):
+ *   "Dind Image Pruning" vs "Dind Image Pruning Cron";
+ * - content-word overlap at or above TITLE_REWORDING_OVERLAP.
+ *
+ * Conservative by design: a false "rewording" freezes a stale title until the
+ * next recap, so anything below the threshold is accepted as a new subject.
+ */
+function isTitleRewording(current: string, candidate: string) {
+  const a = titleWords(current);
+  const b = titleWords(candidate);
+  // Nothing to compare (punctuation-only, or every word a stopword): fall
+  // back to the plain strings so an identical title is still caught.
+  if (a.size === 0 || b.size === 0) {
+    return current.trim().toLocaleLowerCase() === candidate.trim().toLocaleLowerCase();
+  }
+  let shared = 0;
+  for (const word of a) if (b.has(word)) shared += 1;
+  const smaller = Math.min(a.size, b.size);
+  if (shared === smaller && smaller >= 2) return true;
+  return shared / (a.size + b.size - shared) >= TITLE_REWORDING_OVERLAP;
 }
 
 /**
@@ -275,6 +363,7 @@ function parseRecapResponse(text: string) {
     return null;
   }
 
+  // `"title": null` (or no title at all) is the model keeping the current one.
   const title = typeof parsed.title === 'string' ? parsed.title.trim() : '';
   const recap = typeof parsed.recap === 'string' ? parsed.recap.trim() : '';
   if (!title && !recap) return null;
@@ -393,7 +482,11 @@ export async function generateSessionRecap({
   // run the default pass fallbackModel: null and get the provider's own.
   const helperModel = model || fallbackModel || undefined;
 
-  await runQuery(buildRecapPrompt(messages, locale) + '\n\n' + topicPrompt, {
+  // Only an AI title is offered for keeping: a 'derived' name is the last
+  // prompt as a placeholder, not a title, and a 'user' name is never touched.
+  const currentTitle = session.name_source === 'ai' && session.custom_name ? session.custom_name : null;
+
+  await runQuery(buildRecapPrompt(messages, locale, currentTitle) + '\n\n' + topicPrompt, {
     cwd,
     model: helperModel,
     permissionMode: 'bypassPermissions',
@@ -437,7 +530,13 @@ export async function generateSessionRecap({
   // is only visible in `current` — and updateSessionCustomName refuses the
   // write against a 'user' row anyway, so a manual rename survives every
   // later regeneration.
+  //
+  // The title is sticky: a new one replaces an AI title only when it names a
+  // different subject, not when the model merely reworded the current one
+  // despite being told to keep it. The recap above updates every time.
+  const keptTitle = current.name_source === 'ai' && current.custom_name ? current.custom_name : null;
   const titled = result.title && current.name_source !== 'user'
+    && !(keptTitle && isTitleRewording(keptTitle, result.title))
     ? sessionsDb.updateSessionCustomName(rowId, result.title, 'ai')
     : false;
 
@@ -505,5 +604,6 @@ export const __testing = {
   readIndexedTranscriptTail,
   parseRecapResponse,
   buildRecapPrompt,
+  isTitleRewording,
   generateRecap: generateSessionRecap,
 };
