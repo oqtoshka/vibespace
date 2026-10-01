@@ -34,7 +34,7 @@ import { chatRunRegistry } from '@/modules/websocket/services/chat-run-registry.
 import { registerChatDependenciesAtBoot, serverAbortRun, serverEnqueueMessage, serverEnqueueMessageChecked, pluginHostEnqueueMessage, serverEnqueueMessageIfIdle, admitPeerMessage, getPeerMessage, startPeerOutboxSweeper } from '@/modules/websocket/index.js';
 import { forgetRateLimitWake, startRateLimitWakeLoop } from '@/services/rate-limit-wake.service.js';
 import { cancelSessionRecap } from '@/modules/providers/index.js';
-import { forgetSession as forgetRestoreEntry, restoreInterruptedSessions } from '@/services/session-restore.service.js';
+import { createQueuedRestoreStarter, forgetSession as forgetRestoreEntry, restoreInterruptedSessions } from '@/services/session-restore.service.js';
 
 import { getConnectableHost } from '../shared/networkHosts.js';
 
@@ -198,18 +198,23 @@ registerSessionShredDependencies({ forgetRestoreEntry, forgetRateLimitWake, canc
 // row chooses Claude/Codex/OpenCode and supplies cwd/privacy exactly as a live
 // send does; keeping this at the entrypoint avoids the old Claude-only boot
 // hook and makes restored turns visible/replayable to clients from the start.
+//
+// Host modules register task-ledger sources (the Mission Control card plan)
+// when they activate in the listen callback, and the pass reads those ledgers
+// to decide what to resume, so it waits for activation to settle. Capped, so a
+// hung host module cannot hold every restore back.
+const HOST_EXTENSIONS_WAIT_MS = 60_000;
+let markHostExtensionsSettled = () => {};
+const hostExtensionsSettled = new Promise((resolve) => { markHostExtensionsSettled = resolve; });
 if (!process.env.NODE_TEST_CONTEXT) {
     const bootRestoreTimer = setTimeout(() => {
+        const activationCap = new Promise((resolve) => setTimeout(resolve, HOST_EXTENSIONS_WAIT_MS).unref?.());
         restoreInterruptedSessions(null, {
-            startTurn: (entry, prompt) => {
-                const row = sessionsDb.getSessionByProviderSessionId(entry.sessionId);
-                if (!row) return false;
-                const options = {
-                    ...(entry.permissionMode ? { permissionMode: entry.permissionMode } : {}),
-                    ...(entry.cwd ? { cwd: entry.cwd } : {}),
-                };
-                return serverEnqueueMessage(row.session_id, prompt, options, { userId: entry.userId ?? null });
-            },
+            ready: Promise.race([hostExtensionsSettled, activationCap]),
+            startTurn: createQueuedRestoreStarter({
+                findSessionByProviderSessionId: (providerSessionId) => sessionsDb.getSessionByProviderSessionId(providerSessionId),
+                enqueueMessage: serverEnqueueMessage,
+            }),
         }).catch((error) => {
             console.error('[session restore] boot pass failed:', error?.message || error);
         });
@@ -2870,7 +2875,7 @@ async function startServer() {
     peerOutbox: { admit: (input) => admitPeerMessage(input), get: (senderSessionId, requestId) => getPeerMessage(senderSessionId, requestId) },
             }).catch((err) => {
                 console.error('[Plugins] host module activation failed:', err?.message || err);
-            });
+            }).finally(() => markHostExtensionsSettled());
 
             const stopJanitor = startJanitorScheduler();
             server.once('close', stopJanitor);
