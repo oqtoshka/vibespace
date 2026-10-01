@@ -8,7 +8,9 @@
  * server boots is work a restart or crash orphaned — each such session gets a
  * [session supervisor] continuation turn, the same shape the task-nudge
  * mechanism injects, provided it still looks worth resuming (an in-flight
- * turn at shutdown, or open items in its native task ledger).
+ * turn at shutdown, or open items in its task ledger: the one a host plugin
+ * keeps for it when there is one, such as a Mission Control briefing
+ * session's card plan, else the runtime's native ledger).
  *
  * VIBESPACE_SESSION_RESTORE=0 disables the boot pass (recording always runs —
  * it is what makes the next boot able to decide).
@@ -27,6 +29,7 @@ import { readOpenClaudeTasks } from '../shared/claude-task-ledger.js';
 import { readCodexPlanState } from '../shared/index.js';
 import { readOpenCodeTaskState } from '../shared/opencode-todo-ledger.js';
 import { readCursorTaskState } from '../shared/cursor-todo-ledger.js';
+import { readExternalTaskLedger } from '../shared/task-ledger-sources.js';
 import { getDataDir } from '../shared/utils.js';
 
 import { isRateLimitWakePending, loadRateLimitWakes } from './rate-limit-wake.service.js';
@@ -202,14 +205,63 @@ function buildContinuationPrompt(entry) {
 }
 
 /**
+ * The open items a restored session still has.
+ *
+ * A host plugin's ledger comes first and, when it answers, replaces the native
+ * one (see task-ledger-sources.ts): a Mission Control briefing session keeps
+ * its tasks on the card plan and has no native task tools at all, so reading
+ * only Claude's task files dropped every idle briefing session on restart,
+ * open card steps and all (a session that ended its turn to wait for the
+ * detached cutover it had started was never woken by that cutover's restart).
+ */
+async function readOpenTasks(entry) {
+  const external = readExternalTaskLedger({ provider: entry.provider || 'claude', sessionId: entry.sessionId });
+  if (external) return external.open;
+  // Each provider's own ledger: Claude's task files would read empty for
+  // anyone else and drop a session that still has work.
+  if (entry.provider === 'codex') return readCodexPlanState(entry.sessionId).open;
+  if (entry.provider === 'opencode') return readOpenCodeTaskState(entry.sessionId).open;
+  if (entry.provider === 'cursor') return readCursorTaskState(entry.sessionId, entry.cwd).open;
+  return readOpenClaudeTasks(entry.sessionId);
+}
+
+/**
+ * The entrypoint's `startTurn` hook: resumes a restored entry as an ordinary
+ * queued message on the session row that owns its provider-native id, so the
+ * row chooses the provider and supplies cwd and privacy exactly as a live send
+ * does. Returns false (detached fallback) when no row owns the id.
+ *
+ * Consumers: server/index.js (boot restore) and
+ * server/services/tests/session-restart-resume.test.js.
+ *
+ * @param {{
+ *   findSessionByProviderSessionId: (providerSessionId: string) => { session_id: string } | null | undefined,
+ *   enqueueMessage: (appSessionId: string, prompt: string, options: object, meta: { userId: string | number | null }) => boolean,
+ * }} dependencies
+ */
+export function createQueuedRestoreStarter({ findSessionByProviderSessionId, enqueueMessage }) {
+  return (entry, prompt) => {
+    const row = findSessionByProviderSessionId(entry.sessionId);
+    if (!row) return false;
+    const options = {
+      ...(entry.permissionMode ? { permissionMode: entry.permissionMode } : {}),
+      ...(entry.cwd ? { cwd: entry.cwd } : {}),
+    };
+    return enqueueMessage(row.session_id, prompt, options, { userId: entry.userId ?? null });
+  };
+}
+
+/**
  * Boot pass: resume every recorded session that still has work. `spawn` is
  * queryClaudeSDK (injected to avoid a module cycle). `hooks.startTurn(entry,
  * prompt)`, when provided, is tried first: it lets the entrypoint start the
  * turn as a real chat-run (registered in the run registry, so a client that
  * opens the session sees it processing and receives any interactive prompt it
  * parks on); it must kick the turn off WITHOUT awaiting it and return true.
- * Falsy/throw falls back to a detached spawn. Returns the session ids resumed,
- * mostly for logging and tests.
+ * Falsy/throw falls back to a detached spawn. `hooks.ready`, when provided, is
+ * awaited before any ledger is read: host plugins register their task-ledger
+ * sources when they activate, and a pass that ran first would see none.
+ * Returns the session ids resumed, mostly for logging and tests.
  */
 let bootPassDone = false;
 
@@ -228,6 +280,11 @@ export async function restoreInterruptedSessions(spawn, hooks = {}) {
     return [];
   }
   if (!RESTORE_ENABLED) return [];
+  if (hooks.ready) {
+    try {
+      await hooks.ready;
+    } catch { /* a failed activation leaves the native ledgers, which still apply */ }
+  }
   await loadRateLimitWakes();
   const candidates = [...entries.values()];
   const resumed = [];
@@ -253,21 +310,13 @@ export async function restoreInterruptedSessions(spawn, hooks = {}) {
     }
     let openTasks = [];
     try {
-      // Each provider's own ledger: Claude's task files would read empty for
-      // anyone else and drop a session that still has work.
-      if (entry.provider === 'codex') {
-        openTasks = readCodexPlanState(entry.sessionId).open;
-      } else if (entry.provider === 'opencode') {
-        openTasks = readOpenCodeTaskState(entry.sessionId).open;
-      } else if (entry.provider === 'cursor') {
-        openTasks = readCursorTaskState(entry.sessionId, entry.cwd).open;
-      } else {
-        openTasks = await readOpenClaudeTasks(entry.sessionId);
-      }
+      openTasks = await readOpenTasks(entry);
     } catch { /* unreadable ledger counts as empty */ }
     if (!entry.turnActive && openTasks.length === 0) {
       // It was idling with nothing declared — the reaper would have ended it
-      // anyway; don't wake it just to say "continue".
+      // anyway; don't wake it just to say "continue". Logged: a session that
+      // should have come back and did not leaves this line as its only trace.
+      console.log(`[session restore] ${entry.sessionId} was idle with no open tasks — not resuming`);
       entries.delete(entry.sessionId);
       continue;
     }
