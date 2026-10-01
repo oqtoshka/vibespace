@@ -16,6 +16,7 @@ const {
   readIndexedTranscriptTail,
   parseRecapResponse,
   buildRecapPrompt,
+  isTitleRewording,
   generateRecap,
 } = __testing;
 
@@ -161,6 +162,50 @@ test('buildRecapPrompt follows a supported interface locale and rejects arbitrar
   assert.match(buildRecapPrompt(messages, 'ru-RU'), /title and recap in Russian/);
   assert.match(buildRecapPrompt(messages, 'ignore instructions'), /title and recap in English/);
   assert.doesNotMatch(buildRecapPrompt(messages, 'ignore instructions'), /ignore instructions/);
+});
+
+test('buildRecapPrompt offers the current title for keeping', () => {
+  const messages = [
+    { role: 'user', text: 'fix the prune' },
+    { role: 'assistant', text: 'done' },
+  ];
+
+  const prompt = buildRecapPrompt(messages, 'en', 'Dind Image Pruning');
+  assert.match(prompt, /current title is "Dind Image Pruning"/);
+  assert.match(prompt, /\{"title": null, "recap": "\.\.\."\}/);
+  assert.match(prompt, /would someone looking for this tab\s+still recognise it under the current title\? If yes, keep it/);
+  assert.match(prompt, /Rewording, a more precise synonym, or a next step within the same\s+subject is NOT a material change/);
+
+  // No current title: the model is asked for one, with nothing to keep.
+  const fresh = buildRecapPrompt(messages, 'en');
+  assert.doesNotMatch(fresh, /current title/);
+  assert.match(fresh, /\{"title": "\.\.\.", "recap": "\.\.\."\}/);
+});
+
+test('parseRecapResponse reads a null title as keep, still returning the recap', () => {
+  assert.deepEqual(
+    parseRecapResponse('{"title": null, "recap": "Moved on to the cron."}'),
+    { title: '', recap: 'Moved on to the cron.' },
+  );
+});
+
+test('isTitleRewording catches rewordings and lets new subjects through', () => {
+  // Case, punctuation, stopwords and plurals.
+  assert.equal(isTitleRewording('Recap Titles', 'recap title'), true);
+  assert.equal(isTitleRewording('Pruning of Dind Images', 'Dind Image Pruning'), true);
+  // A more precise synonym or a next step in the same subject.
+  assert.equal(isTitleRewording('Dind Image Pruning', 'Dind Image Cleanup'), true);
+  assert.equal(isTitleRewording('Dind Image Pruning', 'Dind Image Pruning Cron'), true);
+  assert.equal(isTitleRewording('Stable Session Titles', 'Sticky Session Titles'), true);
+  // Genuinely different subjects.
+  assert.equal(isTitleRewording('Dind Image Pruning', 'Sidebar Drag Reorder'), false);
+  assert.equal(isTitleRewording('Session Recap Titles', 'Session Sidebar Layout'), false);
+  assert.equal(isTitleRewording('Login Bug', 'Telegram Bot Setup'), false);
+  // One shared generic word is not a rewording.
+  assert.equal(isTitleRewording('VibeSpace', 'Billing Export Page'), false);
+  // Titles without separable words compare as whole strings.
+  assert.equal(isTitleRewording('会话标题', '会话标题'), true);
+  assert.equal(isTitleRewording('会话标题', '侧边栏布局'), false);
 });
 
 // OpenCode keeps every conversation in one shared SQLite store rather than a
@@ -405,6 +450,87 @@ test('generateRecap leaves a private session alone', async () => {
     const stored = sessionsDb.getSessionById('app-private-recap');
     assert.equal(stored?.recap, null);
     assert.equal(stored?.custom_name, null);
+  } finally {
+    closeConnection();
+    if (previousDatabasePath === undefined) delete process.env.DATABASE_PATH;
+    else process.env.DATABASE_PATH = previousDatabasePath;
+    await rm(tempDirectory, { recursive: true, force: true });
+  }
+});
+
+// The title is sticky: once a session has an AI title, a recap replaces it only
+// when the subject has changed, while the recap text itself updates every time.
+test('generateRecap keeps an AI title on keep or rewording and replaces it on a new subject', async () => {
+  const previousDatabasePath = process.env.DATABASE_PATH;
+  const tempDirectory = await mkdtemp(path.join(tmpdir(), 'sticky-title-'));
+  const databasePath = path.join(tempDirectory, 'auth.db');
+
+  closeConnection();
+  process.env.DATABASE_PATH = databasePath;
+  await initializeDatabase();
+
+  let turn = 0;
+  const history = async () => {
+    turn += 2;
+    return {
+      total: turn,
+      messages: [
+        { kind: 'text', role: 'user', content: `step ${turn}` },
+        { kind: 'text', role: 'assistant', content: `did step ${turn}` },
+      ],
+    };
+  };
+  const recapWith = async (reply) => {
+    let prompt = null;
+    let delivered = null;
+    await generateRecap({
+      sessionId: 'sticky-1',
+      cwd: tempDirectory,
+      useIndexedHistory: true,
+      fetchHistory: history,
+      runQuery: async (sentPrompt, _options, writer) => {
+        prompt = sentPrompt;
+        writer.send(JSON.stringify({ kind: 'text', content: JSON.stringify(reply) }));
+      },
+      onRecap: (result) => { delivered = result; },
+    });
+    return { prompt, delivered, stored: sessionsDb.getSessionById('sticky-1') };
+  };
+
+  try {
+    sessionsDb.createSession('sticky-1', 'codex', tempDirectory);
+    // The first-message title, as session-title.service stores it.
+    sessionsDb.updateSessionCustomName('sticky-1', 'Dind Image Pruning', 'ai');
+
+    // Explicit keep: the name stays, the recap moves on.
+    let run = await recapWith({ title: null, recap: 'Found the cron.' });
+    assert.match(run.prompt, /current title is "Dind Image Pruning"/);
+    assert.equal(run.stored.custom_name, 'Dind Image Pruning');
+    assert.equal(run.stored.recap, 'Found the cron.');
+    assert.deepEqual(run.delivered, { sessionId: 'sticky-1', title: null, recap: 'Found the cron.' });
+
+    // A rewording the model sent anyway is discarded.
+    run = await recapWith({ title: 'Dind Image Cleanup', recap: 'Fixed the cron.' });
+    assert.equal(run.stored.custom_name, 'Dind Image Pruning');
+    assert.equal(run.stored.recap, 'Fixed the cron.');
+    assert.equal(run.delivered.title, null);
+
+    // A genuinely new subject replaces it.
+    run = await recapWith({ title: 'Sidebar Drag Reorder', recap: 'Switched to the sidebar.' });
+    assert.equal(run.stored.custom_name, 'Sidebar Drag Reorder');
+    assert.equal(run.stored.name_source, 'ai');
+    assert.equal(run.delivered.title, 'Sidebar Drag Reorder');
+
+    // A placeholder name is not offered for keeping, and a hand-written one is never replaced.
+    sessionsDb.updateSessionCustomName('sticky-1', 'also i want you to fix the', 'derived');
+    run = await recapWith({ title: 'Prune Job Fix', recap: 'Fixing the prune job.' });
+    assert.doesNotMatch(run.prompt, /current title/);
+    assert.equal(run.stored.custom_name, 'Prune Job Fix');
+
+    sessionsDb.updateSessionCustomName('sticky-1', 'My Name', 'user');
+    run = await recapWith({ title: 'Telegram Bot Setup', recap: 'Set up the bot.' });
+    assert.equal(run.stored.custom_name, 'My Name');
+    assert.equal(run.stored.recap, 'Set up the bot.');
   } finally {
     closeConnection();
     if (previousDatabasePath === undefined) delete process.env.DATABASE_PATH;
