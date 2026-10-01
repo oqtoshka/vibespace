@@ -35,3 +35,11 @@ export {
   getActiveOpenCodeSessions,
   resolveOpenCodePermissionOptions,
 };
+
+/*
+ * Test seam, consumed by opencode-runtime.provider.test.js and
+ * providers/tests/opencode-compact-command.test.ts: under test the shared
+ * `opencode serve` is never booted, so a test that runs a server turn injects a
+ * loopback stub, and one that does not is refused (see ensureOpenCodeServer).
+ */
+export { ensureOpenCodeServer, injectOpenCodeServerForTests } from '../../../../services/opencode-server.service.js';
