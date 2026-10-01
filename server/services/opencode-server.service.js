@@ -263,13 +263,65 @@ function bootServer(slot) {
 }
 
 /**
+ * The stub a test put in place of the shared server, or null.
+ *
+ * @type {null | ((options: { private?: boolean }) => { baseUrl: string, authorization: string } | Promise<{ baseUrl: string, authorization: string }>)}
+ */
+let injectedServer = null;
+
+/**
+ * True inside a test run: `npm test` sets NODE_ENV=test, and node's test
+ * runner sets NODE_TEST_CONTEXT in every file it runs, so a file started with
+ * `tsx --test <file>` directly is covered too.
+ */
+function isTestProcess() {
+  return process.env.NODE_ENV === 'test' || Boolean(process.env.NODE_TEST_CONTEXT);
+}
+
+/**
+ * Points every interactive OpenCode turn at a stub server instead of booting
+ * `opencode serve`. Returns a function that removes the stub again.
+ *
+ * Test-only seam (opencode-runtime.provider.test.js,
+ * opencode-compact-command.test.ts): a test that runs an HTTP turn starts its
+ * own loopback fake and hands its address here. Without one, a test process is
+ * refused a server outright (see ensureOpenCodeServer) — booting one resolves
+ * `opencode` from PATH, and a test whose fake had already been taken off PATH
+ * reached the operator's real OpenCode and left "Greeting" sessions in it.
+ *
+ * @param {{ baseUrl: string, authorization: string } | ((options: { private?: boolean }) => { baseUrl: string, authorization: string } | Promise<{ baseUrl: string, authorization: string }>)} server
+ * @returns {() => void}
+ */
+export function injectOpenCodeServerForTests(server) {
+  const resolver = typeof server === 'function' ? server : () => server;
+  injectedServer = resolver;
+  return () => {
+    if (injectedServer === resolver) injectedServer = null;
+  };
+}
+
+/**
  * Returns `{ baseUrl, authorization }` for the shared server, booting it if it
  * is not already running.
+ *
+ * Under test (NODE_ENV=test or node's test runner) it never boots or reaches a
+ * real server: it answers with the stub from injectOpenCodeServerForTests, and
+ * without one it throws.
  *
  * @param {{ private?: boolean }} [options] - `private` selects the server
  *   spawned with the private-variant env (see collectAgentEnv).
  */
 export async function ensureOpenCodeServer(options = {}) {
+  if (injectedServer) {
+    return injectedServer(options);
+  }
+  if (isTestProcess()) {
+    throw new Error(
+      'Refusing to boot `opencode serve` under test (NODE_ENV=test / NODE_TEST_CONTEXT): '
+      + 'it would reach the real OpenCode. Inject a stub with injectOpenCodeServerForTests().',
+    );
+  }
+
   const slot = instances[variantFor(options)];
   if (slot.bootPromise && isAlive(slot.serverProcess)) {
     return slot.bootPromise;

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -15,6 +16,8 @@ const { closeConnection } = await import('../../../database/connection.js');
 const { initializeDatabase } = await import('../../../database/init-db.js');
 const { registerAgentEnvContributor } = await import('../../../../shared/agent-env.js');
 const {
+  ensureOpenCodeServer,
+  injectOpenCodeServerForTests,
   opencodeRuntime,
   injectOpenCodeMessage,
   isOpenCodeSessionActive,
@@ -22,6 +25,8 @@ const {
   spawnOpenCode,
 } = await import('./opencode-runtime.provider.js');
 const { OpenCodeSessionsProvider } = await import('./opencode-sessions.provider.js');
+
+const FAKE_SERVER_AUTHORIZATION = `Basic ${Buffer.from('opencode:test').toString('base64')}`;
 
 // Stands in for a host plugin (e.g. a presence reporter's opt-out): the runtime's
 // job is to tag the spawn correctly and merge what contributors return.
@@ -120,109 +125,109 @@ for (const event of events) {
   await chmod(commandPath, 0o755);
 }
 
-async function createFakeOpenCodeServerExecutable(binDir) {
-  const scriptPath = path.join(binDir, 'opencode-server.js');
-  await writeFile(scriptPath, `
-const fs = require('node:fs');
-const http = require('node:http');
+/**
+ * An in-process stand-in for `opencode serve`, handed to the runtime through
+ * injectOpenCodeServerForTests: the HTTP transport never boots a server under
+ * test, so no `opencode` — fake or real — is ever spawned for a server turn.
+ * Prompts it receives are collected in `requests`; a steer finishes the turn.
+ */
+async function startFakeOpenCodeServer() {
+  const requests = [];
+  const streams = new Set();
+  const sendJson = (response, status, body) => {
+    response.writeHead(status, { 'Content-Type': 'application/json' });
+    response.end(JSON.stringify(body));
+  };
+  const broadcast = (event) => {
+    const frame = `data: ${JSON.stringify(event)}\n\n`;
+    for (const stream of streams) stream.write(frame);
+  };
+  const readBody = (request) => new Promise((resolve) => {
+    let body = '';
+    request.on('data', (chunk) => { body += chunk; });
+    request.on('end', () => resolve(body ? JSON.parse(body) : {}));
+  });
 
-if (process.argv[2] !== 'serve') process.exit(2);
-const port = Number(process.argv[process.argv.indexOf('--port') + 1]);
-const capturePath = process.env.OPENCODE_SERVER_CAPTURE;
-const streams = new Set();
-const sendJson = (response, status, body) => {
-  response.writeHead(status, { 'Content-Type': 'application/json' });
-  response.end(JSON.stringify(body));
-};
-const broadcast = (event) => {
-  const frame = 'data: ' + JSON.stringify(event) + '\\n\\n';
-  for (const stream of streams) stream.write(frame);
-};
-const readBody = (request) => new Promise((resolve) => {
-  let body = '';
-  request.on('data', (chunk) => { body += chunk; });
-  request.on('end', () => resolve(body ? JSON.parse(body) : {}));
-});
-
-const server = http.createServer(async (request, response) => {
-  if (request.method === 'GET' && request.url.split('?')[0] === '/api/model') {
-    sendJson(response, 200, { data: [{ id: 'local', providerID: 'homelab' }] });
-    return;
-  }
-  if (request.method === 'GET' && request.url === '/api/event') {
-    response.writeHead(200, { 'Content-Type': 'text/event-stream', Connection: 'keep-alive' });
-    response.write(': connected\\n\\n');
-    streams.add(response);
-    request.on('close', () => streams.delete(response));
-    return;
-  }
-  if (request.method === 'POST' && request.url === '/api/session') {
-    await readBody(request);
-    sendJson(response, 200, { data: { id: 'open-server-1' } });
-    return;
-  }
-  if (request.method === 'POST' && /\\/api\\/session\\/open-server-1\\/(model|agent)$/.test(request.url)) {
-    await readBody(request);
-    sendJson(response, 200, { data: true });
-    return;
-  }
-  if (request.method === 'POST' && request.url === '/api/session/open-server-1/prompt') {
-    const body = await readBody(request);
-    fs.appendFileSync(capturePath, JSON.stringify(body) + '\\n');
-    const id = body.id || 'msg_initial';
-    sendJson(response, 200, { data: {
-      admittedSeq: body.delivery === 'steer' ? 2 : 1,
-      id,
-      sessionID: 'open-server-1',
-      prompt: body.prompt,
-      delivery: body.delivery || 'steer',
-      timeCreated: Date.now(),
-    } });
-    if (body.delivery === 'steer') {
-      setTimeout(() => {
-        broadcast({ type: 'session.next.prompted', data: {
-          sessionID: 'open-server-1', messageID: id, prompt: body.prompt, delivery: 'steer', timestamp: Date.now(),
-        } });
-        broadcast({ type: 'session.next.text.delta', data: {
-          sessionID: 'open-server-1', assistantMessageID: 'msg_assistant', textID: 'text-1',
-          delta: 'steered answer', timestamp: Date.now(),
-        } });
-        broadcast({ type: 'session.next.step.ended', data: {
-          sessionID: 'open-server-1', assistantMessageID: 'msg_assistant', finish: 'stop', timestamp: Date.now(),
-        } });
-        server.close(() => process.exit(0));
-      }, 25);
-    } else {
-      broadcast({ type: 'session.next.step.started', data: {
-        sessionID: 'open-server-1', assistantMessageID: 'msg_assistant', timestamp: Date.now(),
-      } });
+  const server = http.createServer(async (request, response) => {
+    if (request.headers.authorization !== FAKE_SERVER_AUTHORIZATION) {
+      sendJson(response, 401, { error: 'unauthorized' });
+      return;
     }
-    return;
-  }
-  if (request.method === 'GET' && request.url === '/api/session/open-server-1/context') {
-    sendJson(response, 200, { data: {} });
-    return;
-  }
-  if (request.method === 'POST' && request.url === '/api/session/open-server-1/interrupt') {
-    sendJson(response, 200, { data: true });
-    return;
-  }
-  sendJson(response, 404, { error: 'not found' });
-});
-server.listen(port, '127.0.0.1', () => {
-  console.log('opencode server listening on http://127.0.0.1:' + port);
-});
-process.on('SIGTERM', () => server.close(() => process.exit(0)));
-`, 'utf8');
+    if (request.method === 'GET' && request.url.split('?')[0] === '/api/model') {
+      sendJson(response, 200, { data: [{ id: 'local', providerID: 'homelab' }] });
+      return;
+    }
+    if (request.method === 'GET' && request.url === '/api/event') {
+      response.writeHead(200, { 'Content-Type': 'text/event-stream', Connection: 'keep-alive' });
+      response.write(': connected\n\n');
+      streams.add(response);
+      request.on('close', () => streams.delete(response));
+      return;
+    }
+    if (request.method === 'POST' && request.url === '/api/session') {
+      await readBody(request);
+      sendJson(response, 200, { data: { id: 'open-server-1' } });
+      return;
+    }
+    if (request.method === 'POST' && /\/api\/session\/open-server-1\/(model|agent)$/.test(request.url)) {
+      await readBody(request);
+      sendJson(response, 200, { data: true });
+      return;
+    }
+    if (request.method === 'POST' && request.url === '/api/session/open-server-1/prompt') {
+      const body = await readBody(request);
+      requests.push(body);
+      const id = body.id || 'msg_initial';
+      sendJson(response, 200, { data: {
+        admittedSeq: body.delivery === 'steer' ? 2 : 1,
+        id,
+        sessionID: 'open-server-1',
+        prompt: body.prompt,
+        delivery: body.delivery || 'steer',
+        timeCreated: Date.now(),
+      } });
+      if (body.delivery === 'steer') {
+        setTimeout(() => {
+          broadcast({ type: 'session.next.prompted', data: {
+            sessionID: 'open-server-1', messageID: id, prompt: body.prompt, delivery: 'steer', timestamp: Date.now(),
+          } });
+          broadcast({ type: 'session.next.text.delta', data: {
+            sessionID: 'open-server-1', assistantMessageID: 'msg_assistant', textID: 'text-1',
+            delta: 'steered answer', timestamp: Date.now(),
+          } });
+          broadcast({ type: 'session.next.step.ended', data: {
+            sessionID: 'open-server-1', assistantMessageID: 'msg_assistant', finish: 'stop', timestamp: Date.now(),
+          } });
+        }, 25);
+      } else {
+        broadcast({ type: 'session.next.step.started', data: {
+          sessionID: 'open-server-1', assistantMessageID: 'msg_assistant', timestamp: Date.now(),
+        } });
+      }
+      return;
+    }
+    if (request.method === 'GET' && request.url === '/api/session/open-server-1/context') {
+      sendJson(response, 200, { data: {} });
+      return;
+    }
+    if (request.method === 'POST' && request.url === '/api/session/open-server-1/interrupt') {
+      sendJson(response, 200, { data: true });
+      return;
+    }
+    sendJson(response, 404, { error: 'not found' });
+  });
 
-  if (process.platform === 'win32') {
-    await writeFile(path.join(binDir, 'opencode.cmd'), '@echo off\r\nnode "%~dp0opencode-server.js" %*\r\n', 'utf8');
-    return;
-  }
-
-  const commandPath = path.join(binDir, 'opencode');
-  await writeFile(commandPath, '#!/bin/sh\nexec node "$(dirname "$0")/opencode-server.js" "$@"\n', 'utf8');
-  await chmod(commandPath, 0o755);
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address();
+  return {
+    requests,
+    handle: { baseUrl: `http://127.0.0.1:${port}`, authorization: FAKE_SERVER_AUTHORIZATION },
+    close: () => new Promise((resolve) => {
+      for (const stream of streams) stream.end();
+      server.closeAllConnections?.();
+      server.close(() => resolve());
+    }),
+  };
 }
 
 test('OpenCode injection falls back when no server turn is active', async () => {
@@ -231,13 +236,11 @@ test('OpenCode injection falls back when no server turn is active', async () => 
 
 test('interactive OpenCode turns admit queued messages as live steers', { concurrency: false }, async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'opencode-server-steer-'));
-  const capturePath = path.join(tempRoot, 'requests.jsonl');
   const pathKey = findEnvKey('PATH');
-  const pathExtKey = findEnvKey('PATHEXT');
   const previousPath = process.env[pathKey];
-  const previousPathExt = process.env[pathExtKey];
-  const previousCapture = process.env.OPENCODE_SERVER_CAPTURE;
   const originalHomedir = os.homedir;
+  const fakeServer = await startFakeOpenCodeServer();
+  const restoreServer = injectOpenCodeServerForTests(fakeServer.handle);
   const messages = [];
   const writer = {
     userId: null,
@@ -247,15 +250,13 @@ test('interactive OpenCode turns admit queued messages as live steers', { concur
   };
 
   try {
-    await createFakeOpenCodeServerExecutable(tempRoot);
-    process.env[pathKey] = `${tempRoot}${path.delimiter}${previousPath || ''}`;
-    process.env.OPENCODE_SERVER_CAPTURE = capturePath;
-    os.homedir = () => tempRoot;
-    if (process.platform === 'win32') {
-      process.env[pathExtKey] = previousPathExt?.toUpperCase().includes('.CMD')
-        ? previousPathExt
-        : `.COM;.EXE;.BAT;.CMD${previousPathExt ? `;${previousPathExt}` : ''}`;
+    // The finished turn still asks the CLI for its model catalog (the context
+    // gauge); a CLI that knows nothing keeps that probe off the tripwire.
+    if (process.platform !== 'win32') {
+      await writeFile(path.join(tempRoot, 'opencode'), '#!/bin/sh\nexit 2\n', { mode: 0o755 });
+      process.env[pathKey] = `${tempRoot}${path.delimiter}${previousPath || ''}`;
     }
+    os.homedir = () => tempRoot;
 
     const running = spawnOpenCode('Start the task', {
       cwd: tempRoot,
@@ -284,7 +285,7 @@ test('interactive OpenCode turns admit queued messages as live steers', { concur
     assert.ok(messages.indexOf(userMessage) < messages.indexOf(assistantMessage));
     assert.equal(messages.filter((message) => message.kind === 'complete').length, 1);
 
-    const requests = (await readFile(capturePath, 'utf8')).trim().split('\n').map(JSON.parse);
+    const requests = fakeServer.requests;
     assert.equal(requests[0].prompt.text, 'Start the task');
     assert.equal(requests[1].delivery, 'steer');
     assert.equal(requests[1].prompt.text, 'Use the new direction.');
@@ -292,10 +293,59 @@ test('interactive OpenCode turns admit queued messages as live steers', { concur
     os.homedir = originalHomedir;
     if (previousPath === undefined) delete process.env[pathKey];
     else process.env[pathKey] = previousPath;
-    if (previousPathExt === undefined) delete process.env[pathExtKey];
-    else process.env[pathExtKey] = previousPathExt;
-    if (previousCapture === undefined) delete process.env.OPENCODE_SERVER_CAPTURE;
-    else process.env.OPENCODE_SERVER_CAPTURE = previousCapture;
+    restoreServer();
+    await fakeServer.close();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+// The server transport resolves `opencode serve` from PATH, so a test without
+// its own server would talk to the operator's real OpenCode. Under test it is
+// refused instead: the turn fails before anything is spawned or contacted.
+test('an interactive OpenCode turn fails closed under test when no server stub is injected', { concurrency: false }, async () => {
+  assert.ok(
+    process.env.NODE_ENV === 'test' || process.env.NODE_TEST_CONTEXT,
+    'this file must run under the test runner or NODE_ENV=test for the guard to engage',
+  );
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'opencode-server-guard-'));
+  const messages = [];
+  const writer = {
+    userId: null,
+    sessionId: null,
+    send(message) { messages.push(message); },
+    setSessionId(sessionId) { this.sessionId = sessionId; },
+  };
+
+  try {
+    await assert.rejects(ensureOpenCodeServer(), /Refusing to boot `opencode serve` under test/);
+    await assert.rejects(ensureOpenCodeServer({ private: true }), /Refusing to boot `opencode serve` under test/);
+    await assert.rejects(
+      spawnOpenCode('Hi', { cwd: tempRoot, model: 'homelab/local', enableMidTurnInjection: true, ephemeral: true }, writer),
+      /Refusing to boot `opencode serve` under test/,
+    );
+    assert.equal(writer.sessionId, null, 'no session may be created anywhere');
+    assert.equal(messages.some((message) => message.kind === 'session_created'), false);
+
+    // NODE_ENV=test alone engages it as well, for a process outside the runner.
+    const previousContext = process.env.NODE_TEST_CONTEXT;
+    const previousNodeEnv = process.env.NODE_ENV;
+    delete process.env.NODE_TEST_CONTEXT;
+    process.env.NODE_ENV = 'test';
+    try {
+      await assert.rejects(ensureOpenCodeServer(), /Refusing to boot `opencode serve` under test/);
+    } finally {
+      if (previousContext === undefined) delete process.env.NODE_TEST_CONTEXT;
+      else process.env.NODE_TEST_CONTEXT = previousContext;
+      if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = previousNodeEnv;
+    }
+
+    // Removing a stub restores the refusal rather than falling through to a real boot.
+    const restore = injectOpenCodeServerForTests({ baseUrl: 'http://127.0.0.1:9', authorization: FAKE_SERVER_AUTHORIZATION });
+    assert.deepEqual(await ensureOpenCodeServer(), { baseUrl: 'http://127.0.0.1:9', authorization: FAKE_SERVER_AUTHORIZATION });
+    restore();
+    await assert.rejects(ensureOpenCodeServer(), /Refusing to boot `opencode serve` under test/);
+  } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
 });
