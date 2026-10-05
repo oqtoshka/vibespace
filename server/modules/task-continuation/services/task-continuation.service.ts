@@ -1,4 +1,5 @@
 import { readCodexPlanState, readCursorTaskState, readExternalTaskLedger, readOpenCodeTaskState, WAITING_ON_USER_MARKER } from '../../../shared/index.js';
+import { sessionTransferService } from '../../session-transfer/index.js';
 import { notifyRunFailed } from '../../notifications/index.js';
 
 type LedgerItem = { id: string | number; status: string; subject: string; waitingOnUser?: boolean };
@@ -71,6 +72,7 @@ function buildOpenTasksNudge(open: LedgerItem[], { listName, closeHow, guidance 
  * give-up paths notify the user before returning null.
  */
 export function planTaskContinuation({ provider, sessionId, cwd = null, userId = null, sessionName = null }: { provider: string; sessionId: string; cwd?: string | null; userId?: string | number | null; sessionName?: string | null }) {
+  if (sessionTransferService.successor(sessionId)) return null;
   const native = LEDGERS[provider];
   if (!TASK_NUDGE_ENABLED || !native || !sessionId) return null;
 

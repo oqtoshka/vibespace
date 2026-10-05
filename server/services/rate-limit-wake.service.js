@@ -31,6 +31,7 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { randomUUID } from 'crypto';
 
+import { sessionTransferService } from '../modules/session-transfer/index.js';
 import { getDataDir } from '../shared/utils.js';
 
 import { notifyRunFailed, notifyRunPaused } from './notification-orchestrator.js';
@@ -281,6 +282,7 @@ export async function scheduleRateLimitWake({
 }) {
   if (!WAKE_ENABLED || !provider || !providerSessionId) return null;
   await loadOnce();
+  if (sessionTransferService.successor(providerSessionId)) return null;
 
   const prev = entries.get(providerSessionId);
   const attempts = Math.max(prev?.attempts || 0, priorAttempts || 0) + 1;
@@ -411,6 +413,11 @@ export async function runRateLimitWakeTick(now = Date.now()) {
     await loadOnce();
     const due = [...entries.values()].filter((e) => e.resumeAt <= now);
     for (const entry of due) {
+      if (sessionTransferService.successor(entry.providerSessionId)) {
+        entries.delete(entry.providerSessionId);
+        scheduleWrite();
+        continue;
+      }
       // Consumed before the turn starts: the turn's own limit hit (if any)
       // re-records it, and a user send in the meantime has nothing to cancel.
       entries.delete(entry.providerSessionId);

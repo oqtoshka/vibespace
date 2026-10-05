@@ -1,6 +1,9 @@
 import express from 'express';
 
 import type { LLMProvider } from '@/shared/index.js';
+import { sessionTransferService } from '@/modules/session-transfer/index.js';
+import { chatRunRegistry } from '@/modules/websocket/index.js';
+import { getClaudeSDKLiveBackgroundTasks, isClaudeSDKSessionAlive } from '@/modules/providers/index.js';
 
 import { sideQuestionsService } from './side-questions.service.js';
 import { applyNativeSessionSelection, authenticateNativeControl, nativeControlService, nativeModelOptions, nativePermissionOptions, nativeSessionSelection } from './native-control.service.js';
@@ -58,6 +61,17 @@ router.post('/sessions/:id/side', route((req, res) => { res.json(sideQuestionsSe
 router.post('/sessions/:id/promote', route((req, res) => { res.json(sideQuestionsService.promote(String(req.params.id))); }));
 router.delete('/sessions/:id/side', route(async (req, res) => { res.json(await sideQuestionsService.close(String(req.params.id))); }));
 router.get('/sessions/:id', route((req, res) => { res.json(nativeControlService.describe(String(req.params.id))); }));
+router.get('/sessions/:id/transfer', route((req, res) => {
+  nativeControlService.describe(String(req.params.id));
+  res.json(sessionTransferService.successor(String(req.params.id)) ?? null);
+}));
+router.post('/sessions/:id/transfer', route((req, res) => {
+  const id = String(req.params.id);
+  // A live idle Claude SDK can receive native background completion without our queue.
+  // Wait for its ordinary reaper; transfer never kills an unowned process.
+  const active = chatRunRegistry.isProcessing(id) || isClaudeSDKSessionAlive(id) || getClaudeSDKLiveBackgroundTasks(id).length > 0;
+  res.json(sessionTransferService.transfer(id, req.body, active));
+}));
 // Mission Control's web board has no chat socket; it reads and applies `native.select` here.
 router.get('/sessions/:id/selection', route(async (req, res) => { res.json(await nativeSessionSelection(String(req.params.id))); }));
 router.post('/sessions/:id/selection', route(async (req, res) => { res.json(await applyNativeSessionSelection(String(req.params.id), req.body)); }));
