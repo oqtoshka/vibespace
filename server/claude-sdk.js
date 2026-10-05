@@ -12,11 +12,13 @@
  * - WebSocket message streaming
  */
 
-import { query } from '@anthropic-ai/claude-agent-sdk';
 import crypto from 'crypto';
 import { promises as fs } from 'fs';
 import path from 'path';
 import os from 'os';
+
+import { query } from '@anthropic-ai/claude-agent-sdk';
+
 import { CLAUDE_FALLBACK_MODELS, normalizeClaudeModelToCatalogValue } from './modules/providers/list/claude/claude-models.provider.js';
 import { providerModelsService } from './modules/providers/services/provider-models.service.js';
 import { appendFilesInputTag, buildClaudeUserContent, getGlobalImageAssetsDir, normalizeImageDescriptors } from './shared/image-attachments.js';
@@ -36,12 +38,10 @@ import { createCompleteMessage, createNormalizedMessage, resolveConfiguredContex
 import { rememberContextUsage } from './shared/context-usage-cache.js';
 import { readOpenClaudeTasks } from './shared/claude-task-ledger.js';
 import { readExternalTaskLedger } from './shared/task-ledger-sources.js';
-import { scheduleSessionRecap } from './modules/providers/index.js';
+import { scheduleSessionRecap, broadcastSessionUpdate  } from './modules/providers/index.js';
 import { recordSessionActivity, recordSessionEnd, recordPendingInteraction } from './services/session-restore.service.js';
+import { sessionTransferService } from './modules/session-transfer/index.js';
 import { scheduleRateLimitWake, cancelRateLimitWake, isRateLimitWakePending } from './services/rate-limit-wake.service.js';
-import { broadcastSessionUpdate } from './modules/providers/index.js';
-import { chatRunRegistry } from './modules/websocket/services/chat-run-registry.service.js';
-import { sessionsDb } from './modules/database/index.js';
 
 const activeSessions = new Map();
 // App-facing session id -> the same session object. The gateway addresses a
@@ -1204,6 +1204,7 @@ function armIdleTimer(session) {
  * session back to the reaper.
  */
 async function maybeContinueOpenTasks(session) {
+  if (sessionTransferService.successor(session.sessionId)) return false;
   if (!TASK_NUDGE_ENABLED || session.ephemeral || session.ended || !session.sessionId) return false;
   if (session.input.closed) return false;
   // Waiting on a usage-limit reset: a nudge now would only hit the limit
@@ -1278,6 +1279,8 @@ async function maybeContinueOpenTasks(session) {
   ensureRunForServerStartedTurn(session, 'Resuming — open tasks remain');
   console.log(`[claude tasks] session ${session.sessionId}: idle with ${actionable.length} open task(s) — nudging (${nudges.count}/${TASK_NUDGE_MAX})`);
   await applyPendingModelSwitch(session);
+  // The model-switch await can overlap a committed transfer. Recheck at delivery.
+  if (sessionTransferService.successor(session.sessionId)) return false;
   session.input.push(makeUserMessage(buildOpenTasksNudge(actionable, external)));
   return true;
 }
@@ -1577,10 +1580,12 @@ function noteRuntimeTurnStart(session, message) {
  * `awaitingResult` covers.
  */
 async function resumeForBackgroundTask(session, message, text) {
+  if (sessionTransferService.successor(session.sessionId)) return;
   if (session.ended || session.input.closed) return;
   ensureRunForServerStartedTurn(session, 'Resuming — background task finished');
   console.log(`[claude bg] session ${session.sessionId}: background task ${message.task_id} ${message.status || 'completed'} — auto-resuming agent`);
   await applyPendingModelSwitch(session);
+  if (sessionTransferService.successor(session.sessionId)) return;
   session.input.push(makeUserMessage(text));
 }
 
@@ -1677,6 +1682,7 @@ function ensureRunForServerStartedTurn(session, statusText) {
  * queue, which sends it as its own turn once the run finishes.
  */
 async function injectClaudeMessage(sessionId, command, options = {}) {
+  if (sessionTransferService.successor(sessionId)) return null;
   const session = getSession(sessionId);
   if (!session || session.ended || session.input.closed) {
     return null;
@@ -2419,6 +2425,7 @@ async function handleSessionError(session, error) {
  * this turn's run writer so its output streams under the new run.
  */
 async function reuseSession(session, command, options, ws) {
+  if (sessionTransferService.successor(session.sessionId)) throw new Error('Session was transferred; continue in its successor');
   // Stream this turn's output (and any background-job resume that begins during
   // it) to the run the gateway just opened.
   session.writer = ws;
@@ -2501,6 +2508,7 @@ async function reuseSession(session, command, options, ws) {
 
   // Attachments ride along as content blocks read from the assets store.
   const turnContent = await buildTurnContent(command, options.images, options.files, options.cwd);
+  if (sessionTransferService.successor(session.sessionId)) throw new Error('Session was transferred; continue in its successor');
 
   clearIdleTimer(session);
   session.turnActive = true;
@@ -2852,6 +2860,7 @@ function normalizeQueryOptions(options, context) {
 async function queryClaudeSDK(command, rawOptions = {}, ws, context = undefined) {
   const options = normalizeQueryOptions(rawOptions, context);
   const { sessionId, rewind } = options;
+  if (sessionTransferService.successor(sessionId)) throw new Error('Session was transferred; continue in its successor');
 
   // A new turn supersedes a pending usage-limit wake: whoever sent it (the
   // user, or the wake itself, which consumes its entry before enqueueing) is

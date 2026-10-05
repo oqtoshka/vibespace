@@ -31,6 +31,7 @@ import { readOpenCodeTaskState } from '../shared/opencode-todo-ledger.js';
 import { readCursorTaskState } from '../shared/cursor-todo-ledger.js';
 import { readExternalTaskLedger } from '../shared/task-ledger-sources.js';
 import { getDataDir } from '../shared/utils.js';
+import { sessionTransferService } from '../modules/session-transfer/index.js';
 
 import { isRateLimitWakePending, loadRateLimitWakes } from './rate-limit-wake.service.js';
 
@@ -289,6 +290,10 @@ export async function restoreInterruptedSessions(spawn, hooks = {}) {
   const candidates = [...entries.values()];
   const resumed = [];
   for (const entry of candidates) {
+    if (sessionTransferService.successor(entry.sessionId)) {
+      entries.delete(entry.sessionId);
+      continue;
+    }
     const age = Date.now() - (entry.updatedAt || 0);
     if (age > RESTORE_MAX_AGE_MS) {
       entries.delete(entry.sessionId);
@@ -341,6 +346,8 @@ export async function restoreInterruptedSessions(spawn, hooks = {}) {
     // behind one long-running resume. The spawn re-registers the session,
     // refreshing its registry entry.
     let started = false;
+    // Ledger reads above may yield; do not use their pre-await control snapshot.
+    if (sessionTransferService.successor(entry.sessionId)) { entries.delete(entry.sessionId); continue; }
     if (typeof hooks.startTurn === 'function') {
       try {
         started = Boolean(await hooks.startTurn(entry, prompt));

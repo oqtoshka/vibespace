@@ -2,6 +2,7 @@ import path from 'node:path';
 
 import type { WebSocket } from 'ws';
 
+import { sessionTransferService } from '@/modules/session-transfer/index.js';
 import { peerOutboxDb, sessionsDb } from '@/modules/database/index.js';
 import { providerModelsService, sessionsService } from '@/modules/providers/index.js';
 import { sideSessionContext } from '@/modules/native-control/index.js';
@@ -398,6 +399,7 @@ function recordSessionPreferences(provider: LLMProvider, sessionId: string, clie
  * until the queue empties.
  */
 async function drainQueue(appSessionId: string): Promise<void> {
+  if (sessionTransferService.successor(appSessionId)) return;
   const dependencies = drainDependencies;
   if (!dependencies) {
     return;
@@ -538,6 +540,12 @@ async function handleChatSend(
       `Session "${sessionId}" was not found. Create it via POST /api/providers/sessions first.`,
       sessionId
     );
+    return;
+  }
+
+  const transfer = sessionTransferService.successor(sessionId);
+  if (transfer) {
+    sendProtocolError(ws, 'SESSION_TRANSFERRED', `This conversation continues in session ${transfer.successor_session_id}.`, sessionId);
     return;
   }
 
@@ -963,6 +971,12 @@ async function handleChatQueueAdd(
   const sessionId = readRequiredSessionId(data);
   if (!sessionId) {
     sendProtocolError(ws, 'SESSION_ID_REQUIRED', 'chat.queue-add requires a sessionId.');
+    return;
+  }
+
+  const transfer = sessionTransferService.successor(sessionId);
+  if (transfer) {
+    sendProtocolError(ws, 'SESSION_TRANSFERRED', `This conversation continues in session ${transfer.successor_session_id}.`, sessionId);
     return;
   }
 
@@ -1416,6 +1430,7 @@ export function serverEnqueueMessage(
     deliverMidTurn?: boolean;
   } = {},
 ): boolean {
+  if (sessionTransferService.successor(sessionId)) return false;
   const session = sessionsDb.getSessionById(sessionId);
   if (!session) {
     return false;
@@ -1577,6 +1592,7 @@ function projectOf(row: { project_path?: unknown }): string | null {
 
 /** Why a sender may no longer speak for `projectPath`, or null if it still may. */
 function senderIneligibility(senderSessionId: string, projectPath: string): string | null {
+  if (sessionTransferService.successor(senderSessionId)) return 'sender-transferred';
   const row = sessionsDb.getSessionById(senderSessionId);
   if (!row) return 'sender-missing';
   if (isArchived(row)) return 'sender-archived';
@@ -1613,6 +1629,7 @@ function endPeerStop(sessionId: string): void {
 
 /** Why a recipient may not receive a row for `projectPath`, or null if it may. */
 function recipientIneligibility(recipientSessionId: string, projectPath: string): string | null {
+  if (sessionTransferService.successor(recipientSessionId)) return 'recipient-transferred';
   const row = sessionsDb.getSessionById(recipientSessionId);
   if (!row) return 'recipient-missing';
   if (isArchived(row)) return 'recipient-archived';

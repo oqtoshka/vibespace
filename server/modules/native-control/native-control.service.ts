@@ -182,7 +182,7 @@ export const nativeControlService = {
   describe(id: string) {
     const row = session(id);
     const capability = issueSessionCapability(id);
-    return { sessionId: id, provider: row.provider, title: row.custom_name, projectPath: row.project_path,
+    return { sessionId: id, providerSessionId: row.provider_session_id, provider: row.provider, title: row.custom_name, projectPath: row.project_path,
       model: row.model, effort: row.effort, permissionMode: sessionsDb.getSessionPermissionMode(id),
       launchOptions: parseStoredLaunchOptions(row.launch_options),
       archived: Boolean(row.isArchived), capability };
