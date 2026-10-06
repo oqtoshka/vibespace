@@ -7,7 +7,7 @@ type Transport = {
     child?: { pid?: number };
     closed: boolean;
     request: (method: string, params: Record<string, unknown>, timeoutMs: number) => Promise<unknown>;
-    subscribe: (listener: (message: { method?: string }) => void) => () => void;
+    subscribe: (listener: (method: string, params: Record<string, unknown>) => void) => () => void;
   };
 };
 type Dependencies = { capture: () => Transport[]; now: () => number; monotonicNow?: () => number };
@@ -26,9 +26,10 @@ export function createCodexRestartAdmissionObserver(deps: Dependencies = {
       const deadline = monotonicNow() + 8000;
       const entries = deps.capture();
       let activityChanged = false;
-      const unsubscribers = entries.map(({ client }) => client.subscribe(message => {
+      const unsubscribers = entries.map(({ client }) => client.subscribe(method => {
         // During a snapshot any lifecycle change makes the result conservative.
-        if (/^(turn\/|thread\/)/.test(message.method ?? '')) activityChanged = true;
+        // The actual app-server subscriber receives (method, params), not an envelope.
+        if (/^(turn\/|thread\/)/.test(method)) activityChanged = true;
       }));
       const variants: VariantObservation[] = [];
       try {
