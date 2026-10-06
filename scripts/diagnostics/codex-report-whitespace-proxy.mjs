@@ -1,54 +1,99 @@
 #!/usr/bin/env node
-import {StringDecoder} from 'node:string_decoder';
 import {spawn} from 'node:child_process';
 import {openSync,writeSync,closeSync,readFileSync,realpathSync} from 'node:fs';
 import {isAbsolute} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {createHash} from 'node:crypto';
-import {ReportWhitespaceObserver} from './codex-report-whitespace.mjs';
 
 const native=process.env.VIBESPACE_CODEX_DIAGNOSTIC_NATIVE;
 const target=process.env.VIBESPACE_CODEX_DIAGNOSTIC_THREAD;
 const output=process.env.VIBESPACE_CODEX_DIAGNOSTIC_OUTPUT;
 if(!native||!isAbsolute(native))throw new Error('Explicit absolute native CLI path required; never resolves itself.');
-if(realpathSync(native)===realpathSync(fileURLToPath(import.meta.url)))throw new Error('Native CLI must differ from diagnostic wrapper.');
-const enabled=Boolean(target);
-if(enabled&&(!/^[0-9a-f-]{36}$/i.test(target)||!output||!isAbsolute(output)))throw new Error('One native UUID and absolute exclusive output path required.');
-const fd=enabled?openSync(output,'wx',0o600):null;
-let diagnosticsActive=enabled,diagnosticBytes=0;
-const emit=x=>{if(!diagnosticsActive)return;try{const line=JSON.stringify(x)+'\n';diagnosticBytes+=Buffer.byteLength(line);if(diagnosticBytes>1024*1024){diagnosticsActive=false;return;}writeSync(fd,line);}catch{diagnosticsActive=false;}};
-const observer=enabled?new ReportWhitespaceObserver(target,emit):null;
+// Invalid native configuration is a launch failure, not a capture failure.
+let nativeRealpath;try{nativeRealpath=realpathSync(native);}catch{}
+if(nativeRealpath===realpathSync(fileURLToPath(import.meta.url)))throw new Error('Native CLI must differ from diagnostic wrapper.');
+
+const MAX_OUTPUT=1024*1024,MAX_BUFFER=8*1024*1024;
+let fd=null,diagnosticsActive=false,diagnosticBytes=0,observer;
+let input=Buffer.alloc(0),outputBuffer=Buffer.alloc(0),child;
+function forwardInput(bytes){if(bytes.length&&!child.stdin.write(bytes))process.stdin.pause();}
+function flushInput(){if(child&&input.length){const pending=input;input=Buffer.alloc(0);forwardInput(pending);}}
+function closeCapture(){if(fd!==null){try{closeSync(fd);}catch{}fd=null;}}
+function disable(reason,error,flush=true){
+ diagnosticsActive=false;observer=undefined;outputBuffer=Buffer.alloc(0);closeCapture();
+ // Fixed labels and system error codes only: no file paths, source, or exception text.
+ const code=/^[A-Z][A-Z0-9_]+$/.test(error?.code??'')?` (${error.code})`:'';
+ try{process.stderr.write(`[whitespace diagnostic] disabled: ${reason}${code}; transport continues\n`);}catch{}
+ if(flush)flushInput();
+}
+function emit(record){
+ if(!diagnosticsActive)return;
+ try{
+  const bytes=Buffer.from(JSON.stringify(record)+'\n');
+  if(diagnosticBytes+bytes.length>MAX_OUTPUT){disable('output-limit');return;}
+  // Account actual writes; a short write must never silently produce valid-looking evidence.
+  let offset=0;while(offset<bytes.length){const written=writeSync(fd,bytes,offset,bytes.length-offset);if(written<=0)throw new Error('short write');offset+=written;diagnosticBytes+=written;}
+ }catch(error){disable('capture-write',error);}
+}
+if(target){
+ if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(target)||!output||!isAbsolute(output))disable('configuration');
+ else try{
+  // Load the optional parser only inside the failure boundary. Missing runtime dependencies
+  // must not break the disabled wrapper or the native transport.
+  const {ReportWhitespaceObserver}=await import('./codex-report-whitespace.mjs');
+  fd=openSync(output,'wx',0o600);diagnosticsActive=true;
+  observer=new ReportWhitespaceObserver(target,emit);
+ }catch(error){disable('capture-setup',error);}
+}
 const args=process.argv.slice(2);
-const child=spawn(native,args,{stdio:['pipe','pipe','inherit']});
-let nativeExecutableSha256;try{nativeExecutableSha256=createHash('sha256').update(readFileSync(realpathSync(native))).digest('hex');}catch{}
-emit({type:'source-provenance',nativeExecutableSha256,sourceBoundary:'native-app-server-stdout; not upstream HTTP or final consumer',nativePid:child.pid,argvSha256:createHash('sha256').update(JSON.stringify(args)).digest('hex'),threadId:target});
-let input='',outputBuffer='';
-const inputDecoder=new StringDecoder('utf8'),outputDecoder=new StringDecoder('utf8');
-function inputLine(line){
- let m;try{m=JSON.parse(line);}catch{child.stdin.write(line+'\n');return;}
- if(enabled&&m.method==='initialize')m.params={...m.params,capabilities:{...m.params?.capabilities,experimentalApi:true}};
- if(enabled&&m.method==='thread/resume'&&m.params?.threadId===target)m.params={...m.params,experimentalRawEvents:true};
- child.stdin.write(JSON.stringify(m)+'\n');
+child=spawn(native,args,{stdio:['pipe','pipe','inherit']});
+if(diagnosticsActive){
+ let nativeExecutableSha256;try{nativeExecutableSha256=createHash('sha256').update(readFileSync(nativeRealpath??native)).digest('hex');}catch{}
+ emit({type:'source-provenance',nativeExecutableSha256,sourceBoundary:'native-app-server-stdout; not upstream HTTP or final consumer',nativePid:child.pid,argvSha256:createHash('sha256').update(JSON.stringify(args)).digest('hex'),threadId:target});
+}
+function inputLine(bytes){
+ let m;try{m=JSON.parse(bytes.toString('utf8'));}catch{forwardInput(bytes);return;}
+ try{
+  // Rewrite only the two explicit opt-in requests. Preserve every other byte, including
+  // formatting, CRLF, invalid UTF8, and an unterminated last line.
+  if(m?.method==='initialize')m.params={...m.params,capabilities:{...m.params?.capabilities,experimentalApi:true}};
+  else if(m?.method==='thread/resume'&&m.params?.threadId===target)m.params={...m.params,experimentalRawEvents:true};
+  else{forwardInput(bytes);return;}
+  forwardInput(Buffer.from(JSON.stringify(m)+(bytes.at(-1)===10?'\n':'')));
+ }catch(error){disable('input-observer',error,false);forwardInput(bytes);flushInput();}
 }
 process.stdin.on('data',chunk=>{
- if(!enabled){child.stdin.write(chunk);return;}
- input+=inputDecoder.write(chunk);let end;while((end=input.indexOf('\n'))>=0){inputLine(input.slice(0,end));input=input.slice(end+1);}
+ if(!diagnosticsActive){forwardInput(chunk);return;}
+ input=Buffer.concat([input,chunk]);
+ if(input.length>MAX_BUFFER){disable('input-buffer-limit');return;}
+ let end;while(diagnosticsActive&&(end=input.indexOf(10))>=0){const line=input.subarray(0,end+1);input=input.subarray(end+1);inputLine(line);}
 });
-process.stdin.on('end',()=>{input+=inputDecoder.end();if(input)inputLine(input);child.stdin.end();});
+process.stdin.on('end',()=>{
+ if(input.length){const pending=input;input=Buffer.alloc(0);if(diagnosticsActive)inputLine(pending);else forwardInput(pending);}
+ child.stdin.end();
+});
+child.stdin.on('drain',()=>process.stdin.resume());
 child.stdout.on('data',chunk=>{
- // Parent bytes are forwarded verbatim. Diagnostics never rewrites output.
- process.stdout.write(chunk);
+ // Forward first, independently of diagnostics; stdout bytes are never rewritten.
+ if(!process.stdout.write(chunk)){child.stdout.pause();process.stdout.once('drain',()=>child.stdout.resume());}
  if(!observer||!diagnosticsActive)return;
- outputBuffer+=outputDecoder.write(chunk);if(outputBuffer.length>8*1024*1024){diagnosticsActive=false;outputBuffer='';return;}let end;
- while((end=outputBuffer.indexOf('\n'))>=0){
-  const line=outputBuffer.slice(0,end);outputBuffer=outputBuffer.slice(end+1);
-  let m;try{m=JSON.parse(line);}catch{continue;}
-  try{observer.observe(m,'native-raw');observer.observe(m,'forwarded-code-mode');
-  if(m.method==='item/tool/call'||m.method==='item/started')observer.observe(m,'outgoing-report-tool');}catch{diagnosticsActive=false;outputBuffer='';return;}
- }
+ try{
+  outputBuffer=Buffer.concat([outputBuffer,chunk]);
+  if(outputBuffer.length>MAX_BUFFER){disable('output-buffer-limit');return;}
+  let end;while(diagnosticsActive&&(end=outputBuffer.indexOf(10))>=0){
+   const line=outputBuffer.subarray(0,end);outputBuffer=outputBuffer.subarray(end+1);
+   let m;try{m=JSON.parse(line.toString('utf8'));}catch{continue;}
+   const currentObserver=observer;
+   currentObserver.observe(m,'native-raw');
+   if(!diagnosticsActive)return;
+   currentObserver.observe(m,'forwarded-code-mode');
+   if(diagnosticsActive&&(m?.method==='item/tool/call'||m?.method==='item/started'))currentObserver.observe(m,'outgoing-report-tool');
+  }
+ }catch(error){disable('output-observer',error);}
 });
 child.stdin.on('error',()=>{});
-child.on('error',()=>{emit({type:'terminal',kind:'native-launch-error'});if(fd!==null)try{closeSync(fd);}catch{};process.exitCode=1;});
-child.on('exit',(code,signal)=>{emit({type:'terminal',exitCode:code,signal});if(fd!==null)try{closeSync(fd);}catch{};process.exitCode=code??1;});
+child.on('error',()=>{emit({type:'terminal',kind:'native-launch-error'});closeCapture();process.exitCode=1;});
+// 'close' follows drained stdio; 'exit' can precede the final stdout evidence.
+child.on('close',(code,signal)=>{emit({type:'terminal',exitCode:code,signal});closeCapture();process.exitCode=code??1;});
 // Propagate only to our exact native child. Parent owns normal process deadline.
 for(const signal of ['SIGTERM','SIGINT'])process.on(signal,()=>child.kill(signal));
