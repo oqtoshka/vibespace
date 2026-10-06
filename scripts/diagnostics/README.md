@@ -1,7 +1,7 @@
 # One-thread reporting whitespace observation
 
 Source-only opt-in app-server wrapper. This does not install itself or change a running
-VibeSpace process. Requires existing Node, TypeScript development dependency and an
+VibeSpace process. Requires existing Node, packaged TypeScript runtime dependency and an
 existing native Codex CLI with `experimentalRawEvents` support. Verify compatibility
 with a synthetic fixture before considering an observation on an existing thread.
 
