@@ -80,3 +80,20 @@ test('production empty cache observation never spawns an app-server',async()=>{
  assert.equal(r.variants.length,0);assert.equal(r.restartAuthorized,false);
 });
 
+
+test('a cached readiness handshake that never settles is bounded without spawning', async () => {
+ let unsubscribed = false;
+ const observer = createCodexRestartAdmissionObserver({ now: Date.now, capture: () => [{
+   variant: 'shared', client: { child: { pid: 123 }, closed: false,
+     subscribe: () => () => { unsubscribed = true; },
+     request: () => new Promise(() => undefined),
+   },
+ }] });
+ const started = performance.now();
+ const result = await observer.observe();
+ assert.ok(performance.now() - started < 2500);
+ assert.equal(result.observation, 'unknown');
+ assert.equal(result.variants[0].reason, 'observation-deadline');
+ assert.equal(result.restartAuthorized, false);
+ assert.equal(unsubscribed, true);
+});

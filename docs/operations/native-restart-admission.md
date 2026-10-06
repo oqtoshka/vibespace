@@ -17,7 +17,7 @@ Only `idle` is known idle; `active` (including waiting flags) blocks quiescence.
 cycles, changed inventories, replaced transports, or lifecycle notifications
 during observation return UNKNOWN. Requests have a shared eight-second budget,
 a maximum 1.5-second request timeout and 500 loaded-thread cap per transport.
-These are conservative diagnostic bounds, not claimed runtime capacity.
+The request deadline also bounds a cached client whose readiness handshake never settles; its clock uses monotonic elapsed time. These are conservative diagnostic bounds, not claimed runtime capacity.
 
 Output contains transport variants/PIDs and counts for loaded, active, child,
 active-child and unknown threads. It excludes thread IDs, names, previews,
@@ -44,6 +44,24 @@ live proof. Installing a release with `--no-flip` leaves the old runtime and
 its observation limitation intact. Its first cutover therefore needs an
 independent restart-safe checkpoint of every potentially active owner; this
 endpoint can strengthen subsequent cutovers only after it is actually running.
+Plugin install/update does not bootstrap this observer: the supported plugin
+management service restarts only plugin server subprocesses. In-process host
+extensions are activated at VibeSpace boot, skip already active modules, and
+receive no cached native RPC capability. Session-peer routing and native-control
+session operations do not expose `thread/loaded/list` over an existing client.
+Replacing files therefore cannot retrofit the observer into the running process.
+Do not attach to a process, initialize a second client, or treat a saved
+`turnActive:false` record as live native-child proof.
+
+For the first cutover, collect restart-safe receipts from each affected existing
+session owner, including that owner's native children: source/artifact checkpoint,
+terminal owned jobs, no further scheduled/queued turns, child completion state,
+and safe resume instructions. Reconcile that roster with host processing runs,
+saved session ownership and the complete provider process tree. A persistent
+shared/private transport may cover several owners and does not identify them;
+any uncovered owner/native child remains UNKNOWN. The deployment owner must
+reach the already-required foreign-session completion checkpoint, rather than
+request another generic permission to restart or silently loosen the gate.
 Do not repeatedly arm a waiter requiring idle cached transport PIDs to disappear.
 
 ## Supported staged publication boundary
