@@ -2,14 +2,19 @@ import { randomUUID } from 'node:crypto';
 
 import type { CodexDiagnosticScope } from '../../../shared/index.js';
 
-type OwnerSnapshot = { scope: Readonly<CodexDiagnosticScope>; ownerId: string; residencyRevision: string; nativeIds: readonly string[] };
+type OwnedIdentity = Readonly<{ nativeThreadId: string; ownerId: string }>;
+type OwnerSnapshot = { scope: Readonly<CodexDiagnosticScope>; ownerId: string; residencyRevision: string;
+  nativeIds: readonly string[]; owners: readonly OwnedIdentity[] };
 type Challenge = Readonly<{ scope: Readonly<CodexDiagnosticScope>; ownerId: string; residencyRevision: string;
-  nativeIds: readonly string[]; nonce: string; purpose: 'native-diagnostic-handoff'; issuedAt: number; expiresAt: number }>;
-type Acknowledgement = { authenticatedOwnerId: string; payload: Challenge & { acknowledged: true } };
+  nativeIds: readonly string[]; owners: readonly OwnedIdentity[];
+  nonce: string; purpose: 'native-diagnostic-handoff'; issuedAt: number; expiresAt: number }>;
+type Acknowledgement = { receipts: readonly { authenticatedOwnerId: string;
+  payload: Challenge & { acknowledged: true; acknowledgedNativeThreadId: string } }[] };
 type Dependencies = {
   /** Trusted host inventory, including the complete actual owned descendant set. Not an idle-derived checkpoint. */
   observeOwner: (scope: Readonly<CodexDiagnosticScope>) => Promise<OwnerSnapshot | null>;
-  /** Must prove the exact owner independently of payload fields. No production bridge is supplied by this factory. */
+  /** Each receipt must authenticate that native child's exact owner independently of payload fields.
+   * No production bridge is supplied by this factory; an aggregate parent ACK is insufficient. */
   requestAcknowledgement: (challenge: Challenge) => Promise<Acknowledgement | null>;
   /** Covers owner disconnect, lifecycle and membership/residency changes for root AND every descendant. */
   subscribeInvalidation: (scope: Readonly<CodexDiagnosticScope>, invalidate: () => void) => () => void;
@@ -29,6 +34,13 @@ function idsKey(ids: readonly string[], nativeId: string): string {
   if (!Array.isArray(ids) || !ids.length || ids.length > 500 || !ids.includes(nativeId)
     || ids.some(id => typeof id !== 'string' || !uuid.test(id)) || new Set(ids).size !== ids.length) throw new Error('Incomplete checkpoint inventory');
   return JSON.stringify([...ids].sort());
+}
+function ownersKey(owners: readonly OwnedIdentity[], ids: readonly string[], root: string, rootOwner: string): string {
+  if (!Array.isArray(owners) || owners.length !== ids.length
+    || owners.some(owner => !owner || !ids.includes(owner.nativeThreadId) || !identity(owner.ownerId))
+    || new Set(owners.map(owner => owner.nativeThreadId)).size !== ids.length
+    || owners.find(owner => owner.nativeThreadId === root)?.ownerId !== rootOwner) throw new Error('Child owner identities unavailable');
+  return JSON.stringify(owners.map(owner => [owner.nativeThreadId, owner.ownerId]).sort((a, b) => a[0]!.localeCompare(b[0]!)));
 }
 
 /** Dormant host-compatible adapter, consumed by focused tests. A future internal host
@@ -90,20 +102,30 @@ export function createCodexOwnerCheckpoints(deps: Dependencies) {
         function snapshotKey(snapshot: OwnerSnapshot | null): string {
           if (!snapshot || scopeKey(snapshot.scope) !== key || !identity(snapshot.ownerId)
             || !identity(snapshot.residencyRevision) || idsKey(snapshot.nativeIds, scope.nativeThreadId) !== expectedIds) throw new Error('Owner identity unavailable');
-          return JSON.stringify([key, snapshot.ownerId, snapshot.residencyRevision, expectedIds]);
+          return JSON.stringify([key, snapshot.ownerId, snapshot.residencyRevision, expectedIds,
+            ownersKey(snapshot.owners, snapshot.nativeIds, scope.nativeThreadId, snapshot.ownerId)]);
         }
         const observed = snapshotKey(before);
         if (!before) throw new Error('Owner unavailable');
         // Copy immediately: the observer cannot mutate our challenge while delivery is pending.
         const challenge: Challenge = Object.freeze({ scope, ownerId: before.ownerId, residencyRevision: before.residencyRevision,
-          nativeIds: Object.freeze(JSON.parse(expectedIds) as string[]), nonce: randomUUID(),
+          nativeIds: Object.freeze(JSON.parse(expectedIds) as string[]),
+          owners: Object.freeze(before.owners.map(owner => Object.freeze({ ...owner }))), nonce: randomUUID(),
           purpose: 'native-diagnostic-handoff', issuedAt: startedAt, expiresAt });
         const acknowledgement = await bounded(() => deps.requestAcknowledgement(challenge));
-        const payload = acknowledgement?.payload;
-        if (!payload || acknowledgement.authenticatedOwnerId !== challenge.ownerId || payload.acknowledged !== true
-          || payload.nonce !== challenge.nonce || payload.purpose !== challenge.purpose
-          || payload.issuedAt !== challenge.issuedAt || payload.expiresAt !== challenge.expiresAt
-          || snapshotKey(payload) !== observed) throw new Error('Explicit owner acknowledgement missing');
+        const receipts = acknowledgement?.receipts;
+        if (!Array.isArray(receipts) || receipts.length !== challenge.nativeIds.length) throw new Error('Explicit child owner acknowledgement missing');
+        const acknowledged = new Set<string>();
+        for (const receipt of receipts) {
+          const payload = receipt?.payload;
+          const childOwner = payload && challenge.owners.find(owner => owner.nativeThreadId === payload.acknowledgedNativeThreadId);
+          if (!payload || !childOwner || acknowledged.has(childOwner.nativeThreadId)
+            || receipt.authenticatedOwnerId !== childOwner.ownerId || payload.acknowledged !== true
+            || payload.nonce !== challenge.nonce || payload.purpose !== challenge.purpose
+            || payload.issuedAt !== challenge.issuedAt || payload.expiresAt !== challenge.expiresAt
+            || snapshotKey(payload) !== observed) throw new Error('Explicit child owner acknowledgement missing');
+          acknowledged.add(childOwner.nativeThreadId);
+        }
         // This response is consumed once. It never enters a reusable cache or grants future admission.
         const after = await bounded(() => deps.observeOwner(scope));
         if (snapshotKey(after) !== observed) throw new Error('Owner inventory changed');
