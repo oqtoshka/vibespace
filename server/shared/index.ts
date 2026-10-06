@@ -41,3 +41,5 @@ export { readCursorTaskState } from './cursor-todo-ledger.js';
 export { readOpenCodeTaskState } from './opencode-todo-ledger.js';
 export { WAITING_ON_USER_MARKER } from './waiting-on-user.js';
 export { readExternalTaskLedger, registerTaskLedgerSource } from './task-ledger-sources.js';
+// Providers' dedicated diagnostic peer applies the existing server-secret filter.
+export { buildAgentEnv } from './agent-env.js';

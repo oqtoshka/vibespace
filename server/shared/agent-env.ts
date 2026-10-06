@@ -65,6 +65,7 @@ export function isServerOnlyEnvKey(key: string): boolean {
 
 /**
  * Build the environment for a process spawned on an agent's behalf.
+ * Providers' diagnostic standby and legacy provider runtimes share this filter.
  *
  * @param overrides applied after filtering, so a caller can still set a key
  *   deliberately (opencode's permission flags rely on this).
