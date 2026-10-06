@@ -35,3 +35,7 @@ export { registerCodexRevertedHistoryReader, markCodexRevertedHistory } from './
 
 // Legacy transport tests exercise the authenticated diagnostic observer over actual cached peers.
 export { codexRestartAdmissionObserver } from './services/codex-restart-admission.service.js';
+
+// Legacy Codex execution selects an explicitly mounted, already-transferred
+// diagnostic scope; no bootstrap installs one by default.
+export { codexDiagnosticRuntime } from './services/codex-diagnostic-runtime.service.js';

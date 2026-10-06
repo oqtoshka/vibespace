@@ -27,7 +27,7 @@ import { notifyRunFailed, notifyRunStopped } from './modules/notifications/index
 import { cancelRateLimitWake, scheduleRateLimitWake } from './services/rate-limit-wake.service.js';
 import { recordSessionActivity, recordSessionEnd } from './services/session-restore.service.js';
 import { planTaskContinuation } from './modules/task-continuation/index.js';
-import { broadcastSessionUpdate, generateInitialSessionTitle, scheduleSessionRecap, rewindCodexTurn, registerCodexRevertedHistoryReader, markCodexRevertedHistory } from './modules/providers/index.js';
+import { broadcastSessionUpdate, generateInitialSessionTitle, scheduleSessionRecap, rewindCodexTurn, registerCodexRevertedHistoryReader, markCodexRevertedHistory, codexDiagnosticRuntime } from './modules/providers/index.js';
 import { buildCodexTokenBudget, CODEX_AUTO_COMPACT_LIMIT, readLatestCodexTokenBudget } from './shared/codex-token-usage.js';
 import { toCodexAppServerSandboxPolicy } from './shared/codex-sandbox-policy.js';
 import { createCompleteMessage, createNormalizedMessage } from './shared/utils.js';
@@ -393,6 +393,11 @@ function transformCodexItem(item) {
 // A paginated revert writes a new rollout containing history_base references.
 // Let Codex resolve that chain; parsing the superseded JSONL resurrects removed turns.
 registerCodexRevertedHistoryReader(async (threadId, isPrivate) => {
+  const diagnostic = codexDiagnosticRuntime.acquire({ nativeThreadId: threadId, private: isPrivate }, 'history');
+  if (diagnostic) {
+    try { return await readCodexRevertedHistory(diagnostic.appServer, threadId); }
+    finally { diagnostic.release(); }
+  }
   // Reading may load the thread; pin it so an idle release cannot race the read.
   const release = await holdCodexThread(threadId);
   let appServer = null;
@@ -754,6 +759,7 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
   let releaseThreadHold = null;
   let threadAppServer = null;
   let holdsHelperSlot = false;
+  let diagnosticExecution = null;
 
   try {
     if (backgroundHelper && ephemeral) {
@@ -766,8 +772,10 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
     // never appear as empty presence-board sessions. Host them on the same
     // private-variant app-server variant private sessions use.
     // A resumed thread is pinned before it is loaded (see holdCodexThread).
-    if (sessionId) releaseThreadHold = await holdCodexThread(sessionId);
-    const appServer = await getCodexAppServer({ private: isPrivate || ephemeral });
+    diagnosticExecution = codexDiagnosticRuntime.acquire({ appSessionId, nativeThreadId: sessionId,
+      private: isPrivate || ephemeral, side: sideSession, rewind: options.rewind }, 'turn');
+    if (sessionId && !diagnosticExecution) releaseThreadHold = await holdCodexThread(sessionId);
+    const appServer = diagnosticExecution?.appServer ?? await getCodexAppServer({ private: isPrivate || ephemeral });
     const helperMcpOverrides = backgroundHelper && ephemeral && !sessionId
       ? await readHelperMcpOverrides(appServer, workingDirectory)
       : null;
@@ -789,7 +797,11 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
       ...(Object.keys(threadConfig).length > 0 ? { config: threadConfig } : {}),
     };
     let threadResponse;
-    if (sessionId) {
+    if (diagnosticExecution) {
+      // Transfer already resumed the exact thread. Ordinary resume would load
+      // a second owner; the diagnostic selector only admits scoped turn RPCs.
+      threadResponse = { thread: { id: sessionId } };
+    } else if (sessionId) {
       // Only the thread id is read back. Hydrating turns ships the whole history over
       // stdio, and a long session (hundreds of MB of rollout) blows the request timeout.
       threadResponse = await appServer.request('thread/resume', { threadId: sessionId, ...threadOptions, excludeTurns: true });
@@ -1155,6 +1167,7 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
       releaseBackgroundHelperSlot();
     }
     releaseThreadHold?.(threadAppServer);
+    diagnosticExecution?.release();
     if (capturedSessionId && !ephemeral) {
       const session = activeCodexSessions.get(capturedSessionId);
       if (session?.status === 'aborted') {
