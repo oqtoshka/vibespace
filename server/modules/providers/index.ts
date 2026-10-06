@@ -32,3 +32,6 @@ export { scheduleSessionRecap, cancelSessionRecap, generateSessionRecap } from '
 export { getClaudeSDKLiveBackgroundTasks, isClaudeSDKSessionAlive } from './list/claude/claude-runtime.provider.js';
 
 export { registerCodexRevertedHistoryReader, markCodexRevertedHistory } from './services/codex-reverted-history.service.js';
+
+// Legacy transport tests exercise the authenticated diagnostic observer over actual cached peers.
+export { codexRestartAdmissionObserver } from './services/codex-restart-admission.service.js';

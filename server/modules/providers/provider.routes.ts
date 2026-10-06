@@ -1,3 +1,4 @@
+import { codexRestartAdmissionObserver } from './services/codex-restart-admission.service.js';
 import { providerPolicy } from './services/provider-policy.service.js';
 import express, { type Request, type Response } from 'express';
 
@@ -776,6 +777,14 @@ router.post(
     const name = typeof body.name === 'string' && body.name.trim() ? body.name.trim() : undefined;
     const result = sessionsService.promoteSideSession(sessionId, name);
     res.json(createApiSuccessResponse(result));
+  }),
+);
+
+// Status-only, same existing authenticated Providers mount. Never starts a native client.
+router.get(
+  '/sessions/restart-admission',
+  asyncHandler(async (_req: Request, res: Response) => {
+    res.json(createApiSuccessResponse(await codexRestartAdmissionObserver.observe()));
   }),
 );
 
