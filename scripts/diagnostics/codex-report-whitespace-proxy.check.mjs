@@ -68,7 +68,11 @@ const handshake=[{id:1,method:'initialize',params:{clientInfo:{name:'fixture'},c
 const injection=await run('injection',{input:Buffer.from(handshake.map(x=>JSON.stringify(x)+'\n').join(''))});
 const injected=injection.input.toString().trim().split('\n').map(JSON.parse);
 assert.equal(injected[0].params.capabilities.experimentalApi,true);assert.equal(injected[0].params.capabilities.other,true);
-assert.deepEqual(injected[1],handshake[1]);assert.equal(injected[2].params.experimentalRawEvents,true);
+assert.deepEqual(injected[1],handshake[1]);assert.deepEqual(injected[2],handshake[2]);
+const boundary=JSON.parse((await readFile(injection.output,'utf8')).trim().split('\n').find(line=>JSON.parse(line).type==='capture-boundary'));
+assert.equal(boundary.availability,'not-established');assert.equal(boundary.reason,'resume-has-no-raw-opt-in');
+const exactResume=Buffer.from(' { "id":3, "method":"thread/resume", "params":{"threadId":"'+target+'"}}\r\n');
+assert.deepEqual((await run('exact-resume',{input:exactResume})).input,exactResume);
 const collision=await run('collision',{output:enabled.output});assert.deepEqual(collision.input,plain);assert.match(collision.stderr,/capture-setup \(EEXIST\)/);assert.equal(await readFile(enabled.output,'utf8'),captured);
 const simultaneous=await Promise.all([run('concurrent-a',{output:join(runDirectory,'concurrent.jsonl')}),run('concurrent-b',{output:join(runDirectory,'concurrent.jsonl')})]);
 assert.equal(simultaneous.filter(r=>/EEXIST/.test(r.stderr)).length,1);for(const r of simultaneous)assert.deepEqual(r.input,plain);

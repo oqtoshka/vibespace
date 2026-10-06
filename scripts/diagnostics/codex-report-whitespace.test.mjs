@@ -1,10 +1,32 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
 import {fingerprint,reportLiterals,ReportWhitespaceObserver} from './codex-report-whitespace.mjs';
 const thread='native-thread';
 const raw=(input,id='source-id',turn='turn')=>({method:'rawResponseItem/completed',params:{threadId:thread,turnId:turn,item:{type:'custom_tool_call',name:'exec',input,call_id:id}}});
 const tool=text=>({method:'item/tool/call',params:{threadId:thread,turnId:'turn',callId:'dynamic-id',tool:'mcp__mc__reply',arguments:{text}}});
 const end={method:'turn/completed',params:{threadId:thread,turnId:'turn'}};
+test('installed Codex 0.159.3 schema supports the raw payload but no resume opt-in',()=>{
+ const schema=JSON.parse(readFileSync(new URL('./fixtures/codex-0.159.3-raw-schema.json',import.meta.url),'utf8'));
+ assert.equal(schema.provenance.codexVersion,'0.159.3');
+ assert.equal(schema.ThreadStartParams.properties.experimentalRawEvents.type,'boolean');
+ assert.equal(Object.hasOwn(schema.ThreadResumeParams.properties,'experimentalRawEvents'),false);
+ assert.ok(schema.serverNotificationMethods.includes('turn/completed'));
+ assert.equal(schema.serverNotificationMethods.includes('rawResponseItem/completed'),false);
+ const notification=raw('tools.mcp__mc__reply({text:"42 теста"})');
+ for(const field of schema.RawResponseItemCompletedNotification.required)assert.ok(Object.hasOwn(notification.params,field));
+ assert.equal(schema.RawResponseItemCompletedNotification.properties.item.$ref,'#/definitions/ResponseItem');
+ for(const field of schema.CustomToolCallResponseItem.required)assert.ok(Object.hasOwn(notification.params.item,field));
+ assert.ok(schema.CustomToolCallResponseItem.properties.type.enum.includes(notification.params.item.type));
+ const rows=[],observer=new ReportWhitespaceObserver(thread,row=>rows.push(row));
+ observer.observe(notification,'native-raw');assert.equal(rows.length,1);assert.equal(rows[0].sha256,fingerprint('42 теста').sha256);
+});
+test('outgoing-only capture reports both earlier boundaries as unobserved',()=>{
+ const rows=[],observer=new ReportWhitespaceObserver(thread,row=>rows.push(row));
+ observer.observe(tool('42 теста'),'outgoing-report-tool');observer.observe(end,'forwarded-code-mode');
+ const comparison=rows.at(-1);assert.equal(comparison.rawToForwarded,'unobserved-or-ambiguous');
+ assert.equal(comparison.forwardedToTool,'unobserved-or-ambiguous');assert.equal(comparison.toolCorrelation,'not-observed');
+});
 test('static reporting literals preserve spaces, Unicode escapes, tabs, and const references',()=>{
  const source='const answer="reporter 0.2.77; 465 тестов\\t42\\n"; text(await tools.mcp__mc__reply({text:answer,threadId:"private-id"}));';
  assert.equal(reportLiterals(source)[0].value,'reporter 0.2.77; 465 тестов\t42\n');

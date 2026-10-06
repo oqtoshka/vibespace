@@ -54,10 +54,16 @@ if(diagnosticsActive){
 function inputLine(bytes){
  let m;try{m=JSON.parse(bytes.toString('utf8'));}catch{forwardInput(bytes);return;}
  try{
-  // Rewrite only the two explicit opt-in requests. Preserve every other byte, including
+  // Only initialize has a supported opt-in on a resumed thread. Codex 0.159.3 exposes
+  // experimentalRawEvents on thread/start, not thread/resume; an unknown resume field
+  // does not establish raw capture. Do not start another thread to obtain that option.
+  // Preserve every other byte, including
   // formatting, CRLF, invalid UTF8, and an unterminated last line.
   if(m?.method==='initialize')m.params={...m.params,capabilities:{...m.params?.capabilities,experimentalApi:true}};
-  else if(m?.method==='thread/resume'&&m.params?.threadId===target)m.params={...m.params,experimentalRawEvents:true};
+  else if(m?.method==='thread/resume'&&m.params?.threadId===target){
+   emit({type:'capture-boundary',boundary:'native-raw',availability:'not-established',reason:'resume-has-no-raw-opt-in',threadId:target});
+   forwardInput(bytes);return;
+  }
   else{forwardInput(bytes);return;}
   forwardInput(Buffer.from(JSON.stringify(m)+(bytes.at(-1)===10?'\n':'')));
  }catch(error){disable('input-observer',error,false);forwardInput(bytes);flushInput();}
