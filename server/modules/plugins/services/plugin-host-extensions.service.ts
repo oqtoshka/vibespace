@@ -151,6 +151,8 @@ export type PluginHost = {
      * not as "there are none".
      */
     listByProjectPath?: (projectPath: string, limit: number) => HostSessionRow[];
+    /** Last turn's permission mode, used by integrations that enqueue follow-ups. */
+    getPermissionMode?: (sessionId: string) => string | null;
     /** Creates an app session row; returns its id. */
     createAppSession: (provider: string, cwd: string) => { sessionId: string };
     /** Archives (or with `force`, deletes) a session through the ordinary service path. */

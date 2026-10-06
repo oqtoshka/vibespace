@@ -15,7 +15,17 @@ import {
   sanitizeLeafDirectoryName,
 } from '@/shared/utils.js';
 
-/** Curated Cursor catalog shipped as immutable CloudCLI defaults. */
+/**
+ * Curated Cursor catalog shipped as immutable CloudCLI defaults.
+ *
+ * Unlike every other provider here, Cursor bakes the reasoning effort into the
+ * model id (`gpt-5.6-sol-high`, not `gpt-5.6-sol` + effort `high`) and rejects
+ * a bare family name outright — `Cannot use this model: gpt-5.6-sol`. There is
+ * no `effort` block on these options for the same reason: `cursor-cli.js` only
+ * ever passes `--model`, and `getCurrentActiveModel` below reads Cursor's own
+ * `lastUsedModel`, which is already suffixed. Keeping the suffix inside `value`
+ * is what lets the picker round-trip with what Cursor persists.
+ */
 export const CURSOR_PREDEFINED_MODELS: ProviderModelsDefinition = {
   OPTIONS: [
     { value: 'auto', label: 'Auto', description: 'Let Cursor choose the model.' },
@@ -29,17 +39,31 @@ export const CURSOR_PREDEFINED_MODELS: ProviderModelsDefinition = {
       label: 'Composer 2.5',
       description: 'Cursor model for efficient, long-running coding tasks.',
     },
-    { value: 'gpt-5.6-sol', label: 'GPT-5.6 Sol' },
-    { value: 'gpt-5.6-terra', label: 'GPT-5.6 Terra' },
-    { value: 'gpt-5.6-luna', label: 'GPT-5.6 Luna' },
-    { value: 'gpt-5.5', label: 'GPT-5.5' },
-    { value: 'claude-fable-5', label: 'Claude Fable 5' },
-    { value: 'claude-opus-5', label: 'Claude Opus 5' },
-    { value: 'claude-opus-4-8', label: 'Claude Opus 4.8' },
-    { value: 'claude-sonnet-5', label: 'Claude Sonnet 5' },
-    { value: 'grok-4.5', label: 'Grok 4.5' },
+    { value: 'gpt-5.6-sol-medium', label: 'GPT-5.6 Sol' },
+    { value: 'gpt-5.6-sol-high', label: 'GPT-5.6 Sol High' },
+    { value: 'gpt-5.6-sol-xhigh', label: 'GPT-5.6 Sol XHigh' },
+    { value: 'gpt-5.6-sol-max', label: 'GPT-5.6 Sol Max' },
+    { value: 'gpt-5.6-terra-medium', label: 'GPT-5.6 Terra' },
+    { value: 'gpt-5.6-terra-high', label: 'GPT-5.6 Terra High' },
+    { value: 'gpt-5.6-luna-medium', label: 'GPT-5.6 Luna' },
+    { value: 'gpt-5.6-luna-high', label: 'GPT-5.6 Luna High' },
+    { value: 'gpt-5.5-medium', label: 'GPT-5.5' },
+    { value: 'gpt-5.5-high', label: 'GPT-5.5 High' },
+    { value: 'gpt-5.3-codex', label: 'GPT-5.3 Codex' },
+    { value: 'gpt-5.3-codex-high', label: 'GPT-5.3 Codex High' },
+    { value: 'claude-opus-5-medium', label: 'Claude Opus 5' },
+    { value: 'claude-opus-5-thinking-high', label: 'Claude Opus 5 Thinking' },
+    { value: 'claude-opus-5-thinking-max', label: 'Claude Opus 5 Thinking Max' },
+    { value: 'claude-fable-5-1-high', label: 'Claude Fable 5.1' },
+    { value: 'claude-fable-5-1-thinking-high', label: 'Claude Fable 5.1 Thinking' },
+    { value: 'claude-sonnet-5-medium', label: 'Claude Sonnet 5' },
+    { value: 'claude-sonnet-5-thinking-high', label: 'Claude Sonnet 5 Thinking' },
+    { value: 'cursor-grok-4.6-medium', label: 'Grok 4.6' },
+    { value: 'cursor-grok-4.6-high', label: 'Grok 4.6 High' },
+    { value: 'gemini-3.8-flash-high', label: 'Gemini 3.8 Flash' },
     { value: 'gemini-3.1-pro', label: 'Gemini 3.1 Pro' },
-    { value: 'kimi-k2.5', label: 'Kimi K2.5' },
+    { value: 'kimi-k3-high', label: 'Kimi K3' },
+    { value: 'glm-5.2-high', label: 'GLM 5.2' },
   ],
   DEFAULT: 'auto',
 };
