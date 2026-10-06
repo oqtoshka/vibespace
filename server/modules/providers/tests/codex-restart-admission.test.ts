@@ -5,7 +5,7 @@ import { createCodexRestartAdmissionObserver } from '../services/codex-restart-a
 function fixture(options: { statuses?: string[]; parent?: boolean; failure?: string; drift?: boolean;
   notify?: boolean; cursorCycle?: boolean; invalid?: boolean; replacement?: boolean; closed?: boolean } = {}) {
   const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
-  let listener: ((message: { method: string }) => void) | undefined;
+  let listener: ((method: string, params: Record<string, unknown>) => void) | undefined;
   let cleanup = 0;
   let lists = 0;
   let captures = 0;
@@ -22,7 +22,7 @@ function fixture(options: { statuses?: string[]; parent?: boolean; failure?: str
         return { data: options.drift && lists > 1 ? ['new-id'] : (options.statuses ?? ['idle']).map((_, i) => `t${i}`), nextCursor: null };
       }
       assert.equal(method, 'thread/read');assert.equal(params.includeTurns, false);
-      if (options.notify) listener?.({ method: 'turn/started' });
+      if (options.notify) listener?.('turn/started', { threadId: params.threadId });
       const i = Number(String(params.threadId).slice(1));
       return { thread: { id: params.threadId, status: { type: (options.statuses ?? ['idle'])[i] },
         parentThreadId: options.parent ? 'parent' : null,
