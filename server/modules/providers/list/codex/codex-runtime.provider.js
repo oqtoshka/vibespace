@@ -1,3 +1,4 @@
+import { getExistingCodexAppServerTransports } from '../../../../services/codex-app-server.service.js';
 /**
  * Codex runtime adapter — the registry-facing surface over `server/openai-codex.js`
  * (the app-server transport with turn steering, usage-limit wake and task
@@ -39,3 +40,8 @@ export {
   pickCodexLimitReset,
   __resetCodexRateLimits,
 };
+
+/** Providers admission observer reads cached transports through this legacy runtime facade. */
+export function existingCodexTransports() {
+  return getExistingCodexAppServerTransports();
+}

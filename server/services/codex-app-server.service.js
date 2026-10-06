@@ -364,6 +364,18 @@ export async function getCodexAppServer(options = {}) {
   return entry.promise;
 }
 
+/**
+ * Providers' read-only restart observer uses only already-existing transports.
+ * Unlike getCodexAppServer this never initializes, resumes or spawns a client.
+ * Handles stay inside backend services; the HTTP observer returns counts only.
+ */
+export function getExistingCodexAppServerTransports() {
+  return [...clients.entries()].map(([variant, entry]) => ({
+    variant,
+    client: entry.instance,
+  }));
+}
+
 /** Stops and forgets every shared transport. Exported for tests and shutdowns. */
 export function stopCodexAppServer() {
   for (const { instance } of clients.values()) instance?.stop();
