@@ -10,7 +10,7 @@ type Transport = {
     subscribe: (listener: (message: { method?: string }) => void) => () => void;
   };
 };
-type Dependencies = { capture: () => Transport[]; now: () => number };
+type Dependencies = { capture: () => Transport[]; now: () => number; monotonicNow?: () => number };
 type VariantObservation = { variant: string; pid: number | null; loadedThreads: number;
   activeThreads: number; childThreads: number; activeChildThreads: number; unknownThreads: number;
   observation: 'observed' | 'unknown'; reason?: string };
@@ -22,7 +22,8 @@ export function createCodexRestartAdmissionObserver(deps: Dependencies = {
   return {
     async observe() {
       const startedAt = deps.now();
-      const deadline = startedAt + 8000;
+      const monotonicNow = deps.monotonicNow ?? (() => performance.now());
+      const deadline = monotonicNow() + 8000;
       const entries = deps.capture();
       let activityChanged = false;
       const unsubscribers = entries.map(({ client }) => client.subscribe(message => {
@@ -39,9 +40,22 @@ export function createCodexRestartAdmissionObserver(deps: Dependencies = {
           try {
             if (client.closed || !result.pid) throw new Error('transport-unavailable');
             async function request(method: string, params: Record<string, unknown>) {
-              const remaining = deadline - deps.now();
+              const remaining = deadline - monotonicNow();
               if (remaining <= 0) throw new Error('observation-deadline');
-              return client.request(method, params, Math.min(remaining, 1500));
+              const timeoutMs = Math.min(remaining, 1500);
+              // Client.request may await its readiness handshake before starting
+              // its own timeout. Bound that wait too, without replacing transport.
+              let timer: ReturnType<typeof setTimeout> | undefined;
+              try {
+                return await Promise.race([
+                  client.request(method, params, timeoutMs),
+                  new Promise<never>((_, reject) => {
+                    timer = setTimeout(() => reject(new Error('observation-deadline')), timeoutMs);
+                  }),
+                ]);
+              } finally {
+                if (timer) clearTimeout(timer);
+              }
             }
             async function loaded() {
               const ids: string[] = [];
