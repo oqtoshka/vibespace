@@ -8,17 +8,20 @@ owner channel; they do not prove that live native children can acknowledge a che
 
 The observer must identify the exact owner independently of the request, verify the
 application/native/generation mapping, and return the complete actual root/descendant
-residency set with an owner-specific revision. An empty inventory, idle status,
+residency set with an owner-specific revision and an exact native-child-to-owner mapping. An empty inventory, idle status,
 completed task, restored session or process exit supplies no checkpoint consent.
 
 The ACK transport must authenticate the owner independently of all payload fields.
-It must obtain an explicit owner acknowledgement of the immutable challenge, including
-the full scope, owner, residency revision, exact native IDs, purpose, nonce and deadline.
+It must obtain a distinct explicit authenticated receipt for every native root/child,
+each acknowledging the immutable full challenge and its specific native ID. The challenge
+binds the full scope, root owner, exact child-owner mapping, residency revision, exact
+native IDs, purpose, nonce and deadline. Missing or duplicate child receipts are refused.
 A reply that merely echoes a supplied owner ID is not authenticated. Parent-authored
 child replies, ordinary message-delivery receipts and resource-release verdicts cannot
 stand in for individual child-owner acknowledgements. If separate child owners exist,
-the bridge must gather each explicitly before producing the aggregate ACK; this adapter
-does not manufacture them or establish the bridge's trust.
+the bridge must gather every child receipt explicitly. A single aggregate parent ACK
+cannot pass this service, even if it lists all children. This adapter does not manufacture
+child receipts or establish the bridge's trust.
 
 The invalidation subscription must cover lifecycle changes, membership/residency
 changes, owner disconnect and identity/generation changes for the root and every owned

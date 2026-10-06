@@ -22,6 +22,8 @@ function fixture(ttlMs = 100) {
   let requests = 0;
   let actualScope = { ...scope };
   let ownerId = 'authenticated-owner';
+  let childOwnerId = 'authenticated-child-owner';
+  const actualOwners = () => [{ nativeThreadId: root, ownerId }, { nativeThreadId: child, ownerId: childOwnerId }].filter(owner => nativeIds.includes(owner.nativeThreadId));
   let revision = 'residency-1';
   let nativeIds = [root, child];
   let receive: ((value: Reply) => void) | undefined;
@@ -33,7 +35,7 @@ function fixture(ttlMs = 100) {
     observeOwner: async input => {
       observations++;
       if (observed) return observed(input);
-      return { scope: { ...actualScope }, ownerId, residencyRevision: revision, nativeIds: [...nativeIds] };
+      return { scope: { ...actualScope }, ownerId, residencyRevision: revision, nativeIds: [...nativeIds], owners: actualOwners() };
     },
     requestAcknowledgement: async challenge => {
       requests++; latest = challenge;
@@ -47,13 +49,16 @@ function fixture(ttlMs = 100) {
   const checkpoints = createCodexOwnerCheckpoints(deps);
   return {
     checkpoints, deps, events,
-    snapshot: () => ({ scope: { ...actualScope }, ownerId, residencyRevision: revision, nativeIds: [...nativeIds] }),
-    reply(sender: string, payload: NonNullable<Reply>['payload']) { receive?.({ authenticatedOwnerId: sender, payload }); },
-    ack(challenge: Challenge) { receive?.({ authenticatedOwnerId: ownerId, payload: { ...challenge, acknowledged: true } }); },
+    snapshot: () => ({ scope: { ...actualScope }, ownerId, residencyRevision: revision, nativeIds: [...nativeIds], owners: actualOwners() }),
+    reply(sender: string, payload: Challenge & { acknowledged: true }) { receive?.({ receipts: [{ authenticatedOwnerId: sender, payload: { ...payload, acknowledgedNativeThreadId: root } },
+      { authenticatedOwnerId: childOwnerId, payload: { ...payload, acknowledgedNativeThreadId: child } }] }); },
+    ack(challenge: Challenge) { receive?.({ receipts: actualOwners().map(owner => ({ authenticatedOwnerId: owner.ownerId,
+      payload: { ...challenge, acknowledged: true, acknowledgedNativeThreadId: owner.nativeThreadId } })) }); },
     absent() { receive?.(null); },
     setScope(value: typeof scope) { actualScope = value; },
     setIds(value: string[]) { nativeIds = value; },
     setOwner(value: string) { ownerId = value; },
+    setChildOwner(value: string) { childOwnerId = value; },
     setRevision(value: string) { revision = value; },
     setClocks(w: number, m: number) { wall = w; monotonic = m; },
     setObserve(value: Dependencies['observeOwner']) { observed = value; },
@@ -70,6 +75,7 @@ test('explicit owner ACK binds complete actual inventory; reads and delivery alo
   assert.equal(f.observations, 1); assert.equal(f.requests, 1);
   assert.equal(Object.isFrozen(challenge), true); assert.equal(Object.isFrozen(challenge.scope), true);
   assert.equal(Object.isFrozen(challenge.nativeIds), true);
+  assert.equal(Object.isFrozen(challenge.owners), true); assert.equal(challenge.owners.every(Object.isFrozen), true);
   assert.deepEqual(challenge.nativeIds, [root, child]);
   let settled = false; void pending.then(() => { settled = true; });
   await new Promise(resolve => setImmediate(resolve)); assert.equal(settled, false);
@@ -93,7 +99,9 @@ for (const [name, transform] of [
   ['changed expiry', (c: Challenge) => ({ authenticatedOwnerId: c.ownerId, payload: { ...c, expiresAt: c.expiresAt + 1, acknowledged: true } })],
   ['changed issue time', (c: Challenge) => ({ authenticatedOwnerId: c.ownerId, payload: { ...c, issuedAt: c.issuedAt - 1, acknowledged: true } })],
 ] as const) test(`reject ${name}`, async () => {
-  const f = fixture(); f.deps.requestAcknowledgement = async c => transform(c) as Reply;
+  const f = fixture(); f.deps.requestAcknowledgement = async c => { const response = transform(c);
+    return response ? { receipts: [{ ...response, payload: { ...response.payload, acknowledgedNativeThreadId: root } },
+      { authenticatedOwnerId: 'authenticated-child-owner', payload: { ...c, acknowledged: true, acknowledgedNativeThreadId: child } }] } as Reply : null; };
   assert.equal(await f.checkpoints.checkpointed(scope, [root, child]), false);
   assert.equal(f.events.listenerCount('lifecycle'), 0);
 });
@@ -117,7 +125,7 @@ test('concurrent same app/generation challenges do not replace pending consent',
   assert.equal(f.requests, 1); f.ack(c); assert.equal(await pending, true);
 });
 
-for (const change of ['lifecycle', 'membership', 'revision', 'generation', 'owner'] as const) {
+for (const change of ['lifecycle', 'membership', 'revision', 'generation', 'owner', 'child owner'] as const) {
   test(`actual ${change} change after challenge invalidates acknowledgement`, async () => {
     const f = fixture(); f.events.once('challenge', c => {
       if (change === 'lifecycle') f.events.emit('lifecycle');
@@ -125,6 +133,7 @@ for (const change of ['lifecycle', 'membership', 'revision', 'generation', 'owne
       if (change === 'revision') f.setRevision('residency-2');
       if (change === 'generation') f.setScope({ ...scope, generation: 'g2' });
       if (change === 'owner') f.setOwner('replacement-owner');
+      if (change === 'child owner') f.setChildOwner('replacement-child-owner');
       f.ack(c);
     });
     assert.equal(await f.checkpoints.checkpointed(scope, [root, child]), false);
@@ -177,3 +186,23 @@ test('invalid/private/side scope and incomplete actual inventories cannot reques
   for (const ids of [[], [child], [root], [root, child, child], [root, foreign]]) assert.equal(await f.checkpoints.checkpointed(scope, ids), false);
   assert.equal(f.requests, 0);
 });
+
+for (const failure of ['aggregate parent ACK', 'missing child ACK', 'duplicate child ACK', 'parent impersonates child', 'child cross-native ACK', 'missing child-owner mapping', 'changed mapping in child ACK'] as const) {
+  test(`reject ${failure} without a distinct authenticated receipt for every native child`, async () => {
+    const f = fixture();
+    if (failure === 'missing child-owner mapping') f.setObserve(async () => ({ ...f.snapshot(), owners: [{ nativeThreadId: root, ownerId: 'authenticated-owner' }] }));
+    f.deps.requestAcknowledgement = async c => {
+      const rootReceipt = { authenticatedOwnerId: 'authenticated-owner', payload: { ...c, acknowledged: true as const, acknowledgedNativeThreadId: root } };
+      const childReceipt = { authenticatedOwnerId: 'authenticated-child-owner', payload: { ...c, acknowledged: true as const, acknowledgedNativeThreadId: child } };
+      if (failure === 'aggregate parent ACK') return { authenticatedOwnerId: 'authenticated-owner', payload: { ...c, acknowledged: true } } as unknown as Reply;
+      if (failure === 'missing child ACK') return { receipts: [rootReceipt] };
+      if (failure === 'duplicate child ACK') return { receipts: [rootReceipt, rootReceipt] };
+      if (failure === 'parent impersonates child') childReceipt.authenticatedOwnerId = 'authenticated-owner';
+      if (failure === 'child cross-native ACK') childReceipt.payload.acknowledgedNativeThreadId = foreign;
+      if (failure === 'changed mapping in child ACK') childReceipt.payload.owners = c.owners.map(owner => ({ ...owner, ownerId: 'forged-owner' }));
+      return { receipts: [rootReceipt, childReceipt] };
+    };
+    assert.equal(await f.checkpoints.checkpointed(scope, [root, child]), false);
+    assert.equal(f.events.listenerCount('lifecycle'), 0);
+  });
+}
