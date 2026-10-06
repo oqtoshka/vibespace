@@ -70,8 +70,34 @@ idle checks and no lifecycle change; it unloads the dedicated root before restor
 the original root/descendants. Active, UNKNOWN, rebound or changed-lifecycle cases
 retain a quarantined route. They never restore a second host or stop active work.
 Once claimed, ordinary binding expiry cleanup cannot stop the peer independently.
-No coordinated return transfer or runtime idle retry exists in this checkpoint, so
-claimed and quarantined peers remain retained for later safe reconciliation.
+An explicit dormant `returnToOrdinary(scope)` now coordinates idle return. No runtime
+bootstrap, timer or automatic idle retry invokes it; retained peers still require
+an explicit trusted caller.
+
+## Explicit coordinated return and idle cleanup
+
+The dormant return operation serializes selection and requires zero holds, current
+host/session identity and a fresh bounded admission lease. Releasing a handle while
+an async request is pending does not remove its hold: both success and rejection
+must settle before return can proceed. Capture expiry keeps held steer/interrupt
+controls on the same client and never forces a turn interruption.
+
+Return inventories every cached peer and requires the same original shared client,
+all-native idle observations, target/owned-descendant identity and explicit owner
+checkpoints. It unsubscribes observed dedicated descendants before the root, proves
+them absent from other peers, restores the root/descendants on the retained original
+client and independently verifies ownership and idle status before targeted cleanup.
+The cleanup capability rechecks host lease, identity and lifecycle synchronously
+AFTER its async idle observation, immediately before stopping only the owned empty
+peer. Admission's monotonic duration never extends beyond 15 seconds on clock rollback.
+
+Held/pending handles or unavailable admission defer return without unloading work.
+Active, UNKNOWN, unrelated dedicated residency, duplicate native ownership, rebound
+or replaced cached-client identity refuse cleanup. Ambiguous unsubscribe/resume or
+late activity after mutation quarantines the route, retaining transports. Explicit
+retry reconciles actual original/dedicated inventories; it never resumes a second
+host because a provider response failed. There is no new timer or installed runtime
+caller. Actual full-native notification/ownership behavior remains a release gate.
 
 ## Required before exposing or activating routing
 
@@ -92,9 +118,9 @@ claimed and quarantined peers remain retained for later safe reconciliation.
    quarantine rather than claim successful migration.
 5. Preserve the same immutable handle/client across actual runtime paths. Do not add
    a global executable override or caller-provided executable/environment.
-6. Implement coordinated return transfer, runtime idle retry/eviction after expiry
-   and release removal/revocation. Never interrupt active turns because capture
-   expires. Closed/UNKNOWN claimed entries remain conservatively retained here.
+6. Integrate the explicit coordinated return with runtime idle retry/release lifecycle.
+   Never interrupt active turns because capture expires. Closed/UNKNOWN claimed
+   entries remain conservatively retained until actual reconciliation is possible.
 7. Independently repeat transport/rollback/residency fixtures and full native
    HTTP/WS capture correlation before deployment.
 
@@ -102,5 +128,6 @@ Fixtures prove preparation/refusal/cache identity, filtered environment, bounded
 ownership, unchanged ordinary transports, monotonic expiry, real session/host
 admission, residency transfer, approval round trips, rollback/quarantine, read-only
 history and same-client selection. Standby-only cleanup is verified separately;
-claimed-peer cleanup remains an explicit gap. This slice neither diagnoses the
+claimed-peer return and cleanup now have explicit source-only tests, but automatic
+runtime cleanup remains unimplemented. This slice neither diagnoses the
 primary whitespace cause nor makes runtime capture-ready.

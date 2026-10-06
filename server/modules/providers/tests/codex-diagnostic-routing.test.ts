@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createHash, randomUUID } from 'node:crypto';
-import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { appendFile, chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+
 import { initializeDatabase, closeConnection, sessionsDb, getConnection } from '../../database/index.js';
 import { chatRunRegistry } from '../../websocket/index.js';
 import { codexApprovals } from '../../codex-approvals/index.js';
@@ -41,7 +42,7 @@ fs.appendFileSync(capture,JSON.stringify({kind:'spawn',count,pid:process.pid})+'
 let pendingTurn;
 rl.on('line',line=>{
 const m=JSON.parse(line);fs.appendFileSync(capture,JSON.stringify({count,...m})+'\\n');
-if(m.id!==undefined&&m.method===undefined){if(pendingTurn){send({id:pendingTurn.id,result:{turn:{id:'synthetic-turn'}}});pendingTurn=null;}return;}
+if(m.id!==undefined&&m.method===undefined){if(pendingTurn){send(read().failTurn?{id:pendingTurn.id,error:{message:'PRIVATE_PROVIDER_ERROR'}}:{id:pendingTurn.id,result:{turn:{id:'synthetic-turn'}}});pendingTurn=null;}return;}
 if(m.id===undefined)return;const p=m.params||{};let s=read();let result={};
 if(m.method==='initialize')result={};
 else if(m.method==='thread/loaded/list')result={data:s.ids,nextCursor:null};
@@ -50,11 +51,14 @@ else if(m.method==='thread/read'){
  result={thread:{id:p.threadId,status:{type:s.active===p.threadId?'active':s.unknown?'unknown':'idle'},parentThreadId:p.threadId===${JSON.stringify(descendant)}?${JSON.stringify(native)}:null}};
 }else if(m.method==='thread/unsubscribe'){
  s.ids=s.ids.filter(id=>id!==p.threadId);save(s);send({method:'thread/closed',params:{threadId:p.threadId}});result={status:'unsubscribed'};
+ if(s.failUnsubscribe){send({id:m.id,error:{message:'PRIVATE_PROVIDER_ERROR'}});return;}
 }else if(m.method==='thread/resume'){
  if(!s.ids.includes(p.threadId))s.ids.push(p.threadId);save(s);
+ if(s.notifyResume){s.notifyResume=false;save(s);send({method:'turn/started',params:{threadId:p.threadId}});}
  if(s.failResume){send({id:m.id,error:{message:'PRIVATE_PROVIDER_ERROR'}});return;}
  result={thread:{id:s.wrongIdentity?${JSON.stringify(unrelated)}:p.threadId}};
 }else if(m.method==='thread/turns/list')result={data:[{id:'synthetic-history'}],nextCursor:null};
+else if(m.method==='turn/steer'||m.method==='turn/interrupt')result={};
 else if(m.method==='turn/start'){
  pendingTurn=m;send({id:'approval-1',method:'item/commandExecution/requestApproval',params:{threadId:p.threadId,command:'synthetic'}});return;
 }else throw new Error('unexpected-request');send({id:m.id,result});
@@ -76,21 +80,24 @@ else if(m.method==='turn/start'){
     sha256: createHash('sha256').update(bytes).digest('hex'), observerContract: 'exec-fingerprint-utc-v1', environment: { PATH: process.env.PATH } });
   const deadline = new Date(Math.floor((wall + 60000) / 1000) * 1000).toISOString().replace('.000Z', 'Z');
   const handle = await bindings.prepare(scope, review, deadline);
+  const dedicated = bindings.standby(handle, scope);
   const routing = createCodexDiagnosticRouting({ bindings, host, capture: () => [...getExistingCodexAppServerTransports(), ...bindings.capture()],
     now: () => wall, monotonicNow: () => monotonic });
   const state = async (index: number, patch: Record<string, unknown>) => { const value = JSON.parse(await readFile(states[index], 'utf8')); await writeFile(states[index], JSON.stringify({ ...value, ...patch })); };
-  return { scope, handle, host, bindings, routing, shared, privatePeer, state,
+  return { scope, handle, host, bindings, routing, shared, privatePeer, dedicated, state,
     setCheckpoint: (value: boolean) => { checkpoint = value; }, rebound: () => { epoch = 'new-epoch'; },
     expire: () => { monotonic += 61000; wall -= 3600000; },
     ids: async (index: number) => JSON.parse(await readFile(states[index], 'utf8')).ids as string[],
     requests: async () => (await readFile(receipts, 'utf8')).trim().split('\n').map(line => JSON.parse(line)),
     async close() {
-      for (const entry of bindings.capture()) {
-        if (entry.client.child.exitCode !== null || entry.client.child.signalCode !== null) continue;
-        const exited = new Promise<void>(resolve => entry.client.child.once('exit', () => resolve())); entry.client.stop(); await exited;
+      if (dedicated.child.exitCode === null && dedicated.child.signalCode === null) {
+        const exited = new Promise<void>(resolve => dedicated.child.once('exit', () => resolve())); dedicated.stop(); await exited;
       }
       const exits = [shared, privatePeer].filter(peer => !peer.exited).map(peer => new Promise<void>(resolve => peer.child.once('exit', () => resolve())));
       stopCodexAppServer(); await Promise.all(exits);
+      const processReceipt = [shared, privatePeer, dedicated].map(peer => ({ pid: peer.child.pid, exitCode: peer.child.exitCode, signalCode: peer.child.signalCode }));
+      assert.ok(processReceipt.every(peer => peer.pid && (peer.exitCode !== null || peer.signalCode !== null)));
+      await appendFile(path.join(root, `diagnostic-peer-exits-${process.pid}.jsonl`), JSON.stringify({ appSessionId, children: processReceipt }) + '\n');
       if (previous === undefined) delete process.env.VIBESPACE_CODEX_PATH; else process.env.VIBESPACE_CODEX_PATH = previous;
       getConnection().prepare('DELETE FROM sessions WHERE session_id=?').run(appSessionId);
       await rm(dir, { recursive: true, force: true });
@@ -236,3 +243,163 @@ for (const reason of ['active', 'unknown', 'notify']) {
     } finally { await f.close(); }
   });
 }
+
+
+test('expired diagnostic residency returns to the SAME original peer, restores descendants and stops only the empty owned peer', async () => {
+  const f = await fixture();
+  try {
+    await f.routing.transfer(f.scope, f.handle); f.expire();
+    const history = f.routing.acquire(f.scope, 'history', () => f.shared);
+    assert.deepEqual(await f.routing.returnToOrdinary(f.scope), { returned: false, reason: 'held-or-pending' });
+    assert.deepEqual(await f.ids(0), []); assert.deepEqual(await f.ids(2), [native]);
+    history.release();
+    const exited = new Promise<void>(resolve => f.dedicated.child.once('exit', () => resolve()));
+    assert.deepEqual(await f.routing.returnToOrdinary(f.scope), { returned: true }); await exited;
+    assert.deepEqual(await f.ids(0), [native, descendant]); assert.deepEqual(await f.ids(2), []);
+    assert.equal(f.bindings.capture().length, 0); assert.equal(f.routing.state(f.scope), null);
+    assert.equal(f.routing.acquire(f.scope, 'history', () => f.shared).peer, f.shared);
+    assert.equal(f.shared.closed, false); assert.equal(f.privatePeer.closed, false);
+    assert.equal((await f.requests()).filter(row => row.kind === 'spawn').length, 3);
+    assert.equal(f.shared.listeners.size, 0);
+    assert.deepEqual(await f.routing.returnToOrdinary(f.scope), { returned: false, reason: 'not-routed' });
+  } finally { await f.close(); }
+});
+
+for (const reason of ['active', 'unknown', 'notify', 'otherHost', 'checkpoint', 'activeChild', 'unownedResidency'] as const) {
+  test(`return ${reason} defers before dedicated unload and leaves all transports alive`, async () => {
+    const f = await fixture();
+    try {
+      await f.routing.transfer(f.scope, f.handle);
+      if (reason === 'active') await f.state(2, { active: native });
+      if (reason === 'unknown') await f.state(2, { unknown: true });
+      if (reason === 'notify') await f.state(2, { notify: true });
+      if (reason === 'otherHost') await f.state(1, { ids: [unrelated, native] });
+      if (reason === 'checkpoint') f.setCheckpoint(false);
+      if (reason === 'activeChild') await f.state(2, { ids: [native, descendant], active: descendant });
+      if (reason === 'unownedResidency') await f.state(2, { ids: [native, unrelated] });
+      const before = await f.ids(2);
+      assert.equal((await f.routing.returnToOrdinary(f.scope)).returned, false);
+      assert.deepEqual(await f.ids(0), []); assert.deepEqual(await f.ids(2), before);
+      assert.equal(f.dedicated.closed, false); assert.equal(f.shared.closed, false); assert.equal(f.privatePeer.closed, false);
+      assert.equal(f.shared.listeners.size, 0);
+    } finally { await f.close(); }
+  });
+}
+
+test('return includes actually observed idle descendants in ownership checkpoints and restores their parent residency', async () => {
+  const f = await fixture();
+  try {
+    await f.routing.transfer(f.scope, f.handle);
+    await f.state(2, { ids: [native, descendant] });
+    assert.deepEqual(await f.routing.returnToOrdinary(f.scope), { returned: true });
+    assert.deepEqual(await f.ids(0), [native, descendant]); assert.deepEqual(await f.ids(2), []);
+    const req = await f.requests();
+    const childUnload = req.findIndex(row => row.count === 2 && row.method === 'thread/unsubscribe' && row.params.threadId === descendant);
+    const rootUnload = req.findIndex(row => row.count === 2 && row.method === 'thread/unsubscribe' && row.params.threadId === native);
+    const originalResume = req.findIndex(row => row.count === 0 && row.method === 'thread/resume');
+    assert.ok(childUnload >= 0 && rootUnload > childUnload && originalResume > rootUnload);
+  } finally { await f.close(); }
+});
+
+for (const reason of ['failResume', 'failUnsubscribe', 'notifyResume']) {
+  test(`ambiguous return ${reason} quarantines then explicit idle retry reconciles without duplicate native hosting`, async () => {
+    const f = await fixture();
+    try {
+      await f.routing.transfer(f.scope, f.handle);
+      await f.state(reason === 'failUnsubscribe' ? 2 : 0, { [reason]: true });
+      assert.deepEqual(await f.routing.returnToOrdinary(f.scope), { returned: false, reason: 'quarantined' });
+      assert.equal(f.routing.state(f.scope)?.phase, 'quarantined');
+      assert.throws(() => f.routing.acquire(f.scope, 'history', () => f.shared), /unavailable/);
+      assert.ok(!((await f.ids(0)).includes(native) && (await f.ids(2)).includes(native)));
+      assert.equal(f.dedicated.closed, false);
+      await f.state(reason === 'failUnsubscribe' ? 2 : 0, { [reason]: false });
+      assert.deepEqual(await f.routing.returnToOrdinary(f.scope), { returned: true });
+      assert.deepEqual(await f.ids(0), [native, descendant]); assert.deepEqual(await f.ids(2), []);
+    } finally { await f.close(); }
+  });
+}
+
+
+for (const failTurn of [false, true]) {
+test(`a released handle retains its hold until an actual pending native approval/turn ${failTurn ? 'rejects' : 'succeeds'}`, async () => {
+  const f = await fixture(); let unbind: (() => void) | undefined;
+  try {
+    await f.routing.transfer(f.scope, f.handle);
+    await f.state(2, { failTurn });
+    const handle = f.routing.acquire(f.scope, 'turn', () => f.shared);
+    let requestId: string | undefined;
+    let signalApproval: (() => void) | undefined;
+    const approved = new Promise<void>(resolve => { signalApproval = resolve; });
+    unbind = codexApprovals.bind(native, f.scope.appSessionId, event => {
+      if (event.kind === 'permission_request') { requestId = String(event.requestId); signalApproval?.(); }
+    });
+    const pending = handle.request('turn/start', { threadId: native, input: [] });
+    await approved; handle.release();
+    assert.equal(f.routing.state(f.scope)?.holds, 1);
+    assert.deepEqual(await f.routing.returnToOrdinary(f.scope), { returned: false, reason: 'held-or-pending' });
+    assert.equal(f.dedicated.closed, false);
+    assert.ok(requestId); codexApprovals.resolve(requestId, { allow: true });
+    if (failTurn) await assert.rejects(pending, /^Error: diagnostic-peer-request-failed$/);
+    else await pending;
+    assert.equal(f.routing.state(f.scope)?.holds, 0);
+    assert.deepEqual(await f.routing.returnToOrdinary(f.scope), { returned: true });
+  } finally { unbind?.(); await f.close(); }
+});
+}
+
+test('capture expiry leaves a held active-turn control on the same peer and defers return until release', async () => {
+  const f = await fixture();
+  try {
+    await f.routing.transfer(f.scope, f.handle);
+    const handle = f.routing.acquire(f.scope, 'turn', () => f.shared); f.expire();
+    assert.deepEqual(await handle.request('turn/steer', { threadId: native }), {});
+    assert.deepEqual(await handle.request('turn/interrupt', { threadId: native }), {});
+    assert.deepEqual(await f.routing.returnToOrdinary(f.scope), { returned: false, reason: 'held-or-pending' });
+    assert.equal(f.dedicated.closed, false); handle.release();
+    assert.deepEqual(await f.routing.returnToOrdinary(f.scope), { returned: true });
+  } finally { await f.close(); }
+});
+
+
+test('a foreign host admission defers return without unloading; its later release permits exact idle return', async () => {
+  const f = await fixture();
+  try {
+    await f.routing.transfer(f.scope, f.handle);
+    const lease = chatRunRegistry.reserveAdmission({ appSessionId: f.scope.appSessionId, providerSessionId: native,
+      resourceId: 'foreign-return-owner', generation: f.scope.generation, ttlMs: 15000 });
+    assert.ok(lease);
+    assert.deepEqual(await f.routing.returnToOrdinary(f.scope), { returned: false, reason: 'deferred' });
+    assert.deepEqual(await f.ids(2), [native]); assert.deepEqual(await f.ids(0), []);
+    lease.release();
+    assert.deepEqual(await f.routing.returnToOrdinary(f.scope), { returned: true });
+  } finally { await f.close(); }
+});
+
+test('a rebound generation cannot return or evict the retained dedicated owner', async () => {
+  const f = await fixture();
+  try {
+    await f.routing.transfer(f.scope, f.handle); f.rebound();
+    await assert.rejects(f.routing.returnToOrdinary(f.scope), /rebound/);
+    assert.deepEqual(await f.ids(0), []); assert.deepEqual(await f.ids(2), [native]);
+    assert.equal(f.dedicated.closed, false);
+  } finally { await f.close(); }
+});
+
+
+test('owned cleanup rechecks current generation after its async idle observation before stopping the peer', async () => {
+  const f = await fixture();
+  const claim = f.bindings.claim;
+  try {
+    f.bindings.claim = (...args) => {
+      const owned = claim(...args);
+      return Object.freeze({ ...owned, cleanup: (authorize: () => boolean) => owned.cleanup(() => {
+        f.rebound(); return authorize();
+      }) });
+    };
+    await f.routing.transfer(f.scope, f.handle);
+    assert.deepEqual(await f.routing.returnToOrdinary(f.scope), { returned: false, reason: 'quarantined' });
+    assert.deepEqual(await f.ids(0), [native, descendant]); assert.deepEqual(await f.ids(2), []);
+    assert.equal(f.dedicated.closed, false); assert.equal(f.bindings.capture().length, 1);
+    assert.equal(f.shared.closed, false); assert.equal(f.privatePeer.closed, false);
+  } finally { f.bindings.claim = claim; await f.close(); }
+});

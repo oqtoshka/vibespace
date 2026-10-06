@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
+
 import type { CodexDiagnosticScope, CodexDiagnosticHandle, CodexDiagnosticLease } from '../../../shared/index.js';
+
 import { createCodexDiagnosticBindings } from './codex-diagnostic-binding.service.js';
 import { createCodexRestartAdmissionObserver } from './codex-restart-admission.service.js';
 import { createCodexDiagnosticHost } from './codex-diagnostic-host.service.js';
@@ -10,7 +12,7 @@ type Capture = NonNullable<Parameters<typeof createCodexRestartAdmissionObserver
 type Peer = ReturnType<Capture>[number]['client'];
 type Claim = ReturnType<Bindings['claim']>;
 type Route = { scope: CodexDiagnosticScope; handle: CodexDiagnosticHandle; original: Peer;
-  claim: Claim; phase: 'transferring' | 'diagnostic' | 'quarantined'; holds: number; owned: string[] };
+  claim: Claim; phase: 'transferring' | 'diagnostic' | 'returning' | 'quarantined'; holds: number; owned: string[] };
 type Dependencies = { bindings: Bindings; host: Host; capture: Capture; now: () => number; monotonicNow: () => number };
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
@@ -84,7 +86,7 @@ export function createCodexDiagnosticRouting(deps: Dependencies) {
       }
       try {
         lease = deps.host.reserve(scope, randomUUID());
-        monotonicUntil = deps.monotonicNow() + Math.max(0, (lease?.expiresAt ?? 0) - deps.now());
+        monotonicUntil = deps.monotonicNow() + Math.max(0, Math.min(15000, (lease?.expiresAt ?? 0) - deps.now()));
         check();
         const original = deps.capture().find(entry => entry.variant === 'shared')?.client;
         if (!original) throw new Error('diagnostic-old-transport-missing');
@@ -149,12 +151,101 @@ export function createCodexDiagnosticRouting(deps: Dependencies) {
             const retained = await loaded(route.original);
             for (const id of [scope.nativeThreadId, ...route.owned.filter(id => id !== scope.nativeThreadId)]) if (!retained.includes(id)) { check(); await resume(route.original, id); }
             check();
-            if (!await claim.cleanup()) throw new Error('diagnostic-rollback-cleanup-unknown');
+            if (!await claim.cleanup(() => { try { check(); return true; } catch { return false; } })) throw new Error('diagnostic-rollback-cleanup-unknown');
             routes.delete(scope.appSessionId);
           } catch { /* Retain/quarantine ownership; never expose provider errors. */ }
         }
         throw new Error(route?.phase === 'quarantined' && routes.has(scope.appSessionId)
           ? 'diagnostic-transfer-quarantined' : 'diagnostic-transfer-refused');
+      } finally {
+        releaseListeners.forEach(release => release()); lease?.release(); pending.delete(scope.appSessionId);
+      }
+    },
+    async returnToOrdinary(scope: CodexDiagnosticScope) {
+      scope = Object.freeze({ ...scope });
+      const route = find(scope);
+      if (!route) return { returned: false, reason: 'not-routed' as const };
+      if (pending.has(scope.appSessionId) || route.holds !== 0) return { returned: false, reason: 'held-or-pending' as const };
+      pending.add(scope.appSessionId);
+      const previousPhase = route.phase;
+      route.phase = 'returning';
+      let lease: CodexDiagnosticLease | null = null;
+      let monotonicUntil = 0;
+      let inventory: ReturnType<Capture> | undefined;
+      const releaseListeners: Array<() => void> = [];
+      let changed = false;
+      let mutated = false;
+      let expectedClose: string | null = null;
+      const check = () => {
+        if (!lease || changed || !deps.host.current(scope) || deps.now() >= lease.expiresAt
+          || deps.monotonicNow() >= monotonicUntil || route.holds !== 0) throw new Error('diagnostic-return-stale');
+        if (inventory) {
+          const current = deps.capture();
+          if (current.length !== inventory.length || current.some((entry, i) => entry.client !== inventory![i]?.client
+            || entry.variant !== inventory![i]?.variant)) throw new Error('diagnostic-inventory-replaced');
+        }
+      };
+      try {
+        lease = deps.host.reserve(scope, randomUUID());
+        monotonicUntil = deps.monotonicNow() + Math.max(0, Math.min(15000, (lease?.expiresAt ?? 0) - deps.now()));
+        check();
+        inventory = deps.capture();
+        if (inventory.find(entry => entry.variant === 'shared')?.client !== route.original
+          || !inventory.some(entry => entry.client === route.claim.peer)) throw new Error('diagnostic-return-owner-replaced');
+        for (const entry of inventory) releaseListeners.push(entry.client.subscribe((method, params) => {
+          if (method === 'thread/closed' && entry.client === route.claim.peer && params.threadId === expectedClose) return;
+          if (/^(turn\/|thread\/|transport\/)/.test(method)) changed = true;
+        }));
+        const observed = await createCodexRestartAdmissionObserver({ capture: deps.capture, now: deps.now }).observe();
+        if (!observed.nativeThreadsIdle) throw new Error('diagnostic-return-not-idle');
+        const dedicatedIds = await loaded(route.claim.peer);
+        const originalIds = await loaded(route.original);
+        if (dedicatedIds.includes(scope.nativeThreadId) && originalIds.includes(scope.nativeThreadId)) throw new Error('diagnostic-concurrent-host');
+        let owned = route.owned.slice();
+        if (dedicatedIds.length) {
+          const actual = await ownedIdle(route.claim.peer, scope.nativeThreadId);
+          // A pinned dedicated process belongs only to this native root and its
+          // observed descendants. Unrelated residency makes cleanup unknown.
+          if (actual.length !== dedicatedIds.length) throw new Error('diagnostic-return-owner-unknown');
+          owned = [...new Set([...owned, ...actual])].sort();
+          await noOtherHosts(route.claim.peer, owned);
+        } else {
+          // Retry after an ambiguous return may find the root already on the
+          // original peer, or unloaded from both. Never resume a second owner.
+          await noOtherHosts(route.original, owned);
+          if (originalIds.includes(scope.nativeThreadId)) await ownedIdle(route.original, scope.nativeThreadId);
+        }
+        if (!await deps.host.ownersCheckpointed(scope, owned)) throw new Error('diagnostic-owner-unknown');
+        check();
+        route.owned = owned;
+        for (const id of owned.filter(id => id !== scope.nativeThreadId).concat(scope.nativeThreadId)) {
+          if (!dedicatedIds.includes(id)) continue;
+          check(); mutated = true; expectedClose = id;
+          await route.claim.execution.unsubscribeOwned(id, owned);
+          expectedClose = null; check();
+        }
+        if ((await loaded(route.claim.peer)).length !== 0) throw new Error('diagnostic-return-owner-retained');
+        await noOtherHosts(route.original, owned); check();
+        const retained = await loaded(route.original);
+        for (const id of [scope.nativeThreadId, ...owned.filter(id => id !== scope.nativeThreadId)]) {
+          if (retained.includes(id)) continue;
+          check(); mutated = true; await resume(route.original, id); check();
+        }
+        const restored = await ownedIdle(route.original, scope.nativeThreadId);
+        if (owned.some(id => !restored.includes(id))) throw new Error('diagnostic-return-descendants-unknown');
+        await noOtherHosts(route.original, restored);
+        if (!await deps.host.ownersCheckpointed(scope, restored)) throw new Error('diagnostic-owner-unknown');
+        const final = await createCodexRestartAdmissionObserver({ capture: deps.capture, now: deps.now }).observe();
+        if (!final.nativeThreadsIdle) throw new Error('diagnostic-return-not-idle');
+        check();
+        // Listener latch and admission remain held until targeted cleanup has
+        // verified the dedicated peer empty/idle. Never stop a held/active peer.
+        if (!await route.claim.cleanup(() => { try { check(); return true; } catch { return false; } })) throw new Error('diagnostic-return-cleanup-unknown');
+        routes.delete(scope.appSessionId);
+        return { returned: true };
+      } catch {
+        route.phase = mutated || previousPhase === 'quarantined' ? 'quarantined' : previousPhase;
+        return { returned: false, reason: route.phase === 'quarantined' ? 'quarantined' as const : 'deferred' as const };
       } finally {
         releaseListeners.forEach(release => release()); lease?.release(); pending.delete(scope.appSessionId);
       }
@@ -171,21 +262,28 @@ export function createCodexDiagnosticRouting(deps: Dependencies) {
       if (purpose === 'turn') deps.bindings.standby(route.handle, scope); // expiry denies fresh diagnostic admissions
       route.holds++;
       let released = false;
+      let inFlight = 0;
+      let counted = true;
+      const dropHold = () => { if (released && inFlight === 0 && counted) { counted = false; route.holds--; } };
       const request = async (method: string, params: Record<string, unknown>, timeoutMs = 1500) => {
+        params = { ...params };
         if (released || find(scope) !== route || route.phase !== 'diagnostic') throw new Error('diagnostic-route-unavailable');
         if (params.threadId !== scope.nativeThreadId) throw new Error('diagnostic-execution-scope');
         if (purpose !== 'turn' && !['thread/read', 'thread/turns/list'].includes(method)) throw new Error('diagnostic-readonly-purpose');
         if (!['thread/read', 'thread/turns/list', 'turn/start', 'turn/steer', 'turn/interrupt'].includes(method)) throw new Error('diagnostic-route-method');
         if (method === 'turn/start') deps.bindings.standby(route.handle, scope);
-        if (method === 'thread/read') return route.claim.peer.request(method, params, timeoutMs);
-        return route.claim.execution.request(method, params, timeoutMs);
+        inFlight++;
+        try {
+          if (method === 'thread/read') return await route.claim.peer.request(method, params, timeoutMs);
+          return await route.claim.execution.request(method, params, timeoutMs);
+        } finally { inFlight--; dropHold(); }
       };
       return { peer: route.claim.peer, request,
-        release() { if (!released) { released = true; route.holds--; } } };
+        release() { released = true; dropHold(); } };
     },
     state(scope: CodexDiagnosticScope) { const route = find(scope); return route ? { phase: route.phase, holds: route.holds } : null; },
-    // No cleanup/return-transfer is exposed in this checkpoint. Binding's normal
-    // timer cannot stop claimed peers; runtime idle cleanup remains a hard gap.
+    // Explicit return is dormant/source-only. No timer or runtime retry invokes
+    // it; ordinary expiry cleanup still cannot stop claimed peers independently.
   };
 }
 function ordinaryRequest(peer: Peer) { return (method: string, params: Record<string, unknown>, timeoutMs = 1500) => peer.request(method, params, timeoutMs); }
