@@ -1464,3 +1464,15 @@ export type CliApplication = {
 export type SandboxCommandService = {
   execute(argumentsList: string[]): Promise<number>;
 };
+
+
+//----------------- INTERNAL CODEX DIAGNOSTIC ROUTING ------------
+/** Trusted host-only identity for one diagnostic route. Private and side sessions
+ * are refused; generation is an immutable resource epoch, not an HTTP option. */
+export type CodexDiagnosticScope = { appSessionId: string; nativeThreadId: string; generation: string; private: boolean; side: boolean };
+/** Opaque immutable binding identity. Factories also verify object identity, so
+ * copied/deserialized values cannot authorize an internal transport selection. */
+export type CodexDiagnosticHandle = Readonly<{ id: string; appSessionId: string; nativeThreadId: string; generation: string }>;
+/** Actual host reservation for one session/resource epoch, at most 60 seconds.
+ * It covers VibeSpace admissions only; it is not a lock on external native CLIs. */
+export type CodexDiagnosticLease = { expiresAt: number; release: () => void };

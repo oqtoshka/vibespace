@@ -3,23 +3,22 @@ import { constants } from 'node:fs';
 import { lstat, open, realpath } from 'node:fs/promises';
 import path from 'node:path';
 
+import type { CodexDiagnosticScope as Scope, CodexDiagnosticHandle as Handle, CodexDiagnosticLease } from '../../../shared/index.js';
 import { buildAgentEnv } from '../../../shared/index.js';
 
 import { CodexDiagnosticPeer } from './codex-diagnostic-peer.service.js';
 import { createCodexRestartAdmissionObserver } from './codex-restart-admission.service.js';
 
 type Capture = NonNullable<Parameters<typeof createCodexRestartAdmissionObserver>[0]>['capture'];
-type Scope = { appSessionId: string; nativeThreadId: string; generation: string; private: boolean; side: boolean };
-type Handle = Readonly<{ id: string; appSessionId: string; nativeThreadId: string; generation: string }>;
 type Review = { executable: string; sha256: string; captureDirectory: string;
   // Only a host-reviewed binary with the actual native UTC/monotonic expiry
   // overlay may declare this. The old full CLI does not meet this contract.
   observerContract: 'exec-fingerprint-utc-v1'; environment: NodeJS.ProcessEnv };
 type Dependencies = { capture: Capture; now: () => number; monotonicNow: () => number;
-  reserve: (scope: Scope, resourceId: string) => { expiresAt: number; release: () => void } | null;
+  reserve: (scope: Scope, resourceId: string) => CodexDiagnosticLease | null;
   ownersCheckpointed: (scope: Scope, nativeThreadIds: string[]) => Promise<boolean> };
 type Entry = { handle: Handle; peer: CodexDiagnosticPeer; until: number; monotonicUntil: number;
-  reviewId: string; timer?: ReturnType<typeof setTimeout> };
+  reviewId: string; routed?: boolean; timer?: ReturnType<typeof setTimeout> };
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 async function verifyExecutable(review: Review) {
@@ -37,7 +36,7 @@ async function verifyExecutable(review: Review) {
   } finally { await file.close(); }
 }
 
-/** Internal tests consume this unexposed preparation engine; no route, plugin hook, or runtime selector is registered. */
+/** Dormant routing and tests consume this engine; no public route, plugin hook, or runtime selector is registered. */
 export function createCodexDiagnosticBindings(deps: Dependencies) {
   const reviews = new Map<string, Review>();
   const entries = new Map<string, Entry>();
@@ -58,8 +57,9 @@ export function createCodexDiagnosticBindings(deps: Dependencies) {
     if (!entry || entry.handle !== handle) throw new Error('diagnostic-handle-mismatch');
     return entry;
   }
-  async function cleanup(handle: Handle) {
+  async function cleanup(handle: Handle, owned = false) {
     const entry = entryFor(handle);
+    if (entry.routed && !owned) return false;
     // The standby cannot start/resume turns. Still do not stop on a failed
     // observation or unexpected active native work; retain an expired entry.
     const result = await createCodexRestartAdmissionObserver({ capture: () => [{ variant: 'diagnostic-standby', client: entry.peer }], now: deps.now }).observe();
@@ -172,6 +172,16 @@ export function createCodexDiagnosticBindings(deps: Dependencies) {
       const entry = entryFor(handle);
       if (!matches(handle, scope) || !live(entry)) throw new Error('diagnostic-binding-rebound-or-expired');
       return entry.peer;
+    },
+    // Dormant serialized routing owns cleanup after claiming a standby. Its
+    // expiry timer must not race host admission or interrupt a new turn.
+    claim(handle: Handle, scope: Scope) {
+      validate(scope);
+      const entry = entryFor(handle);
+      if (!matches(handle, scope) || !live(entry) || entry.routed) throw new Error('diagnostic-binding-claimed-or-expired');
+      entry.routed = true;
+      const execution = entry.peer.execution(scope.nativeThreadId);
+      return Object.freeze({ peer: entry.peer, execution, cleanup: () => cleanup(handle, true) });
     },
     // Only internal readiness checks may inventory dedicated peers. No IDs,
     // paths, environments or prompts are turned into an HTTP response here.

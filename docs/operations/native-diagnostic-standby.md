@@ -2,7 +2,7 @@
 
 This slice is **not an installed observer or usable per-session routing feature**.
 The factory in `server/modules/providers/services/codex-diagnostic-binding.service.ts`
-currently has only a test caller. It is not exported through the Providers barrel,
+is used by an unregistered routing factory and tests. Neither factory is exported through the Providers barrel,
 registered in HTTP/plugin APIs, or selected by `openai-codex.js`. Existing shared,
 private, and ephemeral clients retain their existing behavior.
 
@@ -29,38 +29,78 @@ inventory are checked without spawning a replacement for that ordinary peer.
 
 Preparation is deliberately conservative: every loaded thread in the old shared
 peer must be idle. It does not move, unsubscribe, or resume the target. The dedicated
-standby only allows inspection; start/resume requests are refused. Initialization
+ordinary standby interface only allows inspection. Initialization
 failure stops only the newly owned candidate and releases its listeners/reservation.
 Expiry refuses selection and attempts targeted cleanup. If an actual native
 observation is active or UNKNOWN, cleanup defers and retains the entry; an explicit
 later idle cleanup can remove it without stopping unrelated cached peers. The
 standby drains stderr without collecting it and emits finite local error reasons.
 
+## Dormant host and residency integration
+
+The unregistered host adapter uses the real session database and chat-run admission
+registry. It reserves a 15-second host lease and rechecks provider/native identity,
+public/non-side/non-archived state and an explicitly supplied resource generation.
+A separate trusted owner-checkpoint callback is mandatory and bounded to 1.5 seconds.
+An idle host or empty inventory never substitutes for that callback.
+
+The internal routing factory snapshots every existing shared/private/ephemeral and
+dedicated cached peer without spawning an ordinary replacement. It verifies target
+and owned-descendant idle states, rejects another peer hosting any of those IDs,
+and retains lifecycle invalidation across inventory reads, unsubscribe, resume and
+verification. A later idle read never clears a prior activity notification. Under
+the host lease it unsubscribes descendants before their root, proves old ownership
+absent, then resumes the exact native root on the pinned dedicated peer. The final
+conservative check requires every cached native peer to be idle. Ordinary runtime
+paths do not yet observe or participate in this transfer.
+
+Only a claimed transfer capability permits exact-thread resume/unsubscribe/turn
+operations. Native approval and user-input server requests use the existing approval
+broker; unbound or unsupported requests are declined/cancelled. The scoped selector
+returns the same dedicated client for turn, history and idle reads. History is read
+only; normal turn handles cannot change residency. Deadline expiry denies new turn
+admissions, including a previously acquired handle starting a new turn after expiry.
+It neither kills existing work nor disables an already held turn's steer/interrupt.
+History stays on that same client after capture expires. Handle release is
+idempotent and prevents further requests through that handle.
+
+Resume failures are ambiguous until actual peer inventory/status checks succeed.
+Rollback requires still-valid host admission, explicit owner checkpoints, all-peer
+idle checks and no lifecycle change; it unloads the dedicated root before restoring
+the original root/descendants. Active, UNKNOWN, rebound or changed-lifecycle cases
+retain a quarantined route. They never restore a second host or stop active work.
+Once claimed, ordinary binding expiry cleanup cannot stop the peer independently.
+No coordinated return transfer or runtime idle retry exists in this checkpoint, so
+claimed and quarantined peers remain retained for later safe reconciliation.
+
 ## Required before exposing or activating routing
 
 1. Build and independently verify a complete native CLI with the hard UTC/monotonic
-   expiry overlay. Obtain its actual SHA and place it in a trusted, immutable release
-   artifact. Read-only mode plus hash rechecks do not stop the same owner replacing
-   files or ancestor directories between verification and path-based execution.
-   The future bootstrap must enforce trusted artifact ownership and release identity.
-2. Wire the real bounded host admission and actual session-owner checkpoint source.
-   The current factory only accepts injected dependencies; its tests do not establish
-   real deployment admission or operator authorization.
-3. Verify target residency across every relevant cached peer. Standby preparation
-   checks the old shared peer only and does not prove no private/ephemeral transport
-   hosts the same target. Actual transfer must refuse concurrent native hosting.
-4. Implement a serialized residency transfer with lifecycle invalidation and idle
-   checks for the target and its owned descendants. Unsubscribe the old owner only
-   inside that verified transfer; handle rollback and initialization failures safely.
-5. Bind turn, resume, history and idle inspection to the same immutable handle/client.
-   Do not add a global executable override or caller-provided executable/environment.
-6. Add the runtime idle retry/eviction lifecycle after expiry and define release
-   removal/revocation. Never interrupt active turns merely because capture expires.
-   Closed/UNKNOWN entries intentionally remain conservatively retained in this slice.
-7. Independently repeat real transport fixtures, transfer/rollback/residency tests,
-   and full native HTTP/WS capture correlation before deployment.
+   expiry overlay. Pin its actual SHA in a trusted immutable release artifact.
+   Read-only mode and hash rechecks do not stop the same owner replacing files or
+   ancestor directories between verification and path-based execution. Bootstrap
+   must enforce trusted artifact ownership and release identity.
+2. Bootstrap the adapter with the actual trusted resource generation and external
+   session-owner checkpoint source. Real SQLite/registry fixtures do not establish
+   deployment admission, external native ownership or operator authorization.
+3. Integrate the dormant selector with every legacy runtime turn/resume/history/idle
+   path and serialize those paths against residency transfer. Host admission covers
+   VibeSpace starts, not an external terminal owner starting native work.
+4. Verify transfer, notifications and native server-request semantics against the
+   complete reviewed native CLI. Synthetic peers use the real transport but are not
+   proof of every native notification sequence; uncertain sequences deliberately
+   quarantine rather than claim successful migration.
+5. Preserve the same immutable handle/client across actual runtime paths. Do not add
+   a global executable override or caller-provided executable/environment.
+6. Implement coordinated return transfer, runtime idle retry/eviction after expiry
+   and release removal/revocation. Never interrupt active turns because capture
+   expires. Closed/UNKNOWN claimed entries remain conservatively retained here.
+7. Independently repeat transport/rollback/residency fixtures and full native
+   HTTP/WS capture correlation before deployment.
 
-The current synthetic fixture suite proves preparation/refusal/cache identity,
-secret-filtered environment, bounded ownership, unchanged ordinary transports,
-monotonic expiry, active/UNKNOWN cleanup deferral, and targeted idle cleanup. It
-neither diagnoses the primary whitespace cause nor makes the runtime capture-ready.
+Fixtures prove preparation/refusal/cache identity, filtered environment, bounded
+ownership, unchanged ordinary transports, monotonic expiry, real session/host
+admission, residency transfer, approval round trips, rollback/quarantine, read-only
+history and same-client selection. Standby-only cleanup is verified separately;
+claimed-peer cleanup remains an explicit gap. This slice neither diagnoses the
+primary whitespace cause nor makes runtime capture-ready.

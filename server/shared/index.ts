@@ -43,3 +43,4 @@ export { WAITING_ON_USER_MARKER } from './waiting-on-user.js';
 export { readExternalTaskLedger, registerTaskLedgerSource } from './task-ledger-sources.js';
 // Providers' dedicated diagnostic peer applies the existing server-secret filter.
 export { buildAgentEnv } from './agent-env.js';
+export type { CodexDiagnosticScope, CodexDiagnosticHandle, CodexDiagnosticLease } from './types.js';
