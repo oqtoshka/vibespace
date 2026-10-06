@@ -1,0 +1,337 @@
+{
+  "provenance": {
+    "codexVersion": "0.159.3",
+    "command": "codex app-server generate-json-schema --experimental",
+    "sourceFiles": [
+      {
+        "name": "v2/ThreadResumeParams.json",
+        "sha256": "cc5bb3b25f82073d24af5b6c09e4804ac307467f8400ba5f263fa86f9f0349e6"
+      },
+      {
+        "name": "v2/ThreadStartParams.json",
+        "sha256": "80a40a7fac15b4bf70efb7f893fb353acc0a0d30c68f54aee4f01923deca85de"
+      },
+      {
+        "name": "v2/RawResponseItemCompletedNotification.json",
+        "sha256": "e41475a93885572579b0963718e46783b07f9ddb9e61f0669dac09da4d59185e"
+      },
+      {
+        "name": "ServerNotification.json",
+        "sha256": "28a42039eee1c3f45c92b6cf07111bacf6de2716f4d3365ff53ad65507fef00c"
+      }
+    ]
+  },
+  "ThreadResumeParams": {
+    "properties": {
+      "approvalPolicy": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/AskForApproval"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "approvalsReviewer": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/ApprovalsReviewer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Override where approval requests are routed for review on this thread and subsequent turns."
+      },
+      "baseInstructions": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "config": {
+        "additionalProperties": true,
+        "type": [
+          "object",
+          "null"
+        ]
+      },
+      "cwd": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "developerInstructions": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "excludeTurns": {
+        "description": "When true, return only thread metadata and live-resume state without populating `thread.turns`. This is useful when the client plans to call `thread/turns/list` immediately after resuming. Full-history hydration is deprecated for paginated threads; use this with `thread/turns/list` and `thread/items/list` instead.",
+        "type": "boolean"
+      },
+      "history": {
+        "description": "[UNSTABLE] FOR CODEX CLOUD - DO NOT USE. If specified, the thread will be resumed with the provided history instead of loaded from disk.",
+        "items": {
+          "$ref": "#/definitions/ResponseItem"
+        },
+        "type": [
+          "array",
+          "null"
+        ]
+      },
+      "initialTurnsPage": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/ThreadResumeInitialTurnsPageParams"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "When present, include a `thread/turns/list` page in the resume response so clients can bootstrap recent turns without a second request."
+      },
+      "model": {
+        "description": "Configuration overrides for the resumed thread, if any.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "modelProvider": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "path": {
+        "default": null,
+        "description": "[UNSTABLE] Specify the rollout path to resume from. If specified for a non-running thread, the thread_id param will be ignored. If thread_id identifies a running thread, the path must match the active rollout path.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "permissions": {
+        "description": "Named profile id for the resumed thread. Cannot be combined with `sandbox`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "personality": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/Personality"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "@deprecated `friendly` and `pragmatic` no longer select a style. Changing this does not rewrite the thread's existing instructions."
+      },
+      "runtimeWorkspaceRoots": {
+        "description": "Replace the thread's runtime workspace roots. Paths must be absolute.",
+        "items": {
+          "$ref": "#/definitions/AbsolutePathBuf"
+        },
+        "type": [
+          "array",
+          "null"
+        ]
+      },
+      "sandbox": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/SandboxMode"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "serviceTier": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "threadId": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "threadId"
+    ]
+  },
+  "ThreadStartParams": {
+    "properties": {
+      "experimentalRawEvents": {
+        "description": "If true, opt into emitting raw Responses API items on the event stream. This is for internal use only (e.g. Codex Cloud).",
+        "type": "boolean"
+      }
+    }
+  },
+  "RawResponseItemCompletedNotification": {
+    "properties": {
+      "item": {
+        "$ref": "#/definitions/ResponseItem"
+      },
+      "threadId": {
+        "type": "string"
+      },
+      "turnId": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "item",
+      "threadId",
+      "turnId"
+    ]
+  },
+  "CustomToolCallResponseItem": {
+    "properties": {
+      "call_id": {
+        "type": "string"
+      },
+      "id": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "input": {
+        "type": "string"
+      },
+      "internal_chat_message_metadata_passthrough": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/InternalChatMessageMetadataPassthrough"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "name": {
+        "type": "string"
+      },
+      "namespace": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "status": {
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "type": {
+        "enum": [
+          "custom_tool_call"
+        ],
+        "title": "CustomToolCallResponseItemType",
+        "type": "string"
+      }
+    },
+    "required": [
+      "call_id",
+      "input",
+      "name",
+      "type"
+    ],
+    "title": "CustomToolCallResponseItem",
+    "type": "object"
+  },
+  "serverNotificationMethods": [
+    "error",
+    "thread/started",
+    "thread/status/changed",
+    "thread/archived",
+    "thread/deleted",
+    "thread/unarchived",
+    "thread/closed",
+    "thread/reverted",
+    "skills/changed",
+    "thread/name/updated",
+    "thread/attachment/updated",
+    "thread/goal/updated",
+    "thread/goal/cleared",
+    "thread/queue/changed",
+    "project/changed",
+    "thread/project/updated",
+    "thread/environment/connected",
+    "thread/environment/disconnected",
+    "thread/settings/updated",
+    "thread/tokenUsage/updated",
+    "turn/started",
+    "hook/started",
+    "turn/completed",
+    "hook/completed",
+    "turn/diff/updated",
+    "turn/plan/updated",
+    "item/started",
+    "item/autoApprovalReview/started",
+    "item/autoApprovalReview/completed",
+    "autoApprovalReview/strictReviewRequired",
+    "item/completed",
+    "item/agentMessage/delta",
+    "item/plan/delta",
+    "command/exec/outputDelta",
+    "process/outputDelta",
+    "process/exited",
+    "item/commandExecution/outputDelta",
+    "item/commandExecution/terminalInteraction",
+    "item/fileChange/outputDelta",
+    "item/fileChange/patchUpdated",
+    "serverRequest/resolved",
+    "item/mcpToolCall/progress",
+    "mcpServer/oauthLogin/completed",
+    "mcpServer/startupStatus/updated",
+    "mcpServer/event/stream/notification",
+    "account/updated",
+    "account/gatewayOAuth/changed",
+    "account/rateLimits/updated",
+    "app/list/updated",
+    "remoteControl/status/changed",
+    "externalAgentConfig/import/progress",
+    "externalAgentConfig/import/completed",
+    "fs/changed",
+    "item/reasoning/summaryTextDelta",
+    "item/reasoning/summaryPartAdded",
+    "item/reasoning/textDelta",
+    "thread/compacted",
+    "model/rerouted",
+    "model/verification",
+    "modelProvider/authRecoveryStarted",
+    "modelProvider/authRecoveryCompleted",
+    "turn/moderationMetadata",
+    "model/safetyBuffering/updated",
+    "warning",
+    "guardianWarning",
+    "deprecationNotice",
+    "configWarning",
+    "fuzzyFileSearch/sessionUpdated",
+    "fuzzyFileSearch/sessionCompleted",
+    "thread/realtime/started",
+    "thread/realtime/itemAdded",
+    "thread/realtime/item/started",
+    "thread/realtime/item/transcript/delta",
+    "thread/realtime/item/completed",
+    "thread/realtime/transcript/delta",
+    "thread/realtime/transcript/done",
+    "thread/realtime/outputAudio/delta",
+    "thread/realtime/sdp",
+    "thread/realtime/error",
+    "thread/realtime/closed",
+    "windows/worldWritableWarning",
+    "windowsSandbox/setupCompleted",
+    "account/login/completed"
+  ]
+}
