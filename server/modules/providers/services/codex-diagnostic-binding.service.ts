@@ -57,13 +57,16 @@ export function createCodexDiagnosticBindings(deps: Dependencies) {
     if (!entry || entry.handle !== handle) throw new Error('diagnostic-handle-mismatch');
     return entry;
   }
-  async function cleanup(handle: Handle, owned = false) {
+  async function cleanup(handle: Handle, owned = false, authorize?: () => boolean) {
     const entry = entryFor(handle);
     if (entry.routed && !owned) return false;
     // The standby cannot start/resume turns. Still do not stop on a failed
     // observation or unexpected active native work; retain an expired entry.
     const result = await createCodexRestartAdmissionObserver({ capture: () => [{ variant: 'diagnostic-standby', client: entry.peer }], now: deps.now }).observe();
     if (!result.nativeThreadsIdle || entries.get(handle.appSessionId) !== entry) return false;
+    // The owned route must still hold its host lease/identity/lifecycle latch
+    // after the async idle observation, immediately before targeted removal.
+    if (owned && !authorize?.()) return false;
     if (entry.timer) clearTimeout(entry.timer);
     entries.delete(handle.appSessionId); entry.peer.stop(); return true;
   }
@@ -181,7 +184,7 @@ export function createCodexDiagnosticBindings(deps: Dependencies) {
       if (!matches(handle, scope) || !live(entry) || entry.routed) throw new Error('diagnostic-binding-claimed-or-expired');
       entry.routed = true;
       const execution = entry.peer.execution(scope.nativeThreadId);
-      return Object.freeze({ peer: entry.peer, execution, cleanup: () => cleanup(handle, true) });
+      return Object.freeze({ peer: entry.peer, execution, cleanup: (authorize: () => boolean) => cleanup(handle, true, authorize) });
     },
     // Only internal readiness checks may inventory dedicated peers. No IDs,
     // paths, environments or prompts are turned into an HTTP response here.

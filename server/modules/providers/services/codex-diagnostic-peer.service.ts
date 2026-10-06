@@ -1,6 +1,7 @@
-import { codexApprovals } from '../../codex-approvals/index.js';
 import { spawn } from 'node:child_process';
 import readline from 'node:readline';
+
+import { codexApprovals } from '../../codex-approvals/index.js';
 
 // No production route constructs this peer. Its ordinary interface remains
 // inspection-only; only the dormant verified-transfer factory claims execution.
@@ -72,10 +73,19 @@ export class CodexDiagnosticPeer {
     this.ownedThread = threadId;
     return Object.freeze({
       request: async (method: string, params: Record<string, unknown>, timeoutMs = 1500) => {
+        params = { ...params };
         const allowed = ['thread/resume', 'thread/unsubscribe', 'thread/turns/list', 'turn/start', 'turn/steer', 'turn/interrupt'];
         if (!allowed.includes(method) || params.threadId !== threadId || this.ownedThread !== threadId) throw new Error('diagnostic-execution-scope');
         if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > 30000) throw new Error('diagnostic-peer-timeout-bound');
         await this.ready; return this.send(method, params, timeoutMs);
+      },
+      // Internal verified residency transfer only. The routing factory supplies
+      // the immutable, actually observed descendant inventory; normal turn/history
+      // handles never receive this capability.
+      unsubscribeOwned: async (nativeId: string, owned: readonly string[]) => {
+        if (this.ownedThread !== threadId || !owned.includes(threadId) || !owned.includes(nativeId)
+          || owned.some(id => !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(id))) throw new Error('diagnostic-execution-scope');
+        await this.ready; return this.send('thread/unsubscribe', { threadId: nativeId }, 1500);
       },
       revoke: () => { if (this.ownedThread === threadId) this.ownedThread = null; },
     });
