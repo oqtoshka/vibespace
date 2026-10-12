@@ -34,6 +34,13 @@ test('session workspace bounds, assets, ignored files, missing files and real co
     const asset = await service.request('ours', { op: 'asset', entry: 'build/index.html', path: '/main.css' });
     assert.equal(Buffer.from(String(asset.base64), 'base64').toString(), 'body{color:red}');
     await assert.rejects(service.request('ours', { op: 'asset', entry: 'build/index.html', path: '/../../outside.txt' }));
+    // mime-db calls .mp4 application/mp4; players and Mission Control need video/mp4.
+    await writeFile(path.join(workspace, 'clip.mp4'), 'not really a movie');
+    assert.equal((await service.request('ours', { op: 'read', path: 'clip.mp4' })).mime, 'video/mp4');
+    const raw = await service.rawFile('ours', 'clip.mp4');
+    assert.equal(raw.mime, 'video/mp4'); assert.equal(raw.size, 18);
+    await assert.rejects(service.rawFile('ours', '../outside.txt'), /outside/);
+    await assert.rejects(service.rawFile('ours', 'build'), /regular file/);
     const before = await service.request('ours', { op: 'stat', paths: ['build/index.html'] });
     await writeFile(path.join(workspace, 'build', 'index.html'), '<html>changed fixture</html>');
     const after = await service.request('ours', { op: 'stat', paths: ['build/index.html'] });

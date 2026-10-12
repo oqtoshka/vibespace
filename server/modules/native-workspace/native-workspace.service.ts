@@ -16,6 +16,13 @@ const run = promisify(execFile);
 const LIMIT = 32 * 1024 * 1024;
 const MAX_ENTRIES = 2000;
 type SessionRoot = (id: string) => string | null;
+
+/** mime-db 1.54 names .mp4 `application/mp4`; players and Mission Control's renderers expect
+ * `video/mp4` for a playable file, so the workspace reports the media type they recognise. */
+function fileType(file: string) {
+  const type = mime.lookup(file) || 'application/octet-stream';
+  return type === 'application/mp4' ? 'video/mp4' : type;
+}
 type AdditionalRoots = () => string[];
 
 function nativePreviewRoots() {
@@ -63,7 +70,7 @@ export class NativeWorkspaceService {
     if (stat.size > LIMIT) throw new Error('File exceeds the 32 MiB preview limit');
     const bytes = await fs.readFile(file);
     if (bytes.length > LIMIT) throw new Error('File exceeds the 32 MiB preview limit');
-    return { name: path.basename(file), path: path.relative(root, file), mime: mime.lookup(file) || 'application/octet-stream',
+    return { name: path.basename(file), path: path.relative(root, file), mime: fileType(file),
       size: bytes.length, stamp: `${stat.mtimeMs}:${stat.size}`, version: createHash('sha256').update(bytes).digest('hex'), base64: bytes.toString('base64') };
   }
 
@@ -82,6 +89,16 @@ export class NativeWorkspaceService {
       lines.push(nested.split('\n').filter(l => !/^\s*@(start|end)uml\b/i.test(l)).join('\n'));
     }
     return lines.join('\n');
+  }
+
+  /** The raw route's file: same session root and path containment as `read`, but no size
+   * cap and no bytes loaded. The route streams it with Range support for media players. */
+  async rawFile(id: string, value: unknown) {
+    const root = await this.root(id);
+    const file = await this.target(root, value);
+    const stat = await fs.stat(file);
+    if (!stat.isFile()) throw new Error('Not a regular file');
+    return { file, name: path.basename(file), mime: fileType(file), size: stat.size };
   }
 
   async request(id: string, input: unknown): Promise<Record<string, unknown>> {
