@@ -1,4 +1,4 @@
-import { assertOpenCodeServerModel, opencodeQuestions } from '../modules/providers/index.js';
+import { BriefingOutputPolicy, assertOpenCodeServerModel, opencodeQuestions } from '../modules/providers/index.js';
 import { appendFilesInputTag, buildOpenCodePromptAttachments } from '../shared/image-attachments.js';
 import { classifyOpenCodeFailure } from '../shared/opencode-failure.js';
 import { createCompleteMessage, createNormalizedMessage, generateMessageId } from '../shared/utils.js';
@@ -566,6 +566,8 @@ export async function runOpenCodeHttpTurn(command, options, ws, hooks = {}) {
     }
   }
 
+  const briefingPolicy = new BriefingOutputPolicy('opencode', options, options.briefingPolicyState);
+  briefingPolicy.begin(activeSessionId, command);
   ws.setSessionId?.(activeSessionId);
   // A new turn owns the session: any wake still pending for it is moot.
   if (!options.ephemeral) cancelRateLimitWake(activeSessionId).catch(() => {});
@@ -648,6 +650,7 @@ export async function runOpenCodeHttpTurn(command, options, ws, hooks = {}) {
       // will fold it into the running loop at the next agent step.
       turnLooksDone = false;
       const prompt = await buildPrompt(injectedCommand, injectedOptions, workingDir);
+      briefingPolicy.begin(activeSessionId, injectedCommand);
       const serverMessageId = generateMessageId('msg');
       const admitted = await requestJson(server, `/api/session/${activeSessionId}/prompt`, {
         method: 'POST',
@@ -799,7 +802,7 @@ export async function runOpenCodeHttpTurn(command, options, ws, hooks = {}) {
     const translated = translateEvent(type, properties, toolCalls);
     if (translated) {
       for (const message of sessionsService.normalizeMessage('opencode', translated, activeSessionId)) {
-        ws.send(message);
+        if (briefingPolicy.accepts(message)) ws.send(message);
       }
     }
 
@@ -807,7 +810,7 @@ export async function runOpenCodeHttpTurn(command, options, ws, hooks = {}) {
       transcript.assistantMessageId = properties.assistantMessageID;
     }
     if (type === 'session.next.text.delta' && typeof properties.delta === 'string') {
-      transcript.text += properties.delta;
+      if (!briefingPolicy.active) transcript.text += properties.delta;
     }
     if (type === 'session.next.tool.success' || type === 'session.next.tool.failed') {
       transcript.tools.push({
@@ -964,12 +967,25 @@ export async function runOpenCodeHttpTurn(command, options, ws, hooks = {}) {
     }
   }
 
+  const policyCheckpoint = outcome.ok && !handle.aborted ? briefingPolicy.complete() : {};
+  if (policyCheckpoint.failure) {
+    ws.send(briefingPolicy.failureMessage(policyCheckpoint.failure));
+    ws.send(createCompleteMessage({ provider: 'opencode', sessionId: activeSessionId, exitCode: 1 }));
+    return;
+  }
+
   // A failed turn continues too, as Codex does: an error mid-task (a dropped
   // transport, a busy model) is exactly where open work gets stranded. A run
   // the user stopped does not; the planner's stall limit bounds the rest.
   // A wake-worthy failure whose wake was refused (budget spent) is not retried
   // here either: an immediate continuation would only hit the same wall.
-  if (!outcome.wake && !handle.aborted && !options.ephemeral && await onContinue?.({ sessionId: activeSessionId, cwd: workingDir })) {
+  if (!outcome.wake && !handle.aborted && !options.ephemeral && await onContinue?.({ sessionId: activeSessionId, cwd: workingDir, policyCheckpoint })) {
+    return;
+  }
+
+  if (policyCheckpoint.prompt && !handle.aborted) {
+    ws.send(briefingPolicy.failureMessage('AGENT_TEXT_POLICY_VIOLATION: no transport continuation accepted the required reporting repair.'));
+    ws.send(createCompleteMessage({ provider: 'opencode', sessionId: activeSessionId, exitCode: 1 }));
     return;
   }
 

@@ -38,7 +38,7 @@ import { createCompleteMessage, createNormalizedMessage, resolveConfiguredContex
 import { rememberContextUsage } from './shared/context-usage-cache.js';
 import { readOpenClaudeTasks } from './shared/claude-task-ledger.js';
 import { readExternalTaskLedger } from './shared/task-ledger-sources.js';
-import { scheduleSessionRecap, broadcastSessionUpdate  } from './modules/providers/index.js';
+import { scheduleSessionRecap, broadcastSessionUpdate, BriefingOutputPolicy } from './modules/providers/index.js';
 import { recordSessionActivity, recordSessionEnd, recordPendingInteraction } from './services/session-restore.service.js';
 import { sessionTransferService } from './modules/session-transfer/index.js';
 import { scheduleRateLimitWake, cancelRateLimitWake, isRateLimitWakePending } from './services/rate-limit-wake.service.js';
@@ -1702,6 +1702,7 @@ async function injectClaudeMessage(sessionId, command, options = {}) {
   // pick made while that turn was in flight.
   await applyPendingModelSwitch(session);
   session.lastUserTurnAt = Date.now();
+  session.briefingPolicy.begin(session.sessionId, command);
   const pushed = session.input.push({ ...makeUserMessage(content), uuid });
   if (!pushed) {
     return null;
@@ -1855,7 +1856,7 @@ function handleCommandLifecycle(session, message) {
  * @param {Object} session
  * @param {{aborted?: boolean}} opts
  */
-function settleTurn(session, { aborted = false } = {}) {
+function settleTurn(session, { aborted = false, policyFailure = null } = {}) {
   if (!session.awaitingResult) return;
   session.awaitingResult = false;
   session.turnActive = false;
@@ -1873,13 +1874,19 @@ function settleTurn(session, { aborted = false } = {}) {
     session.firstTurnCompleted = true;
     session.writer.send(createNormalizedMessage({
       kind: 'complete',
-      exitCode: 0,
+      exitCode: policyFailure ? 1 : 0,
       isNewSession,
       sessionId: session.sessionId,
       provider: 'claude',
     }));
   } else {
     session.firstTurnCompleted = true;
+  }
+
+  if (policyFailure) {
+    completeTurn(session);
+    endSession(session, 'reporting-policy-failed');
+    return;
   }
 
   if (session.pendingTasks.size > 0) {
@@ -1928,6 +1935,20 @@ function settleTurn(session, { aborted = false } = {}) {
 
 /** Called when a `result` message marks the end of an assistant turn. */
 function onTurnEnd(session) {
+  if (!session.rateLimitHit) {
+    const checkpoint = session.briefingPolicy?.complete();
+    if (checkpoint?.prompt) {
+      session.briefingPolicy.begin(session.sessionId, checkpoint.prompt);
+      session.lastAssistantText = '';
+      session.input.push(makeUserMessage(checkpoint.prompt));
+      return;
+    }
+    if (checkpoint?.failure) {
+      session.writer.send(session.briefingPolicy.failureMessage(checkpoint.failure));
+      settleTurn(session, { policyFailure: checkpoint.failure });
+      return;
+    }
+  }
   settleTurn(session, { aborted: false });
   queueRecapForSession(session);
 }
@@ -2131,6 +2152,7 @@ async function runSessionLoop(session) {
       // Capture the session id from the first message of a brand-new session.
       if (message.session_id && !session.sessionId) {
         registerSession(message.session_id, session);
+        session.briefingPolicy.begin(message.session_id, session.command);
         if (session.writer.setSessionId && typeof session.writer.setSessionId === 'function') {
           session.writer.setSessionId(message.session_id);
         }
@@ -2160,7 +2182,7 @@ async function runSessionLoop(session) {
           session.rateLimitHit = null;
         }
         session.awaitingResult = true;
-        captureAssistantSummary(session, message);
+        if (!session.briefingPolicy.active) captureAssistantSummary(session, message);
 
         // Narrate the turn in the activity indicator. Without this the UI only
         // ever cycles generic words ("Thinking", "Working"), so a long tool run
@@ -2246,7 +2268,7 @@ async function runSessionLoop(session) {
         // reads the subagent transcript directly. Keep the parent Task card
         // (no parentToolUseId) so the subagent is still represented inline.
         if (msg.parentToolUseId) continue;
-        session.writer.send(msg);
+        if (session.briefingPolicy.accepts(msg)) session.writer.send(msg);
       }
 
       const tokenBudgetData = extractTokenBudget(message);
@@ -2518,6 +2540,8 @@ async function reuseSession(session, command, options, ws) {
   if (options.sessionSummary) session.sessionSummary = options.sessionSummary;
 
   const turnPromise = beginTurn(session);
+  session.briefingPolicy = new BriefingOutputPolicy('claude', options);
+  session.briefingPolicy.begin(session.sessionId, command);
   const pushed = session.input.push(makeUserMessage(turnContent));
   if (!pushed) {
     // Stream closed out from under us (raced teardown) — fall back to a fresh
@@ -2614,6 +2638,7 @@ async function startPersistentSession(command, options, ws) {
     sdkOptions,
     options,
     command,
+    briefingPolicy: new BriefingOutputPolicy('claude', options),
     sessionSummary,
     userId: ws?.userId || null,
     startedNew: !sessionId,
@@ -2729,6 +2754,7 @@ async function startPersistentSession(command, options, ws) {
   // running in the background for later turns and background-job resumes.
   console.log('Starting persistent streaming session for:', sessionId || 'NEW');
   const turnPromise = beginTurn(session);
+  session.briefingPolicy.begin(sessionId, command);
   input.push(makeUserMessage(firstTurnContent));
   void runSessionLoop(session);
   return turnPromise;

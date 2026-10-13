@@ -39,3 +39,6 @@ export { codexRestartAdmissionObserver } from './services/codex-restart-admissio
 // Legacy Codex execution selects an explicitly mounted, already-transferred
 // diagnostic scope; no bootstrap installs one by default.
 export { codexDiagnosticRuntime } from './services/codex-diagnostic-runtime.service.js';
+
+// Main briefing transport output and completion admission.
+export { BriefingOutputPolicy } from './services/briefing-output-policy.service.js';

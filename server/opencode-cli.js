@@ -14,8 +14,7 @@ import { sessionsService } from './modules/providers/services/sessions.service.j
 import { providerModelsService } from './modules/providers/services/provider-models.service.js';
 import { notifyRunFailed, notifyRunStopped } from './modules/notifications/index.js';
 import { planTaskContinuation } from './modules/task-continuation/index.js';
-import { scheduleSessionRecap } from './modules/providers/index.js';
-import { broadcastSessionUpdate } from './modules/providers/index.js';
+import { BriefingOutputPolicy, scheduleSessionRecap, broadcastSessionUpdate } from './modules/providers/index.js';
 import { createCompleteMessage, createNormalizedMessage, flattenPromptForWindowsShell, terminateChild, getOpenCodeHelperWorkspace, isDatabaseLockedError, stripAnsi } from './shared/utils.js';
 
 // Every `opencode` process on this machine writes to one WAL database, so a
@@ -268,6 +267,10 @@ async function spawnOpenCode(command, options = {}, ws, context = undefined) {
   // resuming it there would silently restore the stale pre-compaction context;
   // preserving the compacted memory takes priority and keeps the session on
   // the legacy CLI transport that produced the summary.
+  const briefingPolicy = new BriefingOutputPolicy('opencode', options, options.briefingPolicyState);
+  options = { ...options, briefingPolicyState: briefingPolicy.state };
+  briefingPolicy.begin(options.sessionId, command);
+
   const hasCompactedContext = options.sessionId && (
     compactedOpenCodeSessions.has(options.sessionId)
     || hasOpenCodeCompactSummary(options.sessionId)
@@ -279,12 +282,12 @@ async function spawnOpenCode(command, options = {}, ws, context = undefined) {
     return runOpenCodeHttpTurn(command, options, ws, {
       registerHandle,
       releaseHandle,
-      onContinue: async ({ sessionId: continuedSessionId }) => {
+      onContinue: async ({ sessionId: continuedSessionId, policyCheckpoint }) => {
         if (options.ephemeral) {
           return false;
         }
 
-        const continuation = planTaskContinuation({
+        const continuation = policyCheckpoint?.prompt || planTaskContinuation({
           provider: 'opencode',
           sessionId: continuedSessionId,
           userId: ws?.userId || null,
@@ -410,6 +413,7 @@ async function spawnOpenCode(command, options = {}, ws, context = undefined) {
       }
 
       capturedSessionId = nextSessionId;
+      briefingPolicy.begin(nextSessionId, command);
       if (processKey !== capturedSessionId && opencodeProcess) {
         activeOpenCodeProcesses.delete(processKey);
         registerHandle(capturedSessionId, opencodeProcess);
@@ -442,12 +446,11 @@ async function spawnOpenCode(command, options = {}, ws, context = undefined) {
       try {
         response = JSON.parse(line);
       } catch {
-        ws.send(createNormalizedMessage({
-          kind: 'stream_delta',
-          content: line,
-          sessionId: capturedSessionId || sessionId || null,
-          provider: 'opencode',
-        }));
+        const message = createNormalizedMessage({
+          kind: 'stream_delta', content: line,
+          sessionId: capturedSessionId || sessionId || null, provider: 'opencode',
+        });
+        if (briefingPolicy.accepts(message)) ws.send(message);
         return;
       }
 
@@ -455,7 +458,7 @@ async function spawnOpenCode(command, options = {}, ws, context = undefined) {
         registerSession(readOpenCodeSessionId(response));
         const normalized = runtime.normalizeMessage(response, capturedSessionId || sessionId || null);
         for (const msg of normalized) {
-          ws.send(msg);
+          if (briefingPolicy.accepts(msg)) ws.send(msg);
         }
       } catch (error) {
         const errorContent = error instanceof Error ? error.message : String(error);
@@ -617,8 +620,15 @@ async function spawnOpenCode(command, options = {}, ws, context = undefined) {
           // messages (and queues the recap) when the chain actually ends.
           // Bounds and bail-outs live in planTaskContinuation.
           // Failed runs included, as on the server transport.
+          const checkpoint = code === 0 && !opencodeProcess.aborted ? briefingPolicy.complete() : {};
+          if (checkpoint.failure) {
+            ws.send(briefingPolicy.failureMessage(checkpoint.failure));
+            ws.send(createCompleteMessage({ provider: 'opencode', sessionId: finalSessionId, exitCode: 1 }));
+            resolve();
+            return;
+          }
           if (!completeSent && !opencodeProcess.aborted && !options.ephemeral) {
-            const continuation = planTaskContinuation({
+            const continuation = checkpoint.prompt || planTaskContinuation({
               provider: 'opencode',
               sessionId: finalSessionId,
               userId: ws?.userId || null,

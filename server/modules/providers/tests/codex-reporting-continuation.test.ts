@@ -19,11 +19,13 @@ test('actual Codex entry captures prompt before tools and terminal seam performs
   const events: Array<Record<string, unknown>> = [], boundaries: string[] = [];
   const human = 'Mission Control thread 11111111-1111-4111-8111-111111111111\nFull exact prompt';
   const second = 'Mission Control thread 22222222-2222-4222-8222-222222222222\nSteered follow-up';
+  const seenBeginIds = new Set<string>();
   let steer: Promise<unknown> | undefined;
   let checkpoint: { turnId: string; prompt: string } | undefined;
   const unregister = registerTaskLedgerSource((context) => {
     if (context.sessionId !== 'reporting-thread') return null;
-    if (context.phase === 'begin') {
+    if (context.phase === 'begin' && !seenBeginIds.has(context.turnId!)) {
+      seenBeginIds.add(context.turnId!);
       boundaries.push(context.prompt!);
       if (!context.prompt?.startsWith('[session supervisor]')) checkpoint = { turnId: context.turnId!, prompt: context.prompt === second ? 'Reply to second thread 22222222-2222-4222-8222-222222222222' : 'Reply to exact reporting thread' };
     }
@@ -75,6 +77,8 @@ else if(m.method==='turn/steer') {
     assert.equal(turns[0].params.input[0].text, human);
     assert.match(turns[1].params.input[0].text, /Reply to second thread 22222222-2222-4222-8222-222222222222/);
     assert.equal(events.filter(event => event.kind === 'complete').length, 1, 'completion is withheld until repair ends');
+    assert.ok(events.some(event => event.kind === 'error' && /AGENT_TEXT_POLICY_VIOLATION/.test(String(event.content))), 'missing checkpoint after repair is explicit failure');
+    assert.deepEqual(events.filter(event => event.kind === 'complete').map(event => event.success), [false]);
     assert.ok(events.some(event => event.content === 'Fixture chat 1'), 'post-stream repair does not claim chat suppression');
   } finally {
     unregister(); stopCodexAppServer(); __clearTaskContinuationState();
