@@ -1,4 +1,3 @@
-import { codexApprovals } from './modules/codex-approvals/index.js';
 /**
  * OpenAI Codex App Server Integration
  * ====================================
@@ -19,6 +18,7 @@ import { codexApprovals } from './modules/codex-approvals/index.js';
  * - getActiveCodexSessions() - List all active sessions
  */
 
+import { codexApprovals } from './modules/codex-approvals/index.js';
 import { appendFilesInputTag, buildCodexInputItems, normalizeImageDescriptors } from './shared/image-attachments.js';
 import { createProviderRuntimeContext, normalizeRuntimeOptions } from './shared/provider-runtime-context.js';
 import { getCodexAppServer } from './services/codex-app-server.service.js';
@@ -708,6 +708,35 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
   let unsubscribe = null;
   let releaseApprovals = null;
   let activeSession = null;
+  // Internal continuation state: human entry starts a new budget; recursive
+  // plan/report repairs retain it. Never infer policy from the prompt text.
+  const textPolicyState = options.agentTextPolicyState || { repairUsed: false, admitted: false };
+  let rejectAgentText = !ephemeral && !backgroundHelper && !sideSession && textPolicyState.admitted === true;
+  let textPolicyViolation = false;
+  const rejectedTextItems = new Set();
+  const rejectTextAttempt = (itemId, eventType) => {
+    textPolicyViolation = true;
+    const key = itemId || '(unidentified)';
+    if (rejectedTextItems.has(key)) return;
+    rejectedTextItems.add(key);
+    sendMessage(ws, createNormalizedMessage({ kind: 'status', text: 'agent_text_policy_violation',
+      content: 'Agent text rejected by the session reporting policy.',
+      sessionId: capturedSessionId, provider: 'codex',
+      policyViolation: { code: 'AGENT_TEXT_POLICY_VIOLATION', eventType, itemId: itemId || null },
+    }));
+  };
+
+  const resumeWithPrompt = async (prompt, statusText) => {
+    unsubscribe?.();
+    releaseApprovals?.(); releaseApprovals = null;
+    unsubscribe = null;
+    activeSession.status = 'completed';
+    sendMessage(ws, createNormalizedMessage({ kind: 'status', text: statusText,
+      sessionId: capturedSessionId, provider: 'codex' }));
+    await queryCodex(prompt, { ...options, sessionId: capturedSessionId,
+      images: undefined, files: undefined, rewind: undefined,
+      agentTextPolicyState: textPolicyState }, ws);
+  };
 
   const continueOpenPlan = async (terminalReason, allowReportingRepair = false) => {
     if (!capturedSessionId || !activeSession || ephemeral) {
@@ -731,23 +760,7 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
     // This turn is over, so stop its listener before the resumed turn
     // installs its own. Withhold the terminal `complete` and recap until
     // the plan closes or the continuation service reaches its bound.
-    unsubscribe?.();
-    releaseApprovals?.(); releaseApprovals = null;
-    unsubscribe = null;
-    activeSession.status = 'completed';
-    sendMessage(ws, createNormalizedMessage({
-      kind: 'status',
-      text: 'Resuming — open tasks remain',
-      sessionId: capturedSessionId,
-      provider: 'codex',
-    }));
-    await queryCodex(continuation, {
-      ...options,
-      sessionId: capturedSessionId,
-      images: undefined,
-      files: undefined,
-      rewind: undefined,
-    }, ws);
+    await resumeWithPrompt(continuation, 'Resuming — open tasks remain');
     return true;
   };
 
@@ -890,7 +903,11 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
         this.pendingSteers.delete(messageId);
         // Capture only accepted human steers, once: started/completed events and
         // the older-runtime fallback all consume the same pending entry.
-        if (!ephemeral && !backgroundHelper) beginTaskContinuationTurn({ provider: 'codex', sessionId: capturedSessionId, prompt: pending.command });
+        if (!ephemeral && !backgroundHelper && !sideSession) {
+          const policy = beginTaskContinuationTurn({ provider: 'codex', sessionId: capturedSessionId, prompt: pending.command, sessionRole: 'main' });
+          rejectAgentText ||= policy === 'reject';
+          if (rejectAgentText) textPolicyState.admitted = true;
+        }
         sendMessage(this.writer, createNormalizedMessage({
           id: messageId,
           kind: 'text',
@@ -953,7 +970,16 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
         return;
       }
 
+      if (method === 'item/agentMessage/delta' && rejectAgentText && typeof params.delta === 'string' && params.delta.trim()) {
+        rejectTextAttempt(params.itemId, method);
+        return;
+      }
+
       if (method === 'item/completed') {
+        if (rejectAgentText && params.item?.type === 'agentMessage' && typeof params.item.text === 'string' && params.item.text.trim()) {
+          rejectTextAttempt(params.item.id, method);
+          return;
+        }
         captureCodexTurnSummary(activeSession, params.item);
         if (!ephemeral && params.item?.type === 'agentMessage' && params.item.text?.trim()) {
           queueCodexRecap({
@@ -984,7 +1010,11 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
       }
     });
 
-    if (!ephemeral && !backgroundHelper) beginTaskContinuationTurn({ provider: 'codex', sessionId: capturedSessionId, prompt: reportingPrompt });
+    if (!ephemeral && !backgroundHelper) {
+      const policy = beginTaskContinuationTurn({ provider: 'codex', sessionId: capturedSessionId, prompt: reportingPrompt, sessionRole: sideSession ? 'side' : 'main' });
+      rejectAgentText ||= !sideSession && policy === 'reject';
+      if (rejectAgentText) textPolicyState.admitted = true;
+    }
     const turnResponse = await appServer.request('turn/start', {
       threadId: capturedSessionId,
       input: toAppServerInput(appendFilesInputTag(command, files), images, workingDirectory),
@@ -1067,7 +1097,16 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
     const policyBlocked = ['misalignmentPolicyViolation', 'misalignment_policy_violation'].includes(
       terminalFailure?.codexErrorInfo || terminalFailure?.codex_error_info,
     ) || /blocked by our safety systems/i.test(terminalFailure?.message || '');
+    if (!runAborted && !terminalFailure && terminalStatus === 'completed' && textPolicyViolation) {
+      if (!textPolicyState.repairUsed) {
+        textPolicyState.repairUsed = true;
+        await resumeWithPrompt('[session supervisor] Session behavior invariant violated: plain agent text is forbidden in this main briefing session, including commentary and final answers, even after a valid card reply. Use the existing card tools for every operator-facing answer; preserve the exact requested threads. Do not copy sensitive tool output into cards. Continue authorized work and update the existing plan using tools only. A further agent-text attempt will end this run with AGENT_TEXT_POLICY_VIOLATION.', 'Resuming — session reporting policy repair');
+        return;
+      }
+      terminalFailure = Object.assign(new Error('AGENT_TEXT_POLICY_VIOLATION: agent text was attempted again after the single session-policy repair. This run failed; report through the existing card tools.'), { code: 'AGENT_TEXT_POLICY_VIOLATION' });
+    }
     if (!runAborted && !usageLimitFailure && !providerRetryScheduled && !policyBlocked
+      && terminalFailure?.code !== 'AGENT_TEXT_POLICY_VIOLATION'
       && await continueOpenPlan(`terminal status ${terminalStatus}`, terminalStatus === 'completed' && !terminalFailure)) {
       return;
     }

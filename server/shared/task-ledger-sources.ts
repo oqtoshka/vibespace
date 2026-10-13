@@ -37,6 +37,8 @@ export type ExternalTaskLedger = {
   activity: number;
   /** Optional missing-report checkpoint, distinct from open tasks. The turn supervisor gives this stable turn ID one bounded repair. */
   completion?: { turnId: string; prompt: string };
+  /** Opt-in main-session behavior: reject agent prose, preserving tools and system events. */
+  agentTextPolicy?: 'reject';
 };
 
 export type TaskLedgerSourceContext = {
@@ -49,6 +51,8 @@ export type TaskLedgerSourceContext = {
   prompt?: string;
   /** Begin-only unique host turn identity, stable through the corresponding completion check. */
   turnId?: string;
+  /** Observed entrypoint role, never inferred from transcript or session naming. */
+  sessionRole?: 'main' | 'side' | 'helper';
 };
 
 export type TaskLedgerSource = (context: TaskLedgerSourceContext) => ExternalTaskLedger | null | undefined | void;
@@ -100,6 +104,7 @@ export function readExternalTaskLedger(context: TaskLedgerSourceContext): Extern
       guidance: answer.guidance,
       open,
       activity: Number.isFinite(answer.activity) ? answer.activity : 0,
+      ...(answer.agentTextPolicy === 'reject' ? { agentTextPolicy: 'reject' as const } : {}),
       ...(answer.completion && typeof answer.completion.turnId === 'string' && answer.completion.turnId.trim()
         && answer.completion.turnId.length <= 200 && typeof answer.completion.prompt === 'string'
         && answer.completion.prompt.trim() && answer.completion.prompt.length <= 4000
