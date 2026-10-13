@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { registerTaskLedgerSource } from '../../../shared/index.js';
+import { registerTaskLedgerSource, registerAgentLaunchContributor } from '../../../shared/index.js';
 const dbRoot = await mkdtemp(path.join(os.tmpdir(),'claude-briefing-db-'));
 process.env.DATABASE_PATH = path.join(dbRoot,'auth.db');
 // eslint-disable-next-line boundaries/no-unknown -- Actual persistent provider integration without any provider request.
@@ -13,11 +13,12 @@ const { initializeDatabase, closeConnection } = await import('../../database/ind
 test.before(()=>initializeDatabase());
 test.after(async()=>{closeConnection();await rm(dbRoot,{recursive:true,force:true});});
 
-for (const scenario of ['repair','repeat','missing','late','plain','helper','side']) test(`actual Claude stream: ${scenario}`, {timeout:15000},async()=>{
+for (const scenario of ['repair','repeat','missing','late','launch','plain','helper','side']) test(`actual Claude stream: ${scenario}`, {timeout:15000},async()=>{
   const cwd=await mkdtemp(path.join(os.tmpdir(),'claude-briefing-'));
   const sid='claude-policy-'+scenario;
   const sent: any[]=[];const prompts: any[]=[];let present=scenario!=='late';
-  const unregister=registerTaskLedgerSource(c=>c.sessionId===sid&&present&&scenario!=='plain'? {listName:'card',guidance:'',open:[],activity:0,agentTextPolicy:'reject',...(scenario==='missing'?{completion:{turnId:'human',prompt:'reply exact threads'}}:{})}:null);
+  const stopLaunch=registerAgentLaunchContributor(c=>scenario==='launch'&&c.sessionRole==='main'?{agentTextPolicy:'reject'}:null);
+ const unregister=registerTaskLedgerSource(c=>c.sessionId===sid&&present&&scenario!=='plain'&&scenario!=='launch'? {listName:'card',guidance:'',open:[],activity:0,agentTextPolicy:'reject',...(scenario==='missing'?{completion:{turnId:'human',prompt:'reply exact threads'}}:{})}:null);
   __setClaudeQueryImpl(({prompt}: any)=>{
     const reader=prompt[Symbol.asyncIterator]();
     const gen=(async function*(){
@@ -25,7 +26,7 @@ for (const scenario of ['repair','repeat','missing','late','plain','helper','sid
       present=true;
       yield {type:'assistant',session_id:sid,message:{role:'assistant',content:[{type:'text',text:'FORBIDDEN_INITIAL'},{type:'tool_use',id:'card',name:'mcp__mc__reply',input:{threadId:'exact'}}]}};
       yield {type:'result',subtype:'success',session_id:sid};
-      if(['repair','repeat','missing','late'].includes(scenario)){
+      if(['repair','repeat','missing','late','launch'].includes(scenario)){
         prompts.push((await reader.next()).value);
         yield {type:'assistant',session_id:sid,message:{role:'assistant',content:scenario==='repeat'?[{type:'text',text:'FORBIDDEN_AGAIN'}]:[{type:'tool_use',id:'second',name:'mcp__mc__reply',input:{threadId:'exact'}}]}};
         yield {type:'result',subtype:'success',session_id:sid};
@@ -38,8 +39,16 @@ for (const scenario of ['repair','repeat','missing','late','plain','helper','sid
     const output=sent.filter(m=>m.kind==='text'||m.kind==='stream_delta');
     assert.equal(output.some(m=>String(m.content).includes('FORBIDDEN')),['plain','helper','side'].includes(scenario));
     assert.ok(sent.some(m=>m.kind==='tool_use'));
-    assert.equal(prompts.length,['repair','repeat','missing','late'].includes(scenario)?2:1);
-    if(['repeat','missing'].includes(scenario)){assert.ok(sent.some(m=>m.kind==='error'&&String(m.content).includes('AGENT_TEXT_POLICY_VIOLATION')));assert.equal(sent.find(m=>m.kind==='complete').exitCode,1);}
+    assert.equal(prompts.length,['repair','repeat','missing','late','launch'].includes(scenario)?2:1);
+    if(['repeat','missing','launch'].includes(scenario)){assert.ok(sent.some(m=>m.kind==='error'&&String(m.content).includes('AGENT_TEXT_POLICY_VIOLATION')));assert.equal(sent.find(m=>m.kind==='complete').exitCode,1);}
     else assert.equal(sent.find(m=>m.kind==='complete').exitCode,0);
-  }finally{unregister();abortClaudeSDKSession(sid);__setClaudeQueryImpl(null);await rm(cwd,{recursive:true,force:true});}
+  }finally{stopLaunch();unregister();abortClaudeSDKSession(sid);__setClaudeQueryImpl(null);await rm(cwd,{recursive:true,force:true});}
+});
+
+test('actual persistent Claude: identical consecutive human queries require distinct host checkpoints', {timeout:15000},async()=>{
+ const cwd=await mkdtemp(path.join(os.tmpdir(),'claude-identical-'));const sid='claude-identical';const ids:string[]=[];let calls=0;
+ const stop=registerTaskLedgerSource(c=>{if(c.sessionId!==sid)return null;if(c.phase==='begin')ids.push(c.turnId!);return {listName:'card',guidance:'',open:[],activity:0,agentTextPolicy:'reject'};});
+ __setClaudeQueryImpl(({prompt}:any)=>{calls++;const reader=prompt[Symbol.asyncIterator]();const gen=(async function*(){for(let i=0;i<2;i++){await reader.next();yield {type:'assistant',session_id:sid,message:{role:'assistant',content:[{type:'tool_use',id:'card-'+i,name:'mcp__mc__reply',input:{threadId:'exact'}}]}};yield {type:'result',subtype:'success',session_id:sid};}})();(gen as any).interrupt=async()=>{};return gen;});
+ try {const ws={send(){},setSessionId(){},userId:null};await queryClaudeSDK('identical',{sessionId:sid,cwd},ws);const first=ids.at(-1);await queryClaudeSDK('identical',{sessionId:sid,cwd},ws);assert.equal(calls,1,'persistent SDK instance reused');assert.notEqual(ids.at(-1),first,'new human request gets new checkpoint despite identical text');}
+ finally {stop();abortClaudeSDKSession(sid);__setClaudeQueryImpl(null);await rm(cwd,{recursive:true,force:true});}
 });

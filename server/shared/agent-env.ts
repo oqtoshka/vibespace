@@ -107,6 +107,7 @@ export type AgentEnvContext = {
   scope: 'session' | 'server';
   private?: boolean;
   ephemeral?: boolean;
+  sessionRole?: 'main' | 'side' | 'helper';
   sessionId?: string | null;
   /**
    * The launch options the session was created with: option id → value, for
@@ -275,6 +276,8 @@ export function parseStoredLaunchOptions(cell: unknown): SessionLaunchOptions | 
  * never replace it.
  */
 export type AgentLaunchExtras = {
+  /** Launch-owned admission, effective before a provider-native session id exists. */
+  agentTextPolicy?: 'reject';
   instructions?: string;
   mcpServers?: Record<string, unknown>;
   /**
@@ -314,7 +317,9 @@ export function collectAgentLaunchExtras(context: AgentEnvContext): {
   mcpServers: Record<string, unknown>;
   allowedTools: string[];
   disallowedTools: string[];
+  agentTextPolicy?: 'reject';
 } {
+  let agentTextPolicy: 'reject' | undefined;
   const blocks: string[] = [];
   let mcpServers: Record<string, unknown> = {};
   const allowedTools = new Set<string>();
@@ -328,6 +333,7 @@ export function collectAgentLaunchExtras(context: AgentEnvContext): {
       continue;
     }
     if (!extra) continue;
+    if (extra.agentTextPolicy === 'reject') agentTextPolicy = 'reject';
     if (typeof extra.instructions === 'string' && extra.instructions.trim()) blocks.push(extra.instructions.trim());
     if (extra.mcpServers && typeof extra.mcpServers === 'object') mcpServers = { ...mcpServers, ...extra.mcpServers };
     if (Array.isArray(extra.allowedTools)) {
@@ -338,6 +344,7 @@ export function collectAgentLaunchExtras(context: AgentEnvContext): {
     }
   }
   return {
+    ...(agentTextPolicy ? { agentTextPolicy } : {}),
     instructions: blocks.join('\n\n'),
     mcpServers,
     allowedTools: [...allowedTools].filter((tool) => !disallowedTools.has(tool)),
