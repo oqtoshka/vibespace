@@ -144,9 +144,9 @@ export function planTaskContinuation({ provider, sessionId, cwd = null, userId =
 }
 
 /** Codex runtime calls before turn/start so external ledgers can capture the exact prompt without inspecting stale history. */
-export function beginTaskContinuationTurn({ provider, sessionId, prompt }: { provider: 'codex' | 'opencode' | 'cursor'; sessionId: string; prompt: string }): void {
+export function beginTaskContinuationTurn({ provider, sessionId, prompt, sessionRole }: { provider: 'codex' | 'opencode' | 'cursor'; sessionId: string; prompt: string; sessionRole?: 'main' | 'side' | 'helper' }): 'reject' | undefined {
   if (!sessionId) return;
-  readExternalTaskLedger({ provider, sessionId, phase: 'begin', prompt, turnId: randomUUID() });
+  return readExternalTaskLedger({ provider, sessionId, phase: 'begin', prompt, turnId: randomUUID(), sessionRole })?.agentTextPolicy;
 }
 
 /** Test seam consumed by provider and continuation regression tests. */
