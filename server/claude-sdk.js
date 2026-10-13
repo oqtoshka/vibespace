@@ -949,6 +949,9 @@ async function loadMcpConfig(cwd) {
  * SDKUserMessage starts (or is queued behind) an assistant turn; `close()` ends
  * the stream, after which the SDK finishes the current turn and the query ends.
  */
+let inputControllerTestWrapper = null;
+function __setClaudeInputControllerImpl(wrapper) { inputControllerTestWrapper = wrapper; }
+
 function createInputController() {
   const queue = [];
   let resolveNext = null;
@@ -1702,11 +1705,11 @@ async function injectClaudeMessage(sessionId, command, options = {}) {
   // pick made while that turn was in flight.
   await applyPendingModelSwitch(session);
   session.lastUserTurnAt = Date.now();
-  session.briefingPolicy.begin(session.sessionId, command, true);
   const pushed = session.input.push({ ...makeUserMessage(content), uuid });
   if (!pushed) {
     return null;
   }
+  session.briefingPolicy.begin(session.sessionId, command, true);
 
   session.injectedCommands.set(uuid, {
     content: command,
@@ -2594,7 +2597,8 @@ async function startPersistentSession(command, options, ws) {
 
   const firstTurnContent = await buildTurnContent(command, options.images, options.files, options.cwd);
 
-  const input = createInputController();
+  const baseInput = createInputController();
+  const input = inputControllerTestWrapper ? inputControllerTestWrapper(baseInput) : baseInput;
   const session = {
     sessionId: sessionId || null,
     // The gateway's stable id for this conversation (null for legacy callers
@@ -3193,6 +3197,7 @@ export {
   reconnectSessionWriter,
   TOOL_APPROVAL_TIMEOUT_MS,
   __setClaudeQueryImpl,
+  __setClaudeInputControllerImpl,
   __setRewindHistoryImpl,
   __setNativeWakeGraceMs
 };

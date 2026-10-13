@@ -8,7 +8,7 @@ import { registerTaskLedgerSource, registerAgentLaunchContributor } from '../../
 const dbRoot = await mkdtemp(path.join(os.tmpdir(),'claude-briefing-db-'));
 process.env.DATABASE_PATH = path.join(dbRoot,'auth.db');
 // eslint-disable-next-line boundaries/no-unknown -- Actual persistent provider integration without any provider request.
-const { queryClaudeSDK, abortClaudeSDKSession, __setClaudeQueryImpl } = await import('../../../claude-sdk.js');
+const { queryClaudeSDK, injectClaudeMessage, abortClaudeSDKSession, __setClaudeQueryImpl, __setClaudeInputControllerImpl } = await import('../../../claude-sdk.js');
 const { initializeDatabase, closeConnection } = await import('../../database/index.js');
 test.before(()=>initializeDatabase());
 test.after(async()=>{closeConnection();await rm(dbRoot,{recursive:true,force:true});});
@@ -51,4 +51,13 @@ test('actual persistent Claude: identical consecutive human queries require dist
  __setClaudeQueryImpl(({prompt}:any)=>{calls++;const reader=prompt[Symbol.asyncIterator]();const gen=(async function*(){for(let i=0;i<2;i++){await reader.next();yield {type:'assistant',session_id:sid,message:{role:'assistant',content:[{type:'tool_use',id:'card-'+i,name:'mcp__mc__reply',input:{threadId:'exact'}}]}};yield {type:'result',subtype:'success',session_id:sid};}})();(gen as any).interrupt=async()=>{};return gen;});
  try {const ws={send(){},setSessionId(){},userId:null};await queryClaudeSDK('identical',{sessionId:sid,cwd},ws);const first=ids.at(-1);await queryClaudeSDK('identical',{sessionId:sid,cwd},ws);assert.equal(calls,1,'persistent SDK instance reused');assert.notEqual(ids.at(-1),first,'new human request gets new checkpoint despite identical text');}
  finally {stop();abortClaudeSDKSession(sid);__setClaudeQueryImpl(null);await rm(cwd,{recursive:true,force:true});}
+});
+
+test('actual rejected Claude steer preserves current human checkpoint', {timeout:15000},async()=>{
+ const cwd=await mkdtemp(path.join(os.tmpdir(),'claude-rejected-steer-'));const sid='claude-rejected-steer';const ids:string[]=[];let controller:any;
+ __setClaudeInputControllerImpl((input:any)=>{controller=input;return input;});
+ const stop=registerTaskLedgerSource(c=>{if(c.sessionId!==sid)return null;if(c.phase==='begin')ids.push(c.turnId!);return {listName:'card',guidance:'',open:[],activity:0,agentTextPolicy:'reject'};});
+ __setClaudeQueryImpl(({prompt}:any)=>{const reader=prompt[Symbol.asyncIterator]();const gen=(async function*(){await reader.next();yield {type:'system',subtype:'init',session_id:sid,capabilities:['msg_lifecycle_v1']};yield {type:'result',subtype:'success',session_id:sid};await reader.next();})();(gen as any).interrupt=async()=>{};return gen;});
+ try {await queryClaudeSDK('human',{sessionId:sid,cwd},{send(){},setSessionId(){},userId:null});const before=[...ids];controller.push=()=>false;assert.equal(await injectClaudeMessage(sid,'human'),null);assert.deepEqual(ids,before,'refused push must not rotate checkpoint');}
+ finally{stop();abortClaudeSDKSession(sid);__setClaudeQueryImpl(null);__setClaudeInputControllerImpl(null);await rm(cwd,{recursive:true,force:true});}
 });
