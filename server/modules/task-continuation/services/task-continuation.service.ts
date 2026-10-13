@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import { readCodexPlanState, readCursorTaskState, readExternalTaskLedger, readOpenCodeTaskState, WAITING_ON_USER_MARKER } from '../../../shared/index.js';
 import { sessionTransferService } from '../../session-transfer/index.js';
 import { notifyRunFailed } from '../../notifications/index.js';
@@ -41,6 +43,9 @@ const LEDGERS: Record<string, Ledger> = {
 // Entries are dropped as soon as a session's ledger closes or a bail-out
 // fires, so the map only ever holds sessions mid-continuation.
 const states = new Map<string, ContinuationState>();
+// One report-repair checkpoint per stable human turn, even when every task is closed.
+// This is post-stream repair: it does not retract or suppress previously sent chat.
+const reportRepairs = new Map<string, string>();
 
 function buildOpenTasksNudge(open: LedgerItem[], { listName, closeHow, guidance }: Ledger & { guidance?: string }) {
   if (guidance) {
@@ -71,19 +76,26 @@ function buildOpenTasksNudge(open: LedgerItem[], { listName, closeHow, guidance 
  * (no open items), the mechanism is off, or nudging has stopped helping — the
  * give-up paths notify the user before returning null.
  */
-export function planTaskContinuation({ provider, sessionId, cwd = null, userId = null, sessionName = null }: { provider: string; sessionId: string; cwd?: string | null; userId?: string | number | null; sessionName?: string | null }) {
+export function planTaskContinuation({ provider, sessionId, cwd = null, userId = null, sessionName = null, allowReportingRepair = true }: { provider: string; sessionId: string; cwd?: string | null; userId?: string | number | null; sessionName?: string | null; allowReportingRepair?: boolean }) {
   if (sessionTransferService.successor(sessionId)) return null;
   const native = LEDGERS[provider];
   if (!TASK_NUDGE_ENABLED || !native || !sessionId) return null;
 
   // A plugin that keeps this session's task list elsewhere answers instead of
   // the runtime's own ledger (shared/task-ledger-sources.ts).
-  const external = readExternalTaskLedger({ provider: provider as 'codex' | 'opencode' | 'cursor', sessionId });
+  const external = readExternalTaskLedger({ provider: provider as 'codex' | 'opencode' | 'cursor', sessionId, phase: 'complete' });
   const ledger = external
     ? { ...native, listName: external.listName, guidance: external.guidance }
     : native;
   const { open, activity } = external ?? native.read(sessionId, { cwd });
   const key = `${provider}:${sessionId}`;
+  if (allowReportingRepair && external?.completion && reportRepairs.get(key) !== external.completion.turnId) {
+    // Bound retained identities independently of session lifetime. Never extend a
+    // checkpoint's budget because the model changed a task or streamed more text.
+    if (reportRepairs.size >= 10000 && !reportRepairs.has(key)) reportRepairs.delete(reportRepairs.keys().next().value!);
+    reportRepairs.set(key, external.completion.turnId);
+    return `[session supervisor] Missing card reporting checkpoint.\n${external.completion.prompt}`;
+  }
   if (open.length === 0) {
     states.delete(key);
     return null;
@@ -131,9 +143,16 @@ export function planTaskContinuation({ provider, sessionId, cwd = null, userId =
   return buildOpenTasksNudge(actionable, ledger);
 }
 
+/** Codex runtime calls before turn/start so external ledgers can capture the exact prompt without inspecting stale history. */
+export function beginTaskContinuationTurn({ provider, sessionId, prompt }: { provider: 'codex' | 'opencode' | 'cursor'; sessionId: string; prompt: string }): void {
+  if (!sessionId) return;
+  readExternalTaskLedger({ provider, sessionId, phase: 'begin', prompt, turnId: randomUUID() });
+}
+
 /** Test seam consumed by provider and continuation regression tests. */
 export function __clearTaskContinuationState() {
   states.clear();
+  reportRepairs.clear();
 }
 
 const defaultReaders = Object.fromEntries(Object.entries(LEDGERS).map(([name, ledger]) => [name, ledger.read]));

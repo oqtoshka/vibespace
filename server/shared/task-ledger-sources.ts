@@ -35,12 +35,20 @@ export type ExternalTaskLedger = {
   open: ExternalTaskLedgerItem[];
   /** A counter that moves whenever the list is written; stall detection compares it. */
   activity: number;
+  /** Optional missing-report checkpoint, distinct from open tasks. The turn supervisor gives this stable turn ID one bounded repair. */
+  completion?: { turnId: string; prompt: string };
 };
 
 export type TaskLedgerSourceContext = {
   provider: 'claude' | 'codex' | 'opencode' | 'cursor';
   /** The provider-native session id — the one the runtime writes its own ledger under. */
   sessionId: string;
+  /** Begin is invoked before tool execution with the exact arriving prompt. Omitted/complete is the existing completion read. */
+  phase?: 'begin' | 'complete';
+  /** Begin-only transient input: never persisted or logged by the public host. */
+  prompt?: string;
+  /** Begin-only unique host turn identity, stable through the corresponding completion check. */
+  turnId?: string;
 };
 
 export type TaskLedgerSource = (context: TaskLedgerSourceContext) => ExternalTaskLedger | null | undefined | void;
@@ -92,6 +100,10 @@ export function readExternalTaskLedger(context: TaskLedgerSourceContext): Extern
       guidance: answer.guidance,
       open,
       activity: Number.isFinite(answer.activity) ? answer.activity : 0,
+      ...(answer.completion && typeof answer.completion.turnId === 'string' && answer.completion.turnId.trim()
+        && answer.completion.turnId.length <= 200 && typeof answer.completion.prompt === 'string'
+        && answer.completion.prompt.trim() && answer.completion.prompt.length <= 4000
+        ? { completion: { turnId: answer.completion.turnId, prompt: answer.completion.prompt } } : {}),
     };
   }
   return null;
