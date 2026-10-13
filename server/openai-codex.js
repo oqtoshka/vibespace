@@ -26,7 +26,7 @@ import { collectAgentLaunchExtras } from './shared/agent-env.js';
 import { notifyRunFailed, notifyRunStopped } from './modules/notifications/index.js';
 import { cancelRateLimitWake, scheduleRateLimitWake } from './services/rate-limit-wake.service.js';
 import { recordSessionActivity, recordSessionEnd } from './services/session-restore.service.js';
-import { planTaskContinuation } from './modules/task-continuation/index.js';
+import { beginTaskContinuationTurn, planTaskContinuation } from './modules/task-continuation/index.js';
 import { broadcastSessionUpdate, generateInitialSessionTitle, scheduleSessionRecap, rewindCodexTurn, registerCodexRevertedHistoryReader, markCodexRevertedHistory, codexDiagnosticRuntime } from './modules/providers/index.js';
 import { buildCodexTokenBudget, CODEX_AUTO_COMPACT_LIMIT, readLatestCodexTokenBudget } from './shared/codex-token-usage.js';
 import { toCodexAppServerSandboxPolicy } from './shared/codex-sandbox-policy.js';
@@ -622,6 +622,9 @@ function queueCodexRecap({ sessionId, cwd, locale, ws }) {
  *   lookups; absent for direct (provider-id) callers
  */
 export async function queryCodex(command, options = {}, ws, context = undefined) {
+  // Launch instructions and side-question excerpts may prefix command below;
+  // completion checkpoints need the arriving user prompt, not that context.
+  const reportingPrompt = command;
   const runtime = createProviderRuntimeContext('codex', context ?? options.runtimeContext);
   options = normalizeRuntimeOptions(options, runtime, context);
   const {
@@ -706,7 +709,7 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
   let releaseApprovals = null;
   let activeSession = null;
 
-  const continueOpenPlan = async (terminalReason) => {
+  const continueOpenPlan = async (terminalReason, allowReportingRepair = false) => {
     if (!capturedSessionId || !activeSession || ephemeral) {
       return false;
     }
@@ -716,6 +719,7 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
       sessionId: capturedSessionId,
       userId: ws?.userId || null,
       sessionName: sessionSummary,
+      allowReportingRepair,
     });
     if (!continuation) {
       return false;
@@ -884,6 +888,9 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
           return;
         }
         this.pendingSteers.delete(messageId);
+        // Capture only accepted human steers, once: started/completed events and
+        // the older-runtime fallback all consume the same pending entry.
+        if (!ephemeral && !backgroundHelper) beginTaskContinuationTurn({ provider: 'codex', sessionId: capturedSessionId, prompt: pending.command });
         sendMessage(this.writer, createNormalizedMessage({
           id: messageId,
           kind: 'text',
@@ -977,6 +984,7 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
       }
     });
 
+    if (!ephemeral && !backgroundHelper) beginTaskContinuationTurn({ provider: 'codex', sessionId: capturedSessionId, prompt: reportingPrompt });
     const turnResponse = await appServer.request('turn/start', {
       threadId: capturedSessionId,
       input: toAppServerInput(appendFilesInputTag(command, files), images, workingDirectory),
@@ -1060,7 +1068,7 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
       terminalFailure?.codexErrorInfo || terminalFailure?.codex_error_info,
     ) || /blocked by our safety systems/i.test(terminalFailure?.message || '');
     if (!runAborted && !usageLimitFailure && !providerRetryScheduled && !policyBlocked
-      && await continueOpenPlan(`terminal status ${terminalStatus}`)) {
+      && await continueOpenPlan(`terminal status ${terminalStatus}`, terminalStatus === 'completed' && !terminalFailure)) {
       return;
     }
     if (terminalFailure && !usageLimitFailure && !runAborted) {
