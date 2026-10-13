@@ -12,8 +12,7 @@ const previousDatabasePath = process.env.DATABASE_PATH;
 const databaseRoot = await mkdtemp(path.join(os.tmpdir(), 'opencode-runtime-db-'));
 process.env.DATABASE_PATH = path.join(databaseRoot, 'auth.db');
 
-const { closeConnection } = await import('../../../database/connection.js');
-const { initializeDatabase } = await import('../../../database/init-db.js');
+const { closeConnection, initializeDatabase } = await import('../../../database/index.js');
 const { registerAgentEnvContributor } = await import('../../../../shared/agent-env.js');
 const {
   ensureOpenCodeServer,

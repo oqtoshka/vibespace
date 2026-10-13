@@ -12,20 +12,23 @@ import { queryCodex, injectCodexMessage } from '../../../openai-codex.js';
 // eslint-disable-next-line boundaries/no-unknown -- Close the owned executable fixture transport.
 import { stopCodexAppServer } from '../../../services/codex-app-server.service.js';
 
-type Scenario = { policy?: unknown; repeat?: boolean; providerFailure?: boolean; steer?: boolean; side?: boolean; empty?: boolean; child?: boolean; helper?: boolean; unreadable?: boolean; unreadableAfterAdmission?: boolean };
+type Scenario = { policy?: unknown; repeat?: boolean; providerFailure?: boolean; steer?: boolean; side?: boolean; empty?: boolean; child?: boolean; helper?: boolean; unreadable?: boolean; missing?: boolean; late?: boolean; unreadableAfterAdmission?: boolean };
 async function run(scenario: Scenario) {
   const dir = await mkdtemp(path.join(tmpdir(), 'codex-agent-text-policy-'));
   const executable = path.join(dir, 'codex'), capture = path.join(dir, 'requests.jsonl');
   const previous = process.env.VIBESPACE_CODEX_PATH;
   const events: Array<Record<string, unknown>> = [], boundaries: string[] = [], roles: Array<string | undefined> = [];
+  let sidecarReady = false;
   let steered = false, pendingSteer: Promise<unknown> | undefined;
   const unregister = registerTaskLedgerSource(context => {
     if (context.sessionId !== 'policy-thread') return null;
+    if (scenario.late && !sidecarReady) return null;
     if (context.phase === 'begin') { boundaries.push(context.prompt!); roles.push(context.sessionRole); }
     if (scenario.unreadable || (scenario.unreadableAfterAdmission && boundaries.length > 1)) throw new Error('Fixture source unavailable');
     return { listName: 'card plan', guidance: '', open: [], activity: 0,
       // Deliberately allow malformed plugin data to exercise the public normalizer.
-      agentTextPolicy: (scenario.steer && !steered ? undefined : scenario.policy) as 'reject' | undefined };
+      agentTextPolicy: (scenario.steer && !steered ? undefined : scenario.policy) as 'reject' | undefined,
+      ...(scenario.missing ? { completion: { turnId: 'actual-human', prompt: 'reply exact current threads' } } : {}) };
   });
   try {
     await initializeDatabase();
@@ -65,7 +68,7 @@ require('node:readline').createInterface({input:process.stdin}).on('line',line=>
     await chmod(executable, 0o755); process.env.VIBESPACE_CODEX_PATH = executable;
     __clearTaskContinuationState();
     const running = queryCodex('Human request', { sessionId: 'policy-thread', cwd: dir, model: 'gpt-6-astra', sideSession: scenario.side, ephemeral: scenario.helper, backgroundHelper: scenario.helper }, {
-      isWebSocketWriter: true, send(event: Record<string, unknown>) { events.push(event); }, setSessionId() {},
+      isWebSocketWriter: true, send(event: Record<string, unknown>) { events.push(event); if (event.kind === 'tool_use') sidecarReady = true; }, setSessionId() {},
     });
     if (scenario.steer) {
       const deadline = Date.now() + 3000;
@@ -158,4 +161,19 @@ test('confirmed policy admission survives an unavailable source during its one r
   assert.ok(!events.some(event => event.content === 'Do not leak this prose'));
   assert.deepEqual(events.filter(event => event.kind === 'complete').map(event => event.success), [false]);
   assert.ok(events.some(event => event.kind === 'error' && /AGENT_TEXT_POLICY_VIOLATION/.test(String(event.content))));
+});
+
+test('actual Codex re-reads first-turn admission after the card tool creates a sidecar', { timeout: 15000 }, async () => {
+  const { events, calls } = await run({ policy: 'reject', late: true });
+  assert.equal(calls.filter(call => call.method === 'turn/start').length, 2);
+  assert.ok(!events.some(event => event.content === 'Do not leak this prose'));
+  assert.deepEqual(events.filter(event => event.kind === 'complete').map(event => event.success), [true]);
+});
+
+test('actual Codex repeated missing card checkpoint shares the single policy repair budget', { timeout: 15000 }, async () => {
+  const { events, calls } = await run({ policy: 'reject', missing: true });
+  assert.equal(calls.filter(call => call.method === 'turn/start').length, 2);
+  assert.match(calls.filter(call => call.method === 'turn/start')[1].params.input[0].text, /reply exact current threads/);
+  assert.ok(events.some(event => event.kind === 'error' && /AGENT_TEXT_POLICY_VIOLATION/.test(String(event.content))));
+  assert.deepEqual(events.filter(event => event.kind === 'complete').map(event => event.success), [false]);
 });

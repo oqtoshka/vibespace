@@ -1,5 +1,6 @@
 import crossSpawn from 'cross-spawn';
 
+import { BriefingOutputPolicy } from './modules/providers/index.js';
 import { buildAgentEnv } from './shared/agent-env.js';
 import {
   appendFilesInputTag,
@@ -53,6 +54,9 @@ function isWorkspaceTrustPrompt(text = '') {
 async function spawnCursor(command, options = {}, ws, context = undefined) {
   const runtime = createProviderRuntimeContext('cursor', context ?? options.runtimeContext);
   options = normalizeRuntimeOptions(options, runtime, context);
+  const briefingPolicy = new BriefingOutputPolicy('cursor', options, options.briefingPolicyState);
+  options = { ...options, briefingPolicyState: briefingPolicy.state };
+  briefingPolicy.begin(options.providerSessionId || options.sessionId, command);
   return new Promise(async (resolve, reject) => {
     const {
       sessionId: providerSessionId,
@@ -238,6 +242,7 @@ async function spawnCursor(command, options = {}, ws, context = undefined) {
                 // Capture session ID
                 if (response.session_id && !capturedSessionId) {
                   capturedSessionId = response.session_id;
+                  briefingPolicy.begin(capturedSessionId, command);
 
                   // Legacy/direct callers without an app session id re-key the
                   // process under the provider-native id once it is known.
@@ -273,7 +278,7 @@ async function spawnCursor(command, options = {}, ws, context = undefined) {
               // Accumulate assistant message chunks
               if (response.message && response.message.content && response.message.content.length > 0) {
                 const normalized = runtime.normalizeMessage(response, capturedSessionId || sessionId || null);
-                for (const msg of normalized) ws.send(msg);
+                for (const msg of normalized) if (briefingPolicy.accepts(msg)) ws.send(msg);
               }
               break;
 
@@ -284,7 +289,7 @@ async function spawnCursor(command, options = {}, ws, context = undefined) {
               resultExitCode = response.subtype === 'success' ? 0 : 1;
               clearTimeout(resultCompleteTimer);
               resultCompleteTimer = setTimeout(() => {
-                if (!completeSent && !cursorProcess.aborted) {
+                if (!briefingPolicy.active && !completeSent && !cursorProcess.aborted) {
                   completeSent = true;
                   ws.send(createCompleteMessage({
                     provider: 'cursor',
@@ -307,7 +312,7 @@ async function spawnCursor(command, options = {}, ws, context = undefined) {
 
           // If not JSON, send as stream delta via adapter
           const normalized = runtime.normalizeMessage(line, capturedSessionId || sessionId || null);
-          for (const msg of normalized) ws.send(msg);
+          for (const msg of normalized) if (briefingPolicy.accepts(msg)) ws.send(msg);
         }
       };
 
@@ -373,8 +378,15 @@ async function spawnCursor(command, options = {}, ws, context = undefined) {
         // OpenCode and Codex: no terminal messages here, the nested run sends
         // its own when the chain ends. Failed turns included; a stopped run and
         // helper one-shots never. Bounds live in planTaskContinuation.
+        const checkpoint = (resultExitCode ?? code) === 0 && !cursorProcess.aborted ? briefingPolicy.complete() : {};
+        if (checkpoint.failure) {
+          ws.send(briefingPolicy.failureMessage(checkpoint.failure));
+          ws.send(createCompleteMessage({ provider: 'cursor', sessionId: capturedSessionId, exitCode: 1 }));
+          settleOnce(() => resolve());
+          return;
+        }
         if (!completeSent && !cursorProcess.aborted && !options.ephemeral && capturedSessionId) {
-          const continuation = planTaskContinuation({
+          const continuation = checkpoint.prompt || planTaskContinuation({
             provider: 'cursor',
             sessionId: capturedSessionId,
             cwd: workingDir,
