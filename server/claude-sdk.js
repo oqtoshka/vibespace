@@ -1702,7 +1702,7 @@ async function injectClaudeMessage(sessionId, command, options = {}) {
   // pick made while that turn was in flight.
   await applyPendingModelSwitch(session);
   session.lastUserTurnAt = Date.now();
-  session.briefingPolicy.begin(session.sessionId, command);
+  session.briefingPolicy.begin(session.sessionId, command, true);
   const pushed = session.input.push({ ...makeUserMessage(content), uuid });
   if (!pushed) {
     return null;

@@ -713,6 +713,9 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
   // Internal continuation state: human entry starts a new budget; recursive
   // plan/report repairs retain it. Never infer policy from the prompt text.
   const textPolicyState = options.agentTextPolicyState || { repairUsed: false, admitted: false };
+  const launchReportingContext = { launchOptions: options.launchOptions ?? null, private: Boolean(options.private), ephemeral: Boolean(ephemeral || backgroundHelper) };
+  const launchTextPolicy = collectAgentLaunchExtras({ provider: 'codex', scope: 'session', sessionId: options.appSessionId ?? sessionId ?? null, sessionRole: ephemeral || backgroundHelper ? 'helper' : sideSession ? 'side' : 'main', ...launchReportingContext }).agentTextPolicy;
+  if (!ephemeral && !backgroundHelper && !sideSession && launchTextPolicy === 'reject') textPolicyState.admitted = true;
   let rejectAgentText = !ephemeral && !backgroundHelper && !sideSession && textPolicyState.admitted === true;
   let briefingBegin = null;
   const refreshBriefingPolicy = () => {
@@ -912,7 +915,7 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
         // Capture only accepted human steers, once: started/completed events and
         // the older-runtime fallback all consume the same pending entry.
         if (!ephemeral && !backgroundHelper && !sideSession) {
-          briefingBegin = { provider: 'codex', sessionId: capturedSessionId, prompt: pending.command, sessionRole: 'main', turnId: randomUUID() };
+          briefingBegin = { provider: 'codex', sessionId: capturedSessionId, prompt: pending.command, sessionRole: 'main', ...launchReportingContext, turnId: randomUUID() };
           const policy = beginTaskContinuationTurn(briefingBegin);
           rejectAgentText ||= policy === 'reject';
           if (rejectAgentText) textPolicyState.admitted = true;
@@ -1022,7 +1025,7 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
     });
 
     if (!ephemeral && !backgroundHelper) {
-      briefingBegin = { provider: 'codex', sessionId: capturedSessionId, prompt: reportingPrompt, sessionRole: sideSession ? 'side' : 'main', turnId: randomUUID() };
+      briefingBegin = { provider: 'codex', sessionId: capturedSessionId, prompt: reportingPrompt, sessionRole: sideSession ? 'side' : 'main', ...launchReportingContext, turnId: randomUUID() };
       const policy = beginTaskContinuationTurn(briefingBegin);
       rejectAgentText ||= !sideSession && policy === 'reject';
       if (rejectAgentText) textPolicyState.admitted = true;
@@ -1109,8 +1112,9 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
     const policyBlocked = ['misalignmentPolicyViolation', 'misalignment_policy_violation'].includes(
       terminalFailure?.codexErrorInfo || terminalFailure?.codex_error_info,
     ) || /blocked by our safety systems/i.test(terminalFailure?.message || '');
-    const reportingCheckpoint = !ephemeral && !backgroundHelper && !sideSession
-      ? readExternalTaskLedger({ provider: 'codex', sessionId: capturedSessionId, phase: 'complete' })?.completion : null;
+    const completedReportingLedger = !ephemeral && !backgroundHelper && !sideSession
+      ? readExternalTaskLedger({ provider: 'codex', sessionId: capturedSessionId, phase: 'complete', sessionRole: 'main', ...launchReportingContext }) : null;
+    const reportingCheckpoint = completedReportingLedger?.completion ?? (rejectAgentText && !completedReportingLedger ? { prompt: 'The current-turn card reporting bridge is unavailable; no successful reporting checkpoint can be verified.' } : null);
     if (!runAborted && !terminalFailure && terminalStatus === 'completed' && (textPolicyViolation || reportingCheckpoint)) {
       if (!textPolicyState.repairUsed) {
         textPolicyState.repairUsed = true;

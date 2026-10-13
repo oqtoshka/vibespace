@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { registerTaskLedgerSource } from '../../../shared/index.js';
+import { registerTaskLedgerSource, registerAgentLaunchContributor } from '../../../shared/index.js';
 import { __clearTaskContinuationState } from '../../task-continuation/index.js';
 import { initializeDatabase, closeConnection } from '../../database/index.js';
 // eslint-disable-next-line boundaries/no-unknown -- Real runtime/transport policy boundary, without a provider call.
@@ -12,7 +12,7 @@ import { queryCodex, injectCodexMessage } from '../../../openai-codex.js';
 // eslint-disable-next-line boundaries/no-unknown -- Close the owned executable fixture transport.
 import { stopCodexAppServer } from '../../../services/codex-app-server.service.js';
 
-type Scenario = { policy?: unknown; repeat?: boolean; providerFailure?: boolean; steer?: boolean; side?: boolean; empty?: boolean; child?: boolean; helper?: boolean; unreadable?: boolean; missing?: boolean; late?: boolean; unreadableAfterAdmission?: boolean };
+type Scenario = { launch?: boolean; policy?: unknown; repeat?: boolean; providerFailure?: boolean; steer?: boolean; side?: boolean; empty?: boolean; child?: boolean; helper?: boolean; unreadable?: boolean; missing?: boolean; late?: boolean; unreadableAfterAdmission?: boolean };
 async function run(scenario: Scenario) {
   const dir = await mkdtemp(path.join(tmpdir(), 'codex-agent-text-policy-'));
   const executable = path.join(dir, 'codex'), capture = path.join(dir, 'requests.jsonl');
@@ -20,7 +20,9 @@ async function run(scenario: Scenario) {
   const events: Array<Record<string, unknown>> = [], boundaries: string[] = [], roles: Array<string | undefined> = [];
   let sidecarReady = false;
   let steered = false, pendingSteer: Promise<unknown> | undefined;
+  const stopLaunch = registerAgentLaunchContributor(c => scenario.launch && c.sessionRole === 'main' ? { agentTextPolicy: 'reject' } : null);
   const unregister = registerTaskLedgerSource(context => {
+    if (scenario.launch) return null;
     if (context.sessionId !== 'policy-thread') return null;
     if (scenario.late && !sidecarReady) return null;
     if (context.phase === 'begin') { boundaries.push(context.prompt!); roles.push(context.sessionRole); }
@@ -81,7 +83,7 @@ require('node:readline').createInterface({input:process.stdin}).on('line',line=>
     const calls = (await readFile(capture, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
     return { events, calls, boundaries, roles };
   } finally {
-    unregister(); stopCodexAppServer(); __clearTaskContinuationState(); closeConnection();
+    stopLaunch(); unregister(); stopCodexAppServer(); __clearTaskContinuationState(); closeConnection();
     if (previous === undefined) delete process.env.VIBESPACE_CODEX_PATH; else process.env.VIBESPACE_CODEX_PATH = previous;
     await rm(dir, { recursive: true, force: true });
   }
@@ -176,4 +178,12 @@ test('actual Codex repeated missing card checkpoint shares the single policy rep
   assert.match(calls.filter(call => call.method === 'turn/start')[1].params.input[0].text, /reply exact current threads/);
   assert.ok(events.some(event => event.kind === 'error' && /AGENT_TEXT_POLICY_VIOLATION/.test(String(event.content))));
   assert.deepEqual(events.filter(event => event.kind === 'complete').map(event => event.success), [false]);
+});
+
+test('actual Codex explicit launch refuses first prose before any reporter hook and fails unknown checkpoint after one repair',{timeout:15000},async()=>{
+ const {events,calls}=await run({launch:true});
+ assert.equal(calls.filter(c=>c.method==='turn/start').length,2);
+ assert.ok(!events.some(e=>e.content==='Do not leak this prose'));
+ assert.deepEqual(events.filter(e=>e.kind==='complete').map(e=>e.success),[false]);
+ assert.ok(events.some(e=>e.kind==='error'&&String(e.content).includes('AGENT_TEXT_POLICY_VIOLATION')));
 });

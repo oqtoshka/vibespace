@@ -7,7 +7,7 @@ import test from 'node:test';
 const dir = await mkdtemp(path.join(os.tmpdir(), 'http-briefing-'));
 const previousDb = process.env.DATABASE_PATH;
 process.env.DATABASE_PATH = path.join(dir, 'auth.db');
-const { registerTaskLedgerSource } = await import('../../../shared/index.js');
+const { registerTaskLedgerSource, registerAgentLaunchContributor } = await import('../../../shared/index.js');
 const { initializeDatabase, closeConnection } = await import('../../database/index.js');
 const { spawnOpenCode, injectOpenCodeServerForTests } = await import('../list/opencode/opencode-runtime.provider.js');
 const previousPath = process.env.PATH;
@@ -25,7 +25,7 @@ test.after(async () => {
   if (previousDb === undefined) delete process.env.DATABASE_PATH; else process.env.DATABASE_PATH = previousDb;
   await rm(dir, { recursive: true, force: true });
 });
-for (const scenario of ['repair', 'repeat', 'missing', 'late', 'plain', 'helper']) test(`actual OpenCode HTTP: ${scenario}`, { timeout: 15000 }, async () => {
+for (const scenario of ['repair', 'repeat', 'missing', 'late', 'launch', 'plain', 'helper']) test(`actual OpenCode HTTP: ${scenario}`, { timeout: 15000 }, async () => {
   const sid = 'http-policy-' + scenario;
   const streams = new Set<http.ServerResponse>();
   const prompts: string[] = [], sent: any[] = [];
@@ -57,21 +57,22 @@ for (const scenario of ['repair', 'repeat', 'missing', 'late', 'plain', 'helper'
   });
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   const restore = injectOpenCodeServerForTests({ baseUrl: `http://127.0.0.1:${(server.address() as import('node:net').AddressInfo).port}`, authorization: 'Basic fixture' });
-  const unregister = registerTaskLedgerSource(c => {
-    if (c.sessionId !== sid || scenario === 'plain' || (scenario === 'late' && !sidecarReady)) return null;
+  const stopLaunch=registerAgentLaunchContributor(c=>scenario==='launch'&&c.sessionRole==='main'?{agentTextPolicy:'reject'}:null);
+ const unregister = registerTaskLedgerSource(c => {
+    if (c.sessionId !== sid || scenario === 'plain' || scenario === 'launch' || (scenario === 'late' && !sidecarReady)) return null;
     return { listName: 'card', guidance: '', open: [], activity: 0, agentTextPolicy: 'reject', ...(scenario === 'missing' ? { completion: { turnId: 'human', prompt: 'exact card reply' } } : {}) };
   });
   try {
     await spawnOpenCode('human request', { cwd: dir, model: 'homelab/local', enableMidTurnInjection: true, ephemeral: scenario === 'helper' }, {
       send(m: any) { sent.push(m); if (m.kind === 'tool_use') sidecarReady = true; }, setSessionId() {},
     });
-    assert.equal(prompts.length, ['repair', 'repeat', 'missing', 'late'].includes(scenario) ? 2 : 1);
+    assert.equal(prompts.length, ['repair', 'repeat', 'missing', 'late', 'launch'].includes(scenario) ? 2 : 1);
     assert.equal(sent.some(m => ['text', 'stream_delta'].includes(m.kind) && String(m.content).includes('FORBIDDEN_HTTP')), ['plain', 'helper'].includes(scenario));
     assert.ok(sent.some(m => m.kind === 'tool_use' && m.toolName === 'reply'), 'actual named card tool remains visible');
-    assert.deepEqual(sent.filter(m => m.kind === 'complete').map(m => m.success), [!['repeat', 'missing'].includes(scenario)]);
-    if (['repeat', 'missing'].includes(scenario)) assert.ok(sent.some(m => m.kind === 'error' && /AGENT_TEXT_POLICY_VIOLATION/.test(m.content)));
+    assert.deepEqual(sent.filter(m => m.kind === 'complete').map(m => m.success), [!['repeat', 'missing', 'launch'].includes(scenario)]);
+    if (['repeat', 'missing', 'launch'].includes(scenario)) assert.ok(sent.some(m => m.kind === 'error' && /AGENT_TEXT_POLICY_VIOLATION/.test(m.content)));
   } finally {
-    unregister(); restore(); for (const stream of streams) stream.end(); server.closeAllConnections();
+    stopLaunch();unregister(); restore(); for (const stream of streams) stream.end(); server.closeAllConnections();
     await new Promise<void>(resolve => server.close(() => resolve()));
   }
 });

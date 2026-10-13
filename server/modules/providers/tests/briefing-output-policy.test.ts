@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { registerTaskLedgerSource } from '../../../shared/index.js';
+import { registerTaskLedgerSource, registerAgentLaunchContributor } from '../../../shared/index.js';
 import { BriefingOutputPolicy } from '../index.js';
 
 for (const provider of ['claude', 'opencode', 'cursor'] as const) {
@@ -50,3 +50,38 @@ for (const provider of ['claude', 'opencode', 'cursor'] as const) {
     try{const gate=new BriefingOutputPolicy(provider,{});gate.begin('native','request');assert.match(gate.complete().prompt!,/reply both threads/);assert.match(gate.complete().failure!,/AGENT_TEXT_POLICY_VIOLATION/);}finally{unregister();}
   });
 }
+
+for (const provider of ['claude','opencode','cursor'] as const) {
+  test(`${provider}: explicit launch rejects first prose before native ID or hook; absent ledger fails closed`, () => {
+    const contexts: any[]=[];
+    const unregister=registerAgentLaunchContributor(c=>{contexts.push(c);return c.launchOptions?.fixture === true && c.sessionRole==='main' ? {agentTextPolicy:'reject'} : null;});
+    const stop=registerTaskLedgerSource(()=>null);
+    try {
+      const gate=new BriefingOutputPolicy(provider,{launchOptions:{fixture:true},appSessionId:'host-row'});
+      gate.begin(null,'human');
+      assert.equal(gate.accepts({kind:'text',content:'before hook'}),false);
+      assert.ok(gate.complete().prompt);
+      gate.begin('real-native','human');
+      assert.match(gate.complete().failure!,/AGENT_TEXT_POLICY_VIOLATION/);
+      assert.equal(contexts[0].sessionId,'host-row');
+      assert.equal(contexts[0].sessionRole,'main');
+      const plain=new BriefingOutputPolicy(provider,{appSessionId:'host-row'});plain.begin(null,'human');
+      assert.equal(plain.accepts({kind:'text',content:'plain'}),true);
+    } finally {unregister();stop();}
+  });
+  test(`${provider}: late native identity retains human prompt/turn and threads exact launch context`,()=>{
+    const observed:any[]=[];
+    const unregister=registerTaskLedgerSource(c=>{observed.push(c);return {listName:'card',guidance:'',open:[],activity:0,agentTextPolicy:'reject'};});
+    try {const gate=new BriefingOutputPolicy(provider,{launchOptions:{fixture:true}});gate.begin(null,'human');gate.begin('native','human');gate.accepts({kind:'text',content:'x'});
+      assert.equal(observed[0].sessionId,'native');assert.equal(observed[0].prompt,'human');assert.deepEqual(observed[0].launchOptions,{fixture:true});
+      const first=observed[0].turnId;gate.begin('native','human');assert.equal(observed.at(-1).turnId,first);
+    }finally{unregister();}
+  });
+}
+
+for (const provider of ['claude','opencode','cursor'] as const) test(`${provider}: identical explicit human steer starts distinct turn; native binding does not`,()=>{
+ const ids:string[]=[];const stop=registerTaskLedgerSource(c=>{if(c.phase==='begin')ids.push(c.turnId!);return {listName:'card',guidance:'',open:[],activity:0,agentTextPolicy:'reject'};});
+ try {const gate=new BriefingOutputPolicy(provider,{});gate.begin(null,'identical');gate.begin('native','identical');const first=ids.at(-1);gate.begin('native','identical',true);assert.notEqual(ids.at(-1),first);const second=ids.at(-1);gate.begin('native','identical');assert.equal(ids.at(-1),second);
+ const next=new BriefingOutputPolicy(provider,{});next.begin('native','identical');assert.notEqual(ids.at(-1),second);
+ } finally{stop();}
+});

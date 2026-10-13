@@ -53,6 +53,10 @@ export type TaskLedgerSourceContext = {
   turnId?: string;
   /** Observed entrypoint role, never inferred from transcript or session naming. */
   sessionRole?: 'main' | 'side' | 'helper';
+  /** Persisted launch context supplied by the host; plugins own its meaning. */
+  launchOptions?: Record<string, unknown> | null;
+  private?: boolean;
+  ephemeral?: boolean;
 };
 
 export type TaskLedgerSource = (context: TaskLedgerSourceContext) => ExternalTaskLedger | null | undefined | void;
