@@ -85,6 +85,13 @@ test('native session isolation, history, stream, permissions and duplicate recei
     assert.equal(client.frames[0]?.rewind, true);
     await client.input({ type: 'native.history', requestId: 'history' });
     assert.deepEqual(client.frames.find(f => f.kind === 'native.history')?.messages, []);
+    // A full socket buffer used to drop the frame outright; now it waits and is delivered.
+    client.bufferedAmount = 20 * 1024 * 1024;
+    await client.input({ type: 'native.background', requestId: 'held-by-backpressure' });
+    assert.ok(!client.frames.some(f => f.requestId === 'held-by-backpressure'), 'a full buffer holds the frame');
+    client.bufferedAmount = 0;
+    await new Promise(resolve => setTimeout(resolve, 80));
+    assert.ok(client.frames.some(f => f.requestId === 'held-by-backpressure'), 'the held frame is delivered once the buffer drains');
     for (const socket of connectedClients) {
       socket.send(JSON.stringify({ kind: 'text', sessionId: 'native-other', content: 'PRIVATE_OTHER' }));
       socket.send(JSON.stringify({ kind: 'loading_progress', content: 'GLOBAL_PRIVATE' }));

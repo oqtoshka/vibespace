@@ -3,9 +3,12 @@ import type { WebSocket } from 'ws';
 
 const CHUNK_BYTES = 1024 * 1024;
 
+/** The writer a history page goes through: native chat passes its ordered outbox. */
+type HistorySocket = Pick<WebSocket, 'readyState'> & { send(data: string, callback: (error?: Error) => void): void };
+
 /** Application frames stay below the edge/iOS WebSocket message limit. Await
  * writes so a page of inline tool images cannot overflow the socket buffer. */
-export async function sendNativeHistory(ws: WebSocket, payload: Record<string, unknown>, chunked: boolean, authorized: () => boolean = () => true): Promise<void> {
+export async function sendNativeHistory(ws: HistorySocket, payload: Record<string, unknown>, chunked: boolean, authorized: () => boolean = () => true): Promise<void> {
   const bytes = Buffer.from(JSON.stringify(payload));
   const write = (value: string) => new Promise<void>((resolve, reject) => {
     if (!authorized() || ws.readyState !== 1) { reject(new Error('Chat disconnected')); return; }

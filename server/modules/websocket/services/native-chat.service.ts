@@ -17,6 +17,7 @@ import { scopeNativeCommand } from './native-chat-policy.service.js';
 import { nativeBackgroundSnapshot } from './native-background.service.js';
 import { NativeCapabilityLease } from './native-capability-lease.service.js';
 import { sendNativeHistory } from './native-history-transport.service.js';
+import { NativeOutbox } from './native-outbox.service.js';
 import { buildSideExcerpt, SIDE_EXCERPT_MAX_MESSAGES } from './native-side-excerpt.service.js';
 import { nativeHistoryWithReceipts, retainNativeSend } from './native-send-journal.service.js';
 
@@ -90,9 +91,17 @@ export function handleNativeChat(ws: WebSocket, request: AuthenticatedWebSocketR
     return current && current.is_private === 0 && current.is_side === (side ? 1 : 0) && userDb.getSingleActiveUser()
       ? verify(value) : null;
   }, () => ws.close(1012, 'Session authorization expired; reconnect'));
-  ws.on('close', () => lease.stop());
+  // Every frame, history pages included, goes through one ordered outbox:
+  // it queues while the socket buffer is full instead of dropping the frame,
+  // and closes the socket (the phone reconnects and re-reads) if it cannot drain.
+  const outbox = new NativeOutbox(ws);
+  ws.on('close', () => { lease.stop(); outbox.dispose(); });
   const send = (payload: Record<string, unknown>) => {
-    if (lease.active() && ws.readyState === 1 && ws.bufferedAmount < 12 * 1024 * 1024) ws.send(JSON.stringify({ ...payload, sessionId }));
+    if (lease.active()) outbox.send(JSON.stringify({ ...payload, sessionId }));
+  };
+  const historyWriter = {
+    get readyState() { return ws.readyState; },
+    send: (data: string, callback: (error?: Error) => void) => outbox.send(data, callback),
   };
   const facade = new EventEmitter() as EventEmitter & { readyState: number; send: (raw: string) => void };
   const pendingSends = new Map<string, { content: string; options: { images?: unknown[]; files?: unknown[] } }>();
@@ -158,7 +167,7 @@ export function handleNativeChat(ws: WebSocket, request: AuthenticatedWebSocketR
         try {
           const page = nativeHistoryWithReceipts(sessionId, await sessionsService.fetchHistory(sessionId, { limit, offset }));
           const run = chatRunRegistry.getRun(sessionId);
-          await sendNativeHistory(ws, { kind: 'native.history', sessionId, requestId, ...page, runId: run?.startedAt ?? null,
+          await sendNativeHistory(historyWriter, { kind: 'native.history', sessionId, requestId, ...page, runId: run?.startedAt ?? null,
             running: run?.status === 'running', archived: Boolean(current.isArchived),
             replay: run?.status === 'running' ? chatRunRegistry.replayEvents(sessionId, 0) : [] }, data.chunked === true, () => lease.active());
         } finally { historyBusy = false; }
