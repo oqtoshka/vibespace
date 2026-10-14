@@ -8,6 +8,7 @@ import test from 'node:test';
 import express from 'express';
 
 import { collectAgentEnv, listLaunchOptions } from '@/shared/agent-env.js';
+import { readSessionTopicAuthority } from '@/shared/index.js';
 import {
   activateHostExtensions,
   activeHostExtensionNames,
@@ -171,6 +172,26 @@ test('a declared launch option is stamped with the declaring plugin, whatever th
     assert.deepEqual(option.banner, { text: 'Read it on the board.', actionId: 'open-board' });
     await deactivateHostExtensions();
     assert.deepEqual(listLaunchOptions(), [], 'dropped with the plugin');
+  } finally {
+    await deactivateHostExtensions();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+
+test('topic authority readers belong to the activated plugin and disappear on deactivation', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vs-host-topic-authority-'));
+  const plugin = writePlugin(root, 'topics', 'topics', `export function activate(host) {
+    host.registerSessionTopicAuthoritySource((context) => context.sessionId === 'owned' ? 'primary-agent' : null);
+  }`);
+  const context = { sessionId: 'owned', providerSessionId: 'native', provider: 'codex',
+    private: false, sessionRole: 'main' as const, launchOptions: null };
+  try {
+    await activateHostExtensions(deps(root, [plugin]).deps);
+    assert.equal(await readSessionTopicAuthority(context), 'primary-agent');
+    assert.equal(await readSessionTopicAuthority({ ...context, sessionId: 'other' }), null);
+    await deactivateHostExtensions();
+    assert.equal(await readSessionTopicAuthority(context), null, 'no stale reader survives deactivation');
   } finally {
     await deactivateHostExtensions();
     fs.rmSync(root, { recursive: true, force: true });

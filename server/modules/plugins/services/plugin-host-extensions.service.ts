@@ -18,7 +18,9 @@ import {
   type LaunchOptionDeclaration,
 } from '@/shared/agent-env.js';
 import { registerTaskLedgerSource, type TaskLedgerSource } from '@/shared/task-ledger-sources.js';
+import { registerSessionTopicAuthoritySource } from '@/shared/index.js';
 import type {
+  SessionTopicAuthoritySource,
   CheckedEnqueueResult,
   PeerAdmissionInput,
   PeerAdmissionResult,
@@ -304,6 +306,8 @@ export type PluginHost = {
    * on that list instead of the runtime's own.
    */
   registerTaskLedgerSource?: (source: TaskLedgerSource) => () => void;
+  /** Recap asks this bounded reader whether the main agent owns the external topic list. */
+  registerSessionTopicAuthoritySource?: (source: SessionTopicAuthoritySource) => () => void;
   /** Runs on server shutdown and on deactivation, in registration order. */
   onShutdown: (callback: () => void | Promise<void>) => void;
 };
@@ -412,6 +416,11 @@ function buildHost(name: string, pluginDir: string, deps: HostExtensionDependenc
       // Stamped here, not trusted from the plugin: a banner's action id is
       // looked up in this plugin's own manifest and nobody else's.
       const unregister = registerLaunchOption({ ...declaration, pluginName: name });
+      state.unregisterContributors.push(unregister);
+      return unregister;
+    },
+    registerSessionTopicAuthoritySource: (source) => {
+      const unregister = registerSessionTopicAuthoritySource(source);
       state.unregisterContributors.push(unregister);
       return unregister;
     },

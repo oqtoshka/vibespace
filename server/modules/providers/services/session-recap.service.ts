@@ -26,7 +26,8 @@
 import { promises as fs } from 'fs';
 
 import { sessionsDb } from '@/modules/database/index.js';
-import type { AnyRecord, ProviderRunFunction } from '@/shared/index.js';
+import { readSessionTopicAuthority, parseStoredLaunchOptions } from '@/shared/index.js';
+import type { AnyRecord, ProviderRunFunction, SessionTopicAuthorityContext } from '@/shared/index.js';
 
 import { sessionsService } from './sessions.service.js';
 import { readTopicMemory, topicBatch, topicInstructions, mergeTopicResponse } from './session-topics.service.js';
@@ -422,12 +423,23 @@ export async function generateSessionRecap({
 
   // A transcript file when the provider keeps one per session, the indexed
   // history when it keeps a shared store instead (OpenCode).
+  const authorityContext: SessionTopicAuthorityContext = {
+    sessionId: session.session_id, providerSessionId: session.provider_session_id, provider: session.provider,
+    private: Boolean(session.is_private), sessionRole: session.is_side ? 'side' : 'main',
+    launchOptions: parseStoredLaunchOptions(session.launch_options),
+  };
+  const externalTopics = await readSessionTopicAuthority(authorityContext) === 'primary-agent';
+  const admitted = sessionsDb.getSessionById(session.session_id);
+  if (!admitted || admitted.is_private || admitted.provider_session_id !== session.provider_session_id) return;
   const source = useIndexedHistory || !session.jsonl_path ? 'indexed' : 'claude';
   // Provider totals can exclude tool results while pagination includes them. Count the actual
   // normalized history, never infer oldest-message offsets from the UI's display count.
   let historyRows: AnyRecord[];
   let tail: { messages: RecapMessage[]; total: number };
-  if (source === 'indexed') {
+  if (source === 'indexed' && externalTopics) {
+    historyRows = [];
+    tail = await readIndexedTranscriptTail(session.session_id, fetchHistory);
+  } else if (source === 'indexed') {
     const history = await (fetchHistory ?? ((id, options) => sessionsService.fetchHistory(id, options)))(
       session.session_id, { limit: 1_000_000, offset: 0 });
     historyRows = history.messages;
@@ -447,10 +459,10 @@ export async function generateSessionRecap({
   if (memory.source !== source || memory.cursor > historyTotal) {
     memory.cursor = 0; memory.charOffset = 0; memory.source = source;
   }
-  if (session.recap && session.recap_message_count === total && memory.cursor >= historyTotal) return;
+  if (session.recap && session.recap_message_count === total && (externalTopics || memory.cursor >= historyTotal)) return;
   const rows = historyRows.slice(memory.cursor);
   const batch = topicBatch(rows, memory, historyTotal, topicBatchChars);
-  const topicPrompt = topicInstructions(memory, batch);
+  const topicPrompt = externalTopics ? '' : topicInstructions(memory, batch);
   // Historical tools/progress consume no topic budget. The separate tail above still gives
   // the recap current assistant outcomes, while cumulative subjects follow actual user asks.
 
@@ -511,10 +523,21 @@ export async function generateSessionRecap({
   // The app session id is the row key; the runtime may know the session by its
   // provider id, so resolve back to the row we actually read.
   const rowId = session.session_id;
-  const current = sessionsDb.getSessionById(rowId);
-  if (!current || current.is_private) return;
-  const updatedMemory = mergeTopicResponse(responseText, memory, batch);
-  if (!updatedMemory && /"topics"\s*:/.test(responseText)) {
+  let current = sessionsDb.getSessionById(rowId);
+  if (!current || current.is_private || current.provider_session_id !== session.provider_session_id) return;
+  // An authority claim can arrive while this helper is running. Recheck before
+  // accepting its topics; saved historical memory is retained for old links.
+  const mayUpdateTopics = !externalTopics && await readSessionTopicAuthority({
+    ...authorityContext, private: Boolean(current.is_private),
+    sessionRole: current.is_side ? 'side' : 'main',
+    launchOptions: parseStoredLaunchOptions(current.launch_options),
+  }) !== 'primary-agent';
+  // The external read yields. A privacy change or deletion during that read
+  // must also discard the title/recap, not only the helper's topic update.
+  current = sessionsDb.getSessionById(rowId);
+  if (!current || current.is_private || current.provider_session_id !== session.provider_session_id) return;
+  const updatedMemory = mayUpdateTopics ? mergeTopicResponse(responseText, memory, batch) : null;
+  if (mayUpdateTopics && !updatedMemory && /"topics"\s*:/.test(responseText)) {
     throw new Error('Topic update rejected: invalid structure or source quote; coverage retained');
   }
   let more = false;

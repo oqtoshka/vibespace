@@ -42,5 +42,9 @@ export { readOpenCodeTaskState } from './opencode-todo-ledger.js';
 export { WAITING_ON_USER_MARKER } from './waiting-on-user.js';
 export { readExternalTaskLedger, registerTaskLedgerSource } from './task-ledger-sources.js';
 // Providers' dedicated diagnostic peer applies the existing server-secret filter.
-export { buildAgentEnv, collectAgentLaunchExtras, registerAgentLaunchContributor } from './agent-env.js';
+export { buildAgentEnv, collectAgentLaunchExtras, registerAgentLaunchContributor, parseStoredLaunchOptions } from './agent-env.js';
 export type { CodexDiagnosticScope, CodexDiagnosticHandle, CodexDiagnosticLease } from './types.js';
+
+// Recap and host plugins share the explicit, bounded external-topic authority contract.
+export { readSessionTopicAuthority, registerSessionTopicAuthoritySource } from './session-topic-authority.js';
+export type { SessionTopicAuthorityContext, SessionTopicAuthoritySource } from './types.js';
