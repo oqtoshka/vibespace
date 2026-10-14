@@ -1476,3 +1476,22 @@ export type CodexDiagnosticHandle = Readonly<{ id: string; appSessionId: string;
 /** Actual host reservation for one session/resource epoch, at most 60 seconds.
  * It covers VibeSpace admissions only; it is not a lock on external native CLIs. */
 export type CodexDiagnosticLease = { expiresAt: number; release: () => void };
+
+//----------------- EXTERNAL SESSION TOPIC AUTHORITY ------------
+/** Host-owned identity passed to a plugin's current-topic-authority reader.
+ * Only persisted main sessions can delegate their topic list; providerSessionId
+ * identifies that same session on an external card, never a caller-supplied ID. */
+export type SessionTopicAuthorityContext = {
+  sessionId: string;
+  providerSessionId: string | null;
+  provider: string;
+  private: boolean;
+  sessionRole: 'main' | 'side';
+  launchOptions: Record<string, unknown> | null;
+};
+/** Plugin reader consumed by recap generation. An explicit primary-agent answer
+ * freezes helper topic extraction while title/recap generation continues. Null,
+ * errors and timeouts retain the historical helper fallback; they never delete
+ * saved topics or infer that an external card is empty. */
+export type SessionTopicAuthoritySource = (context: SessionTopicAuthorityContext) =>
+  'primary-agent' | null | undefined | Promise<'primary-agent' | null | undefined>;
