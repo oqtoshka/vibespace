@@ -7,12 +7,13 @@ import test from 'node:test';
 import { registerTaskLedgerSource } from '../../../shared/index.js';
 import { __clearTaskContinuationState } from '../../task-continuation/index.js';
 import { initializeDatabase, closeConnection } from '../../database/index.js';
+import { BRIEFING_REPAIRS_PER_TURN } from '../index.js';
 // eslint-disable-next-line boundaries/no-unknown -- Exercise the actual legacy Codex terminal continuation boundary.
 import { queryCodex, injectCodexMessage } from '../../../openai-codex.js';
 // eslint-disable-next-line boundaries/no-unknown -- Own and close the fixture app-server transport.
 import { stopCodexAppServer } from '../../../services/codex-app-server.service.js';
 
-test('actual Codex entry captures prompt before tools and terminal seam performs one missing-card repair', { timeout: 15000 }, async () => {
+test('actual Codex entry captures prompt before tools and terminal seam repairs a missing card up to the turn budget', { timeout: 15000 }, async () => {
   const dir = await mkdtemp(path.join(tmpdir(), 'codex-card-reporting-'));
   const executable = path.join(dir, 'fake-codex'), capture = path.join(dir, 'requests.jsonl');
   const previous = process.env.VIBESPACE_CODEX_PATH;
@@ -69,16 +70,17 @@ else if(m.method==='turn/steer') {
     await steer;
     const calls = (await readFile(capture, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
     const turns = calls.filter(call => call.method === 'turn/start');
-    assert.equal(turns.length, 2, 'one actual terminal continuation, even while checkpoint remains missing');
+    assert.equal(turns.length, 1 + BRIEFING_REPAIRS_PER_TURN, 'terminal repairs stop at the per-turn budget while the checkpoint remains missing');
     assert.equal(boundaries[0], human, 'begin sees original full prompt before execution');
     assert.equal(boundaries[1], second, 'accepted steer captures full next prompt once despite duplicate lifecycle events');
-    assert.equal(boundaries.length, 3);
+    assert.equal(boundaries.length, 2 + BRIEFING_REPAIRS_PER_TURN);
     assert.match(boundaries[2], /^\[session supervisor\].*Missing card reporting checkpoint/);
     assert.equal(turns[0].params.input[0].text, human);
     assert.match(turns[1].params.input[0].text, /Reply to second thread 22222222-2222-4222-8222-222222222222/);
     assert.equal(events.filter(event => event.kind === 'complete').length, 1, 'completion is withheld until repair ends');
-    assert.ok(events.some(event => event.kind === 'error' && /AGENT_TEXT_POLICY_VIOLATION/.test(String(event.content))), 'missing checkpoint after repair is explicit failure');
-    assert.deepEqual(events.filter(event => event.kind === 'complete').map(event => event.success), [false]);
+    assert.ok(!events.some(event => event.kind === 'error'), 'a missing checkpoint past the budget is never a run failure');
+    assert.ok(events.some(event => event.text === 'agent_text_policy_exhausted'), 'exhaustion is reported as status');
+    assert.deepEqual(events.filter(event => event.kind === 'complete').map(event => event.success), [true]);
     assert.ok(events.some(event => event.content === 'Fixture chat 1'), 'post-stream repair does not claim chat suppression');
   } finally {
     unregister(); stopCodexAppServer(); __clearTaskContinuationState();

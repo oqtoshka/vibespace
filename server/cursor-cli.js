@@ -379,12 +379,8 @@ async function spawnCursor(command, options = {}, ws, context = undefined) {
         // its own when the chain ends. Failed turns included; a stopped run and
         // helper one-shots never. Bounds live in planTaskContinuation.
         const checkpoint = (resultExitCode ?? code) === 0 && !cursorProcess.aborted ? briefingPolicy.complete() : {};
-        if (checkpoint.failure) {
-          ws.send(briefingPolicy.failureMessage(checkpoint.failure));
-          ws.send(createCompleteMessage({ provider: 'cursor', sessionId: capturedSessionId, exitCode: 1 }));
-          settleOnce(() => resolve());
-          return;
-        }
+        // Never a failure: past the per-turn repair budget the text stays dropped and the turn ends idle.
+        if (checkpoint.exhausted) ws.send(briefingPolicy.noticeMessage(checkpoint.exhausted));
         if (!completeSent && !cursorProcess.aborted && !options.ephemeral && capturedSessionId) {
           const continuation = checkpoint.prompt || planTaskContinuation({
             provider: 'cursor',
@@ -392,6 +388,7 @@ async function spawnCursor(command, options = {}, ws, context = undefined) {
             cwd: workingDir,
             userId: ws?.userId || null,
             sessionName: sessionSummary,
+            allowReportingRepair: !checkpoint.exhausted,
           });
           if (continuation) {
             ws.send(createNormalizedMessage({

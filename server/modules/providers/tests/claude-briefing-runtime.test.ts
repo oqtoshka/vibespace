@@ -5,6 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { registerTaskLedgerSource, registerAgentLaunchContributor } from '../../../shared/index.js';
+import { BRIEFING_REPAIRS_PER_TURN } from '../index.js';
 const dbRoot = await mkdtemp(path.join(os.tmpdir(),'claude-briefing-db-'));
 process.env.DATABASE_PATH = path.join(dbRoot,'auth.db');
 // eslint-disable-next-line boundaries/no-unknown -- Actual persistent provider integration without any provider request.
@@ -19,16 +20,17 @@ for (const scenario of ['repair','repeat','missing','late','launch','plain','hel
   const sent: any[]=[];const prompts: any[]=[];let present=scenario!=='late';
   const stopLaunch=registerAgentLaunchContributor(c=>scenario==='launch'&&c.sessionRole==='main'?{agentTextPolicy:'reject'}:null);
  const unregister=registerTaskLedgerSource(c=>c.sessionId===sid&&present&&scenario!=='plain'&&scenario!=='launch'? {listName:'card',guidance:'',open:[],activity:0,agentTextPolicy:'reject',...(scenario==='missing'?{completion:{turnId:'human',prompt:'reply exact threads'}}:{})}:null);
+  const persistent=['repeat','missing','launch'].includes(scenario);
+  // Persistent violations get every repair of the turn's budget, then the turn settles idle.
+  const rounds=persistent?1+BRIEFING_REPAIRS_PER_TURN:['repair','late'].includes(scenario)?2:1;
   __setClaudeQueryImpl(({prompt}: any)=>{
     const reader=prompt[Symbol.asyncIterator]();
     const gen=(async function*(){
-      prompts.push((await reader.next()).value);
-      present=true;
-      yield {type:'assistant',session_id:sid,message:{role:'assistant',content:[{type:'text',text:'FORBIDDEN_INITIAL'},{type:'tool_use',id:'card',name:'mcp__mc__reply',input:{threadId:'exact'}}]}};
-      yield {type:'result',subtype:'success',session_id:sid};
-      if(['repair','repeat','missing','late','launch'].includes(scenario)){
+      for(let round=0;round<rounds;round++){
         prompts.push((await reader.next()).value);
-        yield {type:'assistant',session_id:sid,message:{role:'assistant',content:scenario==='repeat'?[{type:'text',text:'FORBIDDEN_AGAIN'}]:[{type:'tool_use',id:'second',name:'mcp__mc__reply',input:{threadId:'exact'}}]}};
+        present=true;
+        const prose=round===0||scenario==='repeat';
+        yield {type:'assistant',session_id:sid,message:{role:'assistant',content:[...(prose?[{type:'text',text:round?'FORBIDDEN_AGAIN':'FORBIDDEN_INITIAL'}]:[]),{type:'tool_use',id:'card-'+round,name:'mcp__mc__reply',input:{threadId:'exact'}}]}};
         yield {type:'result',subtype:'success',session_id:sid};
       }
     })();
@@ -39,9 +41,11 @@ for (const scenario of ['repair','repeat','missing','late','launch','plain','hel
     const output=sent.filter(m=>m.kind==='text'||m.kind==='stream_delta');
     assert.equal(output.some(m=>String(m.content).includes('FORBIDDEN')),['plain','helper','side'].includes(scenario));
     assert.ok(sent.some(m=>m.kind==='tool_use'));
-    assert.equal(prompts.length,['repair','repeat','missing','late','launch'].includes(scenario)?2:1);
-    if(['repeat','missing','launch'].includes(scenario)){assert.ok(sent.some(m=>m.kind==='error'&&String(m.content).includes('AGENT_TEXT_POLICY_VIOLATION')));assert.equal(sent.find(m=>m.kind==='complete').exitCode,1);}
-    else assert.equal(sent.find(m=>m.kind==='complete').exitCode,0);
+    assert.equal(prompts.length,rounds);
+    assert.ok(!sent.some(m=>m.kind==='error'),'a reporting-policy violation is never a failure');
+    assert.equal(sent.find(m=>m.kind==='complete').exitCode,0);
+    assert.equal(sent.some(m=>m.text==='agent_text_policy_exhausted'),persistent);
+    for(const p of prompts.slice(1))assert.doesNotMatch(JSON.stringify(p),/ends this run/);
   }finally{stopLaunch();unregister();abortClaudeSDKSession(sid);__setClaudeQueryImpl(null);await rm(cwd,{recursive:true,force:true});}
 });
 

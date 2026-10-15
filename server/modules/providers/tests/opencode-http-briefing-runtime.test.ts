@@ -8,6 +8,7 @@ const dir = await mkdtemp(path.join(os.tmpdir(), 'http-briefing-'));
 const previousDb = process.env.DATABASE_PATH;
 process.env.DATABASE_PATH = path.join(dir, 'auth.db');
 const { registerTaskLedgerSource, registerAgentLaunchContributor } = await import('../../../shared/index.js');
+const { BRIEFING_REPAIRS_PER_TURN } = await import('../index.js');
 const { initializeDatabase, closeConnection } = await import('../../database/index.js');
 const { spawnOpenCode, injectOpenCodeServerForTests } = await import('../list/opencode/opencode-runtime.provider.js');
 const previousPath = process.env.PATH;
@@ -66,11 +67,13 @@ for (const scenario of ['repair', 'repeat', 'missing', 'late', 'launch', 'plain'
     await spawnOpenCode('human request', { cwd: dir, model: 'homelab/local', enableMidTurnInjection: true, ephemeral: scenario === 'helper' }, {
       send(m: any) { sent.push(m); if (m.kind === 'tool_use') sidecarReady = true; }, setSessionId() {},
     });
-    assert.equal(prompts.length, ['repair', 'repeat', 'missing', 'late', 'launch'].includes(scenario) ? 2 : 1);
+    const persistent = ['repeat', 'missing', 'launch'].includes(scenario);
+    assert.equal(prompts.length, persistent ? 1 + BRIEFING_REPAIRS_PER_TURN : ['repair', 'late'].includes(scenario) ? 2 : 1);
     assert.equal(sent.some(m => ['text', 'stream_delta'].includes(m.kind) && String(m.content).includes('FORBIDDEN_HTTP')), ['plain', 'helper'].includes(scenario));
     assert.ok(sent.some(m => m.kind === 'tool_use' && m.toolName === 'reply'), 'actual named card tool remains visible');
-    assert.deepEqual(sent.filter(m => m.kind === 'complete').map(m => m.success), [!['repeat', 'missing', 'launch'].includes(scenario)]);
-    if (['repeat', 'missing', 'launch'].includes(scenario)) assert.ok(sent.some(m => m.kind === 'error' && /AGENT_TEXT_POLICY_VIOLATION/.test(m.content)));
+    assert.deepEqual(sent.filter(m => m.kind === 'complete').map(m => m.success), [true], 'a reporting-policy violation is never a failure');
+    assert.ok(!sent.some(m => m.kind === 'error'));
+    assert.equal(sent.some(m => m.text === 'agent_text_policy_exhausted'), persistent);
   } finally {
     stopLaunch();unregister(); restore(); for (const stream of streams) stream.end(); server.closeAllConnections();
     await new Promise<void>(resolve => server.close(() => resolve()));
