@@ -3,7 +3,7 @@ import test from 'node:test';
 
 import type { Plugin } from '../contexts/PluginsContext';
 
-import { findLaunchOptionBannerAction, sessionLaunchOptionsWith } from './launchOptionMarks';
+import { findLaunchOptionBannerAction, sessionLaunchOptionsWith, switchableLaunchOptions } from './launchOptionMarks';
 
 const declarations = [
   { id: 'acme.review', label: 'review', marker: { label: 'review' }, banner: { text: 'Read it on the board.' }, inertWhenPrivate: true },
@@ -40,4 +40,17 @@ test('a banner links only to a session action of the enabled plugin that declare
   assert.equal(findLaunchOptionBannerAction([plugin], { ...option, pluginName: undefined }), null);
   assert.equal(findLaunchOptionBannerAction([plugin], { ...option, banner: { text: 'No link.' } }), null);
   assert.equal(findLaunchOptionBannerAction([plugin], { ...option, banner: { text: 'x', actionId: 'missing' } }), null);
+});
+
+test('an existing session is offered only switchable options its provider supports', () => {
+  const options = [
+    { id: 'acme.briefing', label: 'briefing', switchable: true, providers: ['claude', 'codex'] },
+    { id: 'acme.anywhere', label: 'anywhere', switchable: true },
+    { id: 'acme.fixed', label: 'fixed' },
+  ];
+  const ids = (list: { id: string }[]) => list.map((option) => option.id);
+  assert.deepEqual(ids(switchableLaunchOptions(options, 'claude', { providerSupportsSwitch: true, isPrivate: false })), ['acme.briefing', 'acme.anywhere']);
+  assert.deepEqual(ids(switchableLaunchOptions(options, 'opencode', { providerSupportsSwitch: true, isPrivate: false })), ['acme.anywhere']);
+  assert.deepEqual(switchableLaunchOptions(options, 'codex', { providerSupportsSwitch: false, isPrivate: false }), [], 'provider cannot relaunch mid-session');
+  assert.deepEqual(switchableLaunchOptions(options, 'claude', { providerSupportsSwitch: true, isPrivate: true }), [], 'never on a private session');
 });

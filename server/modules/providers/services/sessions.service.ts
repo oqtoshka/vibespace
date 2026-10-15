@@ -16,7 +16,14 @@ import type {
   RewindResult,
 } from '@/shared/types.js';
 import { AppError, sessionAvatarUrl } from '@/shared/utils.js';
-import { parseStoredLaunchOptions, type SessionLaunchOptions } from '@/shared/agent-env.js';
+import {
+  launchOptionsKey,
+  parseStoredLaunchOptions,
+  switchSessionLaunchOptions,
+  type SessionLaunchOptions,
+} from '@/shared/agent-env.js';
+import { getClaudeSDKLiveBackgroundTasks } from '@/modules/providers/list/claude/claude-runtime.provider.js';
+import { providerCapabilitiesService } from '@/modules/providers/services/provider-capabilities.service.js';
 
 /**
  * How long after discarding a helper session to re-check that the session
@@ -532,6 +539,89 @@ export const sessionsService = {
     }
 
     return { sessionId };
+  },
+
+  /**
+   * Switches a switchable launch option (chat ↔ briefing, say) in an existing
+   * session. Only the row changes here: the next turn — whoever sends it, the
+   * operator or a server-drained queue item — reads the row, and the runtime
+   * relaunches its harness with the new options, resuming the transcript.
+   *
+   * Refused (409) where that would not hold:
+   * - a side or private session: a side question is not the conversation the
+   *   option is about, and a private one is inert to such options by design;
+   * - a provider whose runtime cannot relaunch mid-session (capabilities'
+   *   `supportsLaunchOptionSwitch`);
+   * - while a turn is in flight or admission is held: the live harness was
+   *   launched with the old options, and the turn under way would finish under
+   *   them while the row already said otherwise;
+   * - while the live Claude process runs background jobs: the relaunch ends
+   *   that process, and the jobs with it.
+   *
+   * Which options may change, and to what, is the declarations' business
+   * (switchSessionLaunchOptions). Returns the stored options.
+   */
+  switchLaunchOptions(sessionId: string, changes: unknown): {
+    sessionId: string;
+    launchOptions: SessionLaunchOptions | null;
+    changed: boolean;
+  } {
+    const session = sessionsDb.getSessionById(sessionId);
+    if (!session) {
+      throw new AppError(`Session "${sessionId}" was not found.`, {
+        code: 'SESSION_NOT_FOUND',
+        statusCode: 404,
+      });
+    }
+    if (session.is_side || session.is_private) {
+      throw new AppError('Launch options can be switched only in an ordinary, non-private session.', {
+        code: 'LAUNCH_OPTIONS_NOT_SWITCHABLE_HERE',
+        statusCode: 409,
+      });
+    }
+    const provider = session.provider as LLMProvider;
+    if (!providerCapabilitiesService.getProviderCapabilities(provider).supportsLaunchOptionSwitch) {
+      throw new AppError(
+        `A ${provider} session takes its launch options only when it starts. Start a new session with the option instead.`,
+        { code: 'LAUNCH_OPTION_SWITCH_UNSUPPORTED', statusCode: 409 },
+      );
+    }
+
+    const current = parseStoredLaunchOptions(session.launch_options);
+    let next: SessionLaunchOptions | null;
+    try {
+      next = switchSessionLaunchOptions(current, changes, provider);
+    } catch (error) {
+      throw new AppError(error instanceof Error ? error.message : 'Invalid launch options', {
+        code: 'INVALID_LAUNCH_OPTIONS',
+        statusCode: 400,
+      });
+    }
+    // Asking for what is already there succeeds without touching anything.
+    if (launchOptionsKey(next) === launchOptionsKey(current)) {
+      return { sessionId, launchOptions: current, changed: false };
+    }
+
+    if (chatRunRegistry.isProcessing(sessionId) || chatRunRegistry.isAdmissionReserved(sessionId)) {
+      throw new AppError('A turn is in progress. Switch after it finishes, or stop it first.', {
+        code: 'SESSION_TURN_IN_FLIGHT',
+        statusCode: 409,
+      });
+    }
+    if (provider === 'claude') {
+      const liveIds = [sessionId, session.provider_session_id].filter((id): id is string => Boolean(id));
+      if (liveIds.some((id) => getClaudeSDKLiveBackgroundTasks(id).length > 0)) {
+        throw new AppError('Background jobs are still running in this session; switching relaunches it and would end them. Switch after they finish.', {
+          code: 'SESSION_BACKGROUND_TASKS_RUNNING',
+          statusCode: 409,
+        });
+      }
+    }
+
+    sessionsDb.updateSessionLaunchOptions(sessionId, next);
+    // The sidebar marker and the chat banner follow the row.
+    broadcastSessionUpdate(sessionId);
+    return { sessionId, launchOptions: next, changed: true };
   },
 
   /**

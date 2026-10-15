@@ -290,5 +290,12 @@
     "download": "Download",
     "downloadFailed": "Could not download the file. Try again.",
     "notFound": "File not found"
+  },
+  "launchOptionSwitch": {
+    "turnOn": "Switch to {{label}}",
+    "turnOff": "Back to {{label}}",
+    "nextTurn": "Takes effect with your next message: the agent restarts with this session's history.",
+    "busy": "Wait for the current turn to finish, or stop it.",
+    "failed": "Could not switch: {{error}}"
   }
 }

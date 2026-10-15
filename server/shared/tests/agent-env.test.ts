@@ -198,3 +198,44 @@ test('launch options: a marker and a banner are validated at registration and li
     unregister();
   }
 });
+
+test('switching launch options in an existing session: only switchable, provider-matching, normalized', async () => {
+  const { listLaunchOptions, registerLaunchOption, switchSessionLaunchOptions } = await import('@/shared/agent-env.js');
+  const stopBriefing = registerLaunchOption({ id: 'acme.briefing', label: 'briefing', providers: ['claude', 'codex'], switchable: true });
+  const stopFixed = registerLaunchOption({ id: 'acme.fixed', label: 'fixed' });
+  try {
+    assert.equal(listLaunchOptions().find((option) => option.id === 'acme.briefing')?.switchable, true, 'listed for the client');
+    assert.deepEqual(switchSessionLaunchOptions(null, { 'acme.briefing': true }, 'claude'), { 'acme.briefing': true });
+    // Other options of the session are kept untouched.
+    assert.deepEqual(
+      switchSessionLaunchOptions({ 'acme.fixed': true }, { 'acme.briefing': true }, 'claude'),
+      { 'acme.fixed': true, 'acme.briefing': true },
+    );
+    // Off: false or null removes the option; nothing left is null, not {}.
+    assert.equal(switchSessionLaunchOptions({ 'acme.briefing': true }, { 'acme.briefing': false }, 'claude'), null);
+    assert.deepEqual(
+      switchSessionLaunchOptions({ 'acme.briefing': true, 'acme.fixed': true }, { 'acme.briefing': null }, 'claude'),
+      { 'acme.fixed': true },
+    );
+    assert.throws(() => switchSessionLaunchOptions(null, { 'acme.fixed': true }, 'claude'), /cannot be changed/);
+    assert.throws(() => switchSessionLaunchOptions(null, { 'acme.missing': true }, 'claude'), /Unknown launch option/);
+    assert.throws(() => switchSessionLaunchOptions(null, { 'acme.briefing': true }, 'opencode'), /does not apply/);
+    assert.throws(() => switchSessionLaunchOptions(null, { 'acme.briefing': 'yes' }, 'claude'), /Invalid/);
+    for (const bad of [null, [], 'x', {}]) {
+      assert.throws(() => switchSessionLaunchOptions(null, bad, 'claude'), /Invalid launch options/);
+    }
+  } finally {
+    stopBriefing();
+    stopFixed();
+  }
+});
+
+test('launchOptionsKey is the same for equal sets in any key order and empty for none', async () => {
+  const { launchOptionsKey } = await import('@/shared/agent-env.js');
+  assert.equal(launchOptionsKey(null), '');
+  assert.equal(launchOptionsKey(undefined), '');
+  assert.equal(launchOptionsKey({}), '');
+  assert.equal(launchOptionsKey({ a: true, b: { y: 1, x: 2 } }), launchOptionsKey({ b: { x: 2, y: 1 }, a: true }));
+  assert.notEqual(launchOptionsKey({ a: true }), launchOptionsKey({ b: true }));
+  assert.notEqual(launchOptionsKey({ a: true }), '');
+});

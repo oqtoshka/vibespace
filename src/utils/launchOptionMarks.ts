@@ -32,3 +32,20 @@ export function findLaunchOptionBannerAction(
   const plugin = plugins.find((candidate) => candidate.name === option.pluginName && candidate.enabled);
   return plugin?.sessionActions?.find((action) => action.id === actionId) ?? null;
 }
+
+/**
+ * The declared launch options an existing session may switch on or off: those
+ * the plugin marks `switchable`, that apply to the session's provider, where
+ * the provider supports the switch at all. None on a private session — the
+ * server refuses there, and an `inertWhenPrivate` option would do nothing.
+ * Consumer: ChatInterface (the chat ↔ briefing control).
+ */
+export function switchableLaunchOptions(
+  declarations: LaunchOptionDeclaration[],
+  provider: string,
+  { providerSupportsSwitch, isPrivate }: { providerSupportsSwitch: boolean; isPrivate: boolean },
+): LaunchOptionDeclaration[] {
+  if (!providerSupportsSwitch || isPrivate) return [];
+  return declarations.filter((option) => option.switchable === true
+    && (!option.providers?.length || option.providers.includes(provider)));
+}

@@ -110,9 +110,11 @@ export type AgentEnvContext = {
   sessionRole?: 'main' | 'side' | 'helper';
   sessionId?: string | null;
   /**
-   * The launch options the session was created with: option id → value, for
-   * the options host plugins declared (see registerLaunchOption). Like
-   * `private`, chosen at creation and fixed after. What an option means to the
+   * The launch options the session runs with: option id → value, for the
+   * options host plugins declared (see registerLaunchOption). Chosen at
+   * creation; an option its plugin declares `switchable` may be changed on the
+   * row later, and the next turn launches with the new value (see
+   * switchSessionLaunchOptions). What an option means to the
    * harness — which variables, which tool server, which instructions — is the
    * declaring plugin's business (see collectAgentLaunchExtras).
    */
@@ -162,6 +164,14 @@ export type LaunchOptionDeclaration = {
   inertWhenPrivate?: boolean;
   /** Providers the option applies to; all of them when omitted. */
   providers?: string[];
+  /**
+   * The operator may turn the option on or off in an existing session, not
+   * only before its first message. The host stores the change on the row and
+   * relaunches the harness with it on the next turn (history intact), so the
+   * declaring plugin must cope with a session whose earlier turns ran without
+   * it — e.g. by telling the agent to catch up on what was already discussed.
+   */
+  switchable?: boolean;
   /**
    * The plugin that declared the option. Set by the plugin host, never by the
    * plugin itself: the client resolves `banner.actionId` against this plugin's
@@ -255,6 +265,64 @@ export function normalizeLaunchOptions(input: unknown, { strict = false } = {}):
     out[id] = value;
   }
   return Object.keys(out).length ? out : null;
+}
+
+/**
+ * Applies an operator's mid-session change to a session's launch options and
+ * returns the options to store (`null` for none). `changes` maps option id →
+ * new value: `false`/`null` turns the option off, `true` or a small plain
+ * object turns it on, validated exactly as at creation (normalizeLaunchOptions,
+ * strict). Only options declared `switchable` and applying to `provider` may
+ * appear; anything else throws, so a client cannot rewrite a choice that was
+ * meant to be fixed. Options already on the row that the change does not name
+ * are kept as they are, including ones whose plugin is no longer installed.
+ *
+ * Used by the providers module's session service (the `PATCH
+ * /api/providers/sessions/:id/launch-options` route) — the only writer of
+ * `launch_options` after creation.
+ */
+export function switchSessionLaunchOptions(
+  current: SessionLaunchOptions | null,
+  changes: unknown,
+  provider: string,
+): SessionLaunchOptions | null {
+  if (!changes || typeof changes !== 'object' || Array.isArray(changes) || !Object.keys(changes).length) {
+    throw new Error('Invalid launch options');
+  }
+  const next: SessionLaunchOptions = { ...(current ?? {}) };
+  for (const [id, value] of Object.entries(changes as Record<string, unknown>)) {
+    const declaration = launchOptionDeclarations.get(id);
+    if (!declaration) throw new Error(`Unknown launch option: ${id}`);
+    if (declaration.switchable !== true) throw new Error(`Launch option ${id} cannot be changed in an existing session`);
+    if (declaration.providers?.length && !declaration.providers.includes(provider)) {
+      throw new Error(`Launch option ${id} does not apply to ${provider} sessions`);
+    }
+    const normalized = normalizeLaunchOptions({ [id]: value }, { strict: true });
+    if (normalized) next[id] = normalized[id];
+    else delete next[id];
+  }
+  return Object.keys(next).length ? next : null;
+}
+
+/**
+ * A stable serialization of launch options: equal for the same ids and values
+ * whatever their key order, and the same for "none" however it is spelled
+ * (`null`, `undefined`, `{}`). Compares what a live harness process was
+ * launched with against what the next turn asks for: the Claude runtime
+ * (`server/claude-sdk.js`) respawns its persistent process when they differ,
+ * and the session service uses it to tell a no-op switch from a real one.
+ */
+export function launchOptionsKey(options: SessionLaunchOptions | null | undefined): string {
+  if (!options || typeof options !== 'object' || !Object.keys(options).length) return '';
+  const sorted = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(sorted);
+    if (value && typeof value === 'object') {
+      return Object.fromEntries(Object.keys(value as Record<string, unknown>).sort()
+        .map((key) => [key, sorted((value as Record<string, unknown>)[key])]));
+    }
+    return value;
+  };
+  return JSON.stringify(sorted(options));
 }
 
 /** Reads a stored `launch_options` cell; anything unreadable is no options. */

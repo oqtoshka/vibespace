@@ -298,6 +298,8 @@ export type PluginHost = {
   /**
    * See shared/agent-env.ts — offer a launch-time choice for new sessions. The
    * host shows and stores it; contributors read it from `context.launchOptions`.
+   * Declared `switchable`, it may also be turned on or off in an existing
+   * session where the provider can relaunch (Claude).
    */
   registerLaunchOption?: (declaration: LaunchOptionDeclaration) => () => void;
   /**
