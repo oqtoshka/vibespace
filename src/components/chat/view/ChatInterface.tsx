@@ -8,7 +8,7 @@ import { useWebSocket } from '../../../contexts/WebSocketContext';
 import PermissionContext from '../../../contexts/PermissionContext';
 import { QuickSettingsPanel } from '../../quick-settings-panel';
 import type { ChatInterfaceProps, PermissionMode, Provider  } from '../types/types';
-import type { LLMProvider } from '../../../types/app';
+import type { LaunchOptionDeclaration, LLMProvider } from '../../../types/app';
 import { useChatProviderState } from '../hooks/useChatProviderState';
 import { useChatSessionState } from '../hooks/useChatSessionState';
 import { useChatRealtimeHandlers } from '../hooks/useChatRealtimeHandlers';
@@ -21,10 +21,11 @@ import { useSessionActiveModel } from '../hooks/useSessionActiveModel';
 import { sessionModelForSend, useReconnectEpoch } from '../utils/sessionModelLoad';
 import { BackgroundTasksProvider } from '../context/BackgroundTasksContext';
 import { useSessionStore } from '../../../stores/useSessionStore';
-import { sessionLaunchOptionsWith } from '../../../utils/launchOptionMarks';
+import { sessionLaunchOptionsWith, switchableLaunchOptions } from '../../../utils/launchOptionMarks';
 
 import ChatMessagesPane from './subcomponents/ChatMessagesPane';
 import LaunchOptionBanner from './subcomponents/LaunchOptionBanner';
+import LaunchOptionSwitch from './subcomponents/LaunchOptionSwitch';
 import ChatComposer from './subcomponents/ChatComposer';
 import CommandResultModal from './subcomponents/CommandResultModal';
 import BtwPanel from './subcomponents/BtwPanel';
@@ -98,6 +99,7 @@ function ChatInterface({
     launchOptionDeclarations,
     launchOptionValues,
     toggleLaunchOption,
+    canSwitchLaunchOptions,
     pendingPermissionRequests,
     setPendingPermissionRequests,
     cyclePermissionMode,
@@ -165,6 +167,20 @@ function ChatInterface({
     replayCursorRef,
     sessionStore,
   });
+
+  // A launch-option switch (chat ↔ briefing) this view just made, shown until
+  // the session row it changed arrives with the session-list event.
+  const [launchOptionSwitch, setLaunchOptionSwitch] = useState<{
+    sessionId: string;
+    launchOptions: Record<string, unknown> | null;
+  } | null>(null);
+  const handleLaunchOptionSwitched = useCallback((sessionId: string, launchOptions: Record<string, unknown> | null) => {
+    setLaunchOptionSwitch({ sessionId, launchOptions });
+  }, []);
+  const selectedLaunchOptionsKey = JSON.stringify(selectedSession?.launchOptions ?? null);
+  useEffect(() => {
+    setLaunchOptionSwitch(null);
+  }, [selectedSession?.id, selectedLaunchOptionsKey]);
 
   // Brand-new conversation: the composer allocated a stable session id via
   // the session gateway before the first send. Record it locally and put it
@@ -499,10 +515,39 @@ function ChatInterface({
     : privateMode;
   const isPrivateSession = sessionExists && effectivePrivateMode;
   // Plugin-declared launch options: same shape. An existing session's row says
-  // what it was started with; a pending one shows the toggles.
-  const effectiveLaunchOptions: Record<string, unknown> = selectedSession?.launchOptions !== undefined
-    ? selectedSession.launchOptions ?? {}
-    : launchOptionValues;
+  // what it runs with; a pending one shows the toggles. A switch made here is
+  // shown at once, ahead of the session-list event that carries the new row.
+  const bannerSessionId = selectedSession?.id || currentSessionId || null;
+  const switchedOptions = launchOptionSwitch && launchOptionSwitch.sessionId === bannerSessionId
+    ? launchOptionSwitch.launchOptions
+    : undefined;
+  const effectiveLaunchOptions: Record<string, unknown> = switchedOptions !== undefined
+    ? switchedOptions ?? {}
+    : selectedSession?.launchOptions !== undefined
+      ? selectedSession.launchOptions ?? {}
+      : launchOptionValues;
+  // Switchable options of an existing session: "Switch to briefing" while off,
+  // "Back to chat" on the option's banner or badge while on.
+  const sessionProvider = (selectedSession?.__provider as LLMProvider | undefined) ?? provider;
+  const switchOptions = sessionExists && bannerSessionId
+    ? switchableLaunchOptions(launchOptionDeclarations, sessionProvider, {
+      providerSupportsSwitch: canSwitchLaunchOptions(sessionProvider),
+      isPrivate: effectivePrivateMode,
+    })
+    : [];
+  const renderSwitch = (option: LaunchOptionDeclaration, tone: 'muted' | 'banner') => (
+    bannerSessionId && switchOptions.includes(option) ? (
+      <LaunchOptionSwitch
+        option={option}
+        isOn={Boolean(effectiveLaunchOptions[option.id])}
+        sessionId={bannerSessionId}
+        busy={isProcessing}
+        onSwitched={handleLaunchOptionSwitched}
+        tone={tone}
+      />
+    ) : null
+  );
+  const switchOffOptions = switchOptions.filter((option) => !effectiveLaunchOptions[option.id]);
   // An option with a banner shows the banner instead of its thin badge row.
   const launchOptionBanners = sessionExists
     ? sessionLaunchOptionsWith(launchOptionDeclarations, effectiveLaunchOptions, 'banner', effectivePrivateMode)
@@ -510,7 +555,6 @@ function ChatInterface({
   const launchOptionBadges = sessionExists
     ? launchOptionDeclarations.filter((option) => option.badge && !launchOptionBanners.includes(option) && effectiveLaunchOptions[option.id])
     : [];
-  const bannerSessionId = selectedSession?.id || currentSessionId || null;
 
   return (
     <PermissionContext.Provider value={permissionContextValue}>
@@ -529,7 +573,9 @@ function ChatInterface({
           </div>
         )}
         {launchOptionBanners.map((option) => (
-          <LaunchOptionBanner key={option.id} option={option} sessionId={bannerSessionId} />
+          <LaunchOptionBanner key={option.id} option={option} sessionId={bannerSessionId}>
+            {renderSwitch(option, 'banner')}
+          </LaunchOptionBanner>
         ))}
         {launchOptionBadges.map((option) => (
           <div
@@ -543,8 +589,19 @@ function ChatInterface({
             {option.badgeHint && (
               <span className="truncate text-sky-700/70 dark:text-sky-400/70">{option.badgeHint}</span>
             )}
+            <span className="ml-auto">{renderSwitch(option, 'muted')}</span>
           </div>
         ))}
+        {switchOffOptions.length > 0 && (
+          <div
+            className="flex flex-shrink-0 flex-wrap items-center justify-end gap-2 border-b border-border/40 px-3 py-1"
+            data-testid="launch-option-switches"
+          >
+            {switchOffOptions.map((option) => (
+              <span key={option.id}>{renderSwitch(option, 'muted')}</span>
+            ))}
+          </div>
+        )}
         <ChatMessagesPane
           scrollContainerRef={scrollContainerRef}
           transcriptListRef={transcriptListRef}

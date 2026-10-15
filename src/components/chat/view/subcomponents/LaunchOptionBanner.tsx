@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { ArrowRight, Loader2, RotateCw, SlidersHorizontal } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
@@ -22,9 +22,12 @@ type LinkState =
 export default function LaunchOptionBanner({
   option,
   sessionId,
+  children,
 }: {
   option: LaunchOptionDeclaration;
   sessionId: string | null;
+  /** Extra controls at the banner's end — the "Back to chat" switch. */
+  children?: ReactNode;
 }) {
   const { t } = useTranslation('chat');
   const { plugins } = usePlugins();
@@ -91,6 +94,7 @@ export default function LaunchOptionBanner({
           {t('launchOptionBanner.linkUnavailable', { label: linkLabel, defaultValue: '{{label}} unavailable — retry' })}
         </button>
       )}
+      {children}
     </div>
   );
 }

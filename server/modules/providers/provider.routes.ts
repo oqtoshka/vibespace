@@ -780,6 +780,22 @@ router.post(
   }),
 );
 
+/**
+ * Turns a switchable launch option on or off in an existing session (the
+ * chat ↔ briefing switch). Body: `{ launchOptions: { "<option id>": value } }`;
+ * `false`/`null` turns a flag off. Takes effect with the next turn, which
+ * relaunches the harness with resume; refused (409) while a turn runs.
+ */
+router.patch(
+  '/sessions/:sessionId/launch-options',
+  asyncHandler(async (req: Request, res: Response) => {
+    const sessionId = parseSessionId(req.params.sessionId);
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const result = sessionsService.switchLaunchOptions(sessionId, body.launchOptions);
+    res.json(createApiSuccessResponse({ ...result, appliesAt: 'next-turn' }));
+  }),
+);
+
 // Status-only, same existing authenticated Providers mount. Never starts a native client.
 router.get(
   '/sessions/restart-admission',

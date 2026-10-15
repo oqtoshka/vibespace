@@ -10,7 +10,7 @@ import { sessionSynchronizerService } from '@/modules/providers/services/session
 import { WS_OPEN_STATE, connectedClients } from '@/modules/websocket/index.js';
 import type { LLMProvider } from '@/shared/index.js';
 import { generateDisplayName } from '@/modules/projects/index.js';
-import { sessionAvatarUrl } from '@/shared/index.js';
+import { parseStoredLaunchOptions, sessionAvatarUrl } from '@/shared/index.js';
 
 type WatcherEventType = 'add' | 'change';
 
@@ -195,6 +195,9 @@ async function buildSessionUpsertedEvent(updatedProviderSessionId: string): Prom
       messageCount: 0,
       lastActivity: row.updated_at ?? row.created_at ?? new Date().toISOString(),
       isPrivate: Boolean(row.is_private),
+      // Switchable mid-session (chat ↔ briefing), so the sidebar marker and the
+      // chat banner follow this event rather than the creation-time snapshot.
+      launchOptions: parseStoredLaunchOptions(row.launch_options),
       avatarUrl: sessionAvatarUrl(row.provider_session_id, Boolean(row.is_private)),
     },
     project: project

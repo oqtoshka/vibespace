@@ -22,7 +22,7 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import { CLAUDE_FALLBACK_MODELS, normalizeClaudeModelToCatalogValue } from './modules/providers/list/claude/claude-models.provider.js';
 import { providerModelsService } from './modules/providers/services/provider-models.service.js';
 import { appendFilesInputTag, buildClaudeUserContent, getGlobalImageAssetsDir, normalizeImageDescriptors } from './shared/image-attachments.js';
-import { buildAgentEnv, collectAgentEnv, collectAgentLaunchExtras } from './shared/agent-env.js';
+import { buildAgentEnv, collectAgentEnv, collectAgentLaunchExtras, launchOptionsKey } from './shared/agent-env.js';
 import { resolveClaudeCodeExecutablePath } from './shared/claude-cli-path.js';
 import {
   createNotificationEvent,
@@ -2874,6 +2874,19 @@ function normalizeQueryOptions(options, context) {
 }
 
 /**
+ * Whether a turn asks for different launch options than the live process was
+ * spawned with. Only a caller that states them counts: the chat gateway always
+ * passes the session row's options (null for none); legacy callers (agent and
+ * git routes) pass none at all and must keep reusing whatever is live.
+ * Compared by a key-order-independent serialization, so a reordered but equal
+ * set does not cost a relaunch. Consumers: queryClaudeSDK, its tests.
+ */
+function launchOptionsChanged(liveOptions, turnOptions) {
+  if (!turnOptions || !Object.hasOwn(turnOptions, 'launchOptions')) return false;
+  return launchOptionsKey(liveOptions?.launchOptions) !== launchOptionsKey(turnOptions.launchOptions);
+}
+
+/**
  * Executes (or continues) a Claude query using the SDK. A brand-new session
  * spins up a persistent streaming query; a message for an already-running
  * session is fed into it so background jobs from earlier turns stay alive.
@@ -2941,16 +2954,29 @@ async function queryClaudeSDK(command, rawOptions = {}, ws, context = undefined)
     const liveKey = sessionId || options.appSessionId;
     if (liveKey) {
       const existing = getSession(liveKey);
-      if (existing && !existing.ended && existing.input && !existing.input.closed
-          && Boolean(existing.options?.sideSession) === Boolean(options.sideSession)) {
+      const live = Boolean(existing && !existing.ended && existing.input && !existing.input.closed);
+      const sideChanged = live && Boolean(existing.options?.sideSession) !== Boolean(options.sideSession);
+      // The resume id a relaunch needs: the turn's own, else the one the live
+      // process learned from its first `init`. Without either a relaunch would
+      // start a blank conversation, so the old process keeps the turn.
+      const resumeId = sessionId || existing?.sessionId || null;
+      const launchChanged = live && Boolean(resumeId) && launchOptionsChanged(existing.options, options);
+      if (live && !sideChanged && !launchChanged) {
         return await reuseSession(existing, command, options, ws);
       }
-      if (existing && !existing.ended && existing.input && !existing.input.closed) {
-        // A promoted side question: its live process was spawned read-only and
-        // off the board. Respawn it (resuming its own transcript) so the next
-        // turn runs as the ordinary session it has become.
-        endSession(existing, 'side-session-promoted');
+      if (live) {
+        // The live process was launched for a different session shape, and its
+        // env, MCP servers, tool lists and system prompt are fixed at spawn:
+        // - a promoted side question was spawned read-only and off the board;
+        // - a session switched between chat and briefing (or any other
+        //   switchable launch option) carries the old plugin contributions.
+        // Respawn it, resuming its own transcript, so the next turn runs as the
+        // session it has become.
+        endSession(existing, sideChanged ? 'side-session-promoted' : 'launch-options-changed');
         removeSession(liveKey);
+        if (!sessionId && resumeId) {
+          return await startPersistentSession(command, { ...options, sessionId: resumeId, providerSessionId: resumeId }, ws);
+        }
       } else if (existing) {
         // A dead/closing session still lingering in the map — drop it.
         removeSession(liveKey);
@@ -3180,6 +3206,7 @@ function reconnectSessionWriter(sessionId, newRawWs) {
 // Export public API
 export {
   queryClaudeSDK,
+  launchOptionsChanged,
   injectClaudeMessage,
   cancelInjectedClaudeMessage,
   abortClaudeSDKSession,

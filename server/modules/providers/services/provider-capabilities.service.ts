@@ -27,6 +27,15 @@ type ProviderCapabilities = {
   supportsTokenUsage: boolean;
   /** Whether the provider runtime can accept model-level reasoning effort. */
   supportsEffort: boolean;
+  /**
+   * Whether a switchable launch option (see LaunchOptionDeclaration.switchable)
+   * can be changed in an existing session. Only the Claude runtime relaunches
+   * its harness with the new options on the next turn (resuming the
+   * transcript); Codex and OpenCode take a plugin's instructions only when a
+   * thread starts and share one server per variant, so a switch there would
+   * change the card policy without the agent ever being told.
+   */
+  supportsLaunchOptionSwitch: boolean;
 };
 
 /**
@@ -46,6 +55,7 @@ const PROVIDER_CAPABILITIES: Record<LLMProvider, ProviderCapabilities> = {
     supportsPermissionRequests: true,
     supportsTokenUsage: true,
     supportsEffort: true,
+    supportsLaunchOptionSwitch: true,
   },
   cursor: {
     provider: 'cursor',
@@ -57,6 +67,7 @@ const PROVIDER_CAPABILITIES: Record<LLMProvider, ProviderCapabilities> = {
     supportsPermissionRequests: false,
     supportsTokenUsage: false,
     supportsEffort: false,
+    supportsLaunchOptionSwitch: false,
   },
   codex: {
     provider: 'codex',
@@ -71,6 +82,7 @@ const PROVIDER_CAPABILITIES: Record<LLMProvider, ProviderCapabilities> = {
     supportsPermissionRequests: false,
     supportsTokenUsage: true,
     supportsEffort: true,
+    supportsLaunchOptionSwitch: false,
   },
   opencode: {
     provider: 'opencode',
@@ -85,6 +97,7 @@ const PROVIDER_CAPABILITIES: Record<LLMProvider, ProviderCapabilities> = {
     supportsPermissionRequests: false,
     supportsTokenUsage: true,
     supportsEffort: true,
+    supportsLaunchOptionSwitch: false,
   },
 };
 

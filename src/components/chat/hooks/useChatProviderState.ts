@@ -61,6 +61,8 @@ type ProviderCapabilities = {
   supportsPermissionRequests: boolean;
   supportsTokenUsage: boolean;
   supportsEffort?: boolean;
+  /** An existing session's switchable launch options may change (Claude only). */
+  supportsLaunchOptionSwitch?: boolean;
 };
 
 type ProviderCapabilitiesApiResponse = {
@@ -313,6 +315,13 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     }
     return Boolean(FALLBACK_PROVIDER_EFFORT_VALUES[targetProvider]?.length);
   }, [providerCapabilities]);
+
+  // Unknown until capabilities load: no switch is offered rather than one the
+  // server would refuse.
+  const canSwitchLaunchOptions = useCallback(
+    (targetProvider: LLMProvider): boolean => providerCapabilities?.[targetProvider]?.supportsLaunchOptionSwitch === true,
+    [providerCapabilities],
+  );
 
   const pickStoredOrCurrent = (
     storageKey: string,
@@ -953,6 +962,7 @@ export function useChatProviderState({ selectedSession, selectedProject: _select
     launchOptionDeclarations,
     launchOptionValues,
     toggleLaunchOption,
+    canSwitchLaunchOptions,
     pendingPermissionRequests,
     setPendingPermissionRequests,
     availablePermissionModes,

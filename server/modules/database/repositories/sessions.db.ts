@@ -21,7 +21,11 @@ type SessionRow = {
   isArchived: number;
   is_side: number;
   is_private: number;
-  /** JSON of the plugin-declared launch options (see schema.ts); fixed at creation. */
+  /**
+   * JSON of the plugin-declared launch options (see schema.ts). Set at
+   * creation; only `updateSessionLaunchOptions` changes it later, for options
+   * their plugin declares switchable.
+   */
   launch_options: string | null;
   created_at: string;
   updated_at: string;
@@ -217,8 +221,8 @@ export const sessionsDb = {
    *
    * `isPrivate` is the only moment the flag can be set: it has to be in place
    * before the first turn spawns the harness, and nothing updates it later.
-   * `launchOptions` are the same kind of choice: the launch reads them,
-   * nothing rewrites them.
+   * `launchOptions` are the same kind of choice: the launch reads them; only
+   * a switchable one is ever rewritten (updateSessionLaunchOptions).
    */
   createAppSession(
     sessionId: string,
@@ -277,6 +281,24 @@ export const sessionsDb = {
       )
       .run(fallbackName ?? null, fallbackName ?? null, sessionId);
 
+    return result.changes > 0;
+  },
+
+  /**
+   * Replaces a main session's launch options — the operator switched a
+   * switchable option (e.g. chat ↔ briefing) mid-session. Which options may
+   * change, and to what, is validated by the caller (switchSessionLaunchOptions);
+   * the next turn reads the row and launches with the new value. Side and
+   * private rows are never touched. Returns whether a row was updated.
+   */
+  updateSessionLaunchOptions(sessionId: string, launchOptions: Record<string, unknown> | null): boolean {
+    const result = getConnection()
+      .prepare(
+        `UPDATE sessions
+         SET launch_options = ?, updated_at = CURRENT_TIMESTAMP
+         WHERE session_id = ? AND is_side = 0 AND is_private = 0`
+      )
+      .run(launchOptions && Object.keys(launchOptions).length ? JSON.stringify(launchOptions) : null, sessionId);
     return result.changes > 0;
   },
 

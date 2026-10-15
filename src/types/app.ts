@@ -64,8 +64,9 @@ export interface ProjectSession {
   // Started private: no presence reporting, no notifications, no recap.
   // Fixed at creation; the sidebar and the chat header spell it out.
   isPrivate?: boolean;
-  // The plugin-declared launch options the session was created with (option
-  // id → value). Fixed at creation, like private.
+  // The plugin-declared launch options the session runs with (option id →
+  // value). Chosen at creation like private; an option its plugin declares
+  // `switchable` may be turned on or off later (chat ↔ briefing).
   launchOptions?: Record<string, unknown> | null;
   [key: string]: unknown;
 }
@@ -92,6 +93,12 @@ export interface LaunchOptionDeclaration {
   banner?: { text: string; actionId?: string; actionLabel?: string };
   /** No marker or banner on a private session: the plugin ignores the option there. */
   inertWhenPrivate?: boolean;
+  /**
+   * May be turned on or off in an existing session; the next message relaunches
+   * the agent with its history. Only where the provider supports the switch
+   * (capabilities' `supportsLaunchOptionSwitch`).
+   */
+  switchable?: boolean;
   providers?: string[];
   /** The declaring plugin, stamped by the server. */
   pluginName?: string;
