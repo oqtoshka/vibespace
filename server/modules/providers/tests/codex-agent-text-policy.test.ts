@@ -7,6 +7,7 @@ import test from 'node:test';
 import { registerTaskLedgerSource, registerAgentLaunchContributor } from '../../../shared/index.js';
 import { __clearTaskContinuationState } from '../../task-continuation/index.js';
 import { initializeDatabase, closeConnection } from '../../database/index.js';
+import { BRIEFING_REPAIRS_PER_TURN } from '../index.js';
 // eslint-disable-next-line boundaries/no-unknown -- Real runtime/transport policy boundary, without a provider call.
 import { queryCodex, injectCodexMessage } from '../../../openai-codex.js';
 // eslint-disable-next-line boundaries/no-unknown -- Close the owned executable fixture transport.
@@ -89,7 +90,7 @@ require('node:readline').createInterface({input:process.stdin}).on('line',line=>
   }
 }
 
-test('actual Codex rejects delta/completed prose after valid card reply, deduplicates and repairs once', { timeout: 15000 }, async () => {
+test('actual Codex rejects delta/completed prose after valid card reply, deduplicates and repairs', { timeout: 15000 }, async () => {
   const { events, calls } = await run({ policy: 'reject' });
   assert.equal(calls.filter(call => call.method === 'turn/start').length, 2);
   assert.match(calls.filter(call => call.method === 'turn/start')[1].params.input[0].text, /Session behavior invariant violated/);
@@ -99,11 +100,15 @@ test('actual Codex rejects delta/completed prose after valid card reply, dedupli
   assert.ok(!events.some(event => event.content === 'Do not leak this prose'));
   assert.deepEqual(events.filter(event => event.kind === 'complete').map(event => event.success), [true]);
 });
-test('actual Codex repeated prose becomes invariant error and failed terminal, never a silent successful completion', { timeout: 15000 }, async () => {
+test('actual Codex repeated prose keeps getting repairs up to the turn budget, then settles idle without failure', { timeout: 15000 }, async () => {
   const { events, calls } = await run({ policy: 'reject', repeat: true });
-  assert.equal(calls.filter(call => call.method === 'turn/start').length, 2);
-  assert.ok(events.some(event => event.kind === 'error' && /AGENT_TEXT_POLICY_VIOLATION/.test(String(event.content))));
-  assert.deepEqual(events.filter(event => event.kind === 'complete').map(event => event.success), [false]);
+  const starts = calls.filter(call => call.method === 'turn/start');
+  assert.equal(starts.length, 1 + BRIEFING_REPAIRS_PER_TURN);
+  for (const start of starts.slice(1)) assert.doesNotMatch(start.params.input[0].text, /ends this run|AGENT_TEXT_POLICY_VIOLATION/);
+  assert.ok(!events.some(event => event.content === 'Do not leak this prose'));
+  assert.ok(!events.some(event => event.kind === 'error'));
+  assert.ok(events.some(event => event.text === 'agent_text_policy_exhausted'));
+  assert.deepEqual(events.filter(event => event.kind === 'complete').map(event => event.success), [true]);
 });
 test('actual Codex ordinary session prose remains accepted without capability', { timeout: 15000 }, async () => {
   const { events, calls } = await run({});
@@ -157,12 +162,12 @@ test('unreadable source does not fabricate enforcement or turn ordinary prose in
   assert.ok(events.some(event => event.content === 'Do not leak this prose'));
   assert.ok(!events.some(event => event.text === 'agent_text_policy_violation'));
 });
-test('confirmed policy admission survives an unavailable source during its one repair', { timeout: 15000 }, async () => {
+test('confirmed policy admission survives an unavailable source during its repairs', { timeout: 15000 }, async () => {
   const { events, calls } = await run({ policy: 'reject', repeat: true, unreadableAfterAdmission: true });
-  assert.equal(calls.filter(call => call.method === 'turn/start').length, 2);
+  assert.equal(calls.filter(call => call.method === 'turn/start').length, 1 + BRIEFING_REPAIRS_PER_TURN);
   assert.ok(!events.some(event => event.content === 'Do not leak this prose'));
-  assert.deepEqual(events.filter(event => event.kind === 'complete').map(event => event.success), [false]);
-  assert.ok(events.some(event => event.kind === 'error' && /AGENT_TEXT_POLICY_VIOLATION/.test(String(event.content))));
+  assert.deepEqual(events.filter(event => event.kind === 'complete').map(event => event.success), [true]);
+  assert.ok(!events.some(event => event.kind === 'error'));
 });
 
 test('actual Codex re-reads first-turn admission after the card tool creates a sidecar', { timeout: 15000 }, async () => {
@@ -172,18 +177,18 @@ test('actual Codex re-reads first-turn admission after the card tool creates a s
   assert.deepEqual(events.filter(event => event.kind === 'complete').map(event => event.success), [true]);
 });
 
-test('actual Codex repeated missing card checkpoint shares the single policy repair budget', { timeout: 15000 }, async () => {
+test('actual Codex repeated missing card checkpoint shares the per-turn repair budget and never fails the run', { timeout: 15000 }, async () => {
   const { events, calls } = await run({ policy: 'reject', missing: true });
-  assert.equal(calls.filter(call => call.method === 'turn/start').length, 2);
+  assert.equal(calls.filter(call => call.method === 'turn/start').length, 1 + BRIEFING_REPAIRS_PER_TURN);
   assert.match(calls.filter(call => call.method === 'turn/start')[1].params.input[0].text, /reply exact current threads/);
-  assert.ok(events.some(event => event.kind === 'error' && /AGENT_TEXT_POLICY_VIOLATION/.test(String(event.content))));
-  assert.deepEqual(events.filter(event => event.kind === 'complete').map(event => event.success), [false]);
+  assert.ok(!events.some(event => event.kind === 'error'));
+  assert.deepEqual(events.filter(event => event.kind === 'complete').map(event => event.success), [true]);
 });
 
-test('actual Codex explicit launch refuses first prose before any reporter hook and fails unknown checkpoint after one repair',{timeout:15000},async()=>{
+test('actual Codex explicit launch refuses first prose before any reporter hook and repairs an unknown checkpoint up to the budget',{timeout:15000},async()=>{
  const {events,calls}=await run({launch:true});
- assert.equal(calls.filter(c=>c.method==='turn/start').length,2);
+ assert.equal(calls.filter(c=>c.method==='turn/start').length,1+BRIEFING_REPAIRS_PER_TURN);
  assert.ok(!events.some(e=>e.content==='Do not leak this prose'));
- assert.deepEqual(events.filter(e=>e.kind==='complete').map(e=>e.success),[false]);
- assert.ok(events.some(e=>e.kind==='error'&&String(e.content).includes('AGENT_TEXT_POLICY_VIOLATION')));
+ assert.deepEqual(events.filter(e=>e.kind==='complete').map(e=>e.success),[true]);
+ assert.ok(events.some(e=>e.text==='agent_text_policy_exhausted'));
 });

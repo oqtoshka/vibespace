@@ -968,11 +968,8 @@ export async function runOpenCodeHttpTurn(command, options, ws, hooks = {}) {
   }
 
   const policyCheckpoint = outcome.ok && !handle.aborted ? briefingPolicy.complete() : {};
-  if (policyCheckpoint.failure) {
-    ws.send(briefingPolicy.failureMessage(policyCheckpoint.failure));
-    ws.send(createCompleteMessage({ provider: 'opencode', sessionId: activeSessionId, exitCode: 1 }));
-    return;
-  }
+  // Never a failure: past the per-turn repair budget the text stays dropped and the turn ends idle.
+  if (policyCheckpoint.exhausted) ws.send(briefingPolicy.noticeMessage(policyCheckpoint.exhausted));
 
   // A failed turn continues too, as Codex does: an error mid-task (a dropped
   // transport, a busy model) is exactly where open work gets stranded. A run

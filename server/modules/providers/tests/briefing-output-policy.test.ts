@@ -2,10 +2,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { registerTaskLedgerSource, registerAgentLaunchContributor } from '../../../shared/index.js';
-import { BriefingOutputPolicy } from '../index.js';
+import { BriefingOutputPolicy, BRIEFING_REPAIRS_PER_TURN } from '../index.js';
 
 for (const provider of ['claude', 'opencode', 'cursor'] as const) {
-  test(`${provider}: prose rejected after valid card; tools/errors/user retained; one repair only`, () => {
+  test(`${provider}: prose rejected after valid card; tools/errors/user retained; bounded repairs never fail`, () => {
     const unregister = registerTaskLedgerSource(c => c.provider === provider ? { listName:'card', guidance:'', open:[], activity:0, agentTextPolicy:'reject' } : null);
     try {
       const gate = new BriefingOutputPolicy(provider, {}); gate.begin('main', 'actual request');
@@ -14,9 +14,19 @@ for (const provider of ['claude', 'opencode', 'cursor'] as const) {
       assert.equal(gate.accepts({kind:'text',role:'assistant',content:'forbidden'}),false);
       assert.equal(gate.accepts({kind:'stream_delta',content:'forbidden delta'}),false);
       assert.ok(gate.complete().prompt);
+      for (let i = 1; i < BRIEFING_REPAIRS_PER_TURN; i++) {
+        gate.begin('main', 'repair');
+        assert.equal(gate.accepts({kind:'text',role:'assistant',content:'again'}),false);
+        const next = gate.complete();
+        assert.ok(next.prompt); assert.doesNotMatch(next.prompt!, /ends this run|AGENT_TEXT_POLICY_VIOLATION/);
+      }
       gate.begin('main', 'repair');
-      assert.equal(gate.accepts({kind:'text',role:'assistant',content:'again'}),false);
-      assert.match(gate.complete().failure!, /AGENT_TEXT_POLICY_VIOLATION/);
+      assert.equal(gate.accepts({kind:'text',role:'assistant',content:'still'}),false, 'text stays dropped past the budget');
+      const last = gate.complete() as Record<string, unknown>;
+      assert.equal(last.failure, undefined); assert.equal(last.prompt, undefined); assert.match(String(last.exhausted), /stays open/);
+      gate.resetRepairs();
+      assert.equal(gate.accepts({kind:'text',role:'assistant',content:'next turn'}),false);
+      assert.ok(gate.complete().prompt, 'a new turn gets a fresh repair budget');
     } finally { unregister(); }
   });
   test(`${provider}: source published after initial start admits before first output, preserving turn identity`, () => {
@@ -36,18 +46,19 @@ for (const provider of ['claude', 'opencode', 'cursor'] as const) {
       assert.equal(gate.accepts({ kind: 'text', content: 'first violation' }), false);
       assert.ok(gate.complete().prompt);
       available = false;
+      for (let i = 1; i < BRIEFING_REPAIRS_PER_TURN; i++) { gate.begin('native', 'repair ' + i); gate.accepts({ kind: 'text', content: 'x' }); assert.ok(gate.complete().prompt); }
       gate.begin('native', 'accepted steer');
       assert.equal(gate.accepts({ kind: 'text', content: 'repeat violation' }), false);
-      assert.match(gate.complete().failure!, /AGENT_TEXT_POLICY_VIOLATION/);
+      assert.ok(gate.complete().exhausted, 'a steer does not renew the turn budget');
     } finally { unregister(); }
   });
   for(const options of [{ephemeral:true},{backgroundHelper:true},{sideSession:{id:'side'}}]) test(`${provider}: helper/side inert ${JSON.stringify(options)}`,()=> {
     const unregister=registerTaskLedgerSource(()=>({listName:'card',guidance:'',open:[],activity:0,agentTextPolicy:'reject',completion:{turnId:'x',prompt:'missing'}}));
     try{const gate=new BriefingOutputPolicy(provider,options);gate.begin('native','request');assert.equal(gate.accepts({kind:'text',role:'assistant',content:'allowed'}),true);assert.deepEqual(gate.complete(),{});}finally{unregister();}
   });
-  test(`${provider}: missing checkpoint cannot end successfully after repair`,()=>{
+  test(`${provider}: missing checkpoint is repaired up to the budget, then settles without failure`,()=>{
     const unregister=registerTaskLedgerSource(()=>({listName:'card',guidance:'',open:[],activity:0,agentTextPolicy:'reject',completion:{turnId:'x',prompt:'reply both threads'}}));
-    try{const gate=new BriefingOutputPolicy(provider,{});gate.begin('native','request');assert.match(gate.complete().prompt!,/reply both threads/);assert.match(gate.complete().failure!,/AGENT_TEXT_POLICY_VIOLATION/);}finally{unregister();}
+    try{const gate=new BriefingOutputPolicy(provider,{});gate.begin('native','request');for(let i=0;i<BRIEFING_REPAIRS_PER_TURN;i++)assert.match(gate.complete().prompt!,/reply both threads/);const last=gate.complete() as Record<string,unknown>;assert.equal(last.failure,undefined);assert.ok(last.exhausted);}finally{unregister();}
   });
 }
 
@@ -62,7 +73,9 @@ for (const provider of ['claude','opencode','cursor'] as const) {
       assert.equal(gate.accepts({kind:'text',content:'before hook'}),false);
       assert.ok(gate.complete().prompt);
       gate.begin('real-native','human');
-      assert.match(gate.complete().failure!,/AGENT_TEXT_POLICY_VIOLATION/);
+      // Absent ledger still fails closed into repairs, never into a session failure.
+      for(let i=1;i<BRIEFING_REPAIRS_PER_TURN;i++)assert.ok(gate.complete().prompt);
+      assert.ok(gate.complete().exhausted);
       assert.equal(contexts[0].sessionId,'host-row');
       assert.equal(contexts[0].sessionRole,'main');
       const plain=new BriefingOutputPolicy(provider,{appSessionId:'host-row'});plain.begin(null,'human');

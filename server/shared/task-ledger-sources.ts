@@ -35,7 +35,7 @@ export type ExternalTaskLedger = {
   open: ExternalTaskLedgerItem[];
   /** A counter that moves whenever the list is written; stall detection compares it. */
   activity: number;
-  /** Optional missing-report checkpoint, distinct from open tasks. The turn supervisor gives this stable turn ID one bounded repair. */
+  /** Optional missing-report checkpoint, distinct from open tasks. The turn supervisor repairs it within the per-turn repair budget (BRIEFING_REPAIRS_PER_TURN); never a session failure. */
   completion?: { turnId: string; prompt: string };
   /** Opt-in main-session behavior: reject agent prose, preserving tools and system events. */
   agentTextPolicy?: 'reject';

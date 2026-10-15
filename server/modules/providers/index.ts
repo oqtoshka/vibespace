@@ -41,4 +41,4 @@ export { codexRestartAdmissionObserver } from './services/codex-restart-admissio
 export { codexDiagnosticRuntime } from './services/codex-diagnostic-runtime.service.js';
 
 // Main briefing transport output and completion admission.
-export { BriefingOutputPolicy } from './services/briefing-output-policy.service.js';
+export { BriefingOutputPolicy, BRIEFING_REPAIRS_PER_TURN, BRIEFING_REPAIR_PROMPT } from './services/briefing-output-policy.service.js';

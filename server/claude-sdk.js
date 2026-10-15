@@ -1859,9 +1859,12 @@ function handleCommandLifecycle(session, message) {
  * @param {Object} session
  * @param {{aborted?: boolean}} opts
  */
-function settleTurn(session, { aborted = false, policyFailure = null } = {}) {
+function settleTurn(session, { aborted = false } = {}) {
   if (!session.awaitingResult) return;
   session.awaitingResult = false;
+  // The next turn — human or server-started (background resume, task nudge) —
+  // gets a fresh briefing repair budget.
+  session.briefingPolicy?.resetRepairs();
   session.turnActive = false;
   session.turnStartTime = null;
   recordRestoreState(session, false);
@@ -1877,19 +1880,13 @@ function settleTurn(session, { aborted = false, policyFailure = null } = {}) {
     session.firstTurnCompleted = true;
     session.writer.send(createNormalizedMessage({
       kind: 'complete',
-      exitCode: policyFailure ? 1 : 0,
+      exitCode: 0,
       isNewSession,
       sessionId: session.sessionId,
       provider: 'claude',
     }));
   } else {
     session.firstTurnCompleted = true;
-  }
-
-  if (policyFailure) {
-    completeTurn(session);
-    endSession(session, 'reporting-policy-failed');
-    return;
   }
 
   if (session.pendingTasks.size > 0) {
@@ -1946,10 +1943,10 @@ function onTurnEnd(session) {
       session.input.push(makeUserMessage(checkpoint.prompt));
       return;
     }
-    if (checkpoint?.failure) {
-      session.writer.send(session.briefingPolicy.failureMessage(checkpoint.failure));
-      settleTurn(session, { policyFailure: checkpoint.failure });
-      return;
+    // A briefing session is never ended over reporting policy: past the
+    // per-turn repair budget the text stays dropped and the turn settles idle.
+    if (checkpoint?.exhausted) {
+      session.writer.send(session.briefingPolicy.noticeMessage(checkpoint.exhausted));
     }
   }
   settleTurn(session, { aborted: false });

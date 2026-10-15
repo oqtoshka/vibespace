@@ -28,7 +28,7 @@ import { notifyRunFailed, notifyRunStopped } from './modules/notifications/index
 import { cancelRateLimitWake, scheduleRateLimitWake } from './services/rate-limit-wake.service.js';
 import { recordSessionActivity, recordSessionEnd } from './services/session-restore.service.js';
 import { beginTaskContinuationTurn, planTaskContinuation } from './modules/task-continuation/index.js';
-import { broadcastSessionUpdate, generateInitialSessionTitle, scheduleSessionRecap, rewindCodexTurn, registerCodexRevertedHistoryReader, markCodexRevertedHistory, codexDiagnosticRuntime } from './modules/providers/index.js';
+import { broadcastSessionUpdate, generateInitialSessionTitle, scheduleSessionRecap, rewindCodexTurn, registerCodexRevertedHistoryReader, markCodexRevertedHistory, codexDiagnosticRuntime, BRIEFING_REPAIRS_PER_TURN, BRIEFING_REPAIR_PROMPT } from './modules/providers/index.js';
 import { buildCodexTokenBudget, CODEX_AUTO_COMPACT_LIMIT, readLatestCodexTokenBudget } from './shared/codex-token-usage.js';
 import { toCodexAppServerSandboxPolicy } from './shared/codex-sandbox-policy.js';
 import { createCompleteMessage, createNormalizedMessage } from './shared/utils.js';
@@ -712,7 +712,7 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
   let activeSession = null;
   // Internal continuation state: human entry starts a new budget; recursive
   // plan/report repairs retain it. Never infer policy from the prompt text.
-  const textPolicyState = options.agentTextPolicyState || { repairUsed: false, admitted: false };
+  const textPolicyState = options.agentTextPolicyState || { repairs: 0, admitted: false };
   const launchReportingContext = { launchOptions: options.launchOptions ?? null, private: Boolean(options.private), ephemeral: Boolean(ephemeral || backgroundHelper) };
   const launchTextPolicy = collectAgentLaunchExtras({ provider: 'codex', scope: 'session', sessionId: options.appSessionId ?? sessionId ?? null, sessionRole: ephemeral || backgroundHelper ? 'helper' : sideSession ? 'side' : 'main', ...launchReportingContext }).agentTextPolicy;
   if (!ephemeral && !backgroundHelper && !sideSession && launchTextPolicy === 'reject') textPolicyState.admitted = true;
@@ -1115,20 +1115,26 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
     const completedReportingLedger = !ephemeral && !backgroundHelper && !sideSession
       ? readExternalTaskLedger({ provider: 'codex', sessionId: capturedSessionId, phase: 'complete', sessionRole: 'main', ...launchReportingContext }) : null;
     const reportingCheckpoint = completedReportingLedger?.completion ?? (rejectAgentText && !completedReportingLedger ? { prompt: 'The current-turn card reporting bridge is unavailable; no successful reporting checkpoint can be verified.' } : null);
+    let repairBudgetExhausted = false;
     if (!runAborted && !terminalFailure && terminalStatus === 'completed' && (textPolicyViolation || reportingCheckpoint)) {
-      if (!textPolicyState.repairUsed) {
-        textPolicyState.repairUsed = true;
+      // Never a run failure: a briefing session keeps getting repair turns, up
+      // to a per-turn cap so a model that keeps writing prose cannot loop.
+      if ((textPolicyState.repairs || 0) < BRIEFING_REPAIRS_PER_TURN) {
+        textPolicyState.repairs = (textPolicyState.repairs || 0) + 1;
         const repairPrompt = rejectAgentText
-          ? '[session supervisor] Session behavior invariant violated: plain agent text is forbidden in this main briefing session, including commentary and final answers, even after a valid card reply. Use the existing card tools for every operator-facing answer; preserve the exact requested threads. Do not copy sensitive tool output into cards. Continue authorized work and update the existing plan using tools only. A further agent-text attempt or missing reporting checkpoint will end this run with AGENT_TEXT_POLICY_VIOLATION.'
+          ? BRIEFING_REPAIR_PROMPT + ' Preserve the exact requested threads. Do not copy sensitive tool output into cards.'
           : '[session supervisor] Missing card reporting checkpoint.';
         await resumeWithPrompt(repairPrompt + (reportingCheckpoint ? '\n' + reportingCheckpoint.prompt : ''), 'Resuming — session reporting policy repair');
         return;
       }
-      terminalFailure = Object.assign(new Error('AGENT_TEXT_POLICY_VIOLATION: agent text or a missing card checkpoint persisted after the single session-policy repair. This run failed; report through the existing card tools.'), { code: 'AGENT_TEXT_POLICY_VIOLATION' });
+      repairBudgetExhausted = true;
+      console.warn(`[briefing policy] codex session ${capturedSessionId}: repair budget (${BRIEFING_REPAIRS_PER_TURN}) exhausted — text dropped, turn settles idle`);
+      sendMessage(ws, createNormalizedMessage({ kind: 'status', text: 'agent_text_policy_exhausted',
+        content: `Briefing reporting policy: ${BRIEFING_REPAIRS_PER_TURN} repair turns used this turn; further assistant text was dropped and the turn ends idle. The session stays open.`,
+        sessionId: capturedSessionId, provider: 'codex' }));
     }
     if (!runAborted && !usageLimitFailure && !providerRetryScheduled && !policyBlocked
-      && terminalFailure?.code !== 'AGENT_TEXT_POLICY_VIOLATION'
-      && await continueOpenPlan(`terminal status ${terminalStatus}`, terminalStatus === 'completed' && !terminalFailure)) {
+      && await continueOpenPlan(`terminal status ${terminalStatus}`, terminalStatus === 'completed' && !terminalFailure && !repairBudgetExhausted)) {
       return;
     }
     if (terminalFailure && !usageLimitFailure && !runAborted) {

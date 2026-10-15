@@ -292,6 +292,8 @@ async function spawnOpenCode(command, options = {}, ws, context = undefined) {
           sessionId: continuedSessionId,
           userId: ws?.userId || null,
           sessionName: options.sessionSummary,
+          // Past the briefing repair budget the turn settles idle, not into one more repair.
+          allowReportingRepair: !policyCheckpoint?.exhausted,
         });
         if (!continuation) {
           return false;
@@ -621,18 +623,15 @@ async function spawnOpenCode(command, options = {}, ws, context = undefined) {
           // Bounds and bail-outs live in planTaskContinuation.
           // Failed runs included, as on the server transport.
           const checkpoint = code === 0 && !opencodeProcess.aborted ? briefingPolicy.complete() : {};
-          if (checkpoint.failure) {
-            ws.send(briefingPolicy.failureMessage(checkpoint.failure));
-            ws.send(createCompleteMessage({ provider: 'opencode', sessionId: finalSessionId, exitCode: 1 }));
-            resolve();
-            return;
-          }
+          // Never a failure: past the per-turn repair budget the text stays dropped and the turn ends idle.
+          if (checkpoint.exhausted) ws.send(briefingPolicy.noticeMessage(checkpoint.exhausted));
           if (!completeSent && !opencodeProcess.aborted && !options.ephemeral) {
             const continuation = checkpoint.prompt || planTaskContinuation({
               provider: 'opencode',
               sessionId: finalSessionId,
               userId: ws?.userId || null,
               sessionName: sessionSummary,
+              allowReportingRepair: !checkpoint.exhausted,
             });
             if (continuation) {
               ws.send(createNormalizedMessage({

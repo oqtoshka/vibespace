@@ -6,6 +6,7 @@ import path from 'node:path';
 import test from 'node:test';
 const dir=await mkdtemp(path.join(os.tmpdir(),'cli-briefing-'));process.env.DATABASE_PATH=path.join(dir,'auth.db');
 const { registerTaskLedgerSource, registerAgentLaunchContributor }=await import('../../../shared/index.js');
+const { BRIEFING_REPAIRS_PER_TURN }=await import('../index.js');
 const { initializeDatabase,closeConnection }=await import('../../database/index.js');
 // eslint-disable-next-line boundaries/no-unknown -- Actual owned executable CLI fixture, no provider connection.
 const {spawnCursor}=await import('../../../cursor-cli.js');
@@ -34,10 +35,12 @@ ${provider==='cursor'?`send({type:'system',subtype:'init',session_id:${JSON.stri
  const runtime:any={resolveProviderSessionId:(id:string)=>id||null,resolveResumeModel:async()=>undefined,getProviderModels:async()=>({OPTIONS:[],DEFAULT:''}),normalizeMessage:(raw:any,id:string)=>normalizer.normalizeMessage(raw,id),isProviderInstalled:async()=>true};
  const sent:any[]=[];
  try{await(provider==='cursor'?spawnCursor:spawnOpenCode)('request',{sessionId:sid,cwd:dir,ephemeral:scenario==='helper',sideSession:scenario==='side'?{id:'side'}:undefined,skipPermissions:true},{send:(m:any)=>{sent.push(m);if(m.kind==='tool_use')sidecarReady=true;},setSessionId(){}},runtime);
-  const calls=(await readFile(capture,'utf8')).trim().split('\n');assert.equal(calls.length,['repair','repeat','missing','late','launch'].includes(scenario)?2:1);
+  const persistent=['repeat','missing','launch'].includes(scenario);
+  const calls=(await readFile(capture,'utf8')).trim().split('\n');assert.equal(calls.length,persistent?1+BRIEFING_REPAIRS_PER_TURN:['repair','late'].includes(scenario)?2:1);
   assert.equal(sent.some(m=>['text','stream_delta'].includes(m.kind)&&String(m.content).includes('FORBIDDEN')),['plain','helper','side'].includes(scenario));
   const completed=sent.filter(m=>m.kind==='complete');assert.equal(completed.length,1);
-  assert.equal(completed[0].success,!['repeat','missing','launch'].includes(scenario));
-  if(['repeat','missing','launch'].includes(scenario))assert.ok(sent.some(m=>m.kind==='error'&&String(m.content).includes('AGENT_TEXT_POLICY_VIOLATION')));
+  assert.equal(completed[0].success,true,'a reporting-policy violation is never a failure');
+  assert.ok(!sent.some(m=>m.kind==='error'));
+  assert.equal(sent.some(m=>m.text==='agent_text_policy_exhausted'),persistent);
  }finally{stopLaunch();unregister();process.env.PATH=prevPath;}
 });
