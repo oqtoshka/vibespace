@@ -33,6 +33,7 @@ import {
 import { describeTool } from './services/notification-content.js';
 import { describeAssistantActivity } from './services/activity-status.js';
 import { sessionsService } from './modules/providers/services/sessions.service.js';
+import { sessionsDb } from './modules/database/index.js';
 import { providerAuthService } from './modules/providers/services/provider-auth.service.js';
 import { createCompleteMessage, createNormalizedMessage, resolveConfiguredContextWindow } from './shared/utils.js';
 import { rememberContextUsage } from './shared/context-usage-cache.js';
@@ -505,7 +506,7 @@ function mapCliOptionsToSDK(options = {}) {
   sdkOptions.allowedTools = sdkOptions.allowedTools.filter((tool) => !launchExtras.disallowedTools.includes(tool));
 
   // Map system prompt configuration
-  const vibespacePreamble = [buildVibespaceSystemPrompt(cwd), launchExtras.instructions]
+  const vibespacePreamble = [buildVibespaceSystemPrompt(cwd), launchExtras.instructions, options.priorConversation]
     .filter(Boolean)
     .join('\n\n');
   sdkOptions.systemPrompt = {
@@ -2396,16 +2397,39 @@ async function handleSessionError(session, error) {
     // the run ends (and gets evicted) while the replacement query is still
     // streaming into it.
     session.handedOffToRetry = true;
+    // The retry keeps this conversation's app id, and queryClaudeSDK looks a
+    // live session up by it before starting anything. This dead process still
+    // answers to that id — its loop's `finally` runs only after we return — so
+    // left registered it was "reused": the message went into a stream that had
+    // already failed, nothing ran, and the chat sat on "Connecting" (a 40-day-old
+    // session whose transcript Claude Code's 30-day cleanup had deleted).
+    try { session.input.close(); } catch { /* noop */ }
+    for (const key of [sessionId, session.appSessionId]) {
+      if (key && getSession(key) === session) removeSession(key);
+    }
+    // A blank session would not know what "this session" was about; what the
+    // app still remembers of it (title, recap, topic summaries) goes into the
+    // new one's system prompt, so the user's message stays exactly as typed.
+    const priorConversation = await session.runtime.describePriorConversation(session.appSessionId || sessionId);
     session.writer.send(createNormalizedMessage({
       kind: 'error',
-      content: 'This session has no resumable conversation — sending your message to a new session instead.',
+      content: priorConversation
+        ? "This session's transcript is gone (Claude Code deletes conversations after its cleanup period), so your message starts a new conversation here, given this session's recap."
+        : 'This session has no resumable conversation — sending your message to a new session instead.',
       sessionId,
       provider: 'claude'
     }));
-    // finalizeSession (the loop's finally) will untrack this dead session.
+    // finalizeSession (the loop's finally) will finish tearing this dead session down.
     await queryClaudeSDK(
       session.command,
-      { ...session.options, sessionId: undefined, providerSessionId: undefined, resume: false, _resumeFallback: true },
+      {
+        ...session.options,
+        sessionId: undefined,
+        providerSessionId: undefined,
+        resume: false,
+        _resumeFallback: true,
+        priorConversation: priorConversation ? priorConversationPrompt(priorConversation) : undefined,
+      },
       session.writer,
       session.options.runtimeContext,
     );
@@ -2829,7 +2853,52 @@ function resolveRuntimeContext(context) {
         ? context.isProviderInstalled()
         : providerAuthService.isProviderInstalled('claude')
     ),
+    describePriorConversation: async (sessionId) => {
+      try {
+        return typeof context?.describePriorConversation === 'function'
+          ? await context.describePriorConversation(sessionId)
+          : describePriorConversation(sessionId);
+      } catch (error) {
+        console.warn(`[claude] session ${sessionId}: reading what is known of the lost conversation failed:`, error?.message || error);
+        return null;
+      }
+    },
   };
+}
+
+const PRIOR_CONVERSATION_LIMIT = 8000;
+
+/**
+ * What the app still knows about a conversation whose transcript the CLI has
+ * deleted: its title, its last recap and the topic summaries of its topic
+ * memory. Null when the row is missing or carries no recap or topics.
+ */
+function describePriorConversation(sessionId) {
+  if (!sessionId) return null;
+  const row = sessionsDb.getSessionById(sessionId) || sessionsDb.getSessionByProviderSessionId(sessionId);
+  if (!row) return null;
+  const lines = [];
+  if (row.recap?.trim()) lines.push(`Recap of where it stood: ${row.recap.trim()}`);
+  try {
+    const topics = JSON.parse(row.topic_memory || 'null')?.topics;
+    for (const topic of Array.isArray(topics) ? topics : []) {
+      if (topic?.label && topic?.summary) lines.push(`- ${topic.label}: ${topic.summary}`);
+    }
+  } catch { /* an unreadable topic memory adds nothing */ }
+  if (lines.length === 0) return null;
+  return [row.custom_name ? `Earlier session: ${row.custom_name}` : null, ...lines].filter(Boolean).join('\n');
+}
+
+/** Wraps what is known of a lost conversation as system-prompt text for its replacement. */
+function priorConversationPrompt(known) {
+  const facts = known.length > PRIOR_CONVERSATION_LIMIT ? `${known.slice(0, PRIOR_CONVERSATION_LIMIT)}…` : known;
+  return [
+    'This conversation continues an earlier one in the same project whose transcript no longer exists:'
+      + ' Claude Code deleted it after its cleanup period, so you have none of its messages, tool results or files read.'
+      + ' All that is left is what VibeSpace recorded about it, below. Treat it as possibly stale: re-check facts before acting on them,'
+      + ' and tell the user plainly when their message depends on details that were lost.',
+    facts,
+  ].join('\n');
 }
 
 /**
