@@ -1035,6 +1035,72 @@ function makeUserMessage(content) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Side-question prompts: the run ends on the prompt's own turn
+//
+// A side question (Mission Control thread fork) resumes its parent's transcript
+// with `forkSession`. The runtime may run turns of its own before it reaches our
+// prompt: a parent that stopped on a tool result gets a synthetic
+// "No response requested." on load, and a background task that died with the
+// parent's process is announced as a queued `<task-notification>` — submitted
+// without a query, so it still ends in a `result`. Settling the run on the first
+// `result` handed Mission Control an empty answer (2026-10-19, fork 20d7ed12):
+// the reader closes on `complete`, and the real answer arrived two minutes later
+// into a run nobody watched.
+//
+// So a side prompt is stamped with a uuid, and the runtime's `command_lifecycle`
+// narration (`started` when the batch holding our prompt begins its turn) marks
+// the boundary. Until then a `result` belongs to someone else's turn: it does not
+// settle the run, and that turn's output is not fanned out to the side reader.
+// A runtime without `msg_lifecycle_v1` never narrates, so it keeps the old
+// first-result behaviour rather than waiting forever.
+// ---------------------------------------------------------------------------
+
+/**
+ * Builds the streaming-input message for a turn prompt. A side session's prompt
+ * carries a uuid recorded as `session.pendingPrompt`, so the turn that consumes
+ * it can be told apart from turns the runtime starts on its own.
+ */
+function makeTurnPrompt(session, content) {
+  const message = makeUserMessage(content);
+  if (!session.options?.sideSession) {
+    session.pendingPrompt = null;
+    return message;
+  }
+  const uuid = crypto.randomUUID();
+  session.pendingPrompt = { uuid, started: false };
+  return { ...message, uuid };
+}
+
+/** True while the runtime has not yet started the turn holding our prompt. */
+function awaitingPromptTurn(session) {
+  if (!session.pendingPrompt || session.pendingPrompt.started) return false;
+  // Only a runtime that advertised lifecycle narration on `system/init` (which
+  // precedes every turn) will ever say `started`; without it the first result
+  // settles the run, as before.
+  return Array.isArray(session.capabilities) && session.capabilities.includes('msg_lifecycle_v1');
+}
+
+/**
+ * Follows the runtime's lifecycle narration for our own turn prompt.
+ * @returns {boolean} true when the event was about that prompt (consumed).
+ */
+function handlePromptLifecycle(session, message) {
+  const pending = session.pendingPrompt;
+  if (!pending || message?.type !== 'command_lifecycle' || message.command_uuid !== pending.uuid) return false;
+  if (message.state === 'started') {
+    pending.started = true;
+  } else if (message.state === 'cancelled' || message.state === 'discarded') {
+    // The prompt will never get a turn: end the run now instead of waiting for
+    // an answer that cannot come. Nothing was said, so the reader sees an empty
+    // completion and reports it as a failure.
+    console.warn(`[claude] session ${session.sessionId}: side prompt ${pending.uuid} ${message.state} before its turn`);
+    session.pendingPrompt = null;
+    settleTurn(session, { aborted: false });
+  }
+  return true;
+}
+
 /**
  * Renders a background-task completion as the synthetic user turn we inject to
  * wake the agent — byte-for-byte the shape the Claude Code harness uses, so the
@@ -2214,6 +2280,15 @@ async function runSessionLoop(session) {
       // Mid-turn user messages the runtime parked in its own command queue.
       // Not a provider message — it narrates delivery, so it never reaches the
       // normalizer.
+      if (handlePromptLifecycle(session, message)) {
+        // The turn that answers our prompt starts here: drop what the turns
+        // before it left in the recap capture.
+        if (session.pendingPrompt?.started) {
+          session.lastAssistantText = '';
+          session.turnToolNames = [];
+        }
+        continue;
+      }
       if (handleCommandLifecycle(session, message)) {
         continue;
       }
@@ -2256,6 +2331,16 @@ async function runSessionLoop(session) {
         refreshContextUsage(session, 'init');
       }
 
+      // A side session's reader takes everything in the run as its answer, so a
+      // turn the runtime ran before our prompt (leftover context, a stale task
+      // notification) is not shown to it. It stays in the fork's transcript.
+      if (awaitingPromptTurn(session)) {
+        if (message.type === 'result') {
+          console.log(`[claude] session ${session.sessionId}: a turn ended before the side prompt's turn started — not settling the run`);
+        }
+        continue;
+      }
+
       // Transform and normalize the message, then fan out to the current writer.
       const transformedMessage = transformMessage(message);
       const normalized = session.runtime.normalizeMessage(transformedMessage, sid);
@@ -2282,6 +2367,8 @@ async function runSessionLoop(session) {
         // Read the gauge at the turn boundary — the point where the context has
         // just grown by a whole turn and the user decides what to do next.
         refreshContextUsage(session, 'turn-end');
+        // Past awaitingPromptTurn, this is the side prompt's own turn.
+        session.pendingPrompt = null;
         onTurnEnd(session);
       }
     }
@@ -2566,7 +2653,7 @@ async function reuseSession(session, command, options, ws) {
   const turnPromise = beginTurn(session);
   session.briefingPolicy = new BriefingOutputPolicy('claude', options);
   session.briefingPolicy.begin(session.sessionId, command);
-  const pushed = session.input.push(makeUserMessage(turnContent));
+  const pushed = session.input.push(makeTurnPrompt(session, turnContent));
   if (!pushed) {
     // Stream closed out from under us (raced teardown) — fall back to a fresh
     // session so the message isn't dropped.
@@ -2714,6 +2801,9 @@ async function startPersistentSession(command, options, ws) {
     // uuid -> { content, onDelivered, onCancelled } for messages fed into a
     // running turn (see "Mid-turn user messages" above).
     injectedCommands: new Map(),
+    // { uuid, started } for a side session's turn prompt until its turn settles
+    // (see makeTurnPrompt).
+    pendingPrompt: null,
     // Protocol capabilities the runtime advertised on system/init.
     capabilities: null,
     idleTimer: null,
@@ -2780,7 +2870,7 @@ async function startPersistentSession(command, options, ws) {
   console.log('Starting persistent streaming session for:', sessionId || 'NEW');
   const turnPromise = beginTurn(session);
   session.briefingPolicy.begin(sessionId, command);
-  input.push(makeUserMessage(firstTurnContent));
+  input.push(makeTurnPrompt(session, firstTurnContent));
   void runSessionLoop(session);
   return turnPromise;
 }
