@@ -1,6 +1,5 @@
 import os from 'node:os';
 import path from 'node:path';
-import { readFile } from 'node:fs/promises';
 
 import { sessionsDb } from '@/modules/database/index.js';
 import {
@@ -9,13 +8,19 @@ import {
   findFilesRecursivelyCreatedAfter,
   normalizeSessionName,
   readFileTimestamps,
+  stripLaunchInstructions,
 } from '@/shared/utils.js';
+import type { SessionNameSource } from '@/shared/utils.js';
 import type { IProviderSessionSynchronizer } from '@/shared/interfaces.js';
+
+import { extractCodexTextContent, isVisibleCodexUserMessage } from './codex-sessions.provider.js';
 
 type ParsedSession = {
   sessionId: string;
   projectPath: string;
   sessionName?: string;
+  /** Provenance of sessionName; undefined keeps the stored one. */
+  nameSource?: SessionNameSource;
 };
 
 /**
@@ -60,7 +65,8 @@ export class CodexSessionSynchronizer implements IProviderSessionSynchronizer {
         parsed.sessionName,
         timestamps.createdAt,
         timestamps.updatedAt,
-        filePath
+        filePath,
+        parsed.nameSource
       );
       processed += 1;
     }
@@ -90,7 +96,8 @@ export class CodexSessionSynchronizer implements IProviderSessionSynchronizer {
       parsed.sessionName,
       timestamps.createdAt,
       timestamps.updatedAt,
-      filePath
+      filePath,
+      parsed.nameSource
     );
   }
 
@@ -127,21 +134,31 @@ export class CodexSessionSynchronizer implements IProviderSessionSynchronizer {
     const existingSession = sessionsDb.getSessionByProviderSessionId(parsed.sessionId)
       ?? sessionsDb.getSessionById(parsed.sessionId);
     const existingSessionName = existingSession?.custom_name;
-    if (existingSessionName && existingSessionName !== 'Untitled Codex Session') {
+    const threadName = nameMap.get(parsed.sessionId);
+    // A stored name stands unless it is a placeholder: the untitled fallback,
+    // or a first prompt once Codex has named the thread.
+    const isPlaceholder = existingSessionName === 'Untitled Codex Session'
+      || (Boolean(threadName) && existingSession?.name_source === 'derived');
+    if (existingSessionName && !isPlaceholder) {
       return {
         ...parsed,
         sessionName: normalizeSessionName(existingSessionName, 'Untitled Codex Session'),
       };
     }
 
-    let sessionName = nameMap.get(parsed.sessionId);
-    if (!sessionName) {
-      sessionName = await this.extractLastAgentMessageFromEnd(filePath);
+    // Codex's own thread title, as the Claude synchronizer ranks the CLI's.
+    if (threadName) {
+      return { ...parsed, sessionName: normalizeSessionName(threadName, 'Untitled Codex Session'), nameSource: 'ai' };
     }
 
+    // A session Codex never named (every `codex exec` run) shows the first
+    // words its user wrote, a placeholder an AI title may replace, like the
+    // untitled fallback. Never the assistant's last answer: that named
+    // sessions after the agent's own closing sentence.
     return {
       ...parsed,
-      sessionName: normalizeSessionName(sessionName, 'Untitled Codex Session'),
+      sessionName: normalizeSessionName(await this.extractFirstUserPrompt(filePath), 'Untitled Codex Session'),
+      nameSource: 'derived',
     };
   }
 
@@ -164,40 +181,33 @@ export class CodexSessionSynchronizer implements IProviderSessionSynchronizer {
     return typeof source === 'object' && source !== null && 'subagent' in source;
   }
 
-  private async extractLastAgentMessageFromEnd(filePath: string): Promise<string | undefined> {
-    try {
-      const content = await readFile(filePath, 'utf8');
-      const lines = content.split(/\r?\n/);
-
-      for (let index = lines.length - 1; index >= 0; index -= 1) {
-        const line = lines[index]?.trim();
-        if (!line) {
-          continue;
-        }
-
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(line);
-        } catch {
-          continue;
-        }
-
-        const data = parsed as Record<string, unknown>;
-        const eventType = typeof data.type === 'string' ? data.type : undefined;
-        const payload = data.payload as Record<string, unknown> | undefined;
-        const payloadType = typeof payload?.type === 'string' ? payload.type : undefined;
-        const lastAgentMessage = typeof payload?.last_agent_message === 'string'
-          ? payload.last_agent_message
-          : undefined;
-
-        if (eventType === 'event_msg' && payloadType === 'task_complete' && lastAgentMessage?.trim()) {
-          return lastAgentMessage;
-        }
+  /**
+   * The first message the user sent, without the launch instructions a
+   * runtime put ahead of it; undefined when that message holds no words of
+   * the user's own. Later messages never stand in for it.
+   */
+  private async extractFirstUserPrompt(filePath: string): Promise<string | undefined> {
+    const firstMessage = await extractFirstValidJsonlData(filePath, (rawData) => {
+      const data = rawData as Record<string, unknown>;
+      const payload = data.payload as Record<string, unknown> | undefined;
+      if (data.type !== 'event_msg' || !payload) {
+        return null;
       }
-    } catch {
-      // Ignore missing/unreadable files so sync can continue.
-    }
 
-    return undefined;
+      if (isVisibleCodexUserMessage(payload)) {
+        return { text: payload.message as string };
+      }
+
+      // Current Codex records the prompt as a completed UserMessage item
+      // instead of the legacy user_message event.
+      const item = payload.item as Record<string, unknown> | undefined;
+      if (payload.type === 'item_completed' && item?.type === 'UserMessage') {
+        return { text: extractCodexTextContent(item.content) };
+      }
+
+      return null;
+    });
+
+    return stripLaunchInstructions(firstMessage?.text ?? '').trim() || undefined;
   }
 }

@@ -7,6 +7,7 @@ import test from 'node:test';
 import { closeConnection, initializeDatabase, sessionsDb } from '@/modules/database/index.js';
 import { CodexSessionSynchronizer } from '@/modules/providers/list/codex/codex-session-synchronizer.provider.js';
 import { CodexSessionsProvider } from '@/modules/providers/list/codex/codex-sessions.provider.js';
+import { prependLaunchInstructions } from '@/shared/index.js';
 
 const patchHomeDir = (nextHomeDir: string) => {
   const original = os.homedir;
@@ -141,6 +142,18 @@ const writeCodexTranscript = async (
   return filePath;
 };
 
+/** Writes one Codex rollout made of the given records, where the synchronizer scans. */
+const writeCodexRollout = async (
+  homeDir: string,
+  codexSessionId: string,
+  records: Array<Record<string, unknown>>,
+): Promise<void> => {
+  const sessionsDir = path.join(homeDir, '.codex', 'sessions', '2026', '07', '07');
+  await mkdir(sessionsDir, { recursive: true });
+  await writeFile(path.join(sessionsDir, `rollout-${codexSessionId}.jsonl`),
+    `${records.map((record) => JSON.stringify(record)).join('\n')}\n`, 'utf8');
+};
+
 test('Codex synchronizer preserves the title assigned when CloudCLI creates a session', { concurrency: false }, async () => {
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'codex-session-sync-app-'));
   const workspacePath = path.join(tempRoot, 'workspace');
@@ -207,21 +220,84 @@ test('Codex synchronizer skips sub-agent rollout files', { concurrency: false },
   }
 });
 
-test('Codex synchronizer leaves indexed sessions untitled when no name is available', { concurrency: false }, async () => {
-  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'codex-session-sync-indexed-'));
+test('Codex synchronizer titles an unnamed session from its first prompt, never from the assistant', { concurrency: false }, async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'codex-session-sync-prompt-'));
   const workspacePath = path.join(tempRoot, 'workspace');
   await mkdir(workspacePath, { recursive: true });
   const restoreHomeDir = patchHomeDir(tempRoot);
 
   try {
-    // A CLI-created session has no app row; its first user message must NOT be
-    // used as the title, preserving the existing indexing behavior.
-    await writeCodexTranscript(tempRoot, 'codex-indexed-1', workspacePath, 'This prompt should be ignored');
-    await withIsolatedDatabase(async () => {
-      const synchronizer = new CodexSessionSynchronizer();
-      await synchronizer.synchronize();
+    await writeCodexTranscript(tempRoot, 'codex-legacy-1', workspacePath, 'Fix the flaky login test');
+    // A current `codex exec` rollout: the prompt is a completed UserMessage
+    // item behind launch instructions, and the run ends with the assistant's
+    // answer in task_complete, which once became the title.
+    await writeCodexRollout(tempRoot, 'codex-exec-2', [
+      { type: 'session_meta', payload: { id: 'codex-exec-2', cwd: workspacePath, source: 'exec' } },
+      { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '# AGENTS.md instructions' }] } },
+      { type: 'event_msg', payload: { type: 'item_completed', item: { type: 'UserMessage', content: [
+        { type: 'text', text: prependLaunchInstructions('# Briefing mode (Mission Control)\n\nUse the card.', 'Teach the Anthill CLI to list bits') },
+      ] } } },
+      { type: 'event_msg', payload: { type: 'task_complete', last_agent_message: 'Done: the CLI lists bits now.' } },
+    ]);
+    // Older rollouts carry the briefing without markers.
+    await writeCodexRollout(tempRoot, 'codex-briefing-3', [
+      { type: 'session_meta', payload: { id: 'codex-briefing-3', cwd: workspacePath } },
+      { type: 'event_msg', payload: { type: 'item_completed', item: { type: 'UserMessage', content: [
+        { type: 'text', text: '# Briefing mode (Mission Control)\n\nUse the card.\n\n---\n\nWhy did the VPN switch?' },
+      ] } } },
+      { type: 'event_msg', payload: { type: 'item_completed', item: { type: 'UserMessage', content: [{ type: 'text', text: 'A later message' }] } } },
+    ]);
 
-      assert.equal(sessionsDb.getSessionById('codex-indexed-1')?.custom_name, 'Untitled Codex Session');
+    await withIsolatedDatabase(async () => {
+      await new CodexSessionSynchronizer().synchronize();
+
+      const titles = ['codex-legacy-1', 'codex-exec-2', 'codex-briefing-3'].map((id) => {
+        const row = sessionsDb.getSessionById(id);
+        return [row?.custom_name, row?.name_source];
+      });
+      // A first prompt is a placeholder: derived, so an AI title may replace it.
+      assert.deepEqual(titles, [
+        ['Fix the flaky login test', 'derived'],
+        ['Teach the Anthill CLI to list bits', 'derived'],
+        ['Why did the VPN switch?', 'derived'],
+      ]);
+    });
+  } finally {
+    restoreHomeDir();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('Codex synchronizer lets a Codex thread name replace a placeholder but never a rename', { concurrency: false }, async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'codex-session-sync-thread-'));
+  const workspacePath = path.join(tempRoot, 'workspace');
+  await mkdir(workspacePath, { recursive: true });
+  const restoreHomeDir = patchHomeDir(tempRoot);
+
+  try {
+    await writeCodexTranscript(tempRoot, 'codex-empty-1', workspacePath);
+    await writeCodexTranscript(tempRoot, 'codex-prompt-2', workspacePath, 'Fix the flaky login test');
+    await writeCodexTranscript(tempRoot, 'codex-renamed-3', workspacePath, 'Fix the flaky login test');
+
+    await withIsolatedDatabase(async () => {
+      await new CodexSessionSynchronizer().synchronize();
+      assert.equal(sessionsDb.getSessionById('codex-empty-1')?.custom_name, 'Untitled Codex Session');
+      assert.equal(sessionsDb.getSessionById('codex-empty-1')?.name_source, 'derived');
+      sessionsDb.updateSessionCustomName('codex-renamed-3', 'My login work', 'user');
+
+      await writeFile(path.join(tempRoot, '.codex', 'session_index.jsonl'), ['codex-empty-1', 'codex-prompt-2', 'codex-renamed-3']
+        .map((id) => JSON.stringify({ id, thread_name: `Thread ${id}` })).join('\n') + '\n', 'utf8');
+      await new CodexSessionSynchronizer().synchronize();
+
+      const titles = ['codex-empty-1', 'codex-prompt-2', 'codex-renamed-3'].map((id) => {
+        const row = sessionsDb.getSessionById(id);
+        return [row?.custom_name, row?.name_source];
+      });
+      assert.deepEqual(titles, [
+        ['Thread codex-empty-1', 'ai'],
+        ['Thread codex-prompt-2', 'ai'],
+        ['My login work', 'user'],
+      ]);
     });
   } finally {
     restoreHomeDir();

@@ -28,7 +28,8 @@ type CodexHistoryResult =
 /** fetchHistory's normalized list for one parser generation and app session id. */
 type NormalizedView = { generation: number; sessionId: string; messages: NormalizedMessage[]; total: number };
 
-function isVisibleCodexUserMessage(payload: AnyRecord | null | undefined): boolean {
+/** A legacy `user_message` the user typed; the Codex session synchronizer titles sessions from it too. */
+export function isVisibleCodexUserMessage(payload: AnyRecord | null | undefined): boolean {
   if (!payload || payload.type !== 'user_message') {
     return false;
   }
@@ -123,7 +124,8 @@ export function extractCodexUserImages(
   return attachments.length > 0 ? attachments : undefined;
 }
 
-function extractCodexTextContent(content: unknown): string {
+/** Joins a Codex message's text parts; the Codex session synchronizer reads prompts with it too. */
+export function extractCodexTextContent(content: unknown): string {
   if (!Array.isArray(content)) {
     return typeof content === 'string' ? content : '';
   }
