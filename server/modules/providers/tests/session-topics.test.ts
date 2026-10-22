@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+
+import { prependLaunchInstructions } from '@/shared/utils.js';
+
 import { readTopicMemory, topicBatch, mergeTopicResponse, topicInstructions } from '../services/session-topics.service.js';
 
 const row = (id: string, content: string) => ({ id, kind: 'text', role: 'user', content });
@@ -72,4 +75,17 @@ test('paraphrased evidence uses the actual user excerpt and short IDs resolve to
   const next = mergeTopicResponse(reply([topic('Session origin', 'u1', 'Keep original intent')]), memory, batch)!;
   assert.equal(next.topics[0].firstMessageId, 'original-uuid');
   assert.equal(next.topics[0].firstQuote, 'Please preserve the original request');
+});
+
+test('a launch preamble never becomes the origin or a topic quote', () => {
+  const briefing = ['# Briefing mode (Mission Control)', '', ...Array.from({ length: 300 }, (_, i) => `- rule ${i}`)].join('\n');
+  const memory = readTopicMemory();
+  const batch = topicBatch([row('a', prependLaunchInstructions(briefing, 'Stay signed in for 30 days'))], memory, 1);
+  assert.deepEqual(batch.messages.map(m => m.text), ['Stay signed in for 30 days']);
+  const merged = mergeTopicResponse(reply([topic('Persistent login', 'a', 'signed in for 30 days')]), memory, batch)!;
+  assert.equal(merged.origin, 'Stay signed in for 30 days');
+  // An origin saved from an unmarked preamble before the fix is dropped on read.
+  const healed = readTopicMemory(JSON.stringify({ ...merged, origin: briefing.slice(0, 2000) }));
+  assert.equal(healed.origin, '');
+  assert.match(topicInstructions(healed, batch), /ORIGINAL ASK: Stay signed in for 30 days/);
 });

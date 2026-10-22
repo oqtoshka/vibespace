@@ -31,7 +31,7 @@ import { beginTaskContinuationTurn, planTaskContinuation } from './modules/task-
 import { broadcastSessionUpdate, generateInitialSessionTitle, scheduleSessionRecap, rewindCodexTurn, registerCodexRevertedHistoryReader, markCodexRevertedHistory, codexDiagnosticRuntime, BRIEFING_REPAIRS_PER_TURN, BRIEFING_REPAIR_PROMPT } from './modules/providers/index.js';
 import { buildCodexTokenBudget, CODEX_AUTO_COMPACT_LIMIT, readLatestCodexTokenBudget } from './shared/codex-token-usage.js';
 import { toCodexAppServerSandboxPolicy } from './shared/codex-sandbox-policy.js';
-import { createCompleteMessage, createNormalizedMessage } from './shared/utils.js';
+import { createCompleteMessage, createNormalizedMessage, prependLaunchInstructions } from './shared/utils.js';
 import { readExternalTaskLedger } from './shared/task-ledger-sources.js';
 
 // Background metadata has a fixed cost tier, independent of the foreground model.
@@ -663,7 +663,7 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
       provider: 'codex', scope: 'session', private: Boolean(isPrivate), ephemeral: false,
       sessionId: appSessionId ?? null, launchOptions,
     });
-    if (instructions) command = `${instructions}\n\n---\n\n${command}`;
+    if (instructions) command = prependLaunchInstructions(instructions, command);
   }
 
   const resolvedModel = await runtime.resolveResumeModel(
@@ -683,10 +683,12 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
   // A short AI title only needs the first user message. Start that isolated
   // helper beside the real turn instead of waiting minutes for the turn to
   // finish. Titles use the same inexpensive model as recaps and cumulative topics.
+  // The user's own words, not `command`: launch instructions (a 10-18k-char
+  // briefing block) ride ahead of it and would be all a 2,000-char cut sees.
   if (!ephemeral) {
     void generateInitialSessionTitle({
       sessionId: appSessionId || sessionId,
-      initialMessage: command,
+      initialMessage: reportingPrompt,
       cwd: workingDirectory,
       model: CODEX_METADATA_MODEL,
       runQuery: (prompt, helperOptions, writer) => queryCodex(prompt, {

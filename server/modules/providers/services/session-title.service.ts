@@ -1,5 +1,6 @@
 import { sessionsDb } from '@/modules/database/index.js';
 import { broadcastSessionUpdate } from '@/modules/providers/services/sessions-watcher.service.js';
+import { stripLaunchInstructions } from '@/shared/index.js';
 import type { AnyRecord, ProviderRunFunction, ProviderRuntimeWriter } from '@/shared/index.js';
 
 const MAX_INITIAL_MESSAGE_CHARS = 2_000;
@@ -64,7 +65,10 @@ async function runInitialTitleGeneration(input: InitialSessionTitleInput): Promi
   // helper. Only the mechanical placeholder/first-words title is provisional.
   if (session.custom_name && session.name_source !== 'derived') return null;
 
-  const initialMessage = input.initialMessage.trim();
+  // Launch instructions ahead of the first prompt are the harness talking, not
+  // the user; a title made from them names the harness ("Mission Control
+  // Briefing") on every session it launched.
+  const initialMessage = stripLaunchInstructions(input.initialMessage).trim();
   if (!initialMessage) return null;
 
   let responseText = '';

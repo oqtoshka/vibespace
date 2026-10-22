@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 
+import { stripLaunchInstructions } from '@/shared/index.js';
 import type { AnyRecord } from '@/shared/index.js';
 
 const KINDS = ['feature', 'fix', 'incident', 'research', 'refactor', 'deploy'];
@@ -15,7 +16,11 @@ type Batch = { messages: Message[]; cursor: number; charOffset: number; total: n
 export function readTopicMemory(raw?: string | null): Memory {
   try {
     const value = JSON.parse(raw || 'null');
-    if (value?.version === 1 && Array.isArray(value.topics) && Array.isArray(value.kinds)) return value;
+    if (value?.version === 1 && Array.isArray(value.topics) && Array.isArray(value.kinds)) {
+      // An origin saved before launch preambles were stripped is the harness's
+      // instructions, not the ask; '' lets the next batch's first ask stand in.
+      return typeof value.origin === 'string' ? { ...value, origin: stripLaunchInstructions(value.origin) } : value;
+    }
   } catch { /* An old/missing cache is regenerated from the conversation. */ }
   return { version: 1, kinds: [], topics: [], updatedAt: '', origin: '', cursor: 0, charOffset: 0, source: '' };
 }
@@ -25,8 +30,10 @@ function readable(raw: AnyRecord, position: number): Message | null {
   if (role !== 'user' && role !== 'assistant') return null;
   if (raw.kind && raw.kind !== 'text') return null;
   const content = raw.message?.content ?? raw.content;
-  const text = (typeof content === 'string' ? content : Array.isArray(content)
-    ? content.filter((b: AnyRecord) => b.type === 'text').map((b: AnyRecord) => b.text).join('\n') : '').trim();
+  const rawText = (typeof content === 'string' ? content : Array.isArray(content)
+    ? content.filter((b: AnyRecord) => b.type === 'text').map((b: AnyRecord) => b.text).join('\n') : '');
+  // A launch preamble is the harness's text, not a subject; it must not become the origin or a topic quote.
+  const text = (role === 'user' ? stripLaunchInstructions(rawText) : rawText).trim();
   if (!text || /^(<local-command|<system-reminder|<environment_context|# AGENTS\.md)/.test(text)) return null;
   const id = String(raw.id ?? raw.uuid ?? raw.message?.id ?? `message-${position}-${createHash('sha256').update(text).digest('hex').slice(0, 12)}`);
   return { id, role, text };

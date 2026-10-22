@@ -43,6 +43,8 @@ export { WAITING_ON_USER_MARKER } from './waiting-on-user.js';
 export { readExternalTaskLedger, registerTaskLedgerSource } from './task-ledger-sources.js';
 // Providers' dedicated diagnostic peer applies the existing server-secret filter.
 export { buildAgentEnv, collectAgentLaunchExtras, registerAgentLaunchContributor, parseStoredLaunchOptions } from './agent-env.js';
+// Codex/OpenCode fence launch instructions in the first prompt; title, recap and topic helpers strip them.
+export { prependLaunchInstructions, stripLaunchInstructions } from './utils.js';
 export type { CodexDiagnosticScope, CodexDiagnosticHandle, CodexDiagnosticLease } from './types.js';
 
 // Recap and host plugins share the explicit, bounded external-topic authority contract.

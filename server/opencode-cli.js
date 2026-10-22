@@ -15,7 +15,7 @@ import { providerModelsService } from './modules/providers/services/provider-mod
 import { notifyRunFailed, notifyRunStopped } from './modules/notifications/index.js';
 import { planTaskContinuation } from './modules/task-continuation/index.js';
 import { BriefingOutputPolicy, scheduleSessionRecap, broadcastSessionUpdate } from './modules/providers/index.js';
-import { createCompleteMessage, createNormalizedMessage, flattenPromptForWindowsShell, terminateChild, getOpenCodeHelperWorkspace, isDatabaseLockedError, stripAnsi } from './shared/utils.js';
+import { createCompleteMessage, createNormalizedMessage, flattenPromptForWindowsShell, prependLaunchInstructions, terminateChild, getOpenCodeHelperWorkspace, isDatabaseLockedError, stripAnsi } from './shared/utils.js';
 
 // Every `opencode` process on this machine writes to one WAL database, so a
 // second run — or a terminal opencode, or this server's own catalog probe —
@@ -258,7 +258,7 @@ async function spawnOpenCode(command, options = {}, ws, context = undefined) {
       provider: 'opencode', scope: 'session', private: Boolean(options.private), ephemeral: false,
       sessionId: appSessionId ?? null, launchOptions: options.launchOptions,
     });
-    if (instructions && typeof command === 'string') command = `${instructions}\n\n---\n\n${command}`;
+    if (instructions && typeof command === 'string') command = prependLaunchInstructions(instructions, command);
   }
 
   // Images normally need the HTTP transport: `opencode run` cannot carry their

@@ -26,7 +26,7 @@
 import { promises as fs } from 'fs';
 
 import { sessionsDb } from '@/modules/database/index.js';
-import { readSessionTopicAuthority, parseStoredLaunchOptions } from '@/shared/index.js';
+import { readSessionTopicAuthority, parseStoredLaunchOptions, stripLaunchInstructions } from '@/shared/index.js';
 import type { AnyRecord, ProviderRunFunction, SessionTopicAuthorityContext } from '@/shared/index.js';
 
 import { sessionsService } from './sessions.service.js';
@@ -138,11 +138,12 @@ async function readTranscriptTail(jsonlPath: string) {
         ? [{ type: 'text', text: rawContent }]
         : [];
 
-    const text = blocks
+    const joined = blocks
       .filter((block: AnyRecord) => block?.type === 'text' && typeof block.text === 'string')
       .map((block: AnyRecord) => block.text)
-      .join('\n')
-      .trim();
+      .join('\n');
+    // Before the per-message cut: a launch preamble is longer than the cut.
+    const text = (entry.type === 'user' ? stripLaunchInstructions(joined) : joined).trim();
 
     if (!text) continue;
 
@@ -193,7 +194,9 @@ async function readIndexedTranscriptTail(
   for (const message of history.messages ?? []) {
     if (message?.kind !== 'text') continue;
 
-    const text = typeof message.content === 'string' ? message.content.trim() : '';
+    const raw = typeof message.content === 'string' ? message.content : '';
+    // Before the per-message cut: a launch preamble is longer than the cut.
+    const text = (message.role === 'user' ? stripLaunchInstructions(raw) : raw).trim();
     if (!text) continue;
     if (text.startsWith('<local-command') || text.startsWith('<system-reminder')) continue;
 

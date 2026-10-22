@@ -10,6 +10,7 @@ import {
   __testing,
   generateInitialSessionTitle,
 } from '@/modules/providers/services/session-title.service.js';
+import { prependLaunchInstructions } from '@/shared/utils.js';
 
 async function withDatabase(run: (projectPath: string) => Promise<void>): Promise<void> {
   const previousDatabasePath = process.env.DATABASE_PATH;
@@ -138,4 +139,40 @@ test('title prompt treats the first message as quoted data', () => {
     __testing.parseInitialTitleResponse('```json\n{"title":"Session Naming"}\n```'),
     'Session Naming',
   );
+});
+
+test('titles a launched session from the user words, never its launch instructions', { concurrency: false }, async () => {
+  await withDatabase(async (projectPath) => {
+    sessionsDb.createAppSession('briefed-session', 'codex', projectPath, 'Untitled');
+    const briefing = ['# Briefing mode (Mission Control)', '', ...Array.from({ length: 300 }, (_, i) => `- rule ${i}`)].join('\n');
+
+    const prompts: string[] = [];
+    const runQuery = async (prompt: string, _options: unknown, writer: { send: (data: unknown) => void }) => {
+      prompts.push(prompt);
+      writer.send({ kind: 'text', content: '{"title":"Login Page Fix"}' });
+    };
+    for (const initialMessage of [
+      prependLaunchInstructions(briefing, 'Fix the login page redirect loop'),
+      `${briefing}\n\n---\n\nFix the login page redirect loop`,
+    ]) {
+      sessionsDb.updateSessionCustomName('briefed-session', 'Untitled', 'derived');
+      await generateInitialSessionTitle({
+        sessionId: 'briefed-session', initialMessage, cwd: projectPath, model: 'test-model', runQuery, onTitle: () => {},
+      });
+    }
+
+    assert.equal(prompts.length, 2);
+    for (const prompt of prompts) {
+      assert.match(prompt, /--- USER MESSAGE ---\nFix the login page redirect loop\n--- END USER MESSAGE ---/);
+      assert.doesNotMatch(prompt, /Briefing mode|launch-instructions/);
+    }
+
+    // A first message that is nothing but instructions gets no helper call at all.
+    sessionsDb.updateSessionCustomName('briefed-session', 'Untitled', 'derived');
+    const none = await generateInitialSessionTitle({
+      sessionId: 'briefed-session', initialMessage: briefing, cwd: projectPath, model: 'test-model', runQuery, onTitle: () => {},
+    });
+    assert.equal(none, null);
+    assert.equal(prompts.length, 2);
+  });
 });

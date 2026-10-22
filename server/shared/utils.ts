@@ -1929,3 +1929,71 @@ export function terminateChild(
   }, graceMs);
   escalate.unref?.();
 }
+
+//----------------- LAUNCH INSTRUCTION PREAMBLE ------------
+
+/**
+ * Opening marker of the launch-instruction preamble that Codex and OpenCode
+ * runs put ahead of a session's first prompt (their app-servers are shared, so
+ * a plugin's per-session instructions cannot ride a system prompt there; see
+ * ADR-0021). The marker is an HTML comment so a Markdown renderer hides it.
+ */
+export const LAUNCH_INSTRUCTIONS_BEGIN = '<!-- vibespace:launch-instructions -->';
+
+/** Closing marker of the launch-instruction preamble; see LAUNCH_INSTRUCTIONS_BEGIN. */
+export const LAUNCH_INSTRUCTIONS_END = '<!-- /vibespace:launch-instructions -->';
+
+/** The rule between the preamble and the user's own words, before and after the markers existed. */
+const LAUNCH_INSTRUCTIONS_SEPARATOR = '\n\n---\n\n';
+
+/**
+ * First lines of preambles written before the markers existed. Rollouts from
+ * that time still carry them, and every metadata helper reading those
+ * transcripts (title, recap, topics) must still see past them. Only a heading
+ * that a launch contributor is known to have emitted belongs here.
+ */
+const LEGACY_LAUNCH_PREAMBLE_HEADINGS = ['# Briefing mode (Mission Control)'];
+
+/**
+ * Puts launch instructions ahead of a first prompt, fenced by the launch
+ * markers so `stripLaunchInstructions` can always find where the user's own
+ * words begin. Returns the prompt unchanged when there are no instructions.
+ *
+ * Used by the Codex and OpenCode runtimes, the only ones that carry launch
+ * instructions in the prompt rather than in a system prompt.
+ */
+export function prependLaunchInstructions(instructions: string, prompt: string): string {
+  const block = typeof instructions === 'string' ? instructions.trim() : '';
+  if (!block) return prompt;
+  return `${LAUNCH_INSTRUCTIONS_BEGIN}\n${block}\n${LAUNCH_INSTRUCTIONS_END}${LAUNCH_INSTRUCTIONS_SEPARATOR}${prompt}`;
+}
+
+/**
+ * Returns a user message without the launch-instruction preamble a runtime
+ * put ahead of it, so title, recap and topic helpers describe what the user
+ * asked rather than the harness's instructions.
+ *
+ * - A marked preamble (`prependLaunchInstructions`) is removed up to its end
+ *   marker and the separator rule after it. A message cut inside the preamble
+ *   (no end marker) has no user words in it and yields ''.
+ * - An unmarked preamble from before the markers is recognised only by a known
+ *   heading (LEGACY_LAUNCH_PREAMBLE_HEADINGS) appearing before the first
+ *   separator rule, and is removed up to that rule; with no rule, ''.
+ * - Any other text is returned unchanged, so a user who writes `---` or a
+ *   heading of their own loses nothing.
+ */
+export function stripLaunchInstructions(text: string): string {
+  if (typeof text !== 'string') return text;
+  const leading = text.length - text.trimStart().length;
+  const body = text.slice(leading);
+  if (body.startsWith(LAUNCH_INSTRUCTIONS_BEGIN)) {
+    const end = body.indexOf(LAUNCH_INSTRUCTIONS_END);
+    if (end < 0) return '';
+    return body.slice(end + LAUNCH_INSTRUCTIONS_END.length).replace(/^\s*(?:---[ \t]*(?:\r?\n|$))?/, '').trimStart();
+  }
+  const separator = body.indexOf(LAUNCH_INSTRUCTIONS_SEPARATOR);
+  const head = separator < 0 ? body : body.slice(0, separator);
+  const legacy = head.split('\n').some(line => LEGACY_LAUNCH_PREAMBLE_HEADINGS.includes(line.trim()));
+  if (!legacy) return text;
+  return separator < 0 ? '' : body.slice(separator + LAUNCH_INSTRUCTIONS_SEPARATOR.length).trimStart();
+}
