@@ -37,6 +37,195 @@ test('preserves the entire native audio upload and long multilingual transcript 
   }), { ok: true, value: { text } });
 });
 
+function box(type: string, ...payload: Buffer[]): Buffer {
+  const body = Buffer.concat(payload);
+  const header = Buffer.alloc(8);
+  header.writeUInt32BE(8 + body.length, 0);
+  header.write(type, 4, 'latin1');
+  return Buffer.concat([header, body]);
+}
+
+/** A minimal M4A laid out like a phone recording: ftyp, the audio, then moov/mvhd with its length. */
+function m4aRecording(seconds: number, version: 0 | 1 = 0): Buffer {
+  const timescale = 44_100;
+  const duration = Math.round(seconds * timescale);
+  const mvhd = Buffer.alloc(version === 1 ? 112 : 100);
+  mvhd[0] = version;
+  if (version === 1) {
+    mvhd.writeUInt32BE(timescale, 20);
+    mvhd.writeBigUInt64BE(BigInt(duration), 24);
+  } else {
+    mvhd.writeUInt32BE(timescale, 12);
+    mvhd.writeUInt32BE(duration, 16);
+  }
+  return Buffer.concat([
+    box('ftyp', Buffer.from('M4A \0\0\0\0M4A mp42isom', 'latin1')),
+    box('mdat', Buffer.alloc(4_096, 0x21)),
+    box('moov', box('mvhd', mvhd)),
+  ]);
+}
+
+test('sends every model the plain request and returns its transcript as is', async () => {
+  const bodies: FormData[] = [];
+  let sttModel = '';
+  const service = createVoiceService({
+    defaults,
+    transcriptionPresets: [{
+      id: 'local-whisper',
+      label: 'Local Whisper',
+      baseUrl: 'http://ai.internal:8002/v1',
+      apiKey: '',
+      sttModel: 'Systran/faster-whisper-large-v3',
+    }],
+    loadUserOverrides: () => ({ sttModel }),
+    timeoutMs: 1_000,
+    fetchBackend: async (_url, options) => {
+      bodies.push(options.body as FormData);
+      return new Response(JSON.stringify({ text: 'first line\nsecond line ' }));
+    },
+  });
+  const audio = { bytes: Buffer.from('audio'), mimeType: 'audio/mp4', fileName: 'recording.m4a' };
+
+  const results = [];
+  // Server-side chunking (chunking_strategy) dropped more of a long dictation
+  // than one block, so no model gets it.
+  for (const model of ['gpt-transcribe', 'gpt-4o-transcribe', '']) {
+    sttModel = model;
+    results.push(await service.transcribe({ userId: 1, audio }));
+  }
+  results.push(await service.transcribe({ userId: 1, audio, presetId: 'local-whisper' }));
+
+  for (const result of results) {
+    assert.deepEqual(result, { ok: true, value: { text: 'first line\nsecond line ' } });
+  }
+  assert.deepEqual(bodies.map((body) => [...body.keys()]), Array(4).fill(['file', 'model']));
+  assert.deepEqual(bodies.map((body) => body.get('model')), [
+    'gpt-transcribe',
+    'gpt-4o-transcribe',
+    'whisper-1',
+    'Systran/faster-whisper-large-v3',
+  ]);
+});
+
+test('reports every transcription with its sizes and usage, never its text or prompt', async () => {
+  const reports: Record<string, unknown>[] = [];
+  const responses = [
+    // gpt-transcribe bills by duration...
+    new Response(JSON.stringify({
+      text: 'секретный текст диктовки',
+      languages: ['ru'],
+      usage: { type: 'duration', seconds: 62 },
+    })),
+    // ...gpt-4o-transcribe by tokens.
+    new Response(JSON.stringify({
+      text: 'секретный текст',
+      usage: {
+        type: 'tokens',
+        input_tokens: 620,
+        input_token_details: { text_tokens: 5, audio_tokens: 615 },
+        output_tokens: 9,
+        total_tokens: 629,
+      },
+    })),
+    new Response('server exploded', { status: 500 }),
+  ];
+  let sttModel = 'gpt-transcribe';
+  const service = createVoiceService({
+    defaults,
+    transcriptionPresets: [],
+    loadUserOverrides: () => ({ sttModel }),
+    timeoutMs: 1_000,
+    fetchBackend: async () => {
+      const response = responses.shift();
+      if (!response) throw new Error('connect ECONNREFUSED');
+      return response;
+    },
+    reportTranscription: (report) => reports.push({ ...report, elapsedMs: typeof report.elapsedMs }),
+  });
+  const audio = { bytes: m4aRecording(61.5), mimeType: 'audio/mp4', fileName: 'recording.m4a' };
+  const prompt = 'Кванта, Mission Control';
+
+  await service.transcribe({ userId: 42, audio, prompt });
+  sttModel = 'gpt-4o-transcribe';
+  await service.transcribe({ userId: 42, audio, prompt });
+  await service.transcribe({ userId: 42, audio, prompt });
+  await service.transcribe({ userId: 42, audio, prompt });
+
+  const request = (model: string) => ({
+    model,
+    promptCharacters: prompt.length,
+    audioBytes: audio.bytes.length,
+    audioSeconds: 61.5,
+    elapsedMs: 'number',
+  });
+  assert.deepEqual(reports, [
+    {
+      ...request('gpt-transcribe'),
+      status: 200,
+      characters: 'секретный текст диктовки'.length,
+      words: 3,
+      audioTokens: undefined,
+      outputTokens: undefined,
+      billedSeconds: 62,
+    },
+    {
+      ...request('gpt-4o-transcribe'),
+      status: 200,
+      characters: 'секретный текст'.length,
+      words: 2,
+      audioTokens: 615,
+      outputTokens: 9,
+      billedSeconds: undefined,
+    },
+    { ...request('gpt-4o-transcribe'), status: 500 },
+    { ...request('gpt-4o-transcribe'), status: 0 },
+  ]);
+  assert.equal(JSON.stringify(reports).includes('секретный'), false);
+  assert.equal(JSON.stringify(reports).includes('Кванта'), false);
+});
+
+test('reads the recording length from either MP4 header version and tolerates other formats', async () => {
+  const lengths: (number | undefined)[] = [];
+  const service = createVoiceService({
+    defaults,
+    transcriptionPresets: [],
+    loadUserOverrides: () => ({}),
+    timeoutMs: 1_000,
+    fetchBackend: async () => new Response(JSON.stringify({ text: 'ok', usage: { type: 'duration', seconds: 3 } })),
+    reportTranscription: (report) => lengths.push(report.audioSeconds),
+  });
+  const transcribe = (bytes: Buffer, mimeType = 'audio/mp4') => service.transcribe({
+    userId: 1,
+    audio: { bytes, mimeType, fileName: 'recording' },
+  });
+
+  await transcribe(m4aRecording(3));
+  await transcribe(m4aRecording(5_000.04, 1));
+  await transcribe(Buffer.from('webm audio, no MP4 boxes'), 'audio/webm');
+  await transcribe(m4aRecording(3).subarray(0, 60));
+  await transcribe(Buffer.alloc(0));
+
+  assert.deepEqual(lengths, [3, 5_000, undefined, undefined, undefined]);
+});
+
+test('a failing transcription reporter never fails the transcription', async () => {
+  const service = createVoiceService({
+    defaults,
+    transcriptionPresets: [],
+    loadUserOverrides: () => ({}),
+    timeoutMs: 1_000,
+    fetchBackend: async () => new Response(JSON.stringify({ text: 'still delivered' })),
+    reportTranscription: () => {
+      throw new Error('log sink is gone');
+    },
+  });
+
+  assert.deepEqual(await service.transcribe({
+    userId: 1,
+    audio: { bytes: Buffer.from('audio'), mimeType: 'audio/mp4', fileName: 'recording.m4a' },
+  }), { ok: true, value: { text: 'still delivered' } });
+});
+
 test('reports whether the server-controlled backend is configured', () => {
   const service = createVoiceService({
     defaults: { ...defaults, baseUrl: '' },

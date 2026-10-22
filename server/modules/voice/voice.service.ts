@@ -7,6 +7,29 @@ import type {
   VoiceTranscriptionPresetConfig,
 } from '@/shared/types.js';
 
+/**
+ * One transcription as the service reports it: sizes, timing and the backend's
+ * usage numbers, never the transcript or the prompt. Comparing words with the
+ * recording's length shows a transcript that came back cut short.
+ */
+type VoiceTranscriptionReport = {
+  model: string;
+  promptCharacters: number;
+  audioBytes: number;
+  /** Playback length the MP4/M4A container declares; absent for other formats. */
+  audioSeconds?: number;
+  elapsedMs: number;
+  /** Backend HTTP status; 0 when the backend was unreachable or timed out. */
+  status: number;
+  characters?: number;
+  words?: number;
+  /** Token-billed models (gpt-4o-transcribe): audio tokens billed. */
+  audioTokens?: number;
+  outputTokens?: number;
+  /** Duration-billed models (gpt-transcribe, Whisper): audio seconds billed. */
+  billedSeconds?: number;
+};
+
 type VoiceServiceDependencies = {
   defaults: {
     presetLabel: string;
@@ -20,6 +43,8 @@ type VoiceServiceDependencies = {
   loadUserOverrides(userId: number): VoiceRequestOverrides;
   timeoutMs: number;
   fetchBackend(url: string, options: RequestInit): Promise<Response>;
+  /** Called once per transcription attempt that reached the backend request. */
+  reportTranscription?(report: VoiceTranscriptionReport): void;
 };
 
 type ResolvedVoiceConfig = Omit<VoiceServiceDependencies['defaults'], 'presetLabel'> & {
@@ -160,13 +185,98 @@ function validateConfiguredBackend(config: ResolvedVoiceConfig): VoiceServiceRes
  */
 export const MAX_TRANSCRIPTION_PROMPT_LENGTH = 2_000;
 
-function createTranscriptionFormData(audio: VoiceAudioUpload, sttModel: string, prompt?: string): FormData {
+function createTranscriptionFormData(audio: VoiceAudioUpload, sttModel: string, hint: string): FormData {
   const formData = new FormData();
   formData.append('file', new Blob([audio.bytes], { type: audio.mimeType }), audio.fileName);
   formData.append('model', sttModel);
-  const hint = prompt?.trim().slice(0, MAX_TRANSCRIPTION_PROMPT_LENGTH);
   if (hint) formData.append('prompt', hint);
   return formData;
+}
+
+type TranscriptionResponseBody = {
+  text?: unknown;
+  usage?: {
+    seconds?: unknown;
+    output_tokens?: unknown;
+    input_token_details?: { audio_tokens?: unknown };
+  };
+};
+
+function finiteNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function countWords(text: string): number {
+  const trimmed = text.trim();
+  return trimmed ? trimmed.split(/\s+/).length : 0;
+}
+
+function readTranscriptionResponse(responseText: string): {
+  text: string;
+  usage: Pick<VoiceTranscriptionReport, 'audioTokens' | 'outputTokens' | 'billedSeconds'>;
+} {
+  let text = responseText;
+  let usage: TranscriptionResponseBody['usage'];
+  try {
+    const parsed = JSON.parse(responseText) as TranscriptionResponseBody;
+    text = typeof parsed.text === 'string' ? parsed.text : '';
+    usage = parsed.usage;
+  } catch {
+    // A backend answering with plain text (response_format=text) keeps working.
+  }
+
+  return {
+    text,
+    usage: {
+      audioTokens: finiteNumber(usage?.input_token_details?.audio_tokens),
+      outputTokens: finiteNumber(usage?.output_tokens),
+      billedSeconds: finiteNumber(usage?.seconds),
+    },
+  };
+}
+
+/**
+ * Reads the playback length an MP4/M4A container declares in moov/mvhd, or
+ * undefined for any other or malformed container. It only feeds the
+ * transcription report, so it never throws.
+ */
+function readMp4DurationSeconds(bytes: Buffer): number | undefined {
+  const findBox = (type: string, start: number, end: number) => {
+    let offset = start;
+    while (offset + 8 <= end) {
+      let size = bytes.readUInt32BE(offset);
+      let headerSize = 8;
+      if (size === 1) {
+        if (offset + 16 > end) return undefined;
+        size = Number(bytes.readBigUInt64BE(offset + 8));
+        headerSize = 16;
+      } else if (size === 0) {
+        // Size 0 marks the last box, running to the end of its parent.
+        size = end - offset;
+      }
+      if (size < headerSize || offset + size > end) return undefined;
+      if (bytes.toString('latin1', offset + 4, offset + 8) === type) {
+        return { start: offset + headerSize, end: offset + size };
+      }
+      offset += size;
+    }
+    return undefined;
+  };
+
+  const moov = findBox('moov', 0, bytes.length);
+  const mvhd = moov && findBox('mvhd', moov.start, moov.end);
+  if (!mvhd) return undefined;
+
+  // mvhd: version (1 byte), flags (3), then creation and modification times,
+  // timescale and duration; version 1 widens the times and duration to 64 bits.
+  const fields = mvhd.start + 4;
+  const wide = bytes[mvhd.start] === 1;
+  if (fields + (wide ? 28 : 16) > mvhd.end) return undefined;
+  const timescale = bytes.readUInt32BE(fields + (wide ? 16 : 8));
+  const duration = wide
+    ? Number(bytes.readBigUInt64BE(fields + 20))
+    : bytes.readUInt32BE(fields + 12);
+  return timescale > 0 ? Math.round((duration / timescale) * 10) / 10 : undefined;
 }
 
 /**
@@ -216,30 +326,50 @@ export function createVoiceService(dependencies: VoiceServiceDependencies): Voic
         return configurationFailure;
       }
 
+      const hint = input.prompt?.trim().slice(0, MAX_TRANSCRIPTION_PROMPT_LENGTH) ?? '';
+      const startedAt = Date.now();
+      const report = (
+        outcome: Pick<VoiceTranscriptionReport, 'status'> & Partial<VoiceTranscriptionReport>,
+      ) => {
+        try {
+          dependencies.reportTranscription?.({
+            model: config.sttModel,
+            promptCharacters: hint.length,
+            audioBytes: input.audio.bytes.length,
+            audioSeconds: readMp4DurationSeconds(input.audio.bytes),
+            elapsedMs: Date.now() - startedAt,
+            ...outcome,
+          });
+        } catch {
+          // Reporting is diagnostics only; it must never fail a transcription.
+        }
+      };
+
       try {
         const response = await dependencies.fetchBackend(
           `${config.baseUrl}/audio/transcriptions`,
           {
             method: 'POST',
             headers: authorizationHeader(config.apiKey),
-            body: createTranscriptionFormData(input.audio, config.sttModel, input.prompt),
+            body: createTranscriptionFormData(input.audio, config.sttModel, hint),
           },
         );
         const responseText = await response.text();
         if (!response.ok) {
+          report({ status: response.status });
           return backendFailure(response.status, responseText);
         }
 
-        try {
-          const parsed = JSON.parse(responseText) as { text?: unknown };
-          return {
-            ok: true,
-            value: { text: typeof parsed.text === 'string' ? parsed.text : '' },
-          };
-        } catch {
-          return { ok: true, value: { text: responseText } };
-        }
+        const transcript = readTranscriptionResponse(responseText);
+        report({
+          status: response.status,
+          characters: transcript.text.length,
+          words: countWords(transcript.text),
+          ...transcript.usage,
+        });
+        return { ok: true, value: { text: transcript.text } };
       } catch (error) {
+        report({ status: 0 });
         return unreachableBackendFailure(error, dependencies.timeoutMs);
       }
     },

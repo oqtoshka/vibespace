@@ -115,6 +115,11 @@ export const voiceService = createVoiceService({
       clearTimeout(timeoutHandle);
     }
   },
+  // One stdout line per transcription, never its text: how long the recording
+  // was against how many words came back is what shows a dropped sentence.
+  reportTranscription: (report) => {
+    console.info(`[Voice] transcription ${JSON.stringify(report)}`);
+  },
 });
 
 const audioUpload = multer({
