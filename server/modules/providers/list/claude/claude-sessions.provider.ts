@@ -432,6 +432,43 @@ function stripVibespaceRetryMarker(content: string): string {
 }
 
 /**
+ * A base64 `image` block of a user's Claude content list as the attachment a
+ * user row carries (a data URL), or null for any other block.
+ */
+function readBase64ImageBlock(part: AnyRecord | null | undefined): { data: string } | null {
+  if (part?.type !== 'image' || part.source?.type !== 'base64' || typeof part.source.data !== 'string') {
+    return null;
+  }
+  const mediaType = typeof part.source.media_type === 'string' ? part.source.media_type : 'image/png';
+  return { data: `data:${mediaType};base64,${part.source.data}` };
+}
+
+/**
+ * The prompt of a `queued_command` attachment: a string for a text message,
+ * or the Claude content list for one sent with pictures — its text blocks
+ * joined, its images as a user row carries them.
+ */
+function readQueuedCommandPrompt(prompt: unknown): { text: string; images: Array<{ data: string }> } {
+  if (typeof prompt === 'string') {
+    return { text: prompt, images: [] };
+  }
+  if (!Array.isArray(prompt)) {
+    return { text: '', images: [] };
+  }
+  const texts: string[] = [];
+  const images: Array<{ data: string }> = [];
+  for (const part of prompt) {
+    const image = readBase64ImageBlock(part);
+    if (image) {
+      images.push(image);
+    } else if (part?.type === 'text' && typeof part.text === 'string' && part.text.trim()) {
+      texts.push(part.text);
+    }
+  }
+  return { text: texts.join('\n'), images };
+}
+
+/**
  * The summary text when this row is a compaction summary, otherwise `null`.
  *
  * Claude replays the summary as a synthetic *user* turn so the next turn starts
@@ -649,8 +686,12 @@ export class ClaudeSessionsProvider implements IProviderSessions {
     // agent visibly changes course with nothing to explain why.
     if (raw.type === 'attachment' && readObjectRecord(raw.attachment)?.type === 'queued_command') {
       const attachment = readObjectRecord(raw.attachment) || {};
-      const prompt = typeof attachment.prompt === 'string' ? attachment.prompt : '';
-      if (!prompt.trim()) {
+      // A message with pictures is recorded as the content list it was sent
+      // as (text blocks, then base64 `image` blocks), not as a string. This
+      // row is its only durable copy, so reading only strings dropped every
+      // picture message sent mid-turn from the transcript on reload.
+      const { text: prompt, images } = readQueuedCommandPrompt(attachment.prompt);
+      if (!prompt.trim() && images.length === 0) {
         return [];
       }
       // Key it by the uuid the injection was stamped with (echoed back as
@@ -666,6 +707,7 @@ export class ClaudeSessionsProvider implements IProviderSessions {
         kind: 'text',
         role: 'user',
         content: prompt,
+        images: images.length > 0 ? images : undefined,
       })];
     }
 
@@ -707,9 +749,9 @@ export class ClaudeSessionsProvider implements IProviderSessions {
         // render them on the user bubble.
         const imageAttachments: Array<{ data: string }> = [];
         for (const part of raw.message.content) {
-          if (part?.type === 'image' && part.source?.type === 'base64' && typeof part.source.data === 'string') {
-            const mediaType = typeof part.source.media_type === 'string' ? part.source.media_type : 'image/png';
-            imageAttachments.push({ data: `data:${mediaType};base64,${part.source.data}` });
+          const image = readBase64ImageBlock(part);
+          if (image) {
+            imageAttachments.push(image);
           }
         }
         let imagesAttached = false;
