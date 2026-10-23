@@ -506,7 +506,7 @@ function mapCliOptionsToSDK(options = {}) {
   sdkOptions.allowedTools = sdkOptions.allowedTools.filter((tool) => !launchExtras.disallowedTools.includes(tool));
 
   // Map system prompt configuration
-  const vibespacePreamble = [buildVibespaceSystemPrompt(cwd), launchExtras.instructions, options.priorConversation]
+  const vibespacePreamble = [buildVibespaceSystemPrompt(cwd), launchExtras.instructions, options.priorConversation, launchExtras.systemInstructions]
     .filter(Boolean)
     .join('\n\n');
   sdkOptions.systemPrompt = {

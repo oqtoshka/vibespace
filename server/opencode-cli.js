@@ -14,7 +14,7 @@ import { sessionsService } from './modules/providers/services/sessions.service.j
 import { providerModelsService } from './modules/providers/services/provider-models.service.js';
 import { notifyRunFailed, notifyRunStopped } from './modules/notifications/index.js';
 import { planTaskContinuation } from './modules/task-continuation/index.js';
-import { BriefingOutputPolicy, scheduleSessionRecap, broadcastSessionUpdate } from './modules/providers/index.js';
+import { applyOpenCodeSystemInstructions, BriefingOutputPolicy, scheduleSessionRecap, broadcastSessionUpdate } from './modules/providers/index.js';
 import { createCompleteMessage, createNormalizedMessage, flattenPromptForWindowsShell, prependLaunchInstructions, terminateChild, getOpenCodeHelperWorkspace, isDatabaseLockedError, stripAnsi } from './shared/utils.js';
 
 // Every `opencode` process on this machine writes to one WAL database, so a
@@ -250,15 +250,16 @@ async function spawnOpenCode(command, options = {}, ws, context = undefined) {
     options = { ...options, rewind: undefined };
   }
 
-  // Launch options: the shared OpenCode server and the CLI alike get the
-  // session's launch env, but only a fresh session's first prompt can carry
-  // the plugin's instructions (see collectAgentLaunchExtras and ADR-0021).
-  if (options.launchOptions && !options.sessionId && !options.ephemeral) {
-    const { instructions } = collectAgentLaunchExtras({
-      provider: 'opencode', scope: 'session', private: Boolean(options.private), ephemeral: false,
-      sessionId: appSessionId ?? null, launchOptions: options.launchOptions,
-    });
-    if (instructions && typeof command === 'string') command = prependLaunchInstructions(instructions, command);
+  const launchExtras = collectAgentLaunchExtras({
+    provider: 'opencode', scope: 'session', private: Boolean(options.private), ephemeral: Boolean(options.ephemeral),
+    sessionRole: options.ephemeral || options.backgroundHelper ? 'helper' : options.sideSession ? 'side' : 'main',
+    sessionId: appSessionId ?? options.sessionId ?? null, launchOptions: options.launchOptions ?? null,
+  });
+  // User-level launch context belongs only on the first prompt. Native system
+  // overrides are reapplied on every run so resumes keep the same contract.
+  if (options.launchOptions && !options.sessionId && !options.ephemeral
+    && launchExtras.instructions && typeof command === 'string') {
+    command = prependLaunchInstructions(launchExtras.instructions, command);
   }
 
   // Images normally need the HTTP transport: `opencode run` cannot carry their
@@ -275,7 +276,10 @@ async function spawnOpenCode(command, options = {}, ws, context = undefined) {
     compactedOpenCodeSessions.has(options.sessionId)
     || hasOpenCodeCompactSummary(options.sessionId)
   );
-  if (!hasCompactedContext && (
+  // OpenCode 1.18's durable Prompt schema cannot carry a system override. Keep
+  // these sessions on the CLI, whose agent.prompt is a native system channel.
+  // This also means they use CLI attachment paths and cannot accept HTTP steer.
+  if (!launchExtras.systemInstructions && !hasCompactedContext && (
     options.enableMidTurnInjection
     || normalizeImageDescriptors(options.images).length > 0
   )) {
@@ -501,6 +505,7 @@ async function spawnOpenCode(command, options = {}, ws, context = undefined) {
       }
       const permissionOptions = resolveOpenCodePermissionOptions(permissionMode);
       args.push(...permissionOptions.args);
+      if (launchExtras.systemInstructions && permissionMode !== 'plan') args.push('--agent', 'build');
       const hasAttachments =
         normalizeAttachmentDescriptors(images).length > 0
         || normalizeAttachmentDescriptors(files).length > 0;
@@ -526,7 +531,7 @@ async function spawnOpenCode(command, options = {}, ws, context = undefined) {
           // the user's privacy choice; the latter is not an operator session
           // at all (recap/title generation), even though OpenCode mechanically
           // runs it through the same CLI.
-          env: buildAgentEnv({
+          env: applyOpenCodeSystemInstructions(buildAgentEnv({
             ...permissionOptions.env,
             ...collectAgentEnv({
               provider: 'opencode',
@@ -536,7 +541,7 @@ async function spawnOpenCode(command, options = {}, ws, context = undefined) {
               sessionId: options.sessionId ?? null,
               launchOptions: options.launchOptions ?? null,
             }),
-          }),
+          }), launchExtras.systemInstructions, permissionMode),
         });
 
         registerHandle(processKey, opencodeProcess);

@@ -117,14 +117,15 @@ test('collectAgentLaunchExtras concatenates instructions, merges MCP servers, su
   const { collectAgentLaunchExtras, registerAgentLaunchContributor } = await import('@/shared/agent-env.js');
   const unregisterA = registerAgentLaunchContributor((context) => (
     context.launchOptions?.['acme.review']
-      ? { instructions: 'A says hi', mcpServers: { a: { command: 'a' }, shared: { command: 'from-a' } }, allowedTools: ['mcp__a__look', 'mcp__a__look', ''] }
+      ? { instructions: 'A says hi', systemInstructions: '  A override  ', mcpServers: { a: { command: 'a' }, shared: { command: 'from-a' } }, allowedTools: ['mcp__a__look', 'mcp__a__look', ''] }
       : null
   ));
   const unregisterThrows = registerAgentLaunchContributor(() => { throw new Error('boom'); });
-  const unregisterB = registerAgentLaunchContributor(() => ({ instructions: '  B says hi  ', mcpServers: { shared: { command: 'from-b' } } }));
+  const unregisterB = registerAgentLaunchContributor(() => ({ instructions: '  B says hi  ', systemInstructions: 'B override', mcpServers: { shared: { command: 'from-b' } } }));
   try {
     const chosen = collectAgentLaunchExtras({ provider: 'claude', scope: 'session', launchOptions: { 'acme.review': true } });
     assert.equal(chosen.instructions, 'A says hi\n\nB says hi');
+    assert.equal(chosen.systemInstructions, 'A override\n\nB override');
     assert.deepEqual(chosen.mcpServers, { a: { command: 'a' }, shared: { command: 'from-b' } });
     assert.deepEqual(chosen.allowedTools, ['mcp__a__look']);
 

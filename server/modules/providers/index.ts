@@ -22,6 +22,7 @@ export { providerPolicy } from './services/provider-policy.service.js';
 export { rewindCodexTurn } from './services/codex-rewind.service.js';
 
 export { assertOpenCodeServerModel } from './services/opencode-server-model.service.js';
+export { applyOpenCodeSystemInstructions } from './services/opencode-system-instructions.service.js';
 
 export { permissionPreferencesService } from './services/permission-preferences.service.js';
 export { opencodeQuestions } from './services/opencode-questions.service.js';

@@ -13,7 +13,7 @@ import { queryCodex, injectCodexMessage } from '../../../openai-codex.js';
 // eslint-disable-next-line boundaries/no-unknown -- Close the owned executable fixture transport.
 import { stopCodexAppServer } from '../../../services/codex-app-server.service.js';
 
-type Scenario = { launch?: boolean; policy?: unknown; repeat?: boolean; providerFailure?: boolean; steer?: boolean; side?: boolean; empty?: boolean; child?: boolean; helper?: boolean; unreadable?: boolean; missing?: boolean; late?: boolean; unreadableAfterAdmission?: boolean };
+type Scenario = { launch?: boolean; systemInstructions?: string; fresh?: boolean; cardOnly?: boolean; policy?: unknown; repeat?: boolean; providerFailure?: boolean; steer?: boolean; side?: boolean; empty?: boolean; child?: boolean; helper?: boolean; unreadable?: boolean; missing?: boolean; late?: boolean; unreadableAfterAdmission?: boolean };
 async function run(scenario: Scenario) {
   const dir = await mkdtemp(path.join(tmpdir(), 'codex-agent-text-policy-'));
   const executable = path.join(dir, 'codex'), capture = path.join(dir, 'requests.jsonl');
@@ -21,7 +21,7 @@ async function run(scenario: Scenario) {
   const events: Array<Record<string, unknown>> = [], boundaries: string[] = [], roles: Array<string | undefined> = [];
   let sidecarReady = false;
   let steered = false, pendingSteer: Promise<unknown> | undefined;
-  const stopLaunch = registerAgentLaunchContributor(c => scenario.launch && c.sessionRole === 'main' ? { agentTextPolicy: 'reject' } : null);
+  const stopLaunch = registerAgentLaunchContributor(c => c.sessionRole === 'main' ? { ...(scenario.launch ? { agentTextPolicy: 'reject' as const } : {}), systemInstructions: scenario.systemInstructions } : null);
   const unregister = registerTaskLedgerSource(context => {
     if (scenario.launch) return null;
     if (context.sessionId !== 'policy-thread') return null;
@@ -45,7 +45,7 @@ const output=id=>{
  item(id,{type:'reasoning',id:'reasoning-'+id,summary:['Internal trace fixture'],content:[]});
  // A valid card tool reply precedes prose. It must not waive the behavior invariant.
  item(id,{type:'mcpToolCall',id:'reply-'+id,server:'mc',tool:'reply',arguments:{threadId:'fixture'},result:{content:[{type:'text',text:'Card reply accepted'}]},status:'completed'});
- if((serial===1||scenario.repeat)&&!scenario.child){
+ if((serial===1||scenario.repeat)&&!scenario.child&&!scenario.cardOnly){
   send({method:'item/agentMessage/delta',params:{threadId:'policy-thread',turnId:id,itemId:'answer-'+id,delta:scenario.empty?'   ':'Do not leak this prose'}});
   item(id,{type:'agentMessage',id:'answer-'+id,text:scenario.empty?'   ':'Do not leak this prose',phase:'commentary'});
   item(id,{type:'agentMessage',id:'answer-'+id,text:scenario.empty?'   ':'Do not leak this prose',phase:'final_answer'});
@@ -70,7 +70,7 @@ require('node:readline').createInterface({input:process.stdin}).on('line',line=>
 `);
     await chmod(executable, 0o755); process.env.VIBESPACE_CODEX_PATH = executable;
     __clearTaskContinuationState();
-    const running = queryCodex('Human request', { sessionId: 'policy-thread', cwd: dir, model: 'gpt-6-astra', sideSession: scenario.side, ephemeral: scenario.helper, backgroundHelper: scenario.helper }, {
+    const running = queryCodex('Human request', { sessionId: scenario.fresh ? undefined : 'policy-thread', cwd: dir, model: 'gpt-6-astra', sideSession: scenario.side, ephemeral: scenario.helper, backgroundHelper: scenario.helper }, {
       isWebSocketWriter: true, send(event: Record<string, unknown>) { events.push(event); if (event.kind === 'tool_use') sidecarReady = true; }, setSessionId() {},
     });
     if (scenario.steer) {
@@ -192,3 +192,16 @@ test('actual Codex explicit launch refuses first prose before any reporter hook 
  assert.deepEqual(events.filter(e=>e.kind==='complete').map(e=>e.success),[true]);
  assert.ok(events.some(e=>e.text==='agent_text_policy_exhausted'));
 });
+
+for (const fresh of [true, false]) {
+  test(`Codex harness override precedes first response on ${fresh ? 'start' : 'resume'}; card-only smoke completes without repair`, { timeout: 15000 }, async () => {
+    const override = 'Use only card tools for progress and completion. End with no assistant text.';
+    const { calls, events } = await run({ systemInstructions: override, fresh, policy: 'reject', cardOnly: true });
+    const thread = calls.find(call => call.method === (fresh ? 'thread/start' : 'thread/resume'));
+    assert.equal(thread.params.developerInstructions, override);
+    assert.equal(calls.filter(call => call.method === 'turn/start').length, 1);
+    assert.ok(events.some(event => event.kind === 'tool_use'));
+    assert.ok(!events.some(event => event.text === 'agent_text_policy_violation'));
+    assert.deepEqual(events.filter(event => event.kind === 'complete').map(event => event.success), [true]);
+  });
+}

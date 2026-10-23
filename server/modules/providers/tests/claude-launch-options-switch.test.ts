@@ -35,7 +35,7 @@ test('a turn with switched launch options relaunches the live Claude process wit
   const sid = 'claude-launch-switch';
   const spawns: any[] = [];
   const stopLaunch = registerAgentLaunchContributor((c) => (c.launchOptions?.['acme.briefing'] === true
-    ? { instructions: 'ACME_BRIEFING_INSTRUCTIONS', mcpServers: { acme: { type: 'stdio', command: 'acme-mcp' } }, allowedTools: ['mcp__acme__reply'] }
+    ? { instructions: 'ACME_BRIEFING_INSTRUCTIONS', systemInstructions: 'ACME_HARNESS_OVERRIDE', mcpServers: { acme: { type: 'stdio', command: 'acme-mcp' } }, allowedTools: ['mcp__acme__reply'] }
     : null));
   const stopEnv = registerAgentEnvContributor((c) => (c.launchOptions?.['acme.briefing'] === true ? { ACME_BRIEFING: '1' } : null));
   __setClaudeQueryImpl(({ prompt, options }: any) => {
@@ -69,6 +69,7 @@ test('a turn with switched launch options relaunches the live Claude process wit
     const relaunched = spawns[1];
     assert.equal(relaunched.resume, sid, 'the relaunch resumes the same transcript');
     assert.match(String(relaunched.systemPrompt?.append ?? ''), /ACME_BRIEFING_INSTRUCTIONS/);
+    assert.match(String(relaunched.systemPrompt?.append ?? ''), /ACME_HARNESS_OVERRIDE$/);
     assert.equal(relaunched.env.ACME_BRIEFING, '1');
     assert.ok(relaunched.allowedTools.includes('mcp__acme__reply'));
     assert.ok(JSON.stringify(relaunched.mcpServers ?? {}).includes('acme-mcp'), 'the plugin MCP server is attached');

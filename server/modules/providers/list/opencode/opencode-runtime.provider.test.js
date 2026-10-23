@@ -13,7 +13,7 @@ const databaseRoot = await mkdtemp(path.join(os.tmpdir(), 'opencode-runtime-db-'
 process.env.DATABASE_PATH = path.join(databaseRoot, 'auth.db');
 
 const { closeConnection, initializeDatabase } = await import('../../../database/index.js');
-const { registerAgentEnvContributor } = await import('../../../../shared/agent-env.js');
+const { registerAgentEnvContributor, registerAgentLaunchContributor } = await import('../../../../shared/agent-env.js');
 const {
   ensureOpenCodeServer,
   injectOpenCodeServerForTests,
@@ -100,6 +100,7 @@ if (capturePath && process.argv[2] !== 'models') {
     args: process.argv.slice(2),
     permissionEnv: process.env.OPENCODE_PERMISSION ?? null,
     optOut: process.env.VS_TEST_OPT_OUT ?? null,
+    configContent: process.env.OPENCODE_CONFIG_CONTENT ?? null,
   }));
 }
 
@@ -628,6 +629,40 @@ test('spawnOpenCode passes permission mode flags and env to the CLI', async () =
       process.env.OPENCODE_ARGS_CAPTURE = previousArgsCapture;
     }
 
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('native launch override reaches the CLI before fresh and resumed briefing responses', async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'opencode-cli-system-'));
+  const pathKey = findEnvKey('PATH');
+  const previousPath = process.env[pathKey];
+  const previousCapture = process.env.OPENCODE_ARGS_CAPTURE;
+  const unregister = registerAgentLaunchContributor(context =>
+    context.launchOptions?.cardOnly && context.sessionRole === 'main'
+      ? { systemInstructions: 'Progress and completion through card tools only.' }
+      : null,
+  );
+  try {
+    await createFakeOpenCodeExecutable(tempRoot);
+    process.env[pathKey] = `${tempRoot}${path.delimiter}${previousPath || ''}`;
+    for (const sessionId of [undefined, 'open-live-1']) {
+      process.env.OPENCODE_ARGS_CAPTURE = path.join(tempRoot, `capture-${sessionId || 'new'}.json`);
+      await opencodeRuntime.run('Hi', {
+        cwd: tempRoot, sessionId, resume: Boolean(sessionId),
+        launchOptions: { cardOnly: true }, enableMidTurnInjection: true,
+      }, { send() {}, setSessionId() {} }, runtimeContext);
+      const capture = JSON.parse(await readFile(process.env.OPENCODE_ARGS_CAPTURE, 'utf8'));
+      assert.equal(JSON.parse(capture.configContent).agent.build.prompt, 'Progress and completion through card tools only.');
+      assert.ok(capture.args.includes('--agent'));
+      assert.ok(capture.args.includes('build'));
+      assert.equal(capture.args.at(-1), 'Hi', 'system override is absent from user text');
+      assert.equal(capture.args.includes('--session'), Boolean(sessionId));
+    }
+  } finally {
+    unregister();
+    if (previousPath === undefined) delete process.env[pathKey]; else process.env[pathKey] = previousPath;
+    if (previousCapture === undefined) delete process.env.OPENCODE_ARGS_CAPTURE; else process.env.OPENCODE_ARGS_CAPTURE = previousCapture;
     await rm(tempRoot, { recursive: true, force: true });
   }
 });

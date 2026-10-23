@@ -716,7 +716,8 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
   // plan/report repairs retain it. Never infer policy from the prompt text.
   const textPolicyState = options.agentTextPolicyState || { repairs: 0, admitted: false };
   const launchReportingContext = { launchOptions: options.launchOptions ?? null, private: Boolean(options.private), ephemeral: Boolean(ephemeral || backgroundHelper) };
-  const launchTextPolicy = collectAgentLaunchExtras({ provider: 'codex', scope: 'session', sessionId: options.appSessionId ?? sessionId ?? null, sessionRole: ephemeral || backgroundHelper ? 'helper' : sideSession ? 'side' : 'main', ...launchReportingContext }).agentTextPolicy;
+  const sessionLaunchExtras = collectAgentLaunchExtras({ provider: 'codex', scope: 'session', sessionId: options.appSessionId ?? sessionId ?? null, sessionRole: ephemeral || backgroundHelper ? 'helper' : sideSession ? 'side' : 'main', ...launchReportingContext });
+  const launchTextPolicy = sessionLaunchExtras.agentTextPolicy;
   if (!ephemeral && !backgroundHelper && !sideSession && launchTextPolicy === 'reject') textPolicyState.admitted = true;
   let rejectAgentText = !ephemeral && !backgroundHelper && !sideSession && textPolicyState.admitted === true;
   let briefingBegin = null;
@@ -824,6 +825,7 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
       model: resolvedModel,
       sandbox: sandboxMode,
       approvalPolicy: appServerApprovalPolicy,
+      ...(sessionLaunchExtras.systemInstructions ? { developerInstructions: sessionLaunchExtras.systemInstructions } : {}),
       ...(Object.keys(threadConfig).length > 0 ? { config: threadConfig } : {}),
     };
     let threadResponse;

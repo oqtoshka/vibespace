@@ -347,6 +347,8 @@ export type AgentLaunchExtras = {
   /** Launch-owned admission, effective before a provider-native session id exists. */
   agentTextPolicy?: 'reject';
   instructions?: string;
+  /** Session-scoped harness instructions, carried above user prompts by each provider. */
+  systemInstructions?: string;
   mcpServers?: Record<string, unknown>;
   /**
    * Exact tool names the session may call without a permission prompt —
@@ -382,6 +384,7 @@ export function registerAgentLaunchContributor(contributor: AgentLaunchContribut
  */
 export function collectAgentLaunchExtras(context: AgentEnvContext): {
   instructions: string;
+  systemInstructions: string;
   mcpServers: Record<string, unknown>;
   allowedTools: string[];
   disallowedTools: string[];
@@ -389,6 +392,7 @@ export function collectAgentLaunchExtras(context: AgentEnvContext): {
 } {
   let agentTextPolicy: 'reject' | undefined;
   const blocks: string[] = [];
+  const systemBlocks: string[] = [];
   let mcpServers: Record<string, unknown> = {};
   const allowedTools = new Set<string>();
   const disallowedTools = new Set<string>();
@@ -401,6 +405,7 @@ export function collectAgentLaunchExtras(context: AgentEnvContext): {
       continue;
     }
     if (!extra) continue;
+    if (typeof extra.systemInstructions === 'string' && extra.systemInstructions.trim()) systemBlocks.push(extra.systemInstructions.trim());
     if (extra.agentTextPolicy === 'reject') agentTextPolicy = 'reject';
     if (typeof extra.instructions === 'string' && extra.instructions.trim()) blocks.push(extra.instructions.trim());
     if (extra.mcpServers && typeof extra.mcpServers === 'object') mcpServers = { ...mcpServers, ...extra.mcpServers };
@@ -414,6 +419,7 @@ export function collectAgentLaunchExtras(context: AgentEnvContext): {
   return {
     ...(agentTextPolicy ? { agentTextPolicy } : {}),
     instructions: blocks.join('\n\n'),
+    systemInstructions: systemBlocks.join('\n\n'),
     mcpServers,
     allowedTools: [...allowedTools].filter((tool) => !disallowedTools.has(tool)),
     disallowedTools: [...disallowedTools],
