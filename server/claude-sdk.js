@@ -21,7 +21,7 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 
 import { CLAUDE_FALLBACK_MODELS, normalizeClaudeModelToCatalogValue } from './modules/providers/list/claude/claude-models.provider.js';
 import { providerModelsService } from './modules/providers/services/provider-models.service.js';
-import { appendFilesInputTag, buildClaudeUserContent, getGlobalImageAssetsDir, normalizeImageDescriptors } from './shared/image-attachments.js';
+import { appendFilesInputTag, buildClaudeUserContent, getGlobalImageAssetsDir, normalizeAttachmentDescriptors, normalizeImageDescriptors } from './shared/image-attachments.js';
 import { buildAgentEnv, collectAgentEnv, collectAgentLaunchExtras, launchOptionsKey } from './shared/agent-env.js';
 import { resolveClaudeCodeExecutablePath } from './shared/claude-cli-path.js';
 import {
@@ -1766,7 +1766,9 @@ async function injectClaudeMessage(sessionId, command, options = {}) {
     return null;
   }
 
-  const content = await buildTurnContent(command, options.images, options.cwd);
+  // The same content a new turn gets: images as blocks, every other attachment
+  // as the <files_input> path list.
+  const content = await buildTurnContent(command, options.images, options.files, options.cwd);
   const uuid = crypto.randomUUID();
   // A message folded into a running turn is still a user turn: honour a model
   // pick made while that turn was in flight.
@@ -1780,6 +1782,10 @@ async function injectClaudeMessage(sessionId, command, options = {}) {
 
   session.injectedCommands.set(uuid, {
     content: command,
+    // Echoed with the prompt once the runtime picks it up, so the live bubble
+    // shows the attachments the transcript row shows on reload.
+    images: normalizeImageDescriptors(options.images),
+    files: normalizeAttachmentDescriptors(options.files),
     onDelivered: typeof options.onDelivered === 'function' ? options.onDelivered : null,
     onCancelled: typeof options.onCancelled === 'function' ? options.onCancelled : null,
   });
@@ -1889,12 +1895,16 @@ function handleCommandLifecycle(session, message) {
     // stamped the injection with (the runtime echoes it as `source_uuid`), so
     // the merge drops this live row by id instead of stacking a second bubble
     // once the transcript sync lands.
-    if (entry.content.trim()) {
+    const images = entry.images ?? [];
+    const files = entry.files ?? [];
+    if (entry.content.trim() || images.length > 0 || files.length > 0) {
       session.writer.send(createNormalizedMessage({
         id: message.command_uuid,
         kind: 'text',
         role: 'user',
         content: entry.content,
+        images: images.length > 0 ? images : undefined,
+        files: files.length > 0 ? files : undefined,
         sessionId: session.sessionId,
         provider: 'claude',
       }));

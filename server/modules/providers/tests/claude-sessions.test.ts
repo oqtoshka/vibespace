@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { ClaudeSessionsProvider } from '@/modules/providers/list/claude/claude-sessions.provider.js';
+import { appendFilesInputTag } from '@/shared/image-attachments.js';
 
 const SESSION_ID = 'session-1';
 
@@ -109,6 +110,47 @@ test('claude: a picture-only message folded into the running turn is still a use
   assert.equal(messages[0].id, 'injected-1');
   assert.equal(messages[0].content, '');
   assert.deepEqual(messages[0].images, [{ data: `data:image/png;base64,${PNG}` }]);
+});
+
+// A file (PDF, log, archive) sent mid-turn rides in the prompt as the
+// <files_input> block a new turn carries.
+const BUILD_LOG = { path: '/Users/dev/.vibespace/assets/build.log', name: 'build.log' };
+
+test('claude: a file sent into the running turn shows as an attachment on reload, not as the raw tag', () => {
+  const messages = new ClaudeSessionsProvider().normalizeMessage(
+    queuedCommand(appendFilesInputTag('why did it fail?', [BUILD_LOG])),
+    SESSION_ID,
+  );
+
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].id, 'injected-1');
+  assert.equal(messages[0].role, 'user');
+  assert.equal(messages[0].content, 'why did it fail?');
+  assert.deepEqual(messages[0].files, [BUILD_LOG]);
+  assert.equal(messages[0].images, undefined);
+});
+
+test('claude: a picture and a file sent into the running turn keep both on reload', () => {
+  const messages = new ClaudeSessionsProvider().normalizeMessage(queuedCommand([
+    { type: 'text', text: appendFilesInputTag('compare these', [BUILD_LOG]) },
+    { type: 'image', source: { type: 'base64', media_type: 'image/png', data: PNG } },
+  ]), SESSION_ID);
+
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].content, 'compare these');
+  assert.deepEqual(messages[0].images, [{ data: `data:image/png;base64,${PNG}` }]);
+  assert.deepEqual(messages[0].files, [BUILD_LOG]);
+});
+
+test('claude: a file-only message folded into the running turn is still a user row', () => {
+  const messages = new ClaudeSessionsProvider().normalizeMessage(
+    queuedCommand(appendFilesInputTag('', [BUILD_LOG])),
+    SESSION_ID,
+  );
+
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].content, '');
+  assert.deepEqual(messages[0].files, [BUILD_LOG]);
 });
 
 test('claude: a queued command with neither text nor pictures adds nothing', () => {

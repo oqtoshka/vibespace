@@ -676,6 +676,11 @@ export async function runOpenCodeHttpTurn(command, options, ws, hooks = {}) {
         images: Array.isArray(injectedOptions.images) && injectedOptions.images.length > 0
           ? injectedOptions.images
           : undefined,
+        // The persisted row lists the files too; an echo without them never
+        // matches it and stays on screen as a second bubble.
+        files: Array.isArray(injectedOptions.files) && injectedOptions.files.length > 0
+          ? injectedOptions.files
+          : undefined,
         sessionId: activeSessionId,
         provider: 'opencode',
       }));

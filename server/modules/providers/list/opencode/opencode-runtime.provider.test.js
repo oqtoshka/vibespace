@@ -24,6 +24,7 @@ const {
   spawnOpenCode,
 } = await import('./opencode-runtime.provider.js');
 const { OpenCodeSessionsProvider } = await import('./opencode-sessions.provider.js');
+const { appendFilesInputTag } = await import('../../../../shared/image-attachments.js');
 
 const FAKE_SERVER_AUTHORIZATION = `Basic ${Buffer.from('opencode:test').toString('base64')}`;
 
@@ -289,6 +290,65 @@ test('interactive OpenCode turns admit queued messages as live steers', { concur
     assert.equal(requests[0].prompt.text, 'Start the task');
     assert.equal(requests[1].delivery, 'steer');
     assert.equal(requests[1].prompt.text, 'Use the new direction.');
+  } finally {
+    os.homedir = originalHomedir;
+    if (previousPath === undefined) delete process.env[pathKey];
+    else process.env[pathKey] = previousPath;
+    restoreServer();
+    await fakeServer.close();
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('a file sent mid-turn reaches OpenCode in the steer and shows on the live user turn', { concurrency: false }, async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'opencode-server-steer-file-'));
+  const pathKey = findEnvKey('PATH');
+  const previousPath = process.env[pathKey];
+  const originalHomedir = os.homedir;
+  const fakeServer = await startFakeOpenCodeServer();
+  const restoreServer = injectOpenCodeServerForTests(fakeServer.handle);
+  const messages = [];
+  const writer = {
+    userId: null,
+    sessionId: null,
+    send(message) { messages.push(message); },
+    setSessionId(sessionId) { this.sessionId = sessionId; },
+  };
+  const buildLog = { path: path.join(tempRoot, 'build.log'), name: 'build.log', mimeType: 'text/plain' };
+
+  try {
+    if (process.platform !== 'win32') {
+      await writeFile(path.join(tempRoot, 'opencode'), '#!/bin/sh\nexit 2\n', { mode: 0o755 });
+      process.env[pathKey] = `${tempRoot}${path.delimiter}${previousPath || ''}`;
+    }
+    os.homedir = () => tempRoot;
+    await writeFile(buildLog.path, 'step 3 failed\n');
+
+    const running = spawnOpenCode('Start the task', {
+      cwd: tempRoot,
+      model: 'homelab/local',
+      enableMidTurnInjection: true,
+      ephemeral: true,
+    }, writer);
+    await waitFor(
+      () => isOpenCodeSessionActive('open-server-1'),
+      'the fake OpenCode server turn never became active',
+    );
+
+    await injectOpenCodeMessage('open-server-1', 'Why did it fail?', {
+      clientUserMessageId: 'queued-file',
+      files: [buildLog],
+    });
+    await running;
+
+    const steer = fakeServer.requests.find((request) => request.delivery === 'steer');
+    assert.equal(steer?.prompt.text, appendFilesInputTag('Why did it fail?', [buildLog]));
+
+    // The persisted copy lists the file, so the live bubble must too: the two
+    // are matched by text and attachment counts, never by id.
+    const echo = messages.find((message) => message.id === 'queued-file');
+    assert.equal(echo?.content, 'Why did it fail?');
+    assert.deepEqual(echo?.files, [buildLog]);
   } finally {
     os.homedir = originalHomedir;
     if (previousPath === undefined) delete process.env[pathKey];

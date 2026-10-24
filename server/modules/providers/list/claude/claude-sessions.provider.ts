@@ -690,8 +690,13 @@ export class ClaudeSessionsProvider implements IProviderSessions {
       // as (text blocks, then base64 `image` blocks), not as a string. This
       // row is its only durable copy, so reading only strings dropped every
       // picture message sent mid-turn from the transcript on reload.
-      const { text: prompt, images } = readQueuedCommandPrompt(attachment.prompt);
-      if (!prompt.trim() && images.length === 0) {
+      const queued = readQueuedCommandPrompt(attachment.prompt);
+      const images = queued.images;
+      // Files (PDF, log, archive) ride in the text as a <files_input> block;
+      // shown as the attachments a user row carries, not as the raw tag.
+      const parsedFiles = parseFilesInputTag(queued.text);
+      const prompt = parsedFiles.text;
+      if (!prompt.trim() && images.length === 0 && parsedFiles.attachments.length === 0) {
         return [];
       }
       // Key it by the uuid the injection was stamped with (echoed back as
@@ -708,6 +713,7 @@ export class ClaudeSessionsProvider implements IProviderSessions {
         role: 'user',
         content: prompt,
         images: images.length > 0 ? images : undefined,
+        files: parsedFiles.attachments.length > 0 ? parsedFiles.attachments : undefined,
       })];
     }
 

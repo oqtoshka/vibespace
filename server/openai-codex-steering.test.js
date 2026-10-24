@@ -19,6 +19,7 @@ const {
   queryCodex,
 } = await import('./openai-codex.js');
 const { stopCodexAppServer } = await import('./services/codex-app-server.service.js');
+const { appendFilesInputTag } = await import('./shared/image-attachments.js');
 const {
   __clearTaskContinuationState,
   __setTaskLedgerReader,
@@ -292,6 +293,58 @@ test('Codex will not steer a message into a turn running another model than the 
       .map((line) => JSON.parse(line))
       .filter((request) => request.method === 'turn/steer');
     assert.deepEqual(steers.map((request) => request.params.clientUserMessageId), ['queued-same']);
+  } finally {
+    stopCodexAppServer();
+    if (previousPath === undefined) delete process.env.VIBESPACE_CODEX_PATH;
+    else process.env.VIBESPACE_CODEX_PATH = previousPath;
+    if (previousCapture === undefined) delete process.env.VIBESPACE_CODEX_CAPTURE;
+    else process.env.VIBESPACE_CODEX_CAPTURE = previousCapture;
+    await rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('a file sent mid-turn reaches Codex in the steer and shows on the live user turn', async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'codex-steer-file-'));
+  const executable = path.join(tempRoot, 'fake-codex');
+  const capturePath = path.join(tempRoot, 'requests.jsonl');
+  const previousPath = process.env.VIBESPACE_CODEX_PATH;
+  const previousCapture = process.env.VIBESPACE_CODEX_CAPTURE;
+  const messages = [];
+  const writer = { isWebSocketWriter: true, send(message) { messages.push(message); }, setSessionId() {} };
+  const buildLog = { path: path.join(tempRoot, 'build.log'), name: 'build.log', mimeType: 'text/plain' };
+
+  try {
+    await createFakeCodex(executable);
+    process.env.VIBESPACE_CODEX_PATH = executable;
+    process.env.VIBESPACE_CODEX_CAPTURE = capturePath;
+
+    const runningQuery = queryCodex('Start the task', {
+      cwd: tempRoot,
+      model: 'gpt-5.4',
+      permissionMode: 'acceptEdits',
+    }, writer);
+    await waitFor(() => isCodexSessionActive('codex-thread-1'), 'the fake Codex turn never became active');
+
+    const steered = await injectCodexMessage('codex-thread-1', 'Why did it fail?', {
+      clientUserMessageId: 'queued-file',
+      cwd: tempRoot,
+      files: [buildLog],
+    });
+    await runningQuery;
+    assert.equal(steered, 'queued-file');
+
+    const steer = (await readFile(capturePath, 'utf8'))
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line))
+      .find((request) => request.method === 'turn/steer');
+    assert.deepEqual(steer?.params.input, [{ type: 'text', text: appendFilesInputTag('Why did it fail?', [buildLog]) }]);
+
+    // The rollout copy lists the file, so the live bubble must too: the two
+    // are matched by text and attachment counts, never by id.
+    const echo = messages.find((message) => message.id === 'queued-file');
+    assert.equal(echo?.content, 'Why did it fail?');
+    assert.deepEqual(echo?.files, [buildLog]);
   } finally {
     stopCodexAppServer();
     if (previousPath === undefined) delete process.env.VIBESPACE_CODEX_PATH;

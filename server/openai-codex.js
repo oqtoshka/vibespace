@@ -20,7 +20,7 @@ import { randomUUID } from 'node:crypto';
  */
 
 import { codexApprovals } from './modules/codex-approvals/index.js';
-import { appendFilesInputTag, buildCodexInputItems, normalizeImageDescriptors } from './shared/image-attachments.js';
+import { appendFilesInputTag, buildCodexInputItems, normalizeAttachmentDescriptors, normalizeImageDescriptors } from './shared/image-attachments.js';
 import { createProviderRuntimeContext, normalizeRuntimeOptions } from './shared/provider-runtime-context.js';
 import { getCodexAppServer } from './services/codex-app-server.service.js';
 import { collectAgentLaunchExtras } from './shared/agent-env.js';
@@ -930,6 +930,9 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
           role: 'user',
           content: pending.command,
           images: normalizeImageDescriptors(pending.images).length > 0 ? pending.images : undefined,
+          // The persisted row lists the files too; an echo without them
+          // never matches it and stays on screen as a second bubble.
+          files: normalizeAttachmentDescriptors(pending.files).length > 0 ? pending.files : undefined,
           sessionId: capturedSessionId,
           provider: 'codex',
         }));
@@ -1304,6 +1307,7 @@ export async function injectCodexMessage(sessionId, command, options = {}) {
   session.pendingSteers.set(messageId, {
     command,
     images: options.images,
+    files: options.files,
     onDelivered: options.onDelivered,
   });
   const steerPrompt = appendFilesInputTag(command, options.files);
