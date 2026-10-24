@@ -6,9 +6,9 @@ import { sessionShredService, sessionsService } from '@/modules/providers/index.
 import type { LLMProvider } from '@/shared/index.js';
 
 /**
- * Native side questions (Mission Control FEAT-SESSION-030): a `/btw` side
+ * Native side questions: a `/btw` side
  * session asked from the phone under a parent session. VibeSpace owns the row;
- * Mission Control only relays these calls and proxies the chat socket.
+ * The native client only relays these calls and proxies the chat socket.
  *
  * A side session is an `is_side` row with a `parent_session_id`. It is never a
  * board card (its runs carry the private-variant env), it only reads (the send
@@ -43,7 +43,7 @@ export function registerSideRunControl(next: SideRunControl): void { runControl 
 
 /**
  * Providers whose runtime forks the parent's provider session on a side
- * question's first turn (Mission Control threads): Claude resumes it with the
+ * question's first turn (side threads): Claude resumes it with the
  * SDK's `forkSession`, Codex calls the app-server's `thread/fork`, OpenCode runs
  * `opencode run --session <parent> --fork`. Each fork is a new provider session,
  * so the parent's own transcript and live turn are never touched. Any other

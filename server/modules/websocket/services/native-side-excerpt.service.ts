@@ -1,6 +1,6 @@
 /**
  * Parent context for a native side question whose provider cannot fork the
- * parent conversation (Codex, OpenCode — Mission Control FEAT-SESSION-030).
+ * parent conversation (Codex, OpenCode).
  * The first side send is prefixed with the parent's recent visible messages:
  * at most 20 of them and 12,000 characters, cutting the oldest first. The block
  * is quoted, marked untrusted, and names the parent transcript so the model

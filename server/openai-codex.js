@@ -492,7 +492,7 @@ function readCodexOptionOverride(name, allowed) {
 export function mapPermissionModeToCodexOptions(permissionMode, { readOnly = false } = {}) {
   // A side question only reads. Codex has no plan mode, so the guarantee is the
   // read-only sandbox with no approvals to ask for — and no env override may
-  // widen it (Mission Control FEAT-SESSION-030).
+  // widen it.
   if (readOnly) {
     return { sandboxMode: 'read-only', approvalPolicy: 'never' };
   }
@@ -645,7 +645,7 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
     launchOptions = null,
     sideSession = false,
     // A native side question's first turn: the parent's Codex thread id to fork
-    // (Mission Control threads), and the parent excerpt to fall back on when
+    // (side threads), and the parent excerpt to fall back on when
     // the fork is refused. Both are set only by the server-side side policy.
     forkFrom = null,
     sideExcerptFallback = null,

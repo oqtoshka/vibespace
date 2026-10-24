@@ -259,7 +259,7 @@ test('a decision answer reaches a working session as a mid-turn steer, not a que
 
     const accepted = serverEnqueueMessage(
       'session-working',
-      'Decisions from Mission Control\n\nAnswer:\nЛулу окна нет',
+      'Decisions from the board\n\nAnswer:\nЛулу окна нет',
       { permissionMode: 'bypassPermissions' },
       { userId: 1, deliverMidTurn: true },
     );
@@ -280,7 +280,7 @@ test('a decision answer reaches a working session as a mid-turn steer, not a que
 
 /**
  * The failure the operator hit on 1.38.75, reproduced end to end from the
- * plugin's side: the Mission Control decision route calls the host's
+ * plugin's side: the plugin's decision route calls the host's
  * `enqueueMessage(sessionId, message, { deliverMidTurn: true, permissionMode })`
  * against a Claude session in a long turn. A host that dropped the flag queued
  * the answer for the drain, so it reached the agent only when the turn ended —
@@ -294,7 +294,7 @@ test('an answer through the plugin host steers a working Claude turn, like a typ
 
     const accepted = pluginHostEnqueueMessage(
       'session-claude-card',
-      'Decisions from Mission Control\n\n1. Release now?\nAnswer: yes',
+      'Decisions from the board\n\n1. Release now?\nAnswer: yes',
       { deliverMidTurn: true, permissionMode: 'bypassPermissions' },
     );
     assert.equal(accepted, true);

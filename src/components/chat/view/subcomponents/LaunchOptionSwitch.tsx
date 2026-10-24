@@ -13,7 +13,7 @@ type SwitchResponse = {
 
 /**
  * Turns a switchable plugin launch option on or off in an existing session —
- * "Switch to briefing" / "Back to chat" for the Mission Control briefing. The
+ * "Switch to briefing" / "Back to chat" for a plugin's briefing mode. The
  * server stores the choice; the next message relaunches the agent with the
  * session's history and the new launch. `onSwitched` receives the options the
  * server stored, so the badge and banner change at once instead of waiting for

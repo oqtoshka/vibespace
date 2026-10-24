@@ -20,7 +20,7 @@ const RETRY_MS = 30_000;
 
 /**
  * The memorable session identity, with the provider mark as its immediate
- * placeholder while Mission Control is still generating the image.
+ * placeholder while the avatar service is still generating the image.
  */
 export default function SidebarSessionAvatar({
   provider,

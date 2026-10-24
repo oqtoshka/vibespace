@@ -93,11 +93,11 @@ type NormalizedMessageInput =
 
 /**
  * The projects, providers, and websocket modules use this to expose one
- * consistent Mission Control image URL. Mission Control keys avatars by the
+ * consistent avatar image URL. The avatar service keys avatars by the
  * provider-native CLI session id, not by VibeSpace's stable app-facing id.
  * Private sessions never report there and deliberately have no avatar URL.
  * Without `MC_AVATAR_PUBLIC_BASE_URL` (or `VS_SESSION_AVATAR_URL`) there is no
- * Mission Control to point at, so no session gets an avatar.
+ * avatar service to point at, so no session gets an avatar.
  */
 export function sessionAvatarUrl(
   providerSessionId: string | null | undefined,

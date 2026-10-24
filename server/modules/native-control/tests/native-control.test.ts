@@ -39,8 +39,8 @@ test('federation credentials, idempotent creation, registered projects and sessi
       assert.equal(transcribe.mock.calls[0].arguments[0].userId, Number(userDb.getSingleActiveUser()!.id));
       assert.equal(transcribe.mock.calls[0].arguments[0].audio.mimeType, 'audio/mp4');
       assert.equal('prompt' in transcribe.mock.calls[0].arguments[0], false);
-      await nativeControlService.transcribe(Buffer.from('hinted'), 'VibeSpace, Mission Control.');
-      assert.equal(transcribe.mock.calls.at(-1)!.arguments[0].prompt, 'VibeSpace, Mission Control.');
+      await nativeControlService.transcribe(Buffer.from('hinted'), 'VibeSpace, Example Board.');
+      assert.equal(transcribe.mock.calls.at(-1)!.arguments[0].prompt, 'VibeSpace, Example Board.');
       await assert.rejects(nativeControlService.transcribe(Buffer.alloc(0)), /between 1 byte and 8 MiB/);
       await nativeControlService.transcribe(Buffer.alloc(6 * 1024 * 1024));
       await assert.rejects(nativeControlService.transcribe(Buffer.alloc(8 * 1024 * 1024 + 1)), /between 1 byte and 8 MiB/);

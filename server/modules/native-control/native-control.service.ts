@@ -214,7 +214,7 @@ export const nativeControlService = {
     const record = resolveNativeAttachments(sessionId, [assetId])[0];
     return { bytes: await fs.readFile(record.path), mimeType: record.mimeType };
   },
-  /** Lets Mission Control redisplay attachments uploaded by the browser. The
+  /** Lets a native client redisplay attachments uploaded by the browser. The
    * assets module accepts only a basename directly inside ~/.vibespace/assets;
    * checking the requested session first preserves private/side-session scope. */
   async storedAsset(sessionId: string, filename: string) {

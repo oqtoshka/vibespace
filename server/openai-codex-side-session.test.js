@@ -3,7 +3,7 @@ import test from 'node:test';
 
 const { mapPermissionModeToCodexOptions } = await import('./openai-codex.js');
 
-// A side question only reads (Mission Control FEAT-SESSION-030). Codex has no
+// A side question only reads. Codex has no
 // plan mode, so the read-only sandbox is the guarantee — and the operator's
 // sandbox override must not widen it.
 test('a side question runs Codex in the read-only sandbox whatever the mode or override', () => {

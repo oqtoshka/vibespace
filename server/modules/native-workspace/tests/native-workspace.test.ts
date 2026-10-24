@@ -34,7 +34,7 @@ test('session workspace bounds, assets, ignored files, missing files and real co
     const asset = await service.request('ours', { op: 'asset', entry: 'build/index.html', path: '/main.css' });
     assert.equal(Buffer.from(String(asset.base64), 'base64').toString(), 'body{color:red}');
     await assert.rejects(service.request('ours', { op: 'asset', entry: 'build/index.html', path: '/../../outside.txt' }));
-    // mime-db calls .mp4 application/mp4; players and Mission Control need video/mp4.
+    // mime-db calls .mp4 application/mp4; players and native clients need video/mp4.
     await writeFile(path.join(workspace, 'clip.mp4'), 'not really a movie');
     assert.equal((await service.request('ours', { op: 'read', path: 'clip.mp4' })).mime, 'video/mp4');
     const raw = await service.rawFile('ours', 'clip.mp4');

@@ -549,7 +549,7 @@ function mapCliOptionsToSDK(options = {}) {
   } else if (typeof options.forkFrom === 'string' && options.forkFrom) {
     // A native side question's first turn forks the parent conversation: the
     // SDK copies the parent transcript into a NEW session id, so the parent's
-    // file and its live turn are never touched (Mission Control FEAT-SESSION-030).
+    // file and its live turn are never touched.
     // The parent's live process is not reused either — this session is keyed
     // by the side row's own app id.
     sdkOptions.resume = options.forkFrom;
@@ -1038,13 +1038,13 @@ function makeUserMessage(content) {
 // ---------------------------------------------------------------------------
 // Side-question prompts: the run ends on the prompt's own turn
 //
-// A side question (Mission Control thread fork) resumes its parent's transcript
+// A side question (a fork of its parent thread) resumes its parent's transcript
 // with `forkSession`. The runtime may run turns of its own before it reaches our
 // prompt: a parent that stopped on a tool result gets a synthetic
 // "No response requested." on load, and a background task that died with the
 // parent's process is announced as a queued `<task-notification>` — submitted
 // without a query, so it still ends in a `result`. Settling the run on the first
-// `result` handed Mission Control an empty answer (2026-10-19, fork 20d7ed12):
+// `result` handed the client an empty answer:
 // the reader closes on `complete`, and the real answer arrived two minutes later
 // into a run nobody watched.
 //

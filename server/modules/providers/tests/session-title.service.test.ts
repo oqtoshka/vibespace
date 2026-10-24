@@ -84,11 +84,11 @@ test('does not overwrite a title the user supplied while the helper was running'
 
 test('honors an explicit cheap helper model without changing the session model', { concurrency: false }, async () => {
   await withDatabase(async (projectPath) => {
-    sessionsDb.createAppSession('supported-model-session', 'codex', projectPath, 'In mc and anthill');
+    sessionsDb.createAppSession('supported-model-session', 'codex', projectPath, 'In board and tracker');
     sessionsDb.setSessionModel('supported-model-session', 'gpt-6-astra');
     const result = await generateInitialSessionTitle({
       sessionId: 'supported-model-session',
-      initialMessage: 'In mc and anthill fix the session status display',
+      initialMessage: 'In board and tracker fix the session status display',
       cwd: projectPath,
       model: 'gpt-5.6-luna',
       runQuery: async (_prompt, options, writer) => {
@@ -104,11 +104,11 @@ test('honors an explicit cheap helper model without changing the session model',
 
 test('generates a title when Codex reasoning contains a draft JSON object before the final reply', { concurrency: false }, async () => {
   await withDatabase(async (projectPath) => {
-    sessionsDb.createAppSession('reasoning-session', 'codex', projectPath, 'In mc and anthill');
+    sessionsDb.createAppSession('reasoning-session', 'codex', projectPath, 'In board and tracker');
     const provider = new CodexSessionsProvider();
     const result = await generateInitialSessionTitle({
       sessionId: 'reasoning-session',
-      initialMessage: 'In mc and anthill fix the session status display',
+      initialMessage: 'In board and tracker fix the session status display',
       cwd: projectPath,
       runQuery: async (_prompt, _options, writer) => {
         // Shapes emitted by transformCodexItem for app-server item/completed.

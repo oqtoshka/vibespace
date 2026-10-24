@@ -10,7 +10,7 @@ import { sessionsDb } from '@/modules/database/repositories/sessions.db.js';
 
 /**
  * A name the user chose is final until the user renames again. On 2026-09-24 a
- * session renamed to "MC Features" from Mission Control came back as
+ * session renamed to "Client Features" from a native client came back as
  * "Commander-mode completion": the recap helper read the row before the
  * rename, answered minutes later, and wrote its 'ai' title over it. These tests
  * pin the guard at the storage layer, where no caller can race around it.

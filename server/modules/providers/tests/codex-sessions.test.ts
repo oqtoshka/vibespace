@@ -235,7 +235,7 @@ test('Codex synchronizer titles an unnamed session from its first prompt, never 
       { type: 'session_meta', payload: { id: 'codex-exec-2', cwd: workspacePath, source: 'exec' } },
       { type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '# AGENTS.md instructions' }] } },
       { type: 'event_msg', payload: { type: 'item_completed', item: { type: 'UserMessage', content: [
-        { type: 'text', text: prependLaunchInstructions('# Briefing mode (Mission Control)\n\nUse the card.', 'Teach the Anthill CLI to list bits') },
+        { type: 'text', text: prependLaunchInstructions('# Briefing mode\n\nUse the card.', 'Teach the tracker CLI to list items') },
       ] } } },
       { type: 'event_msg', payload: { type: 'task_complete', last_agent_message: 'Done: the CLI lists bits now.' } },
     ]);
@@ -258,7 +258,7 @@ test('Codex synchronizer titles an unnamed session from its first prompt, never 
       // A first prompt is a placeholder: derived, so an AI title may replace it.
       assert.deepEqual(titles, [
         ['Fix the flaky login test', 'derived'],
-        ['Teach the Anthill CLI to list bits', 'derived'],
+        ['Teach the tracker CLI to list items', 'derived'],
         ['Why did the VPN switch?', 'derived'],
       ]);
     });

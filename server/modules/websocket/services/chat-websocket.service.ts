@@ -262,7 +262,7 @@ export const SIDE_SESSION_DISALLOWED_TOOLS = ['Edit', 'MultiEdit', 'Write', 'Not
 
 /**
  * Server-enforced read-only execution for `is_side` rows (the browser `/btw`
- * and Mission Control's native side questions alike — FEAT-SESSION-030). The
+ * and native-client side questions alike). The
  * row decides, never the client: plan mode, the deny list, no permission
  * bypass, and the private-variant env so a side spawn never reports to a
  * presence board. A native side question also names its parent; the first turn
@@ -1485,7 +1485,7 @@ export function serverEnqueueMessage(
  * The plugin host's `enqueueMessage`, exactly as plugins call it.
  *
  * A plugin asks for composer semantics with `options.deliverMidTurn: true` (the
- * Mission Control decision answer does). That key is a delivery instruction,
+ * answer to a pending decision does). That key is a delivery instruction,
  * not a runtime option: it is lifted out here and never reaches a provider's
  * spawn options. This lives beside `serverEnqueueMessage` rather than inline in
  * the boot wiring so the whole plugin-to-runtime path is testable — a host that

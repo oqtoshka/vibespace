@@ -450,7 +450,7 @@ test('spawnOpenCode emits session_created before normalized live messages for ne
   }
 });
 
-// A side question's first OpenCode turn forks the parent (Mission Control threads):
+// A side question's first OpenCode turn forks the parent (side threads):
 // `run --session <parent> --fork` under the read-only plan agent, and the fork's id
 // becomes the side's session. A parent with no rows in opencode.db cannot be forked,
 // so that side runs fresh with the parent excerpt instead.

@@ -4,7 +4,7 @@ import test from 'node:test';
 const { queryClaudeSDK, __setClaudeQueryImpl } = await import('./claude-sdk.js');
 
 /**
- * Native side questions (Mission Control FEAT-SESSION-030): the first turn
+ * Native side questions: the first turn
  * forks the parent's provider session instead of resuming (and so reusing) it,
  * and anything outside the read-only allow list is denied without a prompt.
  */

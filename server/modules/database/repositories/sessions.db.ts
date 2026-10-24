@@ -43,7 +43,7 @@ const SESSION_ROW_COLUMNS =
  * SQL predicate: a transcript sync must keep the stored name.
  *
  * A name the user chose (`name_source = 'user'`, set by a rename in the app,
- * in Mission Control or by a plugin) is never replaced by any automatic
+ * in a native client or by a plugin) is never replaced by any automatic
  * source — a sync, a generated title, a recap. Only another rename replaces it.
  *
  * An app session (`session_id` differs from the provider id) is named from its

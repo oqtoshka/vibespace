@@ -17,7 +17,7 @@ const LIMIT = 32 * 1024 * 1024;
 const MAX_ENTRIES = 2000;
 type SessionRoot = (id: string) => string | null;
 
-/** mime-db 1.54 names .mp4 `application/mp4`; players and Mission Control's renderers expect
+/** mime-db 1.54 names .mp4 `application/mp4`; players and native-client renderers expect
  * `video/mp4` for a playable file, so the workspace reports the media type they recognise. */
 function fileType(file: string) {
   const type = mime.lookup(file) || 'application/octet-stream';

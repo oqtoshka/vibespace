@@ -34,7 +34,7 @@ const child = spawn(process.execPath, ['--import', preload, path.join(root, 'dis
   cwd: root, stdio: ['ignore', 'ignore', 'ignore'],
   env: { PATH: process.env.PATH, LANG: 'en_US.UTF-8', DATABASE_PATH: database, HOST: '127.0.0.1',
     SERVER_PORT: String(port), VIBESPACE_SESSION_RESTORE: '0', VS_OIDC_ISSUER: ' ',
-    ANTHILL_RUNNER: 'false', VIBESPACE_MODE: 'local' },
+    VIBESPACE_MODE: 'local' },
 });
 // A separate watchdog survives the test driver disappearing. Stdin closure also
 // ends it immediately on normal cleanup, instead of leaving a two-minute sleeper.

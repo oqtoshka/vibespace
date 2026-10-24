@@ -9,7 +9,7 @@
  * [session supervisor] continuation turn, the same shape the task-nudge
  * mechanism injects, provided it still looks worth resuming (an in-flight
  * turn at shutdown, or open items in its task ledger: the one a host plugin
- * keeps for it when there is one, such as a Mission Control briefing
+ * keeps for it when there is one, such as a briefing
  * session's card plan, else the runtime's native ledger).
  *
  * VIBESPACE_SESSION_RESTORE=0 disables the boot pass (recording always runs —
@@ -209,7 +209,7 @@ function buildContinuationPrompt(entry) {
  * The open items a restored session still has.
  *
  * A host plugin's ledger comes first and, when it answers, replaces the native
- * one (see task-ledger-sources.ts): a Mission Control briefing session keeps
+ * one (see task-ledger-sources.ts): a plugin briefing session keeps
  * its tasks on the card plan and has no native task tools at all, so reading
  * only Claude's task files dropped every idle briefing session on restart,
  * open card steps and all (a session that ended its turn to wait for the

@@ -143,7 +143,7 @@ test('reports every transcription with its sizes and usage, never its text or pr
     reportTranscription: (report) => reports.push({ ...report, elapsedMs: typeof report.elapsedMs }),
   });
   const audio = { bytes: m4aRecording(61.5), mimeType: 'audio/mp4', fileName: 'recording.m4a' };
-  const prompt = 'Кванта, Mission Control';
+  const prompt = 'Кванта, Example Board';
 
   await service.transcribe({ userId: 42, audio, prompt });
   sttModel = 'gpt-4o-transcribe';
@@ -320,12 +320,12 @@ test('forwards a vocabulary prompt only when one is given, bounded by the owner 
   });
   const audio = { bytes: Buffer.from('audio'), mimeType: 'audio/mp4', fileName: 'recording.m4a' };
 
-  await service.transcribe({ userId: 1, audio, prompt: 'VibeSpace, Mission Control, Кванта.' });
+  await service.transcribe({ userId: 1, audio, prompt: 'VibeSpace, Example Board, Кванта.' });
   await service.transcribe({ userId: 1, audio });
   await service.transcribe({ userId: 1, audio, prompt: '   ' });
   await service.transcribe({ userId: 1, audio, prompt: 'x'.repeat(5_000) });
 
-  assert.equal(bodies[0].get('prompt'), 'VibeSpace, Mission Control, Кванта.');
+  assert.equal(bodies[0].get('prompt'), 'VibeSpace, Example Board, Кванта.');
   assert.equal(bodies[1].get('prompt'), null);
   assert.equal(bodies[2].get('prompt'), null);
   assert.equal((bodies[3].get('prompt') as string).length, MAX_TRANSCRIPTION_PROMPT_LENGTH);

@@ -28,11 +28,11 @@ class NativeChatError extends Error {
   constructor(message: string, readonly code: string) { super(message); }
 }
 
-/** Frames a native side question may send (FEAT-SESSION-030). */
+/** Frames a native side question may send. */
 const SIDE_ALLOWED = new Set(['native.history', 'native.background', 'native.options', 'chat.subscribe', 'chat.send', 'chat.abort']);
 
 /**
- * The parent excerpt for a side question's first send (FEAT-SESSION-030), or
+ * The parent excerpt for a side question's first send, or
  * '' when there is nothing to quote: a parent that turned private, or one with
  * no conversation yet, contributes nothing.
  */
@@ -74,7 +74,7 @@ export function handleNativeChat(ws: WebSocket, request: AuthenticatedWebSocketR
   const sessionId = new URL(request.url ?? '/', 'http://localhost').pathname.slice('/native-chat/'.length);
   const user = userDb.getSingleActiveUser();
   const credential = request.headers['x-vibespace-session-capability'];
-  // A native side question (FEAT-SESSION-030) is reachable only under its own
+  // A native side question is reachable only under its own
   // send-only credential; an owner capability never opens it and it never
   // opens anything else. The row decides which grammar applies.
   const initial = sessionsDb.getSessionById(sessionId);

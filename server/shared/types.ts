@@ -1386,7 +1386,7 @@ export type VoiceService = {
     presetId?: string;
     /**
      * Vocabulary hint forwarded to the transcription model as its `prompt`
-     * (Mission Control's operator glossary). Empty or absent sends none.
+     * (a native client's operator glossary). Empty or absent sends none.
      */
     prompt?: string;
   }): Promise<VoiceServiceResult<{ text: string }>>;

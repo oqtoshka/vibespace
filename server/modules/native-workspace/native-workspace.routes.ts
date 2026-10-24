@@ -18,7 +18,7 @@ nativeWorkspaceRoutes.post('/sessions/:id', async (req, res) => {
 
 /** Raw bytes for media playback and downloads (video/audio have no 32 MiB cap here).
  * `sendFile` answers Range with 206/416 and sets Accept-Ranges, ETag and Last-Modified.
- * The marker header lets Mission Control tell this route from an older server's fallback. */
+ * The marker header lets a native client tell this route from an older server's fallback. */
 nativeWorkspaceRoutes.get('/sessions/:id/raw', async (req, res) => {
   if (req.headers.origin || !authenticateNativeControl(req.headers['x-mc-federation-token'])) {
     res.status(403).json({ error: 'Workspace authentication failed' }); return;

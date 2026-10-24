@@ -25,7 +25,7 @@ Native chat verifies authorization on input/output and closes expired idle
 channels with retryable code1012. A backend-only `native.renew` frame can extend
 a still-valid lease with a newer same-session credential. It cannot revive an
 expired channel or authorize a private/side/missing session. Disconnecting the
-viewer does not abort the agent. Mission Control must deploy proactive renewal
+viewer does not abort the agent. Native clients must deploy proactive renewal
 and block client-originated renewal frames before this owner upgrade.
 
 Plugin hosts expose `verifySessionCapability(sessionId, supplied)`. Integration

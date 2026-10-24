@@ -33,7 +33,7 @@ export function decodeSessionCapability(id: string, value: unknown, secret: stri
 // domain, so a side credential can never be replayed as an owner capability
 // for any session, and an owner capability can never open a side socket.
 // It lives as long as the panel that asked it may (the 24-hour sweep bound);
-// Mission Control renews only `v2.` values, so it never tries to renew this one.
+// Native clients renew only `v2.` values, so it never tries to renew this one.
 const sideLifetimeSeconds = 24 * 60 * 60;
 const sideTokenPattern = /^side1\.([1-9][0-9]{0,10})\.([1-9][0-9]{0,10})\.([A-Za-z0-9_-]{43})$/;
 

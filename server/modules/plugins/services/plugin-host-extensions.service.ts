@@ -235,7 +235,7 @@ export type PluginHost = {
    * `options.deliverMidTurn: true` asks for composer semantics instead: when
    * the session is working, the prompt is steered into the running turn rather
    * than queued behind it. Set it for anything the operator just wrote and
-   * expects the agent to see now (a Mission Control decision answer); leave it
+   * expects the agent to see now (an answer to a pending decision); leave it
    * off for a prompt that means "start a turn" (a queued task, a supervisor
    * resume). The host strips the key before the rest of `options` reaches the
    * runtime, and the return value still means "VibeSpace owns this message",

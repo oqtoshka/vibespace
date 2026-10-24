@@ -3,7 +3,7 @@
  *
  * Run as its own node process against the test's throwaway data dir: it creates
  * the session rows a live server would have, records the sessions through the
- * real restore registry, persists a card plan the way the Mission Control
+ * real restore registry, persists a card plan the way a host
  * reporter keeps one (a file per provider-native session id), waits for the
  * registry's debounced write to reach disk, prints READY and then idles until
  * the test kills it — so nothing it held in memory survives into the restart.

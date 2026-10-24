@@ -15,7 +15,7 @@ const withAvatarBase = (value: string | undefined, run: () => void) => {
   }
 };
 
-test('builds the Mission Control avatar URL from the provider-native session id', () => {
+test('builds the avatar URL from the provider-native session id', () => {
   withAvatarBase('https://mc.example.com/avatars/', () => {
     assert.equal(
       sessionAvatarUrl('provider/id with spaces', false),
@@ -24,7 +24,7 @@ test('builds the Mission Control avatar URL from the provider-native session id'
   });
 });
 
-test('no Mission Control configured means no avatar', () => {
+test('no avatar service configured means no avatar', () => {
   withAvatarBase(undefined, () => {
     assert.equal(sessionAvatarUrl('provider-id', false), null);
   });

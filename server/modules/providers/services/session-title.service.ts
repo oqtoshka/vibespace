@@ -66,8 +66,8 @@ async function runInitialTitleGeneration(input: InitialSessionTitleInput): Promi
   if (session.custom_name && session.name_source !== 'derived') return null;
 
   // Launch instructions ahead of the first prompt are the harness talking, not
-  // the user; a title made from them names the harness ("Mission Control
-  // Briefing") on every session it launched.
+  // the user; a title made from them names the harness ("Briefing
+  // mode") on every session it launched.
   const initialMessage = stripLaunchInstructions(input.initialMessage).trim();
   if (!initialMessage) return null;
 

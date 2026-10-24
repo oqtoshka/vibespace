@@ -173,8 +173,8 @@ cherry-pick is a manual relocation, forever, and the gap only widens.
 
 ## Method
 
-**Phase 0 — fence the personal integrations (done in this change).** Mission
-Control and Anthill now live in a host-module plugin
+**Phase 0 — fence the personal integrations (done in this change).** The
+installation-specific integrations now live in a host-module plugin
 (a private repo, symlinked into
 `~/.claude-code-ui/plugins/`), reached through a narrow `PluginHost` API in
 `server/modules/plugins`. Core keeps only a generic `collectAgentEnv`

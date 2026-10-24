@@ -29,7 +29,7 @@ router.get('/models/:provider', route(async (req, res) => {
   res.json({ ...await nativeModelOptions(provider), ...nativePermissionOptions(provider) });
 }));
 /**
- * Mission Control relays the operator's transcription glossary as a
+ * A native client relays the operator's transcription glossary as a
  * percent-encoded `x-mc-stt-prompt` header. A malformed encoding is dropped
  * rather than failing the recording: the hint is optional, the audio is not.
  */
@@ -56,7 +56,7 @@ router.get('/search/sessions', route(async (req, res) => {
     cursor: one(req.query.cursor),
   }));
 }));
-// Side questions (FEAT-SESSION-030): create under a parent, promote, close.
+// Side questions: create under a parent, promote, close.
 router.post('/sessions/:id/side', route((req, res) => { res.json(sideQuestionsService.create(String(req.params.id), req.body)); }));
 router.post('/sessions/:id/promote', route((req, res) => { res.json(sideQuestionsService.promote(String(req.params.id))); }));
 router.delete('/sessions/:id/side', route(async (req, res) => { res.json(await sideQuestionsService.close(String(req.params.id))); }));
@@ -72,7 +72,7 @@ router.post('/sessions/:id/transfer', route((req, res) => {
   const active = chatRunRegistry.isProcessing(id) || isClaudeSDKSessionAlive(id) || getClaudeSDKLiveBackgroundTasks(id).length > 0;
   res.json(sessionTransferService.transfer(id, req.body, active));
 }));
-// Mission Control's web board has no chat socket; it reads and applies `native.select` here.
+// A native client's web board has no chat socket; it reads and applies `native.select` here.
 router.get('/sessions/:id/selection', route(async (req, res) => { res.json(await nativeSessionSelection(String(req.params.id))); }));
 router.post('/sessions/:id/selection', route(async (req, res) => { res.json(await applyNativeSessionSelection(String(req.params.id), req.body)); }));
 router.get('/sessions/:id/owner-capability', route((req, res) => {

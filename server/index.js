@@ -199,7 +199,7 @@ registerSessionShredDependencies({ forgetRestoreEntry, forgetRateLimitWake, canc
 // send does; keeping this at the entrypoint avoids the old Claude-only boot
 // hook and makes restored turns visible/replayable to clients from the start.
 //
-// Host modules register task-ledger sources (the Mission Control card plan)
+// Host modules register task-ledger sources (a plugin-kept task list)
 // when they activate in the listen callback, and the pass reads those ledgers
 // to decide what to resume, so it waits for activation to settle. Capped, so a
 // hung host module cannot hold every restore back.
@@ -2865,7 +2865,7 @@ async function startServer() {
                     }
                 },
                 // A plugin sets `deliverMidTurn` for an operator-authored
-                // message (a Mission Control decision answer) that should reach
+                // message (an answer to a pending decision) that should reach
                 // a working agent the moment it is submitted, the way a
                 // composer message does — rather than queue behind the whole
                 // turn. The wrapper strips it before the runtime options.

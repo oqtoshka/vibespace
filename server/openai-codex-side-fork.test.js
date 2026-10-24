@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-// A side question's first Codex turn forks the parent's thread (Mission Control
+// A side question's first Codex turn forks the parent's thread (side
 // threads, side-questions.md "Parent context"). These run queryCodex against a fake
 // app-server that records every request, so they pin the exact fork call and the
 // excerpt fallback without a real model. The database must exist before import.

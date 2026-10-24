@@ -18,8 +18,8 @@ test('actual Codex entry captures prompt before tools and terminal seam repairs 
   const executable = path.join(dir, 'fake-codex'), capture = path.join(dir, 'requests.jsonl');
   const previous = process.env.VIBESPACE_CODEX_PATH;
   const events: Array<Record<string, unknown>> = [], boundaries: string[] = [];
-  const human = 'Mission Control thread 11111111-1111-4111-8111-111111111111\nFull exact prompt';
-  const second = 'Mission Control thread 22222222-2222-4222-8222-222222222222\nSteered follow-up';
+  const human = 'Board thread 11111111-1111-4111-8111-111111111111\nFull exact prompt';
+  const second = 'Board thread 22222222-2222-4222-8222-222222222222\nSteered follow-up';
   const seenBeginIds = new Set<string>();
   let steer: Promise<unknown> | undefined;
   let checkpoint: { turnId: string; prompt: string } | undefined;

@@ -323,7 +323,7 @@ async function spawnOpenCode(command, options = {}, ws, context = undefined) {
   }
 
   // A native side question's first turn forks the parent conversation
-  // (Mission Control threads): `run --session <parent> --fork` copies the
+  // (side threads): `run --session <parent> --fork` copies the
   // parent's opencode.db history into a new session and answers there, so the
   // parent's rows and any turn it is running are left alone. The fork's id
   // arrives in the run's events and is announced as `session_created`, which

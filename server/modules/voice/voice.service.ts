@@ -180,7 +180,7 @@ function validateConfiguredBackend(config: ResolvedVoiceConfig): VoiceServiceRes
 
 /**
  * Longest vocabulary prompt forwarded to a transcription backend. The caller
- * (Mission Control) already caps its glossary at 1,500 characters; this is the
+ * (a native client) already caps its glossary at 1,500 characters; this is the
  * owner's own bound, so a larger header can never become an unbounded upload.
  */
 export const MAX_TRANSCRIPTION_PROMPT_LENGTH = 2_000;

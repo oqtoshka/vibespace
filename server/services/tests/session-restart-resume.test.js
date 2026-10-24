@@ -23,7 +23,7 @@ import {
  *
  * Before: a separate node process (fixtures/restart-first-boot.js) plays the
  * server that is about to be restarted. It writes the session rows, records an
- * idle Mission Control briefing session (and an ordinary idle one) through the
+ * idle plugin briefing session (and an ordinary idle one) through the
  * real restore registry, persists the briefing session's card plan with open
  * steps, and is then SIGKILLed — nothing it held in memory survives.
  *
@@ -31,9 +31,8 @@ import {
  * does — the real database, the real boot restore pass, the entrypoint's real
  * startTurn (createQueuedRestoreStarter over serverEnqueueMessage), the real
  * chat-run queue — with the provider runtime replaced by a recorder, so no
- * agent CLI is ever spawned. The task-ledger source stands in for the Mission
- * Control plugin's (host/mission-control-ledger.js): it reads the persisted
- * plan from disk on every call, and it is registered only after the first
+ * agent CLI is ever spawned. The task-ledger source stands in for a host
+ * plugin's: it reads the persisted plan from disk on every call, and it is registered only after the first
  * process is gone, as a host module registers it at activation.
  *
  * Not covered: server/index.js itself (its listen sequence, host-module
@@ -71,14 +70,14 @@ async function runFirstBootAndKill(env) {
   return exited;
 }
 
-/** The Mission Control card plan as a host plugin's ledger source would read it. */
+/** A plugin card plan as a host plugin's ledger source would read it. */
 function cardPlanSource(planDir) {
   return ({ sessionId }) => {
     const file = path.join(planDir, `${sessionId}.json`);
     if (!existsSync(file)) return null;
     const plan = JSON.parse(readFileSync(file, 'utf8'));
     return {
-      listName: 'Mission Control card plan',
+      listName: 'Plugin card plan',
       guidance: 'Update it with `mcp__mc__plan`.',
       activity: plan.activity,
       open: plan.steps
@@ -157,7 +156,7 @@ test('after a restart, an idle briefing session with open card-plan steps is res
   assert.equal(run.options.resume, true);
   assert.equal(run.options.cwd, cwd);
   assert.equal(run.options.permissionMode, 'bypassPermissions');
-  assert.equal(run.ledger?.listName, 'Mission Control card plan');
+  assert.equal(run.ledger?.listName, 'Plugin card plan');
   assert.equal(run.ledger?.activity, 7);
   assert.deepEqual(run.ledger?.open.map((step) => [step.id, step.status, step.subject]), [
     ['s2', 'in_progress', 'Confirm the new release on vs.example.com'],
