@@ -1,5 +1,5 @@
 /**
- * Contract between this host and the integrations plugin's scheduled plan wake.
+ * Contract between this host and an integrations plugin's scheduled plan wake.
  *
  * The plugin's own suite drives its wake against a hand-written host object, which is how a
  * shape mismatch shipped: the stub answered `enqueueMessageChecked` with `{ accepted: true }`
