@@ -1,5 +1,11 @@
 # Repository guidance
 
+## Public and generic: no local services
+
+This repository is public on GitHub and must stay a generic product that knows nothing about any particular installation. Code, tests, fixtures, docs, comments and commit messages never name our own hosts or domains, VPN addresses, machine paths, people, or private services and integrations. Anything specific to one installation lives outside this repo: in a host-module plugin in its own private repository, or in configuration read from the environment (`.env`, never committed). The core never depends on a plugin being present; a plugin talks to it only through the generic plugin host API.
+
+Examples and fixtures use reserved placeholders: `example.com` hosts, `192.0.2.x` addresses, `/Users/dev/...` paths, neutral names. Before every commit, check the diff for anything that would only make sense on our machines, and remove it before it reaches GitHub, since a force-push does not erase old commits there.
+
 ## Backend code
 
 For every task that creates, modifies, refactors, or reviews backend code under `server/`, load and follow `$backend-module-standards` from `.agents/skills/backend-module-standards/SKILL.md`. Apply it only to backend code; do not impose those architecture rules on the frontend.
