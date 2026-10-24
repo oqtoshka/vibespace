@@ -516,6 +516,18 @@ function ensureQueueDrainingRegistered(dependencies: ChatWebSocketDependencies):
 }
 
 /**
+ * A message the user sends into an archived conversation brings it back to the
+ * sidebar; the watcher's next upsert announces it. Besides Restore this is the
+ * only way out of the archive: indexing a transcript never clears the flag, so
+ * an archive survives every rescan.
+ */
+function reopenArchivedConversation(session: SessionRow): void {
+  if (isArchived(session)) {
+    sessionsDb.updateSessionIsArchived(session.session_id, false);
+  }
+}
+
+/**
  * Handles `chat.send`: resolves the session row (provider, project path, and
  * provider-native id all come from the database — never from the client),
  * registers the run, and dispatches to the provider runtime.
@@ -602,6 +614,8 @@ async function handleChatSend(
     );
     return;
   }
+
+  reopenArchivedConversation(session);
 
   // Explicit receipt for the composer's pending-send journal. The client
   // journals every dispatched send and restores unacked entries into the
@@ -1017,6 +1031,8 @@ async function handleChatQueueAdd(
     );
     return;
   }
+
+  reopenArchivedConversation(session);
 
   const provider = session.provider as LLMProvider;
   const outcome = await tryDeliverToRunningTurn(

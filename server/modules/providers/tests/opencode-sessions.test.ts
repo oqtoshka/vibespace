@@ -344,9 +344,13 @@ test('OpenCode session synchronizer imports every session, cursor or not, withou
       await synchronizer.synchronize(new Date());
       assert.equal(Boolean(sessionsDb.getSessionById('open-session-1')?.isArchived), true);
 
-      // Activity since the cursor still restores it, as it always did.
+      // Nor does a scan that sees it touched since the cursor, or the watcher
+      // re-reading opencode.db: indexing never clears an archive. Restore or a
+      // message sent into the conversation does.
       await synchronizer.synchronize(new Date(1_700_000_000_000));
-      assert.equal(Boolean(sessionsDb.getSessionById('open-session-1')?.isArchived), false);
+      assert.equal(Boolean(sessionsDb.getSessionById('open-session-1')?.isArchived), true);
+      await synchronizer.synchronizeFile(path.join(tempRoot, '.local', 'share', 'opencode', 'opencode.db'));
+      assert.equal(Boolean(sessionsDb.getSessionById('open-session-1')?.isArchived), true);
     });
   } finally {
     restoreHomeDir();

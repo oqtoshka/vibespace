@@ -53,22 +53,36 @@ test('session archive queries hide archived rows from active project views', asy
   });
 });
 
-test('createSession reactivates archived rows when the session becomes active again', async () => {
+test('createSession keeps an archived row archived when its transcript is indexed again', async () => {
   await withIsolatedDatabase(() => {
-    sessionsDb.createSession('session-reused', 'claude', '/workspace/demo-project', 'First Name');
+    const transcript = '/workspace/.claude/projects/demo/session-reused.jsonl';
+    sessionsDb.createSession('session-reused', 'claude', '/workspace/demo-project', 'First Name', undefined, '2026-07-18T10:00:00.000Z', transcript);
     sessionsDb.updateSessionIsArchived('session-reused', true);
 
-    sessionsDb.createSession('session-reused', 'claude', '/workspace/demo-project', 'Updated Name');
+    // A rescan re-reads the transcript with nothing new in it.
+    sessionsDb.createSession('session-reused', 'claude', '/workspace/demo-project', 'First Name', undefined, '2026-07-18T10:00:00.000Z', transcript);
+    assert.equal(sessionsDb.getSessionById('session-reused')?.isArchived, 1);
+    assert.equal(sessionsDb.getAllSessions().length, 0);
+    assert.deepEqual(sessionsDb.getArchivedSessions().map((session) => session.session_id), ['session-reused']);
 
-    const activeSessions = sessionsDb.getAllSessions();
-    const archivedSessions = sessionsDb.getArchivedSessions();
-    const restoredSession = sessionsDb.getSessionById('session-reused');
+    // Even a newer transcript only updates the row; the archive stays.
+    sessionsDb.createSession('session-reused', 'claude', '/workspace/demo-project', 'Updated Name', undefined, '2026-07-18T11:00:00.000Z', transcript);
+    const reindexed = sessionsDb.getSessionById('session-reused');
+    assert.equal(reindexed?.isArchived, 1);
+    assert.equal(reindexed?.custom_name, 'Updated Name');
 
-    assert.equal(activeSessions.length, 1);
-    assert.equal(activeSessions[0]?.session_id, 'session-reused');
-    assert.equal(activeSessions[0]?.custom_name, 'Updated Name');
-    assert.equal(archivedSessions.length, 0);
-    assert.equal(restoredSession?.isArchived, 0);
+    // The legacy ON CONFLICT path (a row without its provider id) keeps it too.
+    sessionsDb.createAppSession('session-legacy', 'claude', '/workspace/demo-project');
+    sessionsDb.updateSessionIsArchived('session-legacy', true);
+    sessionsDb.createSession('session-legacy', 'claude', '/workspace/demo-project', 'Legacy');
+    assert.equal(sessionsDb.getSessionById('session-legacy')?.isArchived, 1);
+  });
+});
+
+test('a session indexed for the first time is active', async () => {
+  await withIsolatedDatabase(() => {
+    sessionsDb.createSession('session-new', 'claude', '/workspace/demo-project', 'New');
+    assert.equal(sessionsDb.getSessionById('session-new')?.isArchived, 0);
   });
 });
 

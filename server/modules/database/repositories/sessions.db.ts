@@ -113,6 +113,12 @@ export const sessionsDb = {
    * transcript shows up on disk, instead of producing a duplicate row. An
    * app-created row keeps its existing name; synchronizer names only update
    * rows that were themselves created by indexing provider storage.
+   *
+   * Indexing never touches the archive flag. A rescan re-reads transcripts
+   * that have nothing new, so clearing it here brought archived conversations
+   * back into the sidebar. Only the user un-archives: Restore
+   * (`sessionsService.restoreSessionById`) or a message they send into the
+   * conversation (the chat websocket's send and queue paths).
    */
   createSession(
     providerSessionId: string,
@@ -122,14 +128,9 @@ export const sessionsDb = {
     createdAt?: string,
     updatedAt?: string,
     jsonlPath?: string | null,
-    nameSource?: SessionNameSource | null,
-    options: { preserveArchived?: boolean } = {}
+    nameSource?: SessionNameSource | null
   ): string {
     const db = getConnection();
-    // Indexing a session normally means it saw activity, which un-archives it.
-    // A provider that re-imports its whole store on every scan has to be able
-    // to opt out, or a refresh would silently undo every archive.
-    const archivedAssignment = options.preserveArchived ? '' : 'isArchived = 0,';
     const createdAtValue = normalizeTimestamp(createdAt);
     const updatedAtValue = normalizeTimestamp(updatedAt);
     const incomingName = customName ?? null;
@@ -156,7 +157,6 @@ export const sessionsDb = {
            updated_at = COALESCE(?, CURRENT_TIMESTAMP),
            project_path = ?,
            jsonl_path = ?,
-           ${archivedAssignment}
            custom_name = CASE WHEN ${KEEP_APP_SESSION_NAME_SQL('?')} THEN custom_name ELSE COALESCE(?, custom_name) END,
            name_source = CASE WHEN ${KEEP_APP_SESSION_NAME_SQL('?')} THEN name_source ELSE COALESCE(?, name_source) END
          WHERE session_id = ?`
@@ -189,7 +189,6 @@ export const sessionsDb = {
          updated_at = excluded.updated_at,
          project_path = excluded.project_path,
          jsonl_path = excluded.jsonl_path,
-         ${archivedAssignment}
          custom_name = CASE WHEN ${KEEP_APP_SESSION_NAME_SQL('excluded.custom_name', 'excluded.name_source', 'sessions.')}
            THEN sessions.custom_name ELSE COALESCE(excluded.custom_name, sessions.custom_name) END,
          name_source = CASE WHEN ${KEEP_APP_SESSION_NAME_SQL('excluded.custom_name', 'excluded.name_source', 'sessions.')}

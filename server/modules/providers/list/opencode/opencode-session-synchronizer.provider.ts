@@ -37,9 +37,11 @@ export class OpenCodeSessionSynchronizer implements IProviderSessionSynchronizer
 
   /**
    * Scans OpenCode's shared opencode.db and upserts active sessions into DB.
+   * The scan cursor is ignored: every scan reads the whole session table
+   * (see synchronizeRows).
    */
-  async synchronize(since?: Date): Promise<number> {
-    const result = this.synchronizeRows(since);
+  async synchronize(_since?: Date): Promise<number> {
+    const result = this.synchronizeRows();
     return result.processed;
   }
 
@@ -51,11 +53,11 @@ export class OpenCodeSessionSynchronizer implements IProviderSessionSynchronizer
       return null;
     }
 
-    const result = this.synchronizeRows(undefined, 1);
+    const result = this.synchronizeRows(1);
     return result.firstSessionId;
   }
 
-  private synchronizeRows(since?: Date, limit?: number): SynchronizeRowsResult {
+  private synchronizeRows(limit?: number): SynchronizeRowsResult {
     const dbPath = getOpenCodeDatabasePath();
     if (!fsSync.existsSync(dbPath)) {
       return { processed: 0, firstSessionId: null };
@@ -63,7 +65,6 @@ export class OpenCodeSessionSynchronizer implements IProviderSessionSynchronizer
 
     const db = new Database(dbPath, { readonly: true, fileMustExist: true });
     try {
-      const sinceMillis = since?.getTime() ?? null;
       const limitClause = limit ? 'LIMIT ?' : '';
       // Every scan reads the whole session table rather than only what changed
       // since the last one: OpenCode's sessions live in a single database the
@@ -88,12 +89,9 @@ export class OpenCodeSessionSynchronizer implements IProviderSessionSynchronizer
       let processed = 0;
       let firstSessionId: string | null = null;
       for (const row of rows) {
-        // Re-importing a session must not undo an archive the user asked for,
-        // so only a session that saw activity since the last scan is allowed to
-        // return to the active list.
-        const touched = Number(row.time_updated ?? row.time_created ?? 0);
-        const isNewlyActive = sinceMillis === null || touched >= sinceMillis;
-        const indexedSessionId = this.upsertSession(db, row, { preserveArchived: !isNewlyActive });
+        // Re-importing a session leaves its archive flag alone (createSession
+        // never clears it), so a scan cannot undo an archive the user asked for.
+        const indexedSessionId = this.upsertSession(db, row);
         if (!indexedSessionId) {
           continue;
         }
@@ -114,11 +112,7 @@ export class OpenCodeSessionSynchronizer implements IProviderSessionSynchronizer
     }
   }
 
-  private upsertSession(
-    db: Database.Database,
-    row: OpenCodeSessionRow,
-    options: { preserveArchived?: boolean } = {},
-  ): string | null {
+  private upsertSession(db: Database.Database, row: OpenCodeSessionRow): string | null {
     const sessionId = readOptionalString(row.id);
     const projectPath = readOptionalString(row.directory) ?? readOptionalString(row.worktree);
     if (!sessionId || !projectPath) {
@@ -171,7 +165,6 @@ export class OpenCodeSessionSynchronizer implements IProviderSessionSynchronizer
       normalizeProviderTimestamp(row.time_updated ?? row.time_created),
       null,
       null,
-      { preserveArchived: options.preserveArchived },
     );
   }
 
