@@ -5,6 +5,37 @@ import { registerTaskLedgerSource, registerAgentLaunchContributor } from '../../
 import { BriefingOutputPolicy, BRIEFING_REPAIRS_PER_TURN } from '../index.js';
 
 for (const provider of ['claude', 'opencode', 'cursor'] as const) {
+  test(`${provider}: silent card completion is recorded; prose still repairs; new turns cannot reuse the receipt`, () => {
+    let checkpointMissing = false;
+    const stop = registerTaskLedgerSource(c => ({ listName: 'card', guidance: '', open: [], activity: 3, agentTextPolicy: 'reject',
+      ...(checkpointMissing ? { completion: { turnId: c.turnId!, prompt: 'Report the new request' } }
+        : { turnComplete: { turnId: c.turnId!, activity: 3 } }) }));
+    try {
+      const gate = new BriefingOutputPolicy(provider, {});
+      gate.begin('native', 'human request');
+      assert.equal(gate.accepts({ kind: 'tool_result', content: 'Recorded' }), true);
+      assert.deepEqual(gate.complete(), {});
+      const first = gate.state.completedTurnId;
+      assert.ok(first);
+      assert.equal(gate.state.repairs, 0);
+      assert.deepEqual(gate.complete(false), {}, 'a provider failure receives neither a receipt nor a reporting repair');
+      assert.equal(gate.state.completedTurnId, undefined);
+      gate.begin('native', 'human request', true);
+      assert.equal(gate.state.completedTurnId, undefined);
+      assert.equal(gate.accepts({ kind: 'text', content: 'Forbidden summary' }), false);
+      assert.match(gate.complete().prompt!, /card is the visible output/);
+      assert.equal(gate.state.completedTurnId, undefined, 'text cannot acquire a receipt');
+      assert.deepEqual(gate.complete(), {});
+      assert.notEqual(gate.state.completedTurnId, first);
+      gate.begin('native', 'next request', true);
+      checkpointMissing = true;
+      assert.match(gate.complete().prompt!, /Report the new request/);
+      assert.equal(gate.state.completedTurnId, undefined);
+      const restarted = new BriefingOutputPolicy(provider, {});
+      restarted.begin('native', '[session supervisor] Restored after restart');
+      assert.match(restarted.complete().prompt!, /Report the new request/, 'restart still checks reporting obligations');
+    } finally { stop(); }
+  });
   test(`${provider}: prose rejected after valid card; tools/errors/user retained; bounded repairs never fail`, () => {
     const unregister = registerTaskLedgerSource(c => c.provider === provider ? { listName:'card', guidance:'', open:[], activity:0, agentTextPolicy:'reject' } : null);
     try {

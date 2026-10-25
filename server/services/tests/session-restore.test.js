@@ -11,6 +11,7 @@ import {
   restoreInterruptedSessions,
   __resetSessionRestoreState,
 } from '../session-restore.service.js';
+import { registerTaskLedgerSource } from '../../shared/index.js';
 
 // Point both the registry (getDataDir → DATABASE_PATH's parent) and the task
 // ledger (CLAUDE_CONFIG_DIR) at throwaway dirs before any service call.
@@ -256,4 +257,27 @@ test('a stale restart-without-resume marker is removed and ignored', async () =>
   const calls = [];
   assert.deepEqual(await restoreInterruptedSessions(spawnRecorder(calls)), ['s-stale-marker']);
   await assert.rejects(fs.stat(marker), { code: 'ENOENT' });
+});
+
+test('restart re-reads a silent briefing card: open waits and future schedules park; answers and due steps resume', async () => {
+  let actionable = false;
+  const stop = registerTaskLedgerSource(c => c.sessionId === 'briefing-restored' ? {
+    listName: 'card', guidance: '', activity: 1, agentTextPolicy: 'reject',
+    open: [
+      { id: 's1', subject: 'Attention card', status: 'pending', waitingOnUser: !actionable, updatedAt: null },
+      { id: 's2', subject: 'Scheduled step', status: 'pending', waitingOnUser: !actionable, updatedAt: null },
+    ],
+    turnComplete: { turnId: 'prior-silent-turn', activity: 1 },
+  } : null);
+  try {
+    await recordSessionActivity({ sessionId: 'briefing-restored', cwd: '/project', turnActive: false });
+    assert.deepEqual(await restoreInterruptedSessions(spawnRecorder([])), [], 'parked card never receives a restart nudge');
+    actionable = true; // Only the answer/time changed: same activity and old receipt.
+    __resetSessionRestoreState(); // A later boot gets its own single restore pass.
+    await recordSessionActivity({ sessionId: 'briefing-restored', cwd: '/project', turnActive: false });
+    const calls = [];
+    assert.deepEqual(await restoreInterruptedSessions(spawnRecorder(calls)), ['briefing-restored']);
+    assert.equal(calls[0].options.resume, true);
+    assert.match(calls[0].prompt, /\[session supervisor\]/);
+  } finally { stop(); }
 });

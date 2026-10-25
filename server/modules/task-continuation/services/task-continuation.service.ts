@@ -109,8 +109,9 @@ export function planTaskContinuation({ provider, sessionId, cwd = null, userId =
   }
 
   const state = states.get(key) || { count: 0, stalls: 0, fingerprint: null, activity: 0 };
-  // The subject is part of the fingerprint: parking an item is progress.
-  const fingerprint = open.map((t) => `${t.id}:${t.status}:${t.subject}`).join(',');
+  // Answers and due schedules change the actionable set without a card write.
+  // They renew the budget just as a subject or status change does.
+  const fingerprint = actionable.map((t) => `${t.id}:${t.status}:${t.subject}`).join(',');
   if (state.count > 0 && fingerprint === state.fingerprint && activity === state.activity) {
     state.stalls += 1;
   } else {

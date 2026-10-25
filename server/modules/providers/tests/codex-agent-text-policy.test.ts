@@ -19,6 +19,7 @@ async function run(scenario: Scenario) {
   const executable = path.join(dir, 'codex'), capture = path.join(dir, 'requests.jsonl');
   const previous = process.env.VIBESPACE_CODEX_PATH;
   const events: Array<Record<string, unknown>> = [], boundaries: string[] = [], roles: Array<string | undefined> = [];
+  const receiptState = { repairs: 0, admitted: false, completedTurnId: undefined as string | undefined };
   let sidecarReady = false;
   let steered = false, pendingSteer: Promise<unknown> | undefined;
   const stopLaunch = registerAgentLaunchContributor(c => c.sessionRole === 'main' ? { ...(scenario.launch ? { agentTextPolicy: 'reject' as const } : {}), systemInstructions: scenario.systemInstructions } : null);
@@ -29,6 +30,7 @@ async function run(scenario: Scenario) {
     if (context.phase === 'begin') { boundaries.push(context.prompt!); roles.push(context.sessionRole); }
     if (scenario.unreadable || (scenario.unreadableAfterAdmission && boundaries.length > 1)) throw new Error('Fixture source unavailable');
     return { listName: 'card plan', guidance: '', open: [], activity: 0,
+      ...(context.phase === 'complete' && scenario.cardOnly ? { turnComplete: { turnId: context.turnId!, activity: 0 } } : {}),
       // Deliberately allow malformed plugin data to exercise the public normalizer.
       agentTextPolicy: (scenario.steer && !steered ? undefined : scenario.policy) as 'reject' | undefined,
       ...(scenario.missing ? { completion: { turnId: 'actual-human', prompt: 'reply exact current threads' } } : {}) };
@@ -70,7 +72,7 @@ require('node:readline').createInterface({input:process.stdin}).on('line',line=>
 `);
     await chmod(executable, 0o755); process.env.VIBESPACE_CODEX_PATH = executable;
     __clearTaskContinuationState();
-    const running = queryCodex('Human request', { sessionId: scenario.fresh ? undefined : 'policy-thread', cwd: dir, model: 'gpt-6-astra', sideSession: scenario.side, ephemeral: scenario.helper, backgroundHelper: scenario.helper }, {
+    const running = queryCodex('Human request', { sessionId: scenario.fresh ? undefined : 'policy-thread', cwd: dir, model: 'gpt-6-astra', sideSession: scenario.side, ephemeral: scenario.helper, backgroundHelper: scenario.helper, agentTextPolicyState: receiptState }, {
       isWebSocketWriter: true, send(event: Record<string, unknown>) { events.push(event); if (event.kind === 'tool_use') sidecarReady = true; }, setSessionId() {},
     });
     if (scenario.steer) {
@@ -82,7 +84,7 @@ require('node:readline').createInterface({input:process.stdin}).on('line',line=>
     }
     await running; await pendingSteer;
     const calls = (await readFile(capture, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
-    return { events, calls, boundaries, roles };
+    return { events, calls, boundaries, roles, receiptState };
   } finally {
     stopLaunch(); unregister(); stopCodexAppServer(); __clearTaskContinuationState(); closeConnection();
     if (previous === undefined) delete process.env.VIBESPACE_CODEX_PATH; else process.env.VIBESPACE_CODEX_PATH = previous;
@@ -126,6 +128,14 @@ test('actual Codex provider failure remains error without a policy repair', { ti
   assert.equal(calls.filter(call => call.method === 'turn/start').length, 1);
   assert.ok(events.some(event => event.kind === 'error' && event.content === 'Fixture transport failure'));
   assert.deepEqual(events.filter(event => event.kind === 'complete').map(event => event.success), [false]);
+});
+
+test('a failed Codex turn cannot publish a silent completion receipt', { timeout: 15000 }, async () => {
+  const { events, calls, receiptState } = await run({ policy: 'reject', providerFailure: true, cardOnly: true });
+  assert.equal(calls.filter(call => call.method === 'turn/start').length, 1);
+  assert.equal(receiptState.completedTurnId, undefined);
+  assert.equal(events.find(event => event.kind === 'complete')?.reportingTurnId, undefined);
+  assert.ok(events.some(event => event.kind === 'error'));
 });
 test('actual Codex accepted human steer activates policy once before its next prose', { timeout: 15000 }, async () => {
   const { events, boundaries, roles } = await run({ policy: 'reject', steer: true });
@@ -196,12 +206,14 @@ test('actual Codex explicit launch refuses first prose before any reporter hook 
 for (const fresh of [true, false]) {
   test(`Codex harness override precedes first response on ${fresh ? 'start' : 'resume'}; card-only smoke completes without repair`, { timeout: 15000 }, async () => {
     const override = 'Use only card tools for progress and completion. End with no assistant text.';
-    const { calls, events } = await run({ systemInstructions: override, fresh, policy: 'reject', cardOnly: true });
+    const { calls, events, receiptState } = await run({ systemInstructions: override, fresh, policy: 'reject', cardOnly: true });
     const thread = calls.find(call => call.method === (fresh ? 'thread/start' : 'thread/resume'));
     assert.equal(thread.params.developerInstructions, override);
     assert.equal(calls.filter(call => call.method === 'turn/start').length, 1);
     assert.ok(events.some(event => event.kind === 'tool_use'));
     assert.ok(!events.some(event => event.text === 'agent_text_policy_violation'));
     assert.deepEqual(events.filter(event => event.kind === 'complete').map(event => event.success), [true]);
+    assert.ok(receiptState.completedTurnId, 'host records the accepted silent completion');
+    assert.equal(events.find(event => event.kind === 'complete')?.reportingTurnId, receiptState.completedTurnId);
   });
 }

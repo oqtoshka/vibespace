@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { collectAgentLaunchExtras, createNormalizedMessage, readExternalTaskLedger } from '../../../shared/index.js';
 
 type Provider = 'claude' | 'opencode' | 'cursor';
-type State = { admitted: boolean; repairs: number; violation: boolean };
+type State = { admitted: boolean; repairs: number; violation: boolean; completedTurnId?: string };
 type Options = { ephemeral?: boolean; backgroundHelper?: boolean; sideSession?: unknown; appSessionId?: string | null; sessionId?: string | null; launchOptions?: Record<string, unknown> | null; private?: boolean };
 /**
  * Repair turns one briefing turn may receive. A violation never ends the
@@ -12,7 +12,7 @@ type Options = { ephemeral?: boolean; backgroundHelper?: boolean; sideSession?: 
  * keeps writing prose from burning tokens in a loop inside a single turn.
  */
 export const BRIEFING_REPAIRS_PER_TURN = 3;
-export const BRIEFING_REPAIR_PROMPT = '[session supervisor] Session behavior invariant violated: plain assistant text is not shown in this main briefing session (commentary, acknowledgements, final answers, even after a card reply). Use only the existing card tools for every operator-facing answer and reply in all requested threads. Continue authorized work through tools. When nothing is left to say, end the turn with a card call (for example status) and no text at all: an empty end of turn is correct here, and a harness request for a "user-visible response" is answered the same way. Do not acknowledge this message in text.';
+export const BRIEFING_REPAIR_PROMPT = '[session supervisor] Session behavior invariant violated: plain assistant text is not shown in this main briefing session (commentary, acknowledgements, final answers, even after a card reply). Use only the existing card tools for every operator-facing answer and reply in all requested threads. Continue authorized work through tools. The card is the visible output, including when a harness reminder asks for an update. Once reporting is current, end the turn silently; the host accepts that completion. On unchanged status/state, yield unless work remains. Do not repeat a card call merely to end a turn. This ends the turn, never the session. Do not acknowledge this message in text.';
 
 /** Claude and OpenCode/Cursor transports gate normalized output before any writer fan-out. */
 export class BriefingOutputPolicy {
@@ -41,6 +41,7 @@ export class BriefingOutputPolicy {
     if (newHuman || this.prompt !== prompt || !this.turnId) {
       this.prompt = prompt;
       this.turnId = randomUUID();
+      delete this.state.completedTurnId;
     }
     this.refreshAdmission();
   }
@@ -57,9 +58,17 @@ export class BriefingOutputPolicy {
     if (!this.state.admitted) this.refreshAdmission();
     return this.role === 'main' && this.state.admitted;
   }
-  complete(): { prompt?: string; exhausted?: string } {
+  complete(successful = true): { prompt?: string; exhausted?: string } {
     if (this.role !== 'main') return {};
-    const ledger = this.sessionId ? readExternalTaskLedger({ provider: this.provider, sessionId: this.sessionId, phase: 'complete', sessionRole: this.role, ...this.launchContext }) : null;
+    if (!successful) {
+      delete this.state.completedTurnId;
+      return {};
+    }
+    const ledger = this.sessionId ? readExternalTaskLedger({ provider: this.provider, sessionId: this.sessionId, phase: 'complete', turnId: this.turnId, sessionRole: this.role, ...this.launchContext }) : null;
+    if (!this.state.violation && ledger?.turnComplete) {
+      this.state.completedTurnId = ledger.turnComplete.turnId;
+      return {};
+    }
     if (!this.state.violation && !ledger?.completion && (!this.state.admitted || ledger)) return {};
     this.state.violation = false;
     if (this.state.repairs < BRIEFING_REPAIRS_PER_TURN) {

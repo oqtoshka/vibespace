@@ -21,6 +21,7 @@ const {
   isClaudeSDKSessionAlive,
   __setClaudeQueryImpl,
 } = await import('./claude-sdk.js');
+const { registerTaskLedgerSource } = await import('./shared/index.js');
 
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -322,3 +323,36 @@ test('an open-task nudge waits for a turn-admission reservation, then runs', asy
     __setClaudeQueryImpl(null);
   }
 });
+
+for (const scenario of ['open-card', 'future-schedule', 'answered-card', 'due-schedule', 'unchanged-report', 'real-work']) {
+  test(`briefing handshake: ${scenario} retains correct continuation behavior`, async () => {
+    const sessionId = `briefing-${scenario}`;
+    const received = [];
+    const parked = ['open-card', 'future-schedule'].includes(scenario);
+    let finished = false;
+    const previousTools = process.env.CLAUDE_CODE_TERMINAL_MCP_TOOLS;
+    process.env.CLAUDE_CODE_TERMINAL_MCP_TOOLS = 'mcp__card__status,mcp__card__state';
+    const stop = registerTaskLedgerSource(c => c.sessionId === sessionId ? {
+      listName: 'card', guidance: 'Report on the card, then yield.', activity: 1, agentTextPolicy: 'reject',
+      open: finished ? [] : [{ id: 's1', subject: scenario, status: 'pending', waitingOnUser: parked, updatedAt: null }],
+      ...(c.phase === 'complete' ? { turnComplete: { turnId: c.turnId, activity: 1 } } : {}),
+    } : null);
+    __setClaudeQueryImpl(scriptedRuntime(sessionId, function* (i) {
+      yield assistantTool(scenario === 'real-work' ? 'Bash' : 'mcp__card__status', sessionId);
+      if (scenario === 'real-work' && i === 7) finished = true;
+    }, received));
+    try {
+      await queryClaudeSDK('request', { sessionId }, makeRecordingWriter());
+      await waitUntil(() => !isClaudeSDKSessionAlive(sessionId), 'briefing to settle', 5000);
+      const nudges = received.filter(isNudge);
+      assert.equal(nudges.length, parked ? 0 : scenario === 'real-work' ? 7 : 2);
+      assert.ok(!received.some(raw => raw.includes('Session behavior invariant violated')), 'silent card completion needs no repair');
+    } finally {
+      stop();
+      if (previousTools === undefined) delete process.env.CLAUDE_CODE_TERMINAL_MCP_TOOLS;
+      else process.env.CLAUDE_CODE_TERMINAL_MCP_TOOLS = previousTools;
+      await abortClaudeSDKSession(sessionId).catch(() => {});
+      __setClaudeQueryImpl(null);
+    }
+  });
+}

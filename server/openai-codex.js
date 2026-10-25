@@ -715,6 +715,7 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
   // Internal continuation state: human entry starts a new budget; recursive
   // plan/report repairs retain it. Never infer policy from the prompt text.
   const textPolicyState = options.agentTextPolicyState || { repairs: 0, admitted: false };
+  delete textPolicyState.completedTurnId;
   const launchReportingContext = { launchOptions: options.launchOptions ?? null, private: Boolean(options.private), ephemeral: Boolean(ephemeral || backgroundHelper) };
   const sessionLaunchExtras = collectAgentLaunchExtras({ provider: 'codex', scope: 'session', sessionId: options.appSessionId ?? sessionId ?? null, sessionRole: ephemeral || backgroundHelper ? 'helper' : sideSession ? 'side' : 'main', ...launchReportingContext });
   const launchTextPolicy = sessionLaunchExtras.agentTextPolicy;
@@ -1120,7 +1121,10 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
       terminalFailure?.codexErrorInfo || terminalFailure?.codex_error_info,
     ) || /blocked by our safety systems/i.test(terminalFailure?.message || '');
     const completedReportingLedger = !ephemeral && !backgroundHelper && !sideSession
-      ? readExternalTaskLedger({ provider: 'codex', sessionId: capturedSessionId, phase: 'complete', sessionRole: 'main', ...launchReportingContext }) : null;
+      ? readExternalTaskLedger({ provider: 'codex', sessionId: capturedSessionId, phase: 'complete', turnId: briefingBegin?.turnId, sessionRole: 'main', ...launchReportingContext }) : null;
+    if (!runAborted && !terminalFailure && terminalStatus === 'completed' && !textPolicyViolation && completedReportingLedger?.turnComplete) {
+      textPolicyState.completedTurnId = completedReportingLedger.turnComplete.turnId;
+    }
     const reportingCheckpoint = completedReportingLedger?.completion ?? (rejectAgentText && !completedReportingLedger ? { prompt: 'The current-turn card reporting bridge is unavailable; no successful reporting checkpoint can be verified.' } : null);
     let repairBudgetExhausted = false;
     if (!runAborted && !terminalFailure && terminalStatus === 'completed' && (textPolicyViolation || reportingCheckpoint)) {
@@ -1167,12 +1171,12 @@ export async function queryCodex(command, options = {}, ws, context = undefined)
       });
     }
     if (!runAborted) {
-      sendMessage(ws, createCompleteMessage({
+      sendMessage(ws, { ...createCompleteMessage({
         provider: 'codex',
         sessionId: capturedSessionId || sessionId || null,
         actualSessionId: capturedSessionId || sessionId || null,
         exitCode: terminalFailure ? 1 : 0,
-      }));
+      }), ...(textPolicyState.completedTurnId ? { reportingTurnId: textPolicyState.completedTurnId } : {}) });
       if (!terminalFailure && !ephemeral) {
         notifyRunStopped({
           userId: ws?.userId || null,

@@ -61,3 +61,26 @@ test('per-turn continuation: an external ledger replaces the native one, includi
     __clearTaskContinuationState();
   }
 });
+
+test('silent completion receipt is scoped to an observed main turn and matching activity', () => {
+  let receipt: any = { turnId: 'current', activity: 7 };
+  let completion: any;
+  let policy: any = 'reject';
+  const stop = registerTaskLedgerSource(() => ({ ...card([], 7), agentTextPolicy: policy, turnComplete: receipt, completion }));
+  const context = { provider: 'claude' as const, sessionId: 'receipt', sessionRole: 'main' as const, phase: 'complete' as const, turnId: 'current' };
+  try {
+    assert.deepEqual(readExternalTaskLedger(context)?.turnComplete, receipt);
+    for (const extra of [{ phase: undefined }, { phase: 'begin' }, { sessionRole: 'side' }, { sessionRole: 'helper' }, { turnId: 'old' }, { turnId: undefined }]) {
+      assert.equal(readExternalTaskLedger({ ...context, ...extra } as any)?.turnComplete, undefined);
+    }
+    for (const invalid of [null, {}, { turnId: 'current', activity: 6 }, { turnId: 'current', activity: NaN }]) {
+      receipt = invalid;
+      assert.equal(readExternalTaskLedger(context)?.turnComplete, undefined);
+    }
+    receipt = { turnId: 'current', activity: 7 };
+    completion = { turnId: 'current', prompt: 'Still missing a report' };
+    assert.equal(readExternalTaskLedger(context)?.turnComplete, undefined);
+    completion = undefined; policy = undefined;
+    assert.equal(readExternalTaskLedger(context)?.turnComplete, undefined);
+  } finally { stop(); }
+});

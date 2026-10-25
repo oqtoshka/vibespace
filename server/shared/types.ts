@@ -424,6 +424,12 @@ export type NormalizedMessage = {
   input?: unknown;
   context?: unknown;
   reason?: string;
+  /**
+   * On a successful complete event, the external reporting source accepted a
+   * silent end for this host turn. Provider runtimes publish the receipt for
+   * run history; it never closes the session or suppresses later wake events.
+   */
+  reportingTurnId?: string;
   newSessionId?: string;
   status?: string;
   summary?: string;

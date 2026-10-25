@@ -1140,13 +1140,15 @@ function captureAssistantSummary(session, message) {
   if (!Array.isArray(blocks)) return;
   const textParts = [];
   for (const b of blocks) {
-    if (b?.type === 'text' && b.text) textParts.push(b.text);
+    if (b?.type === 'text' && b.text && !session.briefingPolicy.active) textParts.push(b.text);
     else if (b?.type === 'tool_use' && b.name) {
       session.turnToolNames.push(b.name);
       // Session-lifetime counter, never reset per turn: the task-nudge stall
       // detector compares it across nudges to tell "worked but didn't update
       // the ledger yet" from "did nothing at all".
-      session.toolUseCount += 1;
+      // Reporting-only loops must not renew the work budget. Real tool work
+      // still counts even when the card has not changed yet.
+      if (!session.briefingPolicy.active || !session.terminalMcpTools.has(b.name)) session.toolUseCount += 1;
     }
   }
   if (textParts.length) session.lastAssistantText = textParts.join('\n').trim();
@@ -1315,12 +1317,12 @@ async function maybeContinueOpenTasks(session) {
     return true;
   }
 
-  // Stall detection: a nudge that produced no tool calls AND left the ledger
-  // untouched did nothing. Two of those in a row mean nudging isn't helping.
+  // Count real work and card writes, excluding unchanged reporting calls.
   const nudges = session.taskNudges;
   // The subject is part of the fingerprint: parking an item by renaming it is progress.
   const fingerprint = actionable.map((t) => `${t.id}:${t.status}:${t.subject}`).join(',');
-  if (nudges.count > 0 && fingerprint === nudges.fingerprint && session.toolUseCount === nudges.toolCount) {
+  const activity = external ? `${external.activity}:${session.toolUseCount}` : session.toolUseCount;
+  if (nudges.count > 0 && fingerprint === nudges.fingerprint && activity === nudges.toolCount) {
     nudges.stalls += 1;
   } else {
     nudges.stalls = 0;
@@ -1344,7 +1346,7 @@ async function maybeContinueOpenTasks(session) {
 
   nudges.count += 1;
   nudges.fingerprint = fingerprint;
-  nudges.toolCount = session.toolUseCount;
+  nudges.toolCount = activity;
 
   ensureRunForServerStartedTurn(session, 'Resuming — open tasks remain');
   console.log(`[claude tasks] session ${session.sessionId}: idle with ${actionable.length} open task(s) — nudging (${nudges.count}/${TASK_NUDGE_MAX})`);
@@ -1718,6 +1720,9 @@ function deferUntilTurnAdmitted(session, label, start) {
  */
 function ensureRunForServerStartedTurn(session, statusText) {
   if (!session.turnActive) {
+    // A background completion or supervisor wake is a new host turn, even
+    // though the reporter retains any pending human reporting obligations.
+    session.briefingPolicy?.begin(session.sessionId, `[session supervisor] ${statusText}`, true);
     // Without a seam (tests, one-shot callers) keep the current writer.
     const resumeWriter = session.acquireResumeRun?.();
     if (resumeWriter) {
@@ -1961,6 +1966,7 @@ function settleTurn(session, { aborted = false } = {}) {
       isNewSession,
       sessionId: session.sessionId,
       provider: 'claude',
+      ...(session.briefingPolicy.state.completedTurnId ? { reportingTurnId: session.briefingPolicy.state.completedTurnId } : {}),
     }));
   } else {
     session.firstTurnCompleted = true;
@@ -2011,9 +2017,9 @@ function settleTurn(session, { aborted = false } = {}) {
 }
 
 /** Called when a `result` message marks the end of an assistant turn. */
-function onTurnEnd(session) {
+function onTurnEnd(session, successful) {
   if (!session.rateLimitHit) {
-    const checkpoint = session.briefingPolicy?.complete();
+    const checkpoint = session.briefingPolicy?.complete(successful);
     if (checkpoint?.prompt) {
       session.briefingPolicy.begin(session.sessionId, checkpoint.prompt);
       session.lastAssistantText = '';
@@ -2259,7 +2265,7 @@ async function runSessionLoop(session) {
           session.rateLimitHit = null;
         }
         session.awaitingResult = true;
-        if (!session.briefingPolicy.active) captureAssistantSummary(session, message);
+        captureAssistantSummary(session, message);
 
         // Narrate the turn in the activity indicator. Without this the UI only
         // ever cycles generic words ("Thinking", "Working"), so a long tool run
@@ -2379,7 +2385,7 @@ async function runSessionLoop(session) {
         refreshContextUsage(session, 'turn-end');
         // Past awaitingPromptTurn, this is the side prompt's own turn.
         session.pendingPrompt = null;
-        onTurnEnd(session);
+        onTurnEnd(session, message.subtype === 'success' && !message.is_error);
       }
     }
   } catch (error) {
@@ -2776,6 +2782,7 @@ async function startPersistentSession(command, options, ws) {
     lastAssistantText: '',
     turnToolNames: [],
     toolUseCount: 0,
+    terminalMcpTools: new Set((sdkOptions.env?.CLAUDE_CODE_TERMINAL_MCP_TOOLS || '').split(',').filter(Boolean)),
     // Task-nudge bookkeeping (see maybeContinueOpenTasks).
     taskNudges: { count: 0, stalls: 0, fingerprint: null, toolCount: 0 },
     // Usage-limit bookkeeping (see noteRateLimitHit / settleTurn): the hit
@@ -2827,6 +2834,15 @@ async function startPersistentSession(command, options, ws) {
   };
 
   sdkOptions.hooks = {
+    PostToolUse: [{
+      matcher: '',
+      hooks: [async (hookInput) => !hookInput?.agent_id && session.briefingPolicy.active ? {
+        hookSpecificOutput: {
+          hookEventName: 'PostToolUse',
+          additionalContext: 'This session reports through its card. The card is the visible output, including when a tool-result reminder asks for an update. When reporting is current, end the turn silently. On unchanged status/state, yield unless work remains; do not repeat card calls to satisfy an output reminder.',
+        },
+      } : {}],
+    }],
     Notification: [{
       matcher: '',
       hooks: [async (hookInput) => {

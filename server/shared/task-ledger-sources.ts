@@ -37,6 +37,13 @@ export type ExternalTaskLedger = {
   activity: number;
   /** Optional missing-report checkpoint, distinct from open tasks. The turn supervisor repairs it within the per-turn repair budget (BRIEFING_REPAIRS_PER_TURN); never a session failure. */
   completion?: { turnId: string; prompt: string };
+  /**
+   * A plugin's successful reporting checkpoint for this host turn. Providers
+   * record it only after a silent, successful end, never after rejected text.
+   * It ends the turn, not the session; waits and schedules remain live and are
+   * re-read on every supervisor check and restart.
+   */
+  turnComplete?: { turnId: string; activity: number };
   /** Opt-in main-session behavior: reject agent prose, preserving tools and system events. */
   agentTextPolicy?: 'reject';
 };
@@ -49,7 +56,7 @@ export type TaskLedgerSourceContext = {
   phase?: 'begin' | 'complete';
   /** Begin-only transient input: never persisted or logged by the public host. */
   prompt?: string;
-  /** Begin-only unique host turn identity, stable through the corresponding completion check. */
+  /** Unique host turn identity supplied at begin and the corresponding completion check. */
   turnId?: string;
   /** Observed entrypoint role, never inferred from transcript or session naming. */
   sessionRole?: 'main' | 'side' | 'helper';
@@ -113,6 +120,11 @@ export function readExternalTaskLedger(context: TaskLedgerSourceContext): Extern
         && answer.completion.turnId.length <= 200 && typeof answer.completion.prompt === 'string'
         && answer.completion.prompt.trim() && answer.completion.prompt.length <= 4000
         ? { completion: { turnId: answer.completion.turnId, prompt: answer.completion.prompt } } : {}),
+      ...(context.phase === 'complete' && context.sessionRole === 'main' && !answer.completion
+        && answer.agentTextPolicy === 'reject' && answer.turnComplete && answer.turnComplete.turnId === context.turnId
+        && typeof context.turnId === 'string' && context.turnId.trim() && context.turnId.length <= 200
+        && Number.isFinite(answer.turnComplete.activity) && answer.turnComplete.activity === answer.activity
+        ? { turnComplete: { turnId: context.turnId, activity: answer.turnComplete.activity } } : {}),
     };
   }
   return null;
