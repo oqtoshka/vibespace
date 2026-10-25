@@ -68,6 +68,28 @@ test('optional idle-only enqueue is exposed without falling back to ordinary enq
   }
 });
 
+test('optional restoreById reaches the plugin as given, and is absent on a host without it', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vs-host-restore-'));
+  const plugin = writePlugin(root, 'restore', 'restore', `export function activate(host) { globalThis.__restoreById = host.sessions.restoreById; }`);
+  const restored: string[] = [];
+  const restoreById = (id: string) => { restored.push(id); };
+  const base = deps(root, [plugin]).deps;
+  try {
+    await activateHostExtensions({...base, sessions: {...base.sessions, restoreById}});
+    const exposed = (globalThis as Record<string, unknown>).__restoreById as (id: string) => void;
+    assert.equal(typeof exposed, 'function');
+    exposed('known');
+    assert.deepEqual(restored, ['known']);
+    await deactivateHostExtensions();
+    await activateHostExtensions(base);
+    assert.equal((globalThis as Record<string, unknown>).__restoreById, undefined);
+  } finally {
+    await deactivateHostExtensions();
+    delete (globalThis as Record<string, unknown>).__restoreById;
+    fs.rmSync(root, {recursive: true, force: true});
+  }
+});
+
 test('a plugin completion subscription is dropped when the plugin stops', async () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vs-host-completed-'));
   const plugin = writePlugin(root, 'done', 'done', `export function activate(host) { host.runs.onCompleted((id) => (globalThis.__completed ??= []).push(id)); }`);

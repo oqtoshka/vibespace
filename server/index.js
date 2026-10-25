@@ -2805,6 +2805,11 @@ async function startServer() {
                     createAppSession: (provider, cwd) => sessionsService.createAppSession(provider, cwd),
                     deleteOrArchiveById: (sessionId, options) =>
                         sessionsService.deleteOrArchiveSessionById(sessionId, options),
+                    // The sidebar's Restore path, so an integration's unarchive is
+                    // exactly the operator's.
+                    restoreById: (sessionId) => {
+                        sessionsService.restoreSessionById(sessionId);
+                    },
                     rename: (sessionId, title) => {
                         sessionsService.renameSessionById(sessionId, title);
                     },

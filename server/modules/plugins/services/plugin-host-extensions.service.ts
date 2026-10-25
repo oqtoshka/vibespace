@@ -162,6 +162,16 @@ export type PluginHost = {
       sessionId: string,
       options?: { force?: boolean; deletedFromDisk?: boolean },
     ) => Promise<void>;
+    /**
+     * Restores an archived session through VibeSpace's own Restore
+     * (`isArchived = 0`); the sidebar's next update lists it again. A no-op
+     * write on a row that is already active. Throws when the session does not
+     * exist, so callers check `getById` first.
+     *
+     * Optional so a plugin still loads on a host that predates it; a plugin must
+     * treat its absence as "cannot restore", never as success.
+     */
+    restoreById?: (sessionId: string) => void;
     /** Sets the title shown in the sidebar (cosmetic; never affects the run). */
     rename: (sessionId: string, title: string) => void;
     /**
