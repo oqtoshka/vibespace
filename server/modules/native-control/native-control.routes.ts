@@ -1,9 +1,9 @@
 import express from 'express';
 
-import type { LLMProvider } from '@/shared/index.js';
+import { AppError, type LLMProvider } from '@/shared/index.js';
 import { sessionTransferService } from '@/modules/session-transfer/index.js';
 import { chatRunRegistry } from '@/modules/websocket/index.js';
-import { getClaudeSDKLiveBackgroundTasks, isClaudeSDKSessionAlive } from '@/modules/providers/index.js';
+import { getClaudeSDKLiveBackgroundTasks, isClaudeSDKSessionAlive, sessionsService } from '@/modules/providers/index.js';
 
 import { sideQuestionsService } from './side-questions.service.js';
 import { applyNativeSessionSelection, authenticateNativeControl, nativeControlService, nativeModelOptions, nativePermissionOptions, nativeSessionSelection } from './native-control.service.js';
@@ -75,6 +75,23 @@ router.post('/sessions/:id/transfer', route((req, res) => {
 // A native client's web board has no chat socket; it reads and applies `native.select` here.
 router.get('/sessions/:id/selection', route(async (req, res) => { res.json(await nativeSessionSelection(String(req.params.id))); }));
 router.post('/sessions/:id/selection', route(async (req, res) => { res.json(await applyNativeSessionSelection(String(req.params.id), req.body)); }));
+/**
+ * The app's `PATCH /sessions/:sessionId/launch-options` for a federated client: turns a
+ * declared, switchable launch option on or off in an existing session. The same service, so
+ * the same declarations and refusals; an AppError keeps its status and `code` (a 409 for a
+ * turn in flight, running background tasks, a side or private session, a provider that cannot
+ * switch) so the client can say why.
+ */
+router.patch('/sessions/:id/launch-options', async (req, res) => {
+  try {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const result = sessionsService.switchLaunchOptions(String(req.params.id), body.launchOptions);
+    res.json({ ...result, appliesAt: 'next-turn' });
+  } catch (error) {
+    if (error instanceof AppError) { res.status(error.statusCode).json({ error: error.message, code: error.code }); return; }
+    res.status(400).json({ error: error instanceof Error ? error.message : 'Native control failed' });
+  }
+});
 router.get('/sessions/:id/owner-capability', route((req, res) => {
   res.json(nativeControlService.ownerCapability(String(req.params.id)));
 }));
