@@ -1,4 +1,4 @@
-// Shared contracts and helpers consumed by the Codex sessions provider.
+// Shared contracts and helpers consumed by provider adapters and other modules.
 export type { IProviderSessions } from './interfaces.js';
 export type { AnyRecord, FetchHistoryOptions, FetchHistoryResult, NormalizedMessage, ProviderRunFunction, ProviderRuntimeWriter } from './types.js';
 export { buildCodexTokenBudget } from './codex-token-usage.js';
@@ -50,3 +50,7 @@ export type { CodexDiagnosticScope, CodexDiagnosticHandle, CodexDiagnosticLease 
 // Recap and host plugins share the explicit, bounded external-topic authority contract.
 export { readSessionTopicAuthority, registerSessionTopicAuthoritySource } from './session-topic-authority.js';
 export type { SessionTopicAuthorityContext, SessionTopicAuthoritySource } from './types.js';
+
+// Claude's session provider shares finite-number parsing and rewind result contracts.
+export { readFiniteNumber } from './utils.js';
+export type { RewindResult } from './types.js';
