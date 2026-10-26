@@ -4,22 +4,22 @@ import test from 'node:test';
 import { sessionAvatarUrl } from '@/shared/utils.js';
 
 const withAvatarBase = (value: string | undefined, run: () => void) => {
-  const previous = process.env.MC_AVATAR_PUBLIC_BASE_URL;
-  if (value === undefined) delete process.env.MC_AVATAR_PUBLIC_BASE_URL;
-  else process.env.MC_AVATAR_PUBLIC_BASE_URL = value;
+  const previous = process.env.VS_SESSION_AVATAR_BASE_URL;
+  if (value === undefined) delete process.env.VS_SESSION_AVATAR_BASE_URL;
+  else process.env.VS_SESSION_AVATAR_BASE_URL = value;
   try {
     run();
   } finally {
-    if (previous === undefined) delete process.env.MC_AVATAR_PUBLIC_BASE_URL;
-    else process.env.MC_AVATAR_PUBLIC_BASE_URL = previous;
+    if (previous === undefined) delete process.env.VS_SESSION_AVATAR_BASE_URL;
+    else process.env.VS_SESSION_AVATAR_BASE_URL = previous;
   }
 };
 
 test('builds the avatar URL from the provider-native session id', () => {
-  withAvatarBase('https://mc.example.com/avatars/', () => {
+  withAvatarBase('https://avatars.example.com/avatars/', () => {
     assert.equal(
       sessionAvatarUrl('provider/id with spaces', false),
-      'https://mc.example.com/avatars/provider%2Fid%20with%20spaces',
+      'https://avatars.example.com/avatars/provider%2Fid%20with%20spaces',
     );
   });
 });
@@ -31,8 +31,22 @@ test('no avatar service configured means no avatar', () => {
 });
 
 test('private and not-yet-bound sessions do not advertise an avatar', () => {
-  withAvatarBase('https://mc.example.com/avatars', () => {
+  withAvatarBase('https://avatars.example.com/avatars', () => {
     assert.equal(sessionAvatarUrl('provider-id', true), null);
     assert.equal(sessionAvatarUrl(null, false), null);
   });
+});
+
+test('a fixed avatar URL wins over the avatar service', () => {
+  const previous = process.env.VS_SESSION_AVATAR_URL;
+  process.env.VS_SESSION_AVATAR_URL = 'https://avatars.example.com/default.png';
+  try {
+    withAvatarBase('https://avatars.example.com/avatars', () => {
+      assert.equal(sessionAvatarUrl('provider-id', false), 'https://avatars.example.com/default.png');
+      assert.equal(sessionAvatarUrl('provider-id', true), null);
+    });
+  } finally {
+    if (previous === undefined) delete process.env.VS_SESSION_AVATAR_URL;
+    else process.env.VS_SESSION_AVATAR_URL = previous;
+  }
 });

@@ -34,7 +34,7 @@ test('owner capability distinguishes confirmed absence, privacy refusals and fai
     sessionsDb.createAppSession(side, 'codex', directory, true);
     sessionsDb.updateSessionIsArchived(archived, true);
     const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/native/sessions/`;
-    const lookup = (id: string, headers: Record<string, string> = { 'x-mc-federation-token': federation }) =>
+    const lookup = (id: string, headers: Record<string, string> = { 'x-vibespace-federation-token': federation }) =>
       fetch(url + id + '/owner-capability', { headers });
 
     for (const [id, state] of [[active, 'active'], [archived, 'archived'], [legacy, 'active']] as const) {
@@ -56,7 +56,7 @@ test('owner capability distinguishes confirmed absence, privacy refusals and fai
       assert.equal('state' in body, false);
     }
     assert.equal((await lookup(active, {})).status, 403);
-    assert.equal((await lookup(active, { 'x-mc-federation-token': federation, origin: 'https://browser.invalid' })).status, 403);
+    assert.equal((await lookup(active, { 'x-vibespace-federation-token': federation, origin: 'https://browser.invalid' })).status, 403);
     const ordinary = sessionsDb.getSessionById(active)!;
     const unknown = mock.method(sessionsDb, 'getSessionById', () => ({ ...ordinary, is_private: undefined }) as never);
     try { assert.throws(() => nativeControlService.ownerCapability(active), /unavailable/); }

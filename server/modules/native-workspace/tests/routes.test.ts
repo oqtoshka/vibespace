@@ -25,10 +25,10 @@ test('workspace routes require federation, reject browser origins and private/si
     await writeFile(path.join(root,'readme.md'),'real authorized bytes');
     const request = (id: string,headers: Record<string,string>={})=>fetch(base+id,{method:'POST',headers:{'content-type':'application/json',...headers},body:JSON.stringify({op:'read',path:'readme.md'})});
     assert.equal((await request('ordinary')).status,403);
-    assert.equal((await request('ordinary',{'x-mc-federation-token':'wrong'})).status,403);
-    assert.equal((await request('ordinary',{'x-mc-federation-token':token,origin:'https://project.invalid'})).status,403);
-    for(const id of ['private','side','missing']) assert.equal((await request(id,{'x-mc-federation-token':token})).status,400);
-    const response=await request('ordinary',{'x-mc-federation-token':token});assert.equal(response.status,200);
+    assert.equal((await request('ordinary',{'x-vibespace-federation-token':'wrong'})).status,403);
+    assert.equal((await request('ordinary',{'x-vibespace-federation-token':token,origin:'https://project.invalid'})).status,403);
+    for(const id of ['private','side','missing']) assert.equal((await request(id,{'x-vibespace-federation-token':token})).status,400);
+    const response=await request('ordinary',{'x-vibespace-federation-token':token});assert.equal(response.status,200);
     assert.equal(Buffer.from(((await response.json()) as {base64:string}).base64,'base64').toString(),'real authorized bytes');
   } finally {
     await new Promise<void>((resolve,reject)=>server.close(error=>error?reject(error):resolve())); closeConnection();
@@ -53,10 +53,10 @@ test('raw route streams bytes with the file type, Range 206/416 and the same fed
     const bytes = Buffer.alloc(40 * 1024 * 1024, 7); bytes.write('ftypisom', 4);
     await writeFile(path.join(root,'clip.mp4'), bytes);
     const raw = async (id: string, file: string, headers: Record<string,string> = {}) => {
-      const response = await fetch(base + id + '/raw?path=' + encodeURIComponent(file), { headers: { 'x-mc-federation-token': token, ...headers } });
+      const response = await fetch(base + id + '/raw?path=' + encodeURIComponent(file), { headers: { 'x-vibespace-federation-token': token, ...headers } });
       return { status: response.status, headers: response.headers, body: Buffer.from(await response.arrayBuffer()) };
     };
-    assert.equal((await raw('ordinary', 'clip.mp4', { 'x-mc-federation-token': 'wrong' })).status, 403);
+    assert.equal((await raw('ordinary', 'clip.mp4', { 'x-vibespace-federation-token': 'wrong' })).status, 403);
     assert.equal((await raw('ordinary', 'clip.mp4', { origin: 'https://project.invalid' })).status, 403);
     assert.equal((await raw('private', 'clip.mp4')).status, 400);
     const outside = await raw('ordinary', '/etc/hosts');

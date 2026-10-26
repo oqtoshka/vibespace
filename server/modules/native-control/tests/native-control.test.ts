@@ -51,23 +51,23 @@ test('federation credentials, idempotent creation, registered projects and sessi
     try {
       const port = (server.address() as AddressInfo).port;
       const response = await fetch(`http://127.0.0.1:${port}/native/transcribe`, { method: 'POST',
-        headers: { 'content-type': 'audio/mp4', 'x-mc-federation-token': 'x'.repeat(40) }, body: Buffer.from('route fixture') });
+        headers: { 'content-type': 'audio/mp4', 'x-vibespace-federation-token': 'x'.repeat(40) }, body: Buffer.from('route fixture') });
       assert.equal(response.status, 200);
       assert.deepEqual(await response.json(), { text: 'route fixture' });
       assert.deepEqual(routeTranscribe.mock.calls[0].arguments[0], Buffer.from('route fixture'));
       assert.equal(routeTranscribe.mock.calls[0].arguments[1], undefined);
       const hinted = await fetch(`http://127.0.0.1:${port}/native/transcribe`, { method: 'POST',
-        headers: { 'content-type': 'audio/mp4', 'x-mc-federation-token': 'x'.repeat(40), 'x-mc-stt-prompt': encodeURIComponent('VibeSpace, Кванта.') },
+        headers: { 'content-type': 'audio/mp4', 'x-vibespace-federation-token': 'x'.repeat(40), 'x-vibespace-stt-prompt': encodeURIComponent('VibeSpace, Кванта.') },
         body: Buffer.from('hinted') });
       assert.equal(hinted.status, 200); await hinted.arrayBuffer();
       assert.equal(routeTranscribe.mock.calls.at(-1)!.arguments[1], 'VibeSpace, Кванта.');
       const malformed = await fetch(`http://127.0.0.1:${port}/native/transcribe`, { method: 'POST',
-        headers: { 'content-type': 'audio/mp4', 'x-mc-federation-token': 'x'.repeat(40), 'x-mc-stt-prompt': '%E0%A4%A' },
+        headers: { 'content-type': 'audio/mp4', 'x-vibespace-federation-token': 'x'.repeat(40), 'x-vibespace-stt-prompt': '%E0%A4%A' },
         body: Buffer.from('malformed') });
       assert.equal(malformed.status, 200); await malformed.arrayBuffer();
       assert.equal(routeTranscribe.mock.calls.at(-1)!.arguments[1], undefined);
       const searchResponse = await fetch(`http://127.0.0.1:${port}/native/search/sessions?q=legacy&archived=all&matchType=phrase&limit=7`, {
-        headers: { 'x-mc-federation-token': 'x'.repeat(40) },
+        headers: { 'x-vibespace-federation-token': 'x'.repeat(40) },
       });
       assert.equal(searchResponse.status, 200);
       assert.deepEqual(routeSearch.mock.calls[0].arguments[0], {
@@ -75,10 +75,10 @@ test('federation credentials, idempotent creation, registered projects and sessi
         from: undefined, to: undefined, matchType: 'phrase', limit: 7, cursor: undefined,
       });
       const refused = await fetch(`http://127.0.0.1:${port}/native/search/sessions?q=legacy`, {
-        headers: { 'x-mc-federation-token': 'y'.repeat(40) },
+        headers: { 'x-vibespace-federation-token': 'y'.repeat(40) },
       });
       assert.equal(refused.status, 403);
-      const large = await fetch(`http://127.0.0.1:${port}/native/transcribe`, { method: 'POST', headers: { 'content-type': 'audio/mp4', 'x-mc-federation-token': 'x'.repeat(40) }, body: Buffer.alloc(6 * 1024 * 1024) });
+      const large = await fetch(`http://127.0.0.1:${port}/native/transcribe`, { method: 'POST', headers: { 'content-type': 'audio/mp4', 'x-vibespace-federation-token': 'x'.repeat(40) }, body: Buffer.alloc(6 * 1024 * 1024) });
       assert.equal(large.status, 200); await large.arrayBuffer();
       assert.equal(routeTranscribe.mock.calls.at(-1)!.arguments[0].length, 6 * 1024 * 1024);
     } finally {
@@ -153,7 +153,7 @@ test('federation credentials, idempotent creation, registered projects and sessi
       await assert.rejects(applyNativeSessionSelection(first.sessionId, { permissionMode: 'invented' }), /Invalid permission mode/);
       await assert.rejects(applyNativeSessionSelection(first.sessionId, 'yes'), /Invalid selection/);
       const port = (selectionServer.address() as AddressInfo).port;
-      const headers = { 'content-type': 'application/json', 'x-mc-federation-token': 'x'.repeat(40) };
+      const headers = { 'content-type': 'application/json', 'x-vibespace-federation-token': 'x'.repeat(40) };
       const got = await fetch(`http://127.0.0.1:${port}/native/sessions/${first.sessionId}/selection`, { headers });
       assert.equal(got.status, 200);
       assert.equal((await got.json() as { model: string }).model, 'fixture-model');
@@ -165,7 +165,7 @@ test('federation credentials, idempotent creation, registered projects and sessi
       assert.equal(postedBody.model, 'plain-model');
       assert.equal(postedBody.effort, '');
       const refused = await fetch(`http://127.0.0.1:${port}/native/sessions/${first.sessionId}/selection`, {
-        method: 'POST', headers: { ...headers, 'x-mc-federation-token': 'y'.repeat(40) }, body: '{"model":"plain-model"}',
+        method: 'POST', headers: { ...headers, 'x-vibespace-federation-token': 'y'.repeat(40) }, body: '{"model":"plain-model"}',
       });
       assert.equal(refused.status, 403);
       const badModel = await fetch(`http://127.0.0.1:${port}/native/sessions/${first.sessionId}/selection`, {
@@ -214,7 +214,7 @@ test('federation credentials, idempotent creation, registered projects and sessi
     try {
       const port = (assetServer.address() as AddressInfo).port;
       const response = await fetch(`http://127.0.0.1:${port}/native/sessions/${first.sessionId}/stored-assets/${browserFilename}`, {
-        headers: { 'x-mc-federation-token': 'x'.repeat(40) },
+        headers: { 'x-vibespace-federation-token': 'x'.repeat(40) },
       });
       assert.equal(response.status, 200); assert.equal(await response.text(), 'browser image fixture');
     } finally { await new Promise<void>((resolve, reject) => assetServer.close(error => error ? reject(error) : resolve())); }

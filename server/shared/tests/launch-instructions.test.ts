@@ -5,13 +5,15 @@ import {
   LAUNCH_INSTRUCTIONS_BEGIN,
   LAUNCH_INSTRUCTIONS_END,
   prependLaunchInstructions,
+  registerLegacyLaunchPreambleHeadings,
   stripLaunchInstructions,
 } from '@/shared/utils.js';
 
+const HEADING = '# Briefing mode (Example board)';
 const BRIEFING = [
-  '# Briefing mode (Mission Control)',
+  HEADING,
   '',
-  'This session is read from a structured card on Mission Control, not from this chat.',
+  'This session is read from a structured card on an example board, not from this chat.',
   ...Array.from({ length: 400 }, (_, i) => `- rule ${i}: declare as you go`),
 ].join('\n');
 
@@ -31,9 +33,33 @@ test('stripLaunchInstructions returns the user words of a marked prompt', () => 
 });
 
 test('stripLaunchInstructions sees past an unmarked briefing preamble from older rollouts', () => {
-  assert.equal(stripLaunchInstructions(`${BRIEFING}\n\n---\n\nПогаси VS Code в браузере`), 'Погаси VS Code в браузере');
-  assert.equal(stripLaunchInstructions(`Other plugin block\n\n${BRIEFING}\n\n---\n\nFix it`), 'Fix it');
-  assert.equal(stripLaunchInstructions(BRIEFING.slice(0, 2_000)), '');
+  const unregister = registerLegacyLaunchPreambleHeadings([HEADING]);
+  try {
+    assert.equal(stripLaunchInstructions(`${BRIEFING}\n\n---\n\nПогаси VS Code в браузере`), 'Погаси VS Code в браузере');
+    assert.equal(stripLaunchInstructions(`Other plugin block\n\n${BRIEFING}\n\n---\n\nFix it`), 'Fix it');
+    assert.equal(stripLaunchInstructions(BRIEFING.slice(0, 2_000)), '');
+  } finally {
+    unregister();
+  }
+});
+
+test('an unmarked preamble whose heading nobody registered is left alone', () => {
+  const unmarked = `${BRIEFING}\n\n---\n\nFix it`;
+  // Core declares no heading of its own.
+  assert.equal(stripLaunchInstructions(unmarked), unmarked);
+  const unregister = registerLegacyLaunchPreambleHeadings(['# Some other plugin mode']);
+  try {
+    assert.equal(stripLaunchInstructions(unmarked), unmarked);
+    // A heading that only contains a registered one, or is a near miss, does not count.
+    assert.equal(stripLaunchInstructions('## Some other plugin mode\n\n---\n\nFix it'), '## Some other plugin mode\n\n---\n\nFix it');
+  } finally {
+    unregister();
+  }
+  // Unregistering takes the heading away again.
+  const again = registerLegacyLaunchPreambleHeadings([HEADING]);
+  assert.equal(stripLaunchInstructions(unmarked), 'Fix it');
+  again();
+  assert.equal(stripLaunchInstructions(unmarked), unmarked);
 });
 
 test('stripLaunchInstructions leaves ordinary messages alone', () => {

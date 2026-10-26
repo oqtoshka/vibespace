@@ -10,7 +10,10 @@ import {
   __testing,
   generateInitialSessionTitle,
 } from '@/modules/providers/services/session-title.service.js';
-import { prependLaunchInstructions } from '@/shared/utils.js';
+import { prependLaunchInstructions, registerLegacyLaunchPreambleHeadings } from '@/shared/utils.js';
+
+// The heading a plugin would declare in its manifest (`legacyLaunchPreambleHeadings`); core declares none.
+registerLegacyLaunchPreambleHeadings(['# Briefing mode (Example board)']);
 
 async function withDatabase(run: (projectPath: string) => Promise<void>): Promise<void> {
   const previousDatabasePath = process.env.DATABASE_PATH;
@@ -144,7 +147,7 @@ test('title prompt treats the first message as quoted data', () => {
 test('titles a launched session from the user words, never its launch instructions', { concurrency: false }, async () => {
   await withDatabase(async (projectPath) => {
     sessionsDb.createAppSession('briefed-session', 'codex', projectPath, 'Untitled');
-    const briefing = ['# Briefing mode (Mission Control)', '', ...Array.from({ length: 300 }, (_, i) => `- rule ${i}`)].join('\n');
+    const briefing = ['# Briefing mode (Example board)', '', ...Array.from({ length: 300 }, (_, i) => `- rule ${i}`)].join('\n');
 
     const prompts: string[] = [];
     const runQuery = async (prompt: string, _options: unknown, writer: { send: (data: unknown) => void }) => {

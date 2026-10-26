@@ -10,7 +10,7 @@ import { applyNativeSessionSelection, authenticateNativeControl, nativeControlSe
 
 const router = express.Router();
 router.use((req, res, next) => {
-  if (req.headers.origin || !authenticateNativeControl(req.headers['x-mc-federation-token'])) {
+  if (req.headers.origin || !authenticateNativeControl(req.headers['x-vibespace-federation-token'])) {
     res.status(403).json({ error: 'Native control authentication failed' }); return;
   }
   res.setHeader('Cache-Control', 'no-store');
@@ -30,7 +30,7 @@ router.get('/models/:provider', route(async (req, res) => {
 }));
 /**
  * A native client relays the operator's transcription glossary as a
- * percent-encoded `x-mc-stt-prompt` header. A malformed encoding is dropped
+ * percent-encoded `x-vibespace-stt-prompt` header. A malformed encoding is dropped
  * rather than failing the recording: the hint is optional, the audio is not.
  */
 const sttPrompt = (value: unknown): string | undefined => {
@@ -38,7 +38,7 @@ const sttPrompt = (value: unknown): string | undefined => {
   try { return decodeURIComponent(value).trim() || undefined; } catch { return undefined; }
 };
 router.post('/transcribe', express.raw({ type: 'audio/mp4', limit: '8mb' }), route(async (req, res) => {
-  res.json(await nativeControlService.transcribe(req.body, sttPrompt(req.headers['x-mc-stt-prompt'])));
+  res.json(await nativeControlService.transcribe(req.body, sttPrompt(req.headers['x-vibespace-stt-prompt'])));
 }));
 router.post('/sessions', route(async (req, res) => { res.json(await nativeControlService.create(req.body)); }));
 router.get('/search/sessions', route(async (req, res) => {

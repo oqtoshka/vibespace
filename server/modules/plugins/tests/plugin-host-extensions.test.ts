@@ -8,9 +8,10 @@ import test from 'node:test';
 import express from 'express';
 
 import { collectAgentEnv, listLaunchOptions } from '@/shared/agent-env.js';
-import { readSessionTopicAuthority } from '@/shared/index.js';
+import { readSessionTopicAuthority, stripLaunchInstructions } from '@/shared/index.js';
 import {
   activateHostExtensions,
+  applyPluginLaunchPreambleHeadings,
   activeHostExtensionNames,
   deactivateHostExtensions,
   getHostExtensionRouter,
@@ -217,5 +218,30 @@ test('topic authority readers belong to the activated plugin and disappear on de
   } finally {
     await deactivateHostExtensions();
     fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('manifest legacy launch-preamble headings of enabled plugins are stripped, and only those', () => {
+  const unmarked = (heading: string) => `${heading}\n\nUse the board.\n\n---\n\nFix it`;
+  try {
+    assert.deepEqual(applyPluginLaunchPreambleHeadings([
+      { name: 'board', enabled: true, legacyLaunchPreambleHeadings: ['# Briefing mode (Example board)'] },
+      { name: 'off', enabled: false, legacyLaunchPreambleHeadings: ['# Disabled mode'] },
+      { name: 'plain', enabled: true },
+    ]), ['board']);
+    assert.equal(stripLaunchInstructions(unmarked('# Briefing mode (Example board)')), 'Fix it');
+    assert.equal(stripLaunchInstructions(unmarked('# Disabled mode')), unmarked('# Disabled mode'));
+    assert.equal(stripLaunchInstructions(unmarked('# Undeclared mode')), unmarked('# Undeclared mode'));
+
+    // A later apply replaces the earlier set instead of adding to it.
+    assert.deepEqual(applyPluginLaunchPreambleHeadings([
+      { name: 'board', enabled: false, legacyLaunchPreambleHeadings: ['# Briefing mode (Example board)'] },
+    ]), []);
+    assert.equal(
+      stripLaunchInstructions(unmarked('# Briefing mode (Example board)')),
+      unmarked('# Briefing mode (Example board)'),
+    );
+  } finally {
+    applyPluginLaunchPreambleHeadings([]);
   }
 });

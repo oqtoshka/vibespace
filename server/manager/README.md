@@ -201,6 +201,7 @@ before it boots, so set these on both):
 | `VS_APP_TITLE` | application and sign-in title |
 | `VS_ENABLED_PROVIDERS` | comma-separated allow-list of `claude,codex,cursor,opencode`. Hides the rest in the UI and rejects their API routes and shell launches. An explicit empty or unknown value fails closed (503). |
 | `VS_OPENCODE_LABEL` / `VS_OPENCODE_AVATAR` | display name and avatar path used wherever the OpenCode harness is named |
+| `VS_SESSION_AVATAR_BASE_URL` | base URL of an external avatar service; each non-private session's avatar is `<base>/<provider session id>` (URL-encoded). Unset: no session avatars |
 | `VS_SESSION_AVATAR_URL` | one avatar for every session instead of the per-session external service |
 
 Worker only:

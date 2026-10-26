@@ -5,9 +5,12 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { __testing } from '@/modules/providers/services/session-recap.service.js';
-import { prependLaunchInstructions } from '@/shared/utils.js';
+import { prependLaunchInstructions, registerLegacyLaunchPreambleHeadings } from '@/shared/utils.js';
 
-const BRIEFING = ['# Briefing mode (Mission Control)', '', ...Array.from({ length: 300 }, (_, i) => `- rule ${i}`)].join('\n');
+// The heading a plugin would declare in its manifest (`legacyLaunchPreambleHeadings`); core declares none.
+registerLegacyLaunchPreambleHeadings(['# Briefing mode (Example board)']);
+
+const BRIEFING = ['# Briefing mode (Example board)', '', ...Array.from({ length: 300 }, (_, i) => `- rule ${i}`)].join('\n');
 
 test('recap tails carry the user words, not the launch preamble, of a launched first prompt', async () => {
   const first = prependLaunchInstructions(BRIEFING, 'Why does Authentik keep logging me out?');

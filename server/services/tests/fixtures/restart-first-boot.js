@@ -25,7 +25,7 @@ await initializeDatabase();
 
 // The briefing session: its turn had ended (it was waiting on a detached
 // cutover it had started), and its only task list is the card plan.
-sessionsDb.createAppSession('app-briefing', 'claude', cwd, false, false, null, { 'mission-control.briefing': true });
+sessionsDb.createAppSession('app-briefing', 'claude', cwd, false, false, null, { 'example-plugin.briefing': true });
 sessionsDb.assignProviderSessionId('app-briefing', 'native-briefing');
 await mkdir(planDir, { recursive: true });
 await writeFile(path.join(planDir, 'native-briefing.json'), JSON.stringify({

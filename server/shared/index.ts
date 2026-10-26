@@ -44,7 +44,8 @@ export { readExternalTaskLedger, registerTaskLedgerSource } from './task-ledger-
 // Providers' dedicated diagnostic peer applies the existing server-secret filter.
 export { buildAgentEnv, collectAgentLaunchExtras, registerAgentLaunchContributor, parseStoredLaunchOptions } from './agent-env.js';
 // Codex/OpenCode fence launch instructions in the first prompt; title, recap and topic helpers strip them.
-export { prependLaunchInstructions, stripLaunchInstructions } from './utils.js';
+// The plugins module registers the legacy (unmarked) preamble headings enabled plugins declare.
+export { prependLaunchInstructions, registerLegacyLaunchPreambleHeadings, stripLaunchInstructions } from './utils.js';
 export type { CodexDiagnosticScope, CodexDiagnosticHandle, CodexDiagnosticLease } from './types.js';
 
 // Recap and host plugins share the explicit, bounded external-topic authority contract.

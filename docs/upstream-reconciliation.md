@@ -317,7 +317,7 @@ but creates a new rollout with `history_base` references. Durable canonical-hist
 is selected before attempting the revert, so stale files and restart/index races cannot
 resurrect discarded messages. History is hydrated through the provider's paginated API.
 
-Verification: focused regressions pass; one opt-in integration test (`MC_REAL_CODEX_TEST=1`)
+Verification: focused regressions pass; one opt-in integration test (`VIBESPACE_REAL_CODEX_TEST=1`)
 runs real Codex, reproduces the exact rollback error, then tests the actual revert service and
 history adapter, retained text/answer/image, discarded image, process restart and first-turn
 revert.

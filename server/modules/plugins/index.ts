@@ -6,6 +6,9 @@ export {
   deactivateHostExtensions,
   getHostExtensionRouter,
   activeHostExtensionNames,
+  // applyPluginLaunchPreambleHeadings: the server entrypoint applies manifest-declared
+  // legacy launch-preamble headings at boot, before the first session sync.
+  applyPluginLaunchPreambleHeadings,
 } from './services/plugin-host-extensions.service.js';
 export type { HostRunLease, HostRunView, PluginHost, PluginHostModule } from './services/plugin-host-extensions.service.js';
 // createPluginRunReservation: the server entrypoint's `host.runs.reserve` (the Janitor's cleanup lease).

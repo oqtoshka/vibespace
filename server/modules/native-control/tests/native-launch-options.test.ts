@@ -48,7 +48,7 @@ async function withRoutes(run: (url: (id: string) => string) => Promise<void>): 
 
 const patch = (url: string, launchOptions: unknown, token = TOKEN, extra: Record<string, string> = {}) => fetch(url, {
   method: 'PATCH',
-  headers: { 'content-type': 'application/json', 'x-mc-federation-token': token, ...extra },
+  headers: { 'content-type': 'application/json', 'x-vibespace-federation-token': token, ...extra },
   body: JSON.stringify({ launchOptions }),
 });
 

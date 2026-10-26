@@ -6,7 +6,7 @@ import { NativeWorkspaceService } from './native-workspace.service.js';
 export const nativeWorkspaceRoutes = express.Router();
 const service = new NativeWorkspaceService();
 nativeWorkspaceRoutes.post('/sessions/:id', async (req, res) => {
-  if (req.headers.origin || !authenticateNativeControl(req.headers['x-mc-federation-token'])) {
+  if (req.headers.origin || !authenticateNativeControl(req.headers['x-vibespace-federation-token'])) {
     res.status(403).json({ error: 'Workspace authentication failed' }); return;
   }
   try { res.json(await service.request(String(req.params.id), req.body)); }
@@ -20,7 +20,7 @@ nativeWorkspaceRoutes.post('/sessions/:id', async (req, res) => {
  * `sendFile` answers Range with 206/416 and sets Accept-Ranges, ETag and Last-Modified.
  * The marker header lets a native client tell this route from an older server's fallback. */
 nativeWorkspaceRoutes.get('/sessions/:id/raw', async (req, res) => {
-  if (req.headers.origin || !authenticateNativeControl(req.headers['x-mc-federation-token'])) {
+  if (req.headers.origin || !authenticateNativeControl(req.headers['x-vibespace-federation-token'])) {
     res.status(403).json({ error: 'Workspace authentication failed' }); return;
   }
   let file: Awaited<ReturnType<NativeWorkspaceService['rawFile']>>;

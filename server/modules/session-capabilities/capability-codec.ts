@@ -6,7 +6,7 @@ const tokenPattern = /^v2\.([1-9][0-9]{0,10})\.([1-9][0-9]{0,10})\.([A-Za-z0-9_-
 
 function signature(secret: string, id: string, issued: number, expires: number): string {
   return createHmac('sha256', secret)
-    .update(`mission-control:vibespace-session:v2:${id}:${issued}:${expires}`).digest('base64url');
+    .update(`vibespace:session-capability:v2:${id}:${issued}:${expires}`).digest('base64url');
 }
 
 /** Capability service encodes a fixed-lifetime session credential; timestamps are owner time. */
@@ -39,7 +39,7 @@ const sideTokenPattern = /^side1\.([1-9][0-9]{0,10})\.([1-9][0-9]{0,10})\.([A-Za
 
 function sideSignature(secret: string, id: string, issued: number, expires: number): string {
   return createHmac('sha256', secret)
-    .update(`mission-control:vibespace-side-session:v1:${id}:${issued}:${expires}`).digest('base64url');
+    .update(`vibespace:side-session-capability:v1:${id}:${issued}:${expires}`).digest('base64url');
 }
 
 /** Side-question service encodes a send-only credential bound to one side session. */

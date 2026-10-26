@@ -25,6 +25,8 @@ function sanitizeRepoUrl(raw) {
   }
 }
 const ALLOWED_TYPES = ['react', 'module'];
+const MAX_LEGACY_PREAMBLE_HEADINGS = 20;
+const MAX_LEGACY_PREAMBLE_HEADING_LENGTH = 200;
 const ALLOWED_SLOTS = ['tab'];
 
 export function getPluginsDir() {
@@ -133,6 +135,31 @@ export function validateManifest(manifest) {
         return {
           valid: false,
           error: 'Each session action endpoint must be a same-origin path containing "{sessionId}"',
+        };
+      }
+    }
+  }
+
+  // First lines of launch preambles the plugin's launch contributor wrote into
+  // first prompts before VibeSpace fenced them with markers. Applied at boot so
+  // title, recap and topic helpers see past them (applyPluginLaunchPreambleHeadings).
+  // Kept to single Markdown heading lines: a registered heading strips a user
+  // message's first block, so it must never look like ordinary prose.
+  if (manifest.legacyLaunchPreambleHeadings !== undefined) {
+    const headings = manifest.legacyLaunchPreambleHeadings;
+    if (!Array.isArray(headings) || headings.length > MAX_LEGACY_PREAMBLE_HEADINGS) {
+      return { valid: false, error: `legacyLaunchPreambleHeadings must be an array of at most ${MAX_LEGACY_PREAMBLE_HEADINGS} strings` };
+    }
+    for (const heading of headings) {
+      if (
+        typeof heading !== 'string'
+        || !/^#{1,6} \S/.test(heading.trim())
+        || /[\r\n]/.test(heading)
+        || heading.trim().length > MAX_LEGACY_PREAMBLE_HEADING_LENGTH
+      ) {
+        return {
+          valid: false,
+          error: `Each legacyLaunchPreambleHeadings entry must be one Markdown heading line ("# Title") of at most ${MAX_LEGACY_PREAMBLE_HEADING_LENGTH} characters`,
         };
       }
     }
@@ -329,6 +356,7 @@ export function scanPlugins() {
         server: manifest.server || null,
         hostModule: manifest.hostModule || null,
         sessionActions: manifest.sessionActions || [],
+        legacyLaunchPreambleHeadings: (manifest.legacyLaunchPreambleHeadings || []).map(heading => heading.trim()),
         permissions: manifest.permissions || [],
         enabled: config[manifest.name]?.enabled !== false, // enabled by default
         dirName: entry.name,

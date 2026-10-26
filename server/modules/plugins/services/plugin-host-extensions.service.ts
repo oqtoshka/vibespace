@@ -18,7 +18,7 @@ import {
   type LaunchOptionDeclaration,
 } from '@/shared/agent-env.js';
 import { registerTaskLedgerSource, type TaskLedgerSource } from '@/shared/task-ledger-sources.js';
-import { registerSessionTopicAuthoritySource } from '@/shared/index.js';
+import { registerLegacyLaunchPreambleHeadings, registerSessionTopicAuthoritySource } from '@/shared/index.js';
 import type {
   SessionTopicAuthoritySource,
   CheckedEnqueueResult,
@@ -43,6 +43,19 @@ import type {
  *
  * Deliberately narrow: what `PluginHost` exposes is the contract. Widen it on
  * demand rather than handing out the express app or the database.
+ *
+ * Declarative server-side contributions live in the manifest instead, when they
+ * must be in effect before any host module is activated:
+ *
+ * - `legacyLaunchPreambleHeadings: string[]` — the opening Markdown heading
+ *   lines (e.g. `"# Briefing mode (Example board)"`) of launch preambles that
+ *   the plugin's launch contributor put ahead of first prompts before VibeSpace
+ *   fenced them with `<!-- vibespace:launch-instructions -->` markers. Title,
+ *   recap and topic helpers strip such an unmarked preamble only when its
+ *   heading is declared here; core declares none. Applied by
+ *   `applyPluginLaunchPreambleHeadings` at boot, before the first session sync
+ *   computes titles, for every enabled plugin (host module or not). Like a host
+ *   module, a change takes effect on the next restart.
  */
 
 //----------------- HOST API ------------
@@ -330,6 +343,40 @@ export type PluginHostModule = {
   deactivate?: () => void | Promise<void>;
 };
 
+//----------------- MANIFEST CONTRIBUTIONS ------------
+
+/** The manifest fields `applyPluginLaunchPreambleHeadings` reads (a `scanPlugins` entry). */
+type PluginPreambleDeclaration = {
+  name: string;
+  enabled: boolean;
+  legacyLaunchPreambleHeadings?: string[];
+};
+
+/** Unregister functions of the headings the last apply registered. */
+let manifestPreambleRegistrations: Array<() => void> = [];
+
+/**
+ * Registers the `legacyLaunchPreambleHeadings` of every enabled plugin, replacing
+ * whatever an earlier call registered, and returns the names of the plugins
+ * that declared any. Used by the server entrypoint at boot, before the sessions
+ * watcher's first sync, so titles, recaps and topics of old transcripts are
+ * computed with the headings already known. The manifest was validated by
+ * `scanPlugins`.
+ */
+export function applyPluginLaunchPreambleHeadings(plugins: PluginPreambleDeclaration[]): string[] {
+  for (const unregister of manifestPreambleRegistrations) unregister();
+  manifestPreambleRegistrations = [];
+  const contributing: string[] = [];
+  for (const plugin of plugins) {
+    const headings = plugin.legacyLaunchPreambleHeadings ?? [];
+    if (!plugin.enabled || headings.length === 0) continue;
+    manifestPreambleRegistrations.push(registerLegacyLaunchPreambleHeadings(headings));
+    contributing.push(plugin.name);
+  }
+  return contributing;
+}
+
+// ---------------------------
 //----------------- WIRING ------------
 
 /**

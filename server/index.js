@@ -76,6 +76,7 @@ import { initializeDatabase, projectsDb, sessionsDb, fileSharesDb, appConfigDb, 
 import { permissionPreferencesService, sessionsService } from '@/modules/providers/index.js';
 import {
     activateHostExtensions,
+    applyPluginLaunchPreambleHeadings,
     deactivateHostExtensions,
     getHostExtensionRouter,
     startEnabledPluginServers,
@@ -2722,6 +2723,17 @@ async function removeLocalServerMarker() {
 // Initialize database and start server
 async function startServer() {
     try {
+        // Plugin-declared headings of legacy (unmarked) launch preambles. Before
+        // anything reads a transcript: the sessions watcher's first sync already
+        // computes titles, and host modules activate only after it.
+        try {
+            const preamblePlugins = applyPluginLaunchPreambleHeadings(scanPlugins());
+            if (preamblePlugins.length > 0) {
+                console.log(`[Plugins] legacy launch-preamble headings from: ${preamblePlugins.join(', ')}`);
+            }
+        } catch (error) {
+            console.warn('[Plugins] could not apply legacy launch-preamble headings:', error?.message ?? error);
+        }
         // Initialize authentication database
         await initializeDatabase();
         // Needs the `peer_outbox` table, so strictly after initializeDatabase();

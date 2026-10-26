@@ -2423,7 +2423,7 @@ function finalizeSession(session) {
   // `chat.send` and the queue drain each have this safety net in their own
   // `finally` (completeRunIfCurrent / completeRun); a background auto-resume
   // opens its run from down here — via `acquireResumeRun` — and had none, so
-  // two oqto sessions whose CLI died under an auto-resume left the count
+  // two sessions whose CLI died under an auto-resume left the count
   // pinned at 2 for days.
   //
   // The registry drops a duplicate terminal `complete`, so emitting one here

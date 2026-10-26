@@ -53,7 +53,7 @@ const key = 'b'.repeat(128);
 function mint(id, issued = Math.floor(Date.now() / 1000), secret = key) {
   const expires = issued + 900;
   const signature = createHmac('sha256', secret)
-    .update(`mission-control:vibespace-session:v2:${id}:${issued}:${expires}`).digest('base64url');
+    .update(`vibespace:session-capability:v2:${id}:${issued}:${expires}`).digest('base64url');
   return `v2.${issued}.${expires}.${signature}`;
 }
 function open(id, credential) {
@@ -102,7 +102,7 @@ try {
       .run(id, 'codex', Number(kind === 'archived'), Number(kind === 'private'), Number(kind === 'side'));
   }
   for (const [kind, id] of Object.entries(ids)) {
-    const response = await fetch(origin + '/api/native-control/sessions/' + id + '/owner-capability', { headers: { 'x-mc-federation-token': federation } });
+    const response = await fetch(origin + '/api/native-control/sessions/' + id + '/owner-capability', { headers: { 'x-vibespace-federation-token': federation } });
     assert.equal(response.headers.get('cache-control'), 'no-store');
     const body = await response.json();
     if (kind === 'private' || kind === 'side') { assert.equal(response.status, 400); assert.equal(body.capability, undefined); }
@@ -118,7 +118,7 @@ try {
   }
   assert.equal((await fetch(origin + '/api/native-control/sessions/archived/owner-capability')).status, 403);
   const jwt = db.prepare("SELECT value FROM app_config WHERE key='jwt_secret'").get().value;
-  const v1 = createHmac('sha256', jwt).update('mission-control:vibespace-session:v1:' + ids.active).digest('base64url');
+  const v1 = createHmac('sha256', jwt).update('legacy-session-capability:v1:' + ids.active).digest('base64url');
   for (const credential of [v1, 'é'.repeat(43), mint(ids.active, Math.floor(Date.now() / 1000) - 901), mint('other')]) {
     assert.equal(await closed(open(ids.active, credential)), 4403);
   }

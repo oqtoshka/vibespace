@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { prependLaunchInstructions } from '@/shared/utils.js';
+import { prependLaunchInstructions, registerLegacyLaunchPreambleHeadings } from '@/shared/utils.js';
+
+// The heading a plugin would declare in its manifest (`legacyLaunchPreambleHeadings`); core declares none.
+registerLegacyLaunchPreambleHeadings(['# Briefing mode (Example board)']);
 
 import { readTopicMemory, topicBatch, mergeTopicResponse, topicInstructions } from '../services/session-topics.service.js';
 
@@ -78,7 +81,7 @@ test('paraphrased evidence uses the actual user excerpt and short IDs resolve to
 });
 
 test('a launch preamble never becomes the origin or a topic quote', () => {
-  const briefing = ['# Briefing mode (Mission Control)', '', ...Array.from({ length: 300 }, (_, i) => `- rule ${i}`)].join('\n');
+  const briefing = ['# Briefing mode (Example board)', '', ...Array.from({ length: 300 }, (_, i) => `- rule ${i}`)].join('\n');
   const memory = readTopicMemory();
   const batch = topicBatch([row('a', prependLaunchInstructions(briefing, 'Stay signed in for 30 days'))], memory, 1);
   assert.deepEqual(batch.messages.map(m => m.text), ['Stay signed in for 30 days']);

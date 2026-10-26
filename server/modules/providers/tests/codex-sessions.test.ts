@@ -7,7 +7,10 @@ import test from 'node:test';
 import { closeConnection, initializeDatabase, sessionsDb } from '@/modules/database/index.js';
 import { CodexSessionSynchronizer } from '@/modules/providers/list/codex/codex-session-synchronizer.provider.js';
 import { CodexSessionsProvider } from '@/modules/providers/list/codex/codex-sessions.provider.js';
-import { prependLaunchInstructions } from '@/shared/index.js';
+import { prependLaunchInstructions, registerLegacyLaunchPreambleHeadings } from '@/shared/index.js';
+
+// The heading a plugin would declare in its manifest (`legacyLaunchPreambleHeadings`); core declares none.
+registerLegacyLaunchPreambleHeadings(['# Briefing mode (Example board)']);
 
 const patchHomeDir = (nextHomeDir: string) => {
   const original = os.homedir;
@@ -243,7 +246,7 @@ test('Codex synchronizer titles an unnamed session from its first prompt, never 
     await writeCodexRollout(tempRoot, 'codex-briefing-3', [
       { type: 'session_meta', payload: { id: 'codex-briefing-3', cwd: workspacePath } },
       { type: 'event_msg', payload: { type: 'item_completed', item: { type: 'UserMessage', content: [
-        { type: 'text', text: '# Briefing mode (Mission Control)\n\nUse the card.\n\n---\n\nWhy did the VPN switch?' },
+        { type: 'text', text: '# Briefing mode (Example board)\n\nUse the card.\n\n---\n\nWhy did the VPN switch?' },
       ] } } },
       { type: 'event_msg', payload: { type: 'item_completed', item: { type: 'UserMessage', content: [{ type: 'text', text: 'A later message' }] } } },
     ]);

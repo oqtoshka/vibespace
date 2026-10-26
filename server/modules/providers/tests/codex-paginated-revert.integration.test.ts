@@ -15,7 +15,7 @@ import { rewindCodexTurn } from '../services/codex-rewind.service.js';
 import { markCodexRevertedHistory } from '../services/codex-reverted-history.service.js';
 
 test('real Codex paginated edits preserve retained history across new rollout, repeated edit and process restart',
-  { skip: process.env.MC_REAL_CODEX_TEST !== '1' }, async () => {
+  { skip: process.env.VIBESPACE_REAL_CODEX_TEST !== '1' }, async () => {
   const root = await mkdtemp(path.join(os.tmpdir(),'codex-paginated-revert-'));
   const saved = {CODEX_HOME:process.env.CODEX_HOME, DATABASE_PATH:process.env.DATABASE_PATH, MC_DISABLE:process.env.MC_DISABLE};
   const threadId='01993edf-5df0-7000-a000-000000000001';

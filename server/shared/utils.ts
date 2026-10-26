@@ -96,8 +96,13 @@ type NormalizedMessageInput =
  * consistent avatar image URL. The avatar service keys avatars by the
  * provider-native CLI session id, not by VibeSpace's stable app-facing id.
  * Private sessions never report there and deliberately have no avatar URL.
- * Without `MC_AVATAR_PUBLIC_BASE_URL` (or `VS_SESSION_AVATAR_URL`) there is no
- * avatar service to point at, so no session gets an avatar.
+ *
+ * - `VS_SESSION_AVATAR_URL`: one fixed image for every session (wins).
+ * - `VS_SESSION_AVATAR_BASE_URL`: an avatar service; the session's URL is
+ *   `<base>/<encoded provider session id>`.
+ *
+ * With neither set there is no avatar service to point at, so no session gets
+ * an avatar.
  */
 export function sessionAvatarUrl(
   providerSessionId: string | null | undefined,
@@ -108,7 +113,7 @@ export function sessionAvatarUrl(
   }
 
   if (process.env.VS_SESSION_AVATAR_URL) return process.env.VS_SESSION_AVATAR_URL;
-  const base = process.env.MC_AVATAR_PUBLIC_BASE_URL?.trim().replace(/\/+$/, '');
+  const base = process.env.VS_SESSION_AVATAR_BASE_URL?.trim().replace(/\/+$/, '');
   if (!base) return null;
   return `${base}/${encodeURIComponent(providerSessionId.trim())}`;
 }
@@ -1947,12 +1952,46 @@ export const LAUNCH_INSTRUCTIONS_END = '<!-- /vibespace:launch-instructions -->'
 const LAUNCH_INSTRUCTIONS_SEPARATOR = '\n\n---\n\n';
 
 /**
- * First lines of preambles written before the markers existed. Rollouts from
- * that time still carry them, and every metadata helper reading those
- * transcripts (title, recap, topics) must still see past them. Only a heading
- * that a launch contributor is known to have emitted belongs here.
+ * First lines of preambles written before the markers existed, one set per
+ * registration. Rollouts from that time still carry them, and every metadata
+ * helper reading those transcripts (title, recap, topics) must still see past
+ * them. Core emits no such preamble, so it ships none: each heading comes from
+ * the plugin whose launch contributor emitted it (manifest
+ * `legacyLaunchPreambleHeadings`, applied at boot before the first session
+ * sync; see the plugins module).
  */
-const LEGACY_LAUNCH_PREAMBLE_HEADINGS = ['# Briefing mode (Mission Control)'];
+const legacyLaunchPreambleHeadings = new Set<ReadonlySet<string>>();
+
+/**
+ * Teaches `stripLaunchInstructions` the opening heading of an unmarked launch
+ * preamble that some launch contributor wrote before the launch markers
+ * existed. Returns the unregister function.
+ *
+ * Used by the plugins module, which registers the headings enabled plugins
+ * declare in their manifest. Each heading is compared with a whole, trimmed
+ * line, so only a line that is exactly the heading counts; blank entries are
+ * ignored. Register only headings a contributor is known to have emitted: a
+ * user message whose first block contains one loses everything up to the
+ * first `---` rule.
+ */
+export function registerLegacyLaunchPreambleHeadings(headings: readonly string[]): () => void {
+  const entry: ReadonlySet<string> = new Set(
+    (Array.isArray(headings) ? headings : [])
+      .filter((heading): heading is string => typeof heading === 'string')
+      .map(heading => heading.trim())
+      .filter(Boolean),
+  );
+  legacyLaunchPreambleHeadings.add(entry);
+  return () => { legacyLaunchPreambleHeadings.delete(entry); };
+}
+
+/** Whether a trimmed line is a registered legacy preamble heading. */
+function isLegacyLaunchPreambleHeading(line: string): boolean {
+  for (const headings of legacyLaunchPreambleHeadings) {
+    if (headings.has(line)) return true;
+  }
+  return false;
+}
 
 /**
  * Puts launch instructions ahead of a first prompt, fenced by the launch
@@ -1976,9 +2015,10 @@ export function prependLaunchInstructions(instructions: string, prompt: string):
  * - A marked preamble (`prependLaunchInstructions`) is removed up to its end
  *   marker and the separator rule after it. A message cut inside the preamble
  *   (no end marker) has no user words in it and yields ''.
- * - An unmarked preamble from before the markers is recognised only by a known
- *   heading (LEGACY_LAUNCH_PREAMBLE_HEADINGS) appearing before the first
- *   separator rule, and is removed up to that rule; with no rule, ''.
+ * - An unmarked preamble from before the markers is recognised only by a
+ *   registered heading (`registerLegacyLaunchPreambleHeadings`) appearing
+ *   before the first separator rule, and is removed up to that rule; with no
+ *   rule, ''. With nothing registered, no unmarked text is ever stripped.
  * - Any other text is returned unchanged, so a user who writes `---` or a
  *   heading of their own loses nothing.
  */
@@ -1993,7 +2033,8 @@ export function stripLaunchInstructions(text: string): string {
   }
   const separator = body.indexOf(LAUNCH_INSTRUCTIONS_SEPARATOR);
   const head = separator < 0 ? body : body.slice(0, separator);
-  const legacy = head.split('\n').some(line => LEGACY_LAUNCH_PREAMBLE_HEADINGS.includes(line.trim()));
+  const legacy = legacyLaunchPreambleHeadings.size > 0
+    && head.split('\n').some(line => isLegacyLaunchPreambleHeading(line.trim()));
   if (!legacy) return text;
   return separator < 0 ? '' : body.slice(separator + LAUNCH_INSTRUCTIONS_SEPARATOR.length).trimStart();
 }

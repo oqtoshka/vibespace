@@ -56,7 +56,7 @@ test('native side questions: create under a parent, refuse private, promote, clo
     try {
       const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}/native`;
       const call = (method: string, url: string, body?: unknown) => fetch(base + url, {
-        method, headers: { 'x-mc-federation-token': token, ...(body ? { 'content-type': 'application/json' } : {}) },
+        method, headers: { 'x-vibespace-federation-token': token, ...(body ? { 'content-type': 'application/json' } : {}) },
         ...(body ? { body: JSON.stringify(body) } : {}),
       });
 
@@ -97,7 +97,7 @@ test('native side questions: create under a parent, refuse private, promote, clo
       assert.equal(sideQuestionsService.create(cursorParent, { requestId: randomUUID() }).contextMode, 'excerpt');
       assert.equal(sideQuestionsService.create(freshParent, { requestId: randomUUID() }).contextMode, 'none');
 
-      // Refusals: private (MC_DISABLE) parent, a side as parent, archived, missing, bad input.
+      // Refusals: private parent, a side as parent, archived, missing, bad input.
       const refusedPrivate = await call('POST', `/sessions/${privateId}/side`, { requestId: randomUUID() });
       assert.equal(refusedPrivate.status, 400);
       assert.match((await refusedPrivate.json() as { error: string }).error, /unavailable/);
@@ -109,7 +109,7 @@ test('native side questions: create under a parent, refuse private, promote, clo
       sessionsDb.updateSessionIsArchived(archived, true);
       assert.throws(() => sideQuestionsService.create(archived, { requestId: randomUUID() }), /unavailable/);
       const forbidden = await fetch(`${base}/sessions/${parentId}/side`, { method: 'POST',
-        headers: { 'x-mc-federation-token': 'y'.repeat(40), 'content-type': 'application/json' }, body: JSON.stringify({ requestId: randomUUID() }) });
+        headers: { 'x-vibespace-federation-token': 'y'.repeat(40), 'content-type': 'application/json' }, body: JSON.stringify({ requestId: randomUUID() }) });
       assert.equal(forbidden.status, 403);
 
       // A parent that turns private revokes its side credentials.

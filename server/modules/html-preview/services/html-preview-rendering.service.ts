@@ -1,7 +1,7 @@
 /**
  * HTML live-preview rendering support.
  *
- * Sketch-style HTML (e.g. the oqto design sketches) isn't self-contained: it
+ * Sketch-style HTML (e.g. a design kit's sketches) isn't self-contained: it
  * loads React/Babel/CSS from root-absolute paths (`/kit/...`, `/static/...`)
  * that a dev server maps to project directories. To render these in vibespace
  * we serve the file and its resources ourselves through an authenticated route,
