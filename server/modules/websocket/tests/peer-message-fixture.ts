@@ -8,7 +8,7 @@ import path from 'node:path';
 import { closeConnection, initializeDatabase, sessionsDb } from '@/modules/database/index.js';
 import type { handleChatConnection } from '@/modules/websocket/services/chat-websocket.service.js';
 
-/** Shared by the self-contained transport tests and the cross-repo integration. */
+/** Shared by the self-contained transport tests; plugin host-integration suites also import it from a VibeSpace checkout, so keep its exports stable. */
 export class FakeSocket extends EventEmitter {
   readyState = 1;
   sent: Array<Record<string, unknown>> = [];
