@@ -37,6 +37,8 @@ async function withIsolatedHomeAndDb(
 
   closeConnection();
   process.env.DATABASE_PATH = databasePath;
+  // An existing empty file prevents importing the installation's legacy database.
+  await writeFile(databasePath, '');
   // os.homedir() honors $HOME on POSIX, which is what the synchronizer reads in
   // its constructor — so HOME must be set before the class is imported/built.
   process.env.HOME = home;

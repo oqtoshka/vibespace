@@ -13,6 +13,8 @@ async function withIsolatedDatabase(runTest: () => void | Promise<void>): Promis
 
   closeConnection();
   process.env.DATABASE_PATH = path.join(tempDirectory, 'auth.db');
+  // An existing empty file prevents importing the installation's legacy database.
+  await writeFile(process.env.DATABASE_PATH, '');
   await initializeDatabase();
 
   try {

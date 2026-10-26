@@ -10,6 +10,9 @@ const tempRoot = await mkdtemp(path.join(os.tmpdir(), 'session-rescan-archive-')
 const homeDir = path.join(tempRoot, 'home');
 process.env.HOME = homeDir;
 process.env.DATABASE_PATH = path.join(tempRoot, 'auth.db');
+// Precreate before imports, which can open the database for auth configuration.
+// An existing empty file prevents importing the installation's legacy database.
+await writeFile(process.env.DATABASE_PATH, '');
 
 const { closeConnection, initializeDatabase, sessionsDb } = await import('@/modules/database/index.js');
 const { ClaudeSessionSynchronizer } = await import('@/modules/providers/list/claude/claude-session-synchronizer.provider.js');
