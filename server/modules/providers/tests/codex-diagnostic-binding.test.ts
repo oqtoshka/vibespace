@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createHash } from 'node:crypto';
-import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -15,7 +15,8 @@ const descendant = '33333333-3333-3333-3333-333333333333';
 const scope = { appSessionId: app, nativeThreadId: native, generation: 'generation_1', private: false, side: false };
 
 async function fixture(options: { active?: boolean; notify?: boolean; refuse?: boolean; owners?: boolean; failInitialize?: boolean; stallOwner?: boolean; expireLease?: boolean } = {}) {
-  const dir = await mkdtemp(path.join(process.env.TEST_ARTIFACT_ROOT ?? os.tmpdir(), 'diagnostic-routing-'));
+  // The reviewer refuses symlinked paths; macOS tmpdir is under the /var symlink.
+  const dir = await realpath(await mkdtemp(path.join(process.env.TEST_ARTIFACT_ROOT ?? os.tmpdir(), 'diagnostic-routing-')));
   const capture = path.join(dir, 'receipts.jsonl');
   const oldExecutable = path.join(dir, 'old-peer');
   const executable = path.join(dir, 'reviewed-peer');

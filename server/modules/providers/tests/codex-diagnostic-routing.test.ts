@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createHash, randomUUID } from 'node:crypto';
-import { appendFile, chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { appendFile, chmod, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -14,7 +14,8 @@ import { createCodexDiagnosticBindings } from '../services/codex-diagnostic-bind
 import { createCodexDiagnosticHost } from '../services/codex-diagnostic-host.service.js';
 import { createCodexDiagnosticRouting } from '../services/codex-diagnostic-routing.service.js';
 
-const root = process.env.TEST_ARTIFACT_ROOT ?? os.tmpdir();
+// The reviewer refuses symlinked paths; macOS tmpdir is under the /var symlink.
+const root = await realpath(process.env.TEST_ARTIFACT_ROOT ?? os.tmpdir());
 process.env.DATABASE_PATH = path.join(root, `routing-${process.pid}.db`);
 const native = '22222222-2222-2222-2222-222222222222';
 const descendant = '33333333-3333-3333-3333-333333333333';
