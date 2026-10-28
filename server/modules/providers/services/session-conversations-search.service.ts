@@ -30,6 +30,7 @@ type SessionConversationResult = {
   sessionId: string;
   provider: SearchableProvider;
   sessionSummary: string;
+  isBackground?: boolean;
   matches: SessionConversationMatch[];
 };
 
@@ -46,6 +47,7 @@ type SessionTitleSearchResult = {
   projectId: string | null;
   projectDisplayName: string;
   sessionTitle: string;
+  isBackground?: boolean;
   lastActivity: string | null;
 };
 
@@ -1333,6 +1335,7 @@ export const sessionConversationsSearchService = {
         projectId: result.projectId,
         projectDisplayName: result.projectPath ? path.basename(result.projectPath) : 'Unknown Project',
         sessionTitle: result.title,
+        isBackground: result.isBackground,
         lastActivity: result.occurredAt,
       }));
     input.onTitleResults?.(titleResults);
@@ -1352,7 +1355,7 @@ export const sessionConversationsSearchService = {
       let session = bucket.sessions.find(item => item.sessionId === result.sessionId);
       if (!session) {
         session = { sessionId: result.sessionId, provider: result.provider as SearchableProvider,
-          sessionSummary: result.title, matches: [] };
+          sessionSummary: result.title, isBackground: result.isBackground, matches: [] };
         bucket.sessions.push(session);
       }
       session.matches.push({

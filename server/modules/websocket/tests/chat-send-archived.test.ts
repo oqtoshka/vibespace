@@ -118,3 +118,28 @@ test('an empty queue item is dropped and leaves the archive alone', async () => 
   assert.equal(sessionsDb.getSessionById('session-archived-empty')?.isArchived, 1);
   assert.deepEqual(runs, []);
 });
+
+
+test('an accepted VibeSpace send permanently promotes a Codex background run', async () => {
+  sessionsDb.createSession('background-send', 'codex', '/workspace/example', 'Background');
+  sessionsDb.setSessionBackground('background-send', true);
+  const runs: string[] = [];
+  await deliver(connect(runs), {
+    type: 'chat.send', sessionId: 'background-send', clientMsgId: 'resume_background',
+    content: 'Continue interactively', options: {},
+  });
+  assert.deepEqual(runs, ['Continue interactively']);
+  sessionsDb.setSessionBackground('background-send', true);
+  assert.equal(sessionsDb.getSessionById('background-send')?.is_background, 0);
+  assert.ok(sessionsDb.getRecentSessionsPage(50, 0).sessions.some(row => row.session_id === 'background-send'));
+});
+
+test('an accepted VibeSpace queue item promotes a Codex background run', async () => {
+  sessionsDb.createSession('background-queue', 'codex', '/workspace/example', 'Background');
+  sessionsDb.setSessionBackground('background-queue', true);
+  await deliver(connect([]), {
+    type: 'chat.queue-add', sessionId: 'background-queue', id: 'resume_queued',
+    content: 'Continue interactively', options: {},
+  });
+  assert.equal(sessionsDb.getSessionById('background-queue')?.is_background, 0);
+});

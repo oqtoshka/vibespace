@@ -299,6 +299,7 @@ export default function SidebarContent({
                         <span className="min-w-0 flex-1">
                           <span className="flex items-center gap-2">
                             <span className="truncate text-xs font-normal text-foreground">{session.sessionTitle}</span>
+                            {session.isBackground && <span className="text-[10px] text-muted-foreground">{t('sessions.backgroundRun', 'Background run')}</span>}
                             {age && (
                               <span className="ml-auto flex-shrink-0 text-[11px] text-muted-foreground">{age}</span>
                             )}
@@ -360,6 +361,7 @@ export default function SidebarContent({
                         <span className="truncate text-xs font-normal text-foreground">
                           {session.sessionSummary}
                         </span>
+                        {session.isBackground && <span className="text-[10px] text-muted-foreground">{t('sessions.backgroundRun', 'Background run')}</span>}
                         {session.provider && session.provider !== 'claude' && (
                           <span className="flex-shrink-0 rounded bg-muted px-1 py-0.5 text-[9px] uppercase text-muted-foreground">
                             {session.provider}
@@ -583,6 +585,7 @@ export default function SidebarContent({
                               <span className="truncate text-xs font-normal text-foreground">
                                 {session.sessionTitle}
                               </span>
+                              {session.isBackground && <span className="text-[10px] text-muted-foreground">{t('sessions.backgroundRun', 'Background run')}</span>}
                               {session.lastActivity && (
                                 <span className="ml-auto flex-shrink-0 text-[11px] text-muted-foreground">
                                   {formatCompactAge(session.lastActivity, projectListProps.currentTime)}

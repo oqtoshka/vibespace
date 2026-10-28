@@ -1,4 +1,5 @@
 import os from 'node:os';
+import { stat } from 'node:fs/promises';
 import path from 'node:path';
 
 import { sessionsDb } from '@/modules/database/index.js';
@@ -21,6 +22,7 @@ type ParsedSession = {
   sessionName?: string;
   /** Provenance of sessionName; undefined keeps the stored one. */
   nameSource?: SessionNameSource;
+  isBackground: boolean;
 };
 
 /**
@@ -29,11 +31,36 @@ type ParsedSession = {
 export class CodexSessionSynchronizer implements IProviderSessionSynchronizer {
   private readonly provider = 'codex' as const;
   private readonly codexHome = path.join(os.homedir(), '.codex');
+  private historyStamp = '';
+  private interactiveIds = new Set<string>();
+
+  // The TUI's submitted-prompt journal is explicit interaction evidence; exec
+  // continuations alone never promote a run. Read only when its fingerprint changes.
+  private async refreshInteractiveHistory(): Promise<void> {
+    const historyPath = path.join(this.codexHome, 'history.jsonl');
+    try {
+      const info = await stat(historyPath);
+      const stamp = `${info.ino}:${info.size}:${info.mtimeMs}`;
+      if (stamp === this.historyStamp) return;
+      const entries = await buildLookupMap(historyPath, 'session_id', 'text');
+      this.interactiveIds = new Set(entries.keys());
+      for (const id of this.interactiveIds) sessionsDb.promoteBackgroundSession(id);
+      this.historyStamp = stamp;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+  }
+
+  private indexBackground(sessionId: string, parsed: ParsedSession): void {
+    sessionsDb.setSessionBackground(sessionId, parsed.isBackground);
+    if (this.interactiveIds.has(parsed.sessionId)) sessionsDb.promoteBackgroundSession(sessionId);
+  }
 
   /**
    * Scans ~/.codex/sessions and upserts discovered sessions into DB.
    */
   async synchronize(since?: Date): Promise<number> {
+    await this.refreshInteractiveHistory();
     const nameMap = await buildLookupMap(path.join(this.codexHome, 'session_index.jsonl'), 'id', 'thread_name');
     const files = await findFilesRecursivelyCreatedAfter(
       path.join(this.codexHome, 'sessions'),
@@ -58,7 +85,7 @@ export class CodexSessionSynchronizer implements IProviderSessionSynchronizer {
       }
 
       const timestamps = await readFileTimestamps(filePath);
-      sessionsDb.createSession(
+      const sessionId = sessionsDb.createSession(
         parsed.sessionId,
         this.provider,
         parsed.projectPath,
@@ -68,6 +95,7 @@ export class CodexSessionSynchronizer implements IProviderSessionSynchronizer {
         filePath,
         parsed.nameSource
       );
+      this.indexBackground(sessionId, parsed);
       processed += 1;
     }
 
@@ -82,6 +110,7 @@ export class CodexSessionSynchronizer implements IProviderSessionSynchronizer {
       return null;
     }
 
+    await this.refreshInteractiveHistory();
     const nameMap = await buildLookupMap(path.join(this.codexHome, 'session_index.jsonl'), 'id', 'thread_name');
     const parsed = await this.processSessionFile(filePath, nameMap);
     if (!parsed) {
@@ -89,7 +118,7 @@ export class CodexSessionSynchronizer implements IProviderSessionSynchronizer {
     }
 
     const timestamps = await readFileTimestamps(filePath);
-    return sessionsDb.createSession(
+    const sessionId = sessionsDb.createSession(
       parsed.sessionId,
       this.provider,
       parsed.projectPath,
@@ -99,6 +128,8 @@ export class CodexSessionSynchronizer implements IProviderSessionSynchronizer {
       filePath,
       parsed.nameSource
     );
+    this.indexBackground(sessionId, parsed);
+    return sessionId;
   }
 
   /**
@@ -110,6 +141,7 @@ export class CodexSessionSynchronizer implements IProviderSessionSynchronizer {
   ): Promise<ParsedSession | null> {
     const parsed = await extractFirstValidJsonlData(filePath, (rawData) => {
       const data = rawData as Record<string, unknown>;
+      if (data.type !== 'session_meta') return null;
       const payload = data.payload as Record<string, unknown> | undefined;
       const sessionId = typeof payload?.id === 'string' ? payload.id : undefined;
       const projectPath = typeof payload?.cwd === 'string' ? payload.cwd : undefined;
@@ -121,6 +153,7 @@ export class CodexSessionSynchronizer implements IProviderSessionSynchronizer {
       return {
         sessionId,
         projectPath,
+        isBackground: payload?.originator === 'codex_exec' || payload?.source === 'exec',
         isSubagent: payload ? this.isSubagentSessionMeta(payload) : false,
       };
     });

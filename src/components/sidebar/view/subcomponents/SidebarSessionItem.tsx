@@ -348,6 +348,7 @@ export default function SidebarSessionItem({
                     {sessionView.messageCount}
                   </Badge>
                 )}
+                {session.isBackground && <span className="text-[11px] text-muted-foreground">{t('sessions.backgroundRun', 'Background run')}</span>}
                 {session.isPrivate && <PrivateMark label={privateLabel} />}
                 {markedOptions.map((option) => (
                   <LaunchOptionMark key={option.id} label={option.marker!.label} hint={option.marker!.hint} />
@@ -595,6 +596,7 @@ export default function SidebarSessionItem({
               </div>
               <div className="mt-0.5 flex items-center gap-1.5">
                 {sessionView.messageCount > 0 && <Badge variant="secondary" className="px-1 py-0 text-xs">{sessionView.messageCount}</Badge>}
+                {session.isBackground && <span className="text-[11px] text-muted-foreground">{t('sessions.backgroundRun', 'Background run')}</span>}
                 {session.isPrivate && <PrivateMark label={privateLabel} />}
                 {markedOptions.map((option) => (
                   <LaunchOptionMark key={option.id} label={option.marker!.label} hint={option.marker!.hint} />

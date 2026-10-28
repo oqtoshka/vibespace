@@ -25,11 +25,12 @@ export type ArchivedSessionListItem = {
   lastActivity: string | null;
   isProjectArchived: boolean;
   avatarUrl?: string | null;
+  isBackground?: boolean;
 };
 
 export type RecentConversationListItem = Pick<
   ArchivedSessionListItem,
-  'sessionId' | 'provider' | 'projectId' | 'projectDisplayName' | 'sessionTitle' | 'lastActivity' | 'avatarUrl'
+  'sessionId' | 'provider' | 'projectId' | 'projectDisplayName' | 'sessionTitle' | 'lastActivity' | 'avatarUrl' | 'isBackground'
 > & {
   isPrivate?: boolean;
   /** The plugin-declared launch options the session was created with. */

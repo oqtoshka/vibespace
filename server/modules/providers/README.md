@@ -378,3 +378,30 @@ alongside the implementation.
 - Assuming one provider's MCP config file format works for the others.
 
 
+
+## Codex background runs
+
+The synchronizer indexes `session_meta.payload.originator === "codex_exec"`
+**or** `session_meta.payload.source === "exec"` as `sessions.is_background`.
+Other or missing values stay visible; prompt wording is never a classifier.
+Existing installations reset the scan cursor once when adding this column so
+older rollouts are classified too. List requests use the stored flag and never
+open rollout files to classify a page.
+
+Project, Recent and Archive session lists hide background runs by default.
+**Show background runs** reveals them with a **Background run** label. The
+preference is stored in the browser per authenticated user and shared across
+tabs; it does not sync across devices. Filtering precedes pagination and totals.
+Title/content search and command-palette search include background runs
+regardless of the toggle; direct session URLs remain resolvable.
+
+Promotion is permanent: an accepted `chat.send` or `chat.queue-add` in VibeSpace,
+or a submitted TUI prompt for the same provider session id in Codex's
+`history.jsonl`, sets `interactive_resumed` and clears `is_background`. The
+synchronizer checks the prompt journal during indexing, including when the
+rollout is outside the incremental scan window. Journal changes are cached by
+file fingerprint. Subsequent exec continuations and rescans cannot hide a
+promoted conversation. Merely opening a URL, renaming a run, or appending another
+scripted prompt does not promote it. If Codex prompt-history persistence is
+disabled or its entry was removed before indexing, a TUI resume leaves no reliable
+interaction signal; send a message from VibeSpace to promote that conversation.

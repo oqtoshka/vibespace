@@ -1,20 +1,21 @@
-import { WORKSPACE_SERVICES, DEFAULT_PROVIDER, isProviderEnabled } from '../constants/providerPolicy';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { NavigateFunction } from 'react-router-dom';
 
+import { WORKSPACE_SERVICES, DEFAULT_PROVIDER, isProviderEnabled } from '../constants/providerPolicy';
 import { getSessionProvider } from '../components/sidebar/utils/utils';
 import { useWebSocketEvent } from '../contexts/WebSocketContext';
 import { api } from '../utils/api';
 import type {
   AppSocketMessage,
-  AppTab,
   LLMProvider,
   LoadingProgress,
   Project,
   ProjectSession,
   ProjectsUpdatedMessage,
 } from '../types/app';
+import { visibleListSessions } from '../utils/sessionListPreferences';
 
+import { useSessionListPreferences } from './useSessionListPreferences';
 import { reconcileSelectedSession } from './projectSessionSelection';
 
 type UseProjectsStateArgs = {
@@ -37,6 +38,7 @@ type LocatedSession = {
   provider: LLMProvider;
   projectId: string | null;
   sessionTitle: string | null;
+  isBackground?: boolean;
 };
 
 const serialize = (value: unknown) => JSON.stringify(value ?? null);
@@ -342,11 +344,9 @@ const isUpdateAdditive = (
   return getProjectSessions(updatedSelectedProject).some((session) => session.id === selectedSession.id);
 };
 
-const PROJECTS_CACHE_KEY = 'projects-cache-v1';
-
-const readProjectsCache = (): Project[] | null => {
+const readProjectsCache = (cacheKey: string): Project[] | null => {
   try {
-    const raw = localStorage.getItem(PROJECTS_CACHE_KEY);
+    const raw = localStorage.getItem(cacheKey);
     if (!raw) return null;
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed) ? (parsed as Project[]) : null;
@@ -355,9 +355,9 @@ const readProjectsCache = (): Project[] | null => {
   }
 };
 
-const writeProjectsCache = (projects: Project[]) => {
+const writeProjectsCache = (cacheKey: string, projects: Project[]) => {
   try {
-    localStorage.setItem(PROJECTS_CACHE_KEY, JSON.stringify(projects));
+    localStorage.setItem(cacheKey, JSON.stringify(projects));
   } catch {
     // Quota exceeded or storage unavailable — ignore silently.
   }
@@ -372,8 +372,13 @@ export function useProjectsState({
   // Seed projects from localStorage so the shell paints instantly on iOS
   // Safari resume (which otherwise blanks until /api/projects round-trips).
   // The fetch below refreshes in the background.
-  const [hadCachedProjectsOnMount] = useState<boolean>(() => readProjectsCache() !== null);
-  const [projects, setProjects] = useState<Project[]>(() => readProjectsCache() ?? []);
+  const { showBackgroundRuns, listPreferenceKey } = useSessionListPreferences();
+  const projectsCacheKey = `projects-cache-v2.${listPreferenceKey}.${showBackgroundRuns}`;
+  const [hadCachedProjectsOnMount] = useState<boolean>(() => readProjectsCache(projectsCacheKey) !== null);
+  const loadedModeRef = useRef(showBackgroundRuns);
+  const listModeRef = useRef(showBackgroundRuns);
+  const projectFetchSeqRef = useRef(0);
+  const [projects, setProjects] = useState<Project[]>(() => readProjectsCache(projectsCacheKey) ?? []);
   const [selectedProject, setSelectedProject] = useState<Project | null>(null);
   const [selectedSession, setSelectedSession] = useState<ProjectSession | null>(null);
   // Tab/panel selection moved to useWorkspaceTabs (per-project workspace
@@ -417,16 +422,24 @@ export function useProjectsState({
   const locateAttemptedRef = useRef<Set<string>>(new Set());
 
   const fetchProjects = useCallback(async ({ showLoadingState = true }: FetchProjectsOptions = {}) => {
+    const requestSeq = ++projectFetchSeqRef.current;
+    const modeChanged = listModeRef.current !== showBackgroundRuns;
+    listModeRef.current = showBackgroundRuns;
     try {
       if (showLoadingState) {
         setIsLoadingProjects(true);
       }
-      const response = await api.projects();
+      const response = await api.projects({ showBackgroundRuns });
       const projectData = (await response.json()) as Project[];
 
+      if (requestSeq !== projectFetchSeqRef.current) return;
+      loadedModeRef.current = showBackgroundRuns;
       setProjects((prevProjects) => {
         const projectsWithTaskMaster = mergeTaskMasterCache(projectData, prevProjects);
-        const mergedProjects = mergeExpandedSessionPages(prevProjects, projectsWithTaskMaster);
+        const mergedProjects = modeChanged ? projectsWithTaskMaster : mergeExpandedSessionPages(
+          prevProjects.map(project => ({ ...project, sessions: visibleListSessions(project.sessions ?? [], showBackgroundRuns) })),
+          projectsWithTaskMaster,
+        );
 
         if (prevProjects.length === 0) {
           return mergedProjects;
@@ -443,7 +456,7 @@ export function useProjectsState({
         setIsLoadingProjects(false);
       }
     }
-  }, []);
+  }, [showBackgroundRuns]);
 
   const refreshProjectsSilently = useCallback(async () => {
     // Keep chat view stable while still syncing sidebar/session metadata in background.
@@ -504,9 +517,9 @@ export function useProjectsState({
   }, [fetchProjects, hadCachedProjectsOnMount]);
 
   useEffect(() => {
-    if (projects.length === 0) return;
-    writeProjectsCache(projects);
-  }, [projects]);
+    if (projects.length === 0 || loadedModeRef.current !== showBackgroundRuns) return;
+    writeProjectsCache(projectsCacheKey, projects);
+  }, [projects, projectsCacheKey, showBackgroundRuns]);
 
   useEffect(() => {
     if (!selectedProject?.projectId) {
@@ -574,7 +587,7 @@ export function useProjectsState({
       // regenerated title never showed up until a reload. Merging one session
       // cannot disturb anything else, so unlike a full snapshot it is safe to
       // apply while a run is in flight.
-      if (upsertedSessionId && upsertedMessage.session) {
+      if (upsertedSessionId && upsertedMessage.session && (showBackgroundRuns || !upsertedMessage.session.isBackground)) {
         setProjects((previousProjects) =>
           upsertSessionIntoProjects(
             previousProjects,
@@ -601,6 +614,12 @@ export function useProjectsState({
       return;
     }
 
+    // Global snapshots use the default list mode. Fetch this user's mode
+    // instead of dropping expanded background rows from a shared broadcast.
+    if (showBackgroundRuns) {
+      void fetchProjects({ showLoadingState: false });
+      return;
+    }
     const projectsMessage = latestMessage as ProjectsUpdatedMessage;
 
     if (projectsMessage.updatedSessionId && selectedSession && selectedProject) {
@@ -653,7 +672,7 @@ export function useProjectsState({
       (session) => session.id === selectedSession.id,
     );
 
-    if (!updatedSelectedSession) {
+    if (!updatedSelectedSession && selectedSession.id !== sessionId) {
       setSelectedSession(null);
     }
   });
@@ -748,6 +767,7 @@ export function useProjectsState({
           setSelectedSession({
             id: located.sessionId,
             summary: located.sessionTitle ?? '',
+            isBackground: located.isBackground,
             __provider: located.provider,
             __projectId: located.projectId ?? owner?.projectId ?? undefined,
           });
@@ -894,7 +914,7 @@ export function useProjectsState({
 
   const handleSidebarRefresh = useCallback(async () => {
     try {
-      const response = await api.projects();
+      const response = await api.projects({ showBackgroundRuns });
       const freshProjects = (await response.json()) as Project[];
       const projectsWithTaskMaster = mergeTaskMasterCache(freshProjects, projects);
       const mergedProjects = mergeExpandedSessionPages(projects, projectsWithTaskMaster);
@@ -938,7 +958,7 @@ export function useProjectsState({
     } catch (error) {
       console.error('Error refreshing sidebar:', error);
     }
-  }, [projects, selectedProject, selectedSession]);
+  }, [projects, selectedProject, selectedSession, showBackgroundRuns]);
 
   const loadMoreProjectSessions = useCallback(async (projectId: string) => {
     const project = projects.find((candidate) => candidate.projectId === projectId);
@@ -946,15 +966,17 @@ export function useProjectsState({
       return;
     }
 
-    const loadedCount = countLoadedProjectSessions(project);
+    const loadedCount = visibleListSessions(getProjectSessions(project), showBackgroundRuns).length;
     const totalCount = Number(project.sessionMeta?.total ?? 0);
     if (totalCount > 0 && loadedCount >= totalCount) {
       return;
     }
 
+    const requestedMode = showBackgroundRuns;
     const response = await api.projectSessions(projectId, {
       limit: 20,
       offset: loadedCount,
+      showBackgroundRuns,
     });
 
     if (!response.ok) {
@@ -971,6 +993,7 @@ export function useProjectsState({
 
     const sessionsPage = (await response.json()) as Pick<Project, 'sessions' | 'cursorSessions' | 'codexSessions' | 'geminiSessions' | 'opencodeSessions' | 'sessionMeta'>;
 
+    if (requestedMode !== listModeRef.current) return;
     let mergedProjectForSelection: Project | null = null;
     setProjects((previousProjects) =>
       previousProjects.map((candidate) => {
@@ -987,7 +1010,7 @@ export function useProjectsState({
     if (selectedProject?.projectId === projectId && mergedProjectForSelection) {
       setSelectedProject(mergedProjectForSelection);
     }
-  }, [projects, selectedProject?.projectId]);
+  }, [projects, selectedProject?.projectId, showBackgroundRuns]);
 
   // `projectId` is the DB identifier passed from the sidebar's delete flow
   // after the migration away from folder-derived project names.

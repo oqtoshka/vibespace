@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { TFunction } from 'i18next';
 
+import { useSessionListPreferences } from '../../../hooks/useSessionListPreferences';
+import { visibleListSessions } from '../../../utils/sessionListPreferences';
 import { api } from '../../../utils/api';
 import { dbg } from '../../../utils/debugLog';
 import { usePaletteOps } from '../../../contexts/PaletteOpsContext';
@@ -41,6 +43,7 @@ type ConversationMatch = {
 type ConversationSession = {
   sessionId: string;
   sessionSummary: string;
+  isBackground?: boolean;
   provider?: string;
   matches: ConversationMatch[];
 };
@@ -60,6 +63,7 @@ export type SessionTitleSearchResult = {
   projectId: string | null;
   projectDisplayName: string;
   sessionTitle: string;
+  isBackground?: boolean;
   lastActivity: string | null;
 };
 
@@ -135,6 +139,7 @@ export function useSidebarController({
   sidebarVisible,
 }: UseSidebarControllerArgs) {
   const paletteOps = usePaletteOps();
+  const { showBackgroundRuns } = useSessionListPreferences();
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(new Set());
   const [editingProject, setEditingProject] = useState<string | null>(null);
   const [showNewProject, setShowNewProject] = useState(false);
@@ -260,8 +265,8 @@ export function useSidebarController({
 
     try {
       const [archivedProjectsResponse, archivedSessionsResponse] = await Promise.all([
-        api.archivedProjects(),
-        api.getArchivedSessions(),
+        api.archivedProjects({ showBackgroundRuns: true }),
+        api.getArchivedSessions({ showBackgroundRuns: true }),
       ]);
 
       if (!archivedProjectsResponse.ok) {
@@ -299,7 +304,7 @@ export function useSidebarController({
     setRecentConversationsError(false);
 
     try {
-      const response = await api.recentConversations({ limit: 40, offset });
+      const response = await api.recentConversations({ limit: 40, offset, showBackgroundRuns });
       if (!response.ok) {
         throw new Error(`Failed to load recent conversations: ${response.status}`);
       }
@@ -338,7 +343,7 @@ export function useSidebarController({
         setIsLoadingMoreRecentConversations(false);
       }
     }
-  }, []);
+  }, [showBackgroundRuns]);
 
   const reloadRecentConversations = useCallback(() => {
     void fetchRecentConversationsPage(0, false);
@@ -659,7 +664,7 @@ export function useSidebarController({
     [resolveProjectStarState],
   );
 
-  const getProjectSessions = useCallback((project: Project) => getAllSessions(project), []);
+  const getProjectSessions = useCallback((project: Project) => visibleListSessions(getAllSessions(project), showBackgroundRuns), [showBackgroundRuns]);
 
   const loadMoreSessionsForProject = useCallback(async (projectId: string) => {
     if (!onLoadMoreSessions) {
@@ -732,7 +737,7 @@ export function useSidebarController({
   const filteredArchivedSessions = useMemo(() => {
     const normalizedSearch = debouncedSearchQuery.trim().toLowerCase();
     if (!normalizedSearch) {
-      return archivedSessions;
+      return visibleListSessions(archivedSessions, showBackgroundRuns);
     }
 
     return archivedSessions.filter((session) => {
@@ -745,12 +750,15 @@ export function useSidebarController({
 
       return searchableFields.some((value) => value.toLowerCase().includes(normalizedSearch));
     });
-  }, [archivedSessions, debouncedSearchQuery]);
+  }, [archivedSessions, debouncedSearchQuery, showBackgroundRuns]);
 
   const filteredArchivedProjects = useMemo(() => {
     const normalizedSearch = debouncedSearchQuery.trim().toLowerCase();
     if (!normalizedSearch) {
-      return archivedProjects;
+      return archivedProjects.map(project => {
+        const sessions = visibleListSessions(project.sessions ?? [], showBackgroundRuns);
+        return { ...project, sessions, sessionMeta: { total: sessions.length, hasMore: false } };
+      });
     }
 
     return archivedProjects.filter((project) => {
@@ -777,7 +785,7 @@ export function useSidebarController({
         ].some((value) => value.toLowerCase().includes(normalizedSearch));
       });
     });
-  }, [archivedProjects, debouncedSearchQuery]);
+  }, [archivedProjects, debouncedSearchQuery, showBackgroundRuns]);
 
   const startEditing = useCallback((project: Project) => {
     // `editingProject` is keyed by projectId so it stays stable across
@@ -1079,7 +1087,7 @@ export function useSidebarController({
     filteredProjects,
     archivedProjects: filteredArchivedProjects,
     archivedSessions: filteredArchivedSessions,
-    archivedSessionsCount: archivedProjects.length + archivedSessions.length,
+    archivedSessionsCount: filteredArchivedProjects.length + filteredArchivedSessions.length,
     isArchivedSessionsLoading,
     recentConversations,
     recentConversationsTotal,

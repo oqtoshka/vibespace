@@ -195,6 +195,7 @@ async function buildSessionUpsertedEvent(updatedProviderSessionId: string): Prom
       messageCount: 0,
       lastActivity: row.updated_at ?? row.created_at ?? new Date().toISOString(),
       isPrivate: Boolean(row.is_private),
+      isBackground: Boolean(row.is_background),
       // Switchable mid-session (chat ↔ briefing), so the sidebar marker and the
       // chat banner follow this event rather than the creation-time snapshot.
       launchOptions: parseStoredLaunchOptions(row.launch_options),

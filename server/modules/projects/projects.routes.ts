@@ -74,6 +74,7 @@ router.get(
     const sessionsLimit = readOptionalNumericQueryValue(req.query.sessionsLimit) ?? undefined;
     const sessionsOffset = readOptionalNumericQueryValue(req.query.sessionsOffset) ?? undefined;
     const projects = await getProjectsWithSessions({
+      showBackgroundRuns: req.query.showBackgroundRuns === '1',
       skipSynchronization,
       sessionsLimit,
       sessionsOffset,
@@ -84,8 +85,8 @@ router.get(
 
 router.get(
   '/archived',
-  asyncHandler(async (_req, res) => {
-    const projects = await getArchivedProjectsWithSessions();
+  asyncHandler(async (req, res) => {
+    const projects = await getArchivedProjectsWithSessions({ showBackgroundRuns: req.query.showBackgroundRuns === '1' });
     res.json(createApiSuccessResponse({ projects }));
   }),
 );
@@ -96,7 +97,7 @@ router.get(
     const projectId = typeof req.params.projectId === 'string' ? req.params.projectId : '';
     const limit = parseNonNegativeIntQuery(req.query.limit, 'limit', 20);
     const offset = parseNonNegativeIntQuery(req.query.offset, 'offset', 0);
-    const sessionsPage = await getProjectSessionsPage(projectId, { limit, offset });
+    const sessionsPage = await getProjectSessionsPage(projectId, { limit, offset, showBackgroundRuns: req.query.showBackgroundRuns === '1' });
     res.json(sessionsPage);
   }),
 );

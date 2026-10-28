@@ -7,7 +7,7 @@ import { AUTH_TOKEN_STORAGE_KEY } from '../components/auth/constants';
 // rather than ever letting the token write lose. Everything listed here is
 // either re-fetched from the server or a UI convenience that rebuilds itself.
 const EVICTABLE_EXACT_KEYS = ['projects-cache-v1', 'sidebar-session-read-state'];
-const EVICTABLE_KEY_PREFIXES = ['draft_input_', 'command_history_', 'permissionMode-'];
+const EVICTABLE_KEY_PREFIXES = ['projects-cache-v2.', 'draft_input_', 'command_history_', 'permissionMode-'];
 
 const evictNonCriticalStorage = (): boolean => {
   let removedAny = false;

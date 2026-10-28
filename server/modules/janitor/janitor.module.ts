@@ -15,7 +15,7 @@ const model=process.env.VS_JANITOR_MODEL || '';
 const apiBase=process.env.VS_JANITOR_API_BASE || '';
 
 async function sessionContext() {
-  const sessions=sessionsDb.getRecentSessionsPage(100,0).sessions.filter(session=>
+  const sessions=sessionsDb.getRecentSessionsPage(100,0,true).sessions.filter(session=>
     !session.is_private&&session.project_path&&(session.project_path===root||session.project_path.startsWith(root+path.sep))
     &&new Date(session.updated_at).getTime()<Date.now()-24*60*60*1000,
   ).slice(0,5);

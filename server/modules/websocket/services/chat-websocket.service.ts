@@ -4,7 +4,7 @@ import type { WebSocket } from 'ws';
 
 import { sessionTransferService } from '@/modules/session-transfer/index.js';
 import { peerOutboxDb, sessionsDb } from '@/modules/database/index.js';
-import { providerModelsService, sessionsService } from '@/modules/providers/index.js';
+import { broadcastSessionUpdate, providerModelsService, sessionsService } from '@/modules/providers/index.js';
 import { sideSessionContext } from '@/modules/native-control/index.js';
 import { chatRunRegistry, MAX_QUEUED_MESSAGES } from '@/modules/websocket/services/chat-run-registry.service.js';
 import {
@@ -615,7 +615,9 @@ async function handleChatSend(
     return;
   }
 
+  sessionsDb.promoteBackgroundSession(sessionId);
   reopenArchivedConversation(session);
+  if (session.is_background) broadcastSessionUpdate(sessionId);
 
   // Explicit receipt for the composer's pending-send journal. The client
   // journals every dispatched send and restores unacked entries into the
@@ -1032,7 +1034,9 @@ async function handleChatQueueAdd(
     return;
   }
 
+  sessionsDb.promoteBackgroundSession(sessionId);
   reopenArchivedConversation(session);
+  if (session.is_background) broadcastSessionUpdate(sessionId);
 
   const provider = session.provider as LLMProvider;
   const outcome = await tryDeliverToRunningTurn(

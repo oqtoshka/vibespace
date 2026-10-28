@@ -436,3 +436,54 @@ test('Codex edit anchors survive reload and rollback hides discarded turns and i
     });
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test('Codex background classification uses exec metadata, never prompt text', { concurrency: false }, async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'codex-background-'));
+  const restoreHome = patchHomeDir(root);
+  const fixtures = [
+    ['exec-origin', { originator: 'codex_exec' }, 1],
+    ['exec-source', { source: 'exec' }, 1],
+    ['interactive', { originator: 'codex_cli_rs', source: 'cli' }, 0],
+    ['app-server', { originator: 'codex_vscode', source: 'vscode' }, 0],
+    ['unknown', {}, 0],
+  ] as const;
+  try {
+    await withIsolatedDatabase(async () => {
+      const synchronizer = new CodexSessionSynchronizer();
+      for (const [id, metadata, expected] of fixtures) {
+        await writeCodexRollout(root, id, [
+          { type: 'session_meta', payload: { id, cwd: '/workspace/example', ...metadata } },
+          { type: 'event_msg', payload: { type: 'user_message', message: 'You are a sub-agent; RESUME: earlier run' } },
+        ]);
+        const file = path.join(root, '.codex/sessions/2026/07/07', `rollout-${id}.jsonl`);
+        await synchronizer.synchronizeFile(file);
+        assert.equal(sessionsDb.getSessionById(id)?.is_background, expected, id);
+      }
+      await synchronizer.synchronize();
+      for (const [id, , expected] of fixtures) assert.equal(sessionsDb.getSessionById(id)?.is_background, expected);
+    });
+  } finally { restoreHome(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('Codex TUI prompt history permanently promotes an exec run, even outside the scan window', { concurrency: false }, async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'codex-background-resume-'));
+  const restoreHome = patchHomeDir(root);
+  try {
+    await withIsolatedDatabase(async () => {
+      await writeCodexRollout(root, 'exec-resumed', [
+        { type: 'session_meta', payload: { id: 'exec-resumed', cwd: '/workspace/example', originator: 'codex_exec', source: 'exec' } },
+        { type: 'event_msg', payload: { type: 'user_message', message: 'Scripted first turn' } },
+        { type: 'event_msg', payload: { type: 'user_message', message: 'Scripted continuation' } },
+      ]);
+      const synchronizer = new CodexSessionSynchronizer();
+      await synchronizer.synchronize();
+      assert.equal(sessionsDb.getSessionById('exec-resumed')?.is_background, 1);
+      await writeFile(path.join(root, '.codex/history.jsonl'), JSON.stringify({ session_id: 'exec-resumed', ts: 1800000000, text: 'A TUI follow-up' }) + '\n');
+      await synchronizer.synchronize(new Date('2099-01-01'));
+      assert.equal(sessionsDb.getSessionById('exec-resumed')?.is_background, 0);
+      await rm(path.join(root, '.codex/history.jsonl'));
+      await new CodexSessionSynchronizer().synchronize();
+      assert.equal(sessionsDb.getSessionById('exec-resumed')?.is_background, 0, 'rescan cannot hide a promoted run');
+    });
+  } finally { restoreHome(); await rm(root, { recursive: true, force: true }); }
+});

@@ -64,6 +64,7 @@ type ArchivedSessionListItem = {
   lastActivity: string | null;
   isProjectArchived: boolean;
   isPrivate: boolean;
+  isBackground: boolean;
   /** The plugin-declared launch options the session was created with. */
   launchOptions: SessionLaunchOptions | null;
   avatarUrl: string | null;
@@ -71,7 +72,7 @@ type ArchivedSessionListItem = {
 
 type RecentSessionListItem = Pick<
   ArchivedSessionListItem,
-  'sessionId' | 'provider' | 'projectId' | 'projectDisplayName' | 'sessionTitle' | 'lastActivity' | 'isPrivate' | 'launchOptions'
+  'sessionId' | 'provider' | 'projectId' | 'projectDisplayName' | 'sessionTitle' | 'lastActivity' | 'isBackground' | 'isPrivate' | 'launchOptions'
 >;
 
 type RecentSessionsPage = {
@@ -264,6 +265,7 @@ function toSessionListItem(
     lastActivity: session.updated_at ?? session.created_at ?? null,
     isProjectArchived: Boolean(project?.isArchived),
     isPrivate: Boolean(session.is_private),
+    isBackground: Boolean(session.is_background),
     launchOptions: parseStoredLaunchOptions(session.launch_options),
     avatarUrl: sessionAvatarUrl(session.provider_session_id, Boolean(session.is_private)),
     isArchived: Boolean(session.isArchived),
@@ -304,8 +306,8 @@ export const sessionsService = {
   /**
    * Returns the active conversation feed in true global activity order.
    */
-  listRecentSessions(limit: number, offset: number): RecentSessionsPage {
-    const page = sessionsDb.getRecentSessionsPage(limit, offset);
+  listRecentSessions(limit: number, offset: number, showBackgroundRuns = false): RecentSessionsPage {
+    const page = sessionsDb.getRecentSessionsPage(limit, offset, showBackgroundRuns);
     const projectCache = new Map<string, ReturnType<typeof projectsDb.getProjectPath>>();
     const conversations = page.sessions.map((session) => {
       const projectPath = session.project_path?.trim() ? session.project_path : null;
@@ -327,6 +329,7 @@ export const sessionsService = {
         lastActivity: session.updated_at ?? session.created_at ?? null,
         // So the feed can mark a session started with a plugin launch option.
         isPrivate: Boolean(session.is_private),
+        isBackground: Boolean(session.is_background),
         launchOptions: parseStoredLaunchOptions(session.launch_options),
       };
     });
@@ -807,8 +810,8 @@ export const sessionsService = {
    * Returns archived sessions with enough project metadata for the sidebar to
    * group, filter, open, and restore them without a per-row follow-up query.
    */
-  listArchivedSessions(): ArchivedSessionListItem[] {
-    const archivedSessions = sessionsDb.getArchivedSessions();
+  listArchivedSessions(showBackgroundRuns = false): ArchivedSessionListItem[] {
+    const archivedSessions = sessionsDb.getArchivedSessions(showBackgroundRuns);
     const projectCache = new Map<string, ReturnType<typeof projectsDb.getProjectPath>>();
 
     return archivedSessions.map((session) => toSessionListItem(session, projectCache));

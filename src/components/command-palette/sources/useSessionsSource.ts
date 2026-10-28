@@ -18,7 +18,7 @@ export function useSessionsSource(projectId: string | undefined, enabled: boolea
     enabled: enabled && !!projectId,
     deps: [projectId],
     fetcher: (signal) => {
-      const params = new URLSearchParams({ limit: '50', offset: '0' });
+      const params = new URLSearchParams({ limit: '50', offset: '0', showBackgroundRuns: '1' });
       return authenticatedFetch(
         `/api/projects/${encodeURIComponent(projectId!)}/sessions?${params.toString()}`,
         { signal },

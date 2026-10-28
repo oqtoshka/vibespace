@@ -1,5 +1,7 @@
 import { Archive, Folder, FolderPlus, History, MessageSquare, Plus, RefreshCw, Search, X, PanelLeftClose } from 'lucide-react';
 import type { TFunction } from 'i18next';
+
+import { useSessionListPreferences } from '../../../../hooks/useSessionListPreferences';
 import { Button, Input, Tooltip } from '../../../../shared/view/ui';
 import { IS_PLATFORM, APP_TITLE } from '../../../../constants/config';
 import { cn } from '../../../../lib/utils';
@@ -49,6 +51,13 @@ export default function SidebarHeader({
   onCollapseSidebar,
   t,
 }: SidebarHeaderProps) {
+  const { showBackgroundRuns, setShowBackgroundRuns } = useSessionListPreferences();
+  const backgroundToggle = (
+    <label className="flex cursor-pointer items-center gap-2 px-3 py-2 text-xs text-muted-foreground">
+      <input type="checkbox" checked={showBackgroundRuns} onChange={event => setShowBackgroundRuns(event.target.checked)} />
+      {t('sessions.showBackgroundRuns', 'Show background runs')}
+    </label>
+  );
   const showSearchTools = (projectsCount > 0 || archivedSessionsCount > 0 || isArchivedSessionsLoading) && !isLoading;
   const searchPlaceholder = searchMode === 'archived'
     ? t('search.archivedPlaceholder', 'Search archived sessions...')
@@ -198,6 +207,7 @@ export default function SidebarHeader({
         {showSearchTools && (
           <div className="mt-2.5 space-y-2">
             <ViewSwitcher />
+            {view === 'sessions' && backgroundToggle}
             {view === 'sessions' && (
               <div className="relative">
                 <Search className="pointer-events-none absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground/50" />
@@ -274,6 +284,7 @@ export default function SidebarHeader({
         {showSearchTools && (
           <div className="mt-2.5 space-y-2">
             <ViewSwitcher />
+            {view === 'sessions' && backgroundToggle}
             {view === 'sessions' && (
               <div className="relative">
                 <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground/50" />

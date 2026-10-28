@@ -374,6 +374,7 @@ export const sessionSearchIndexService = {
         title: displayTitle,
         summary: displaySummary || null,
         archived: Number(row.archived) === 1,
+        isBackground: Boolean(session?.is_background),
         model: row.model,
         effort: row.effort,
         matchedField,

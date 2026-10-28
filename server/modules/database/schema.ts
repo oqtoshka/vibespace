@@ -148,6 +148,9 @@ CREATE TABLE IF NOT EXISTS sessions (
     -- Decided at creation and never changed — a session that has reported
     -- once cannot become private after the fact.
     is_private INTEGER DEFAULT 0,
+    -- Indexed Codex exec origin, cleared permanently by an interactive resume.
+    is_background INTEGER NOT NULL DEFAULT 0,
+    interactive_resumed INTEGER NOT NULL DEFAULT 0,
     -- The launch options the session was created with, as JSON: option id →
     -- value, for options declared by host plugins. The host stores the choice
     -- and hands it to every harness launch; what an option means is the

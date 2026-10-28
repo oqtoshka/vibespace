@@ -619,6 +619,13 @@ export const runMigrations = (db: Database) => {
     addSessionRecap(db);
     addSessionIsSide(db);
     addSessionIsPrivate(db);
+    const sessionColumns = getTableInfo(db, 'sessions').map(column => column.name);
+    if (!sessionColumns.includes('is_background')) {
+      addColumnToTableIfNotExists(db, 'sessions', sessionColumns, 'is_background', 'INTEGER NOT NULL DEFAULT 0');
+      // Re-index existing rollouts once; a timestamp cursor would skip old exec runs.
+      if (tableExists(db, 'scan_state')) db.exec('DELETE FROM scan_state');
+    }
+    addColumnToTableIfNotExists(db, 'sessions', sessionColumns, 'interactive_resumed', 'INTEGER NOT NULL DEFAULT 0');
     addSessionLaunchOptions(db);
     addSessionParentSessionId(db);
     addSessionModelColumn(db);

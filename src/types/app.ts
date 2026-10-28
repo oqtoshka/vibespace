@@ -64,6 +64,7 @@ export interface ProjectSession {
   // Started private: no presence reporting, no notifications, no recap.
   // Fixed at creation; the sidebar and the chat header spell it out.
   isPrivate?: boolean;
+  isBackground?: boolean;
   // The plugin-declared launch options the session runs with (option id →
   // value). Chosen at creation like private; an option its plugin declares
   // `switchable` may be turned on or off later (chat ↔ briefing).

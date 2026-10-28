@@ -147,6 +147,7 @@ export default function SidebarRecentConversations({
                   {conversation.sessionTitle}
                 </span>
                 <span className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[10px] leading-3 text-muted-foreground">
+                  {conversation.isBackground && <span className="text-[11px] text-muted-foreground">{t('sessions.backgroundRun', 'Background run')}</span>}
                   {markedOptions.map((option) => (
                     <LaunchOptionMark key={option.id} label={option.marker!.label} hint={option.marker!.hint} />
                   ))}

@@ -21,6 +21,8 @@ type SessionRow = {
   isArchived: number;
   is_side: number;
   is_private: number;
+  is_background: number;
+  interactive_resumed: number;
   /**
    * JSON of the plugin-declared launch options (see schema.ts). Set at
    * creation; only `updateSessionLaunchOptions` changes it later, for options
@@ -37,7 +39,7 @@ type RecentSessionsPage = {
 };
 
 const SESSION_ROW_COLUMNS =
-  'session_id, provider, provider_session_id, project_path, jsonl_path, custom_name, name_source, recap, recap_message_count, topic_memory, model, effort, isArchived, is_side, is_private, launch_options, created_at, updated_at';
+  'session_id, provider, provider_session_id, project_path, jsonl_path, custom_name, name_source, recap, recap_message_count, topic_memory, model, effort, isArchived, is_side, is_private, is_background, interactive_resumed, launch_options, created_at, updated_at';
 
 /**
  * SQL predicate: a transcript sync must keep the stored name.
@@ -104,6 +106,18 @@ function normalizeProjectPathForProvider(provider: string, projectPath: string):
 }
 
 export const sessionsDb = {
+  /** Providers index rollout origin here; explicit interactive promotion always wins. */
+  setSessionBackground(sessionId: string, isBackground: boolean): void {
+    getConnection().prepare(`UPDATE sessions SET is_background = CASE WHEN interactive_resumed = 1 THEN 0 ELSE ? END
+      WHERE session_id = ? AND provider = 'codex'`).run(Number(isBackground), sessionId);
+  },
+
+  /** Websocket sends and Codex prompt history promote a run permanently, including after rescans. */
+  promoteBackgroundSession(sessionId: string): void {
+    getConnection().prepare(`UPDATE sessions SET is_background = 0, interactive_resumed = 1
+      WHERE (session_id = ? OR provider_session_id = ?) AND provider = 'codex'`).run(sessionId, sessionId);
+  },
+
   /**
    * Upserts one session row discovered on disk by a provider synchronizer.
    *
@@ -568,10 +582,11 @@ export const sessionsDb = {
    * and correctly ordered across projects instead of flattening only the
    * per-project slices already loaded by the client.
    */
-  getRecentSessionsPage(limit: number, offset: number): RecentSessionsPage {
+  getRecentSessionsPage(limit: number, offset: number, showBackgroundRuns = false): RecentSessionsPage {
     const db = getConnection();
     const visibilityClause = `
       sessions.isArchived = 0
+      AND (${showBackgroundRuns ? 1 : 0} = 1 OR sessions.is_background = 0)
       AND (projects.isArchived IS NULL OR projects.isArchived = 0)
     `;
     const rows = db
@@ -604,13 +619,14 @@ export const sessionsDb = {
    * Archived rows are intentionally queried separately so the caller can render
    * them in a dedicated view without reintroducing them into active session lists.
    */
-  getArchivedSessions(): SessionRow[] {
+  getArchivedSessions(showBackgroundRuns = false): SessionRow[] {
     const db = getConnection();
     const rows = db
       .prepare(
         `SELECT ${SESSION_ROW_COLUMNS}
          FROM sessions
          WHERE isArchived = 1
+           AND (${showBackgroundRuns ? 1 : 0} = 1 OR is_background = 0)
          ORDER BY datetime(COALESCE(updated_at, created_at)) DESC, session_id DESC`
       )
       .all() as SessionRow[];
@@ -652,7 +668,7 @@ export const sessionsDb = {
     return normalizeSessionRows(rows);
   },
 
-  getSessionsByProjectPathPage(projectPath: string, limit: number, offset: number): SessionRow[] {
+  getSessionsByProjectPathPage(projectPath: string, limit: number, offset: number, showBackgroundRuns = false): SessionRow[] {
     const db = getConnection();
     const normalizedProjectPath = normalizeProjectPath(projectPath);
     const rows = db
@@ -662,6 +678,7 @@ export const sessionsDb = {
          WHERE project_path = ?
            AND isArchived = 0
            AND is_side = 0
+           AND (${showBackgroundRuns ? 1 : 0} = 1 OR is_background = 0)
          ORDER BY datetime(COALESCE(updated_at, created_at)) DESC, session_id DESC
          LIMIT ? OFFSET ?`
       )
@@ -670,7 +687,7 @@ export const sessionsDb = {
     return normalizeSessionRows(rows);
   },
 
-  countSessionsByProjectPath(projectPath: string): number {
+  countSessionsByProjectPath(projectPath: string, showBackgroundRuns = false): number {
     const db = getConnection();
     const normalizedProjectPath = normalizeProjectPath(projectPath);
     const row = db
@@ -679,7 +696,8 @@ export const sessionsDb = {
          FROM sessions
          WHERE project_path = ?
            AND isArchived = 0
-           AND is_side = 0`
+           AND is_side = 0
+           AND (${showBackgroundRuns ? 1 : 0} = 1 OR is_background = 0)`
       )
       .get(normalizedProjectPath) as { count: number } | undefined;
 

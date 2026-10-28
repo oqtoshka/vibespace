@@ -219,12 +219,13 @@ export const api = {
   // config endpoint removed - no longer needed (frontend uses window.location)
   // After the projectName → projectId migration the path/query identifier is
   // the DB-assigned `projectId`; parameter names reflect that for clarity.
-  projects: () => authenticatedFetch('/api/projects'),
-  archivedProjects: () => authenticatedFetch('/api/projects/archived'),
-  projectSessions: (projectId, { limit = 20, offset = 0 } = {}) => {
+  projects: ({ showBackgroundRuns = false } = {}) => authenticatedFetch(`/api/projects?showBackgroundRuns=${showBackgroundRuns ? '1' : '0'}`),
+  archivedProjects: ({ showBackgroundRuns = false } = {}) => authenticatedFetch(`/api/projects/archived?showBackgroundRuns=${showBackgroundRuns ? '1' : '0'}`),
+  projectSessions: (projectId, { limit = 20, offset = 0, showBackgroundRuns = false } = {}) => {
     const params = new URLSearchParams();
     params.set('limit', String(limit));
     params.set('offset', String(offset));
+    params.set('showBackgroundRuns', showBackgroundRuns ? '1' : '0');
     return authenticatedFetch(`/api/projects/${encodeURIComponent(projectId)}/sessions?${params.toString()}`);
   },
   projectTaskmaster: (projectId) =>
@@ -267,8 +268,8 @@ export const api = {
       method: 'DELETE',
     });
   },
-  getArchivedSessions: () =>
-    authenticatedFetch('/api/providers/sessions/archived'),
+  getArchivedSessions: ({ showBackgroundRuns = false } = {}) =>
+    authenticatedFetch(`/api/providers/sessions/archived?showBackgroundRuns=${showBackgroundRuns ? '1' : '0'}`),
   // Where a session lives when no sidebar list contains it — archived, a side
   // session, or simply past the newest-20-per-project window. Used to resolve a
   // `/session/:id` URL that arrived from outside the app (an external board, a
@@ -281,11 +282,12 @@ export const api = {
     authenticatedFetch(`/api/providers/sessions/${encodeURIComponent(sessionId)}`),
   runningSessions: () =>
     authenticatedFetch('/api/providers/sessions/running'),
-  recentConversations: ({ limit = 40, offset = 0 } = {}) => {
+  recentConversations: ({ limit = 40, offset = 0, showBackgroundRuns = false } = {}) => {
     const params = new URLSearchParams({
       limit: String(limit),
       offset: String(offset),
     });
+    params.set('showBackgroundRuns', showBackgroundRuns ? '1' : '0');
     return authenticatedFetch(`/api/providers/sessions/recent?${params.toString()}`);
   },
   providerSessionId: (sessionId) =>
