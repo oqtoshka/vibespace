@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import type { NormalizedMessage } from './useSessionStore';
-import { removeOptimisticUserEchoes } from './sessionMessageReconciliation';
+import { removeOptimisticUserEchoes, removePersistedRealtimeEchoes } from './sessionMessageReconciliation';
 
 const createUserMessage = (
   id: string,
@@ -119,4 +119,60 @@ test('leaves non-user realtime rows alone', () => {
   } as unknown as NormalizedMessage;
 
   assert.deepEqual(removeOptimisticUserEchoes([], [toolUse]), [toolUse]);
+});
+
+function row(id: string, second: number, kind: NormalizedMessage['kind'], content = '', role?: 'user' | 'assistant'): NormalizedMessage {
+  return {
+    id, sessionId: 'session-1', provider: 'opencode', kind, content, role,
+    timestamp: new Date(Date.UTC(2026, 0, 1, 12, 0, second)).toISOString(),
+  };
+}
+
+test('chat history refresh removes the live answer across a bash row after reconciling the user echo', () => {
+  // The HTTP runtime stores tools before the final answer, while the live
+  // answer may already have appeared before the tool. Adjacent-text dedupe
+  // cannot fix this transcript: live answer -> bash -> persisted answer.
+  const localUser = row('local-user', 1, 'text', 'More context', 'user');
+  const liveAnswer = row('live-answer', 10, 'text', 'Context added.', 'assistant');
+  const liveTool = { ...row('live-bash', 11, 'tool_use'), toolId: 'call-bash' };
+  const history = [
+    row('stored-user', 2, 'text', 'More context', 'user'),
+    { ...row('stored-bash', 12, 'tool_use'), toolId: 'call-bash' },
+    row('stored-answer', 13, 'text', 'Context added.', 'assistant'),
+  ];
+
+  assert.deepEqual(removePersistedRealtimeEchoes(history, [localUser, liveAnswer, liveTool]), []);
+});
+
+test('an identical answer in a later pending turn survives a refresh of the preceding turn', () => {
+  const history = [
+    row('stored-user', 1, 'text', 'First question', 'user'),
+    row('stored-answer', 2, 'text', 'Done.', 'assistant'),
+  ];
+  const pending = [
+    row('next-user', 3, 'text', 'Second question', 'user'),
+    row('next-answer', 4, 'text', 'Done.', 'assistant'),
+  ];
+  assert.deepEqual(removePersistedRealtimeEchoes(history, pending), pending);
+});
+
+test('history lag retains an answer until its own turn has been persisted', () => {
+  const localUser = row('local-user', 1, 'text', 'Question', 'user');
+  const stream = row('__streaming_session-1', 3, 'stream_delta', 'Still writing');
+  const history = [row('stored-user', 2, 'text', 'Question', 'user')];
+  assert.deepEqual(removePersistedRealtimeEchoes(history, [localUser, stream]), [stream]);
+});
+
+test('reconciles later turns without borrowing the same text from an earlier answer', () => {
+  const localUser = row('local-user', 4, 'text', 'Second question', 'user');
+  const live = row('live-answer', 6, 'text', 'Done.', 'assistant');
+  const history = [
+    row('first-user', 1, 'text', 'First question', 'user'),
+    row('first-answer', 2, 'text', 'Done.', 'assistant'),
+    row('second-user', 5, 'text', 'Second question', 'user'),
+    row('second-answer', 7, 'text', 'Different answer.', 'assistant'),
+  ];
+  assert.deepEqual(removePersistedRealtimeEchoes(history, [localUser, live]), [live]);
+  history[3] = { ...history[3], content: 'Done.' };
+  assert.deepEqual(removePersistedRealtimeEchoes(history, [localUser, live]), []);
 });
