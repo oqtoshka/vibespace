@@ -8,7 +8,7 @@ type LedgerItem = { id: string | number; status: string; subject: string; waitin
 type LedgerResult = { open: LedgerItem[]; activity: number };
 type LedgerReader = (sessionId: string, options?: { cwd?: string | null }) => LedgerResult;
 type Ledger = { read: LedgerReader; listName: string; closeHow: string };
-type ContinuationState = { count: number; stalls: number; fingerprint: string | null; activity: number };
+type ContinuationState = { count: number; stalls: number; fingerprint: string | null; activity: number; retryAt?: number; backoff?: number };
 
 /**
  * Task-ledger continuation for the per-turn providers (OpenCode, Codex, Cursor).
@@ -40,8 +40,8 @@ const LEDGERS: Record<string, Ledger> = {
 };
 
 // `${provider}:${sessionId}` -> { count, stalls, fingerprint, activity }.
-// Entries are dropped as soon as a session's ledger closes or a bail-out
-// fires, so the map only ever holds sessions mid-continuation.
+// Native entries drop on close or bail-out; external exhausted identities stay
+// for deduplication across checks. Bound retained sessions independently.
 const states = new Map<string, ContinuationState>();
 // One report-repair checkpoint per stable human turn, even when every task is closed.
 // This is post-stream repair: it does not retract or suppress previously sent chat.
@@ -108,23 +108,43 @@ export function planTaskContinuation({ provider, sessionId, cwd = null, userId =
     return null;
   }
 
+  if (states.size >= 10000 && !states.has(key)) states.delete(states.keys().next().value!);
   const state = states.get(key) || { count: 0, stalls: 0, fingerprint: null, activity: 0 };
   // Answers and due schedules change the actionable set without a card write.
   // They renew the budget just as a subject or status change does.
   const fingerprint = actionable.map((t) => `${t.id}:${t.status}:${t.subject}`).join(',');
-  if (state.count > 0 && fingerprint === state.fingerprint && activity === state.activity) {
+  // Preserve the exhausted identity across repeated checks. Activity still
+  // renews real runnable work; request/child wait semantics belong to the ledger.
+  const unchanged = fingerprint === state.fingerprint && activity === state.activity;
+  if (external && unchanged && state.retryAt && Date.now() < state.retryAt) return null;
+  if (external && unchanged && state.retryAt) {
+    state.count = 0;
+    state.stalls = 0;
+    delete state.retryAt;
+  }
+  if (state.count > 0 && unchanged) {
     state.stalls += 1;
   } else {
     state.stalls = 0;
     // A productive turn renews the budget. The cap protects against empty loops,
     // not against a real task needing more than five agent turns.
     state.count = 0;
+    if (!unchanged) { delete state.retryAt; delete state.backoff; }
   }
 
   if (state.count >= TASK_NUDGE_MAX || state.stalls >= 2) {
     const subjects = actionable.map((t) => t.subject).join('; ');
     const why = state.stalls >= 2 ? 'no progress across two nudges' : `nudge budget (${TASK_NUDGE_MAX}) exhausted`;
     console.log(`[${provider} tasks] session ${sessionId}: giving up (${why}) with ${actionable.length} open task(s): ${subjects}`);
+    if (external) {
+      // Keep the dedup identity across unrelated turns instead of deleting it
+      // and immediately starting the same loop again. A changed actionable set
+      // (including a due schedule or answered card) bypasses this cooldown.
+      state.backoff = Math.min((state.backoff || 30_000) * 2, 300_000);
+      state.retryAt = Date.now() + state.backoff;
+      states.set(key, state);
+      if (state.backoff > 60_000) return null;
+    }
     notifyRunFailed({
       userId,
       provider,
@@ -132,7 +152,7 @@ export function planTaskContinuation({ provider, sessionId, cwd = null, userId =
       sessionName,
       error: `Turn ended with ${actionable.length} open task(s) — ${why}: ${subjects}`,
     });
-    states.delete(key);
+    if (!external) states.delete(key);
     return null;
   }
 

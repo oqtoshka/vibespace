@@ -28,3 +28,37 @@ for (const provider of ['codex', 'cursor', 'opencode']) {
     } finally { stop(); __clearTaskContinuationState(); }
   });
 }
+
+test('exhausted external requests retain dedup state; progress and runnable changes bypass cooldown', () => {
+  __clearTaskContinuationState();
+  let activity = 1;
+  let now = 1_000_000;
+  const originalNow = Date.now;
+  Date.now = () => now;
+  const open = [{ id: 'r1', subject: 'Deliver outcome', status: 'in_progress' as const, waitingOnUser: false, updatedAt: null }];
+  const stop = registerTaskLedgerSource(() => ({ listName: 'card', guidance: 'Use card tools', open, activity }));
+  const options = { provider: 'codex', sessionId: 'dedup-reporting' };
+  try {
+    assert.ok(planTaskContinuation(options));
+    assert.ok(planTaskContinuation(options));
+    assert.equal(planTaskContinuation(options), null, 'unchanged work reaches its existing stall bound');
+    for (let i = 0; i < 20; i++) assert.equal(planTaskContinuation(options), null);
+    now += 60_000;
+    assert.ok(planTaskContinuation(options), 'still-runnable unchanged work can be retried after cooldown');
+    assert.ok(planTaskContinuation(options));
+    assert.equal(planTaskContinuation(options), null);
+    now += 60_000;
+    assert.equal(planTaskContinuation(options), null, 'repeated duplicate bursts increase backoff');
+    activity += 1;
+    assert.ok(planTaskContinuation(options), 'actual ledger progress immediately bypasses cooldown');
+    assert.ok(planTaskContinuation(options));
+    assert.equal(planTaskContinuation(options), null);
+    open.push({ id: 's2', subject: 'New runnable step', status: 'in_progress', waitingOnUser: false, updatedAt: null });
+    assert.match(planTaskContinuation(options)!, /New runnable step/, 'new runnable work never waits for the old cooldown');
+    open[0].waitingOnUser = true;
+    open[1].waitingOnUser = true;
+    assert.equal(planTaskContinuation(options), null);
+    open[0].waitingOnUser = false;
+    assert.ok(planTaskContinuation(options), 'answered wait starts immediately');
+  } finally { Date.now = originalNow; stop(); __clearTaskContinuationState(); }
+});
