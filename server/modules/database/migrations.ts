@@ -506,6 +506,49 @@ const addSessionLaunchOptions = (db: Database): void => {
 };
 
 /**
+ * What the synchronizers recognise as a background run. Bump it whenever the
+ * verdict changes: 1 = Codex `codex exec` rollouts, 2 = Claude `claude -p`
+ * transcripts too, and never a chat started in VibeSpace.
+ */
+const BACKGROUND_RUN_CLASSIFIER_VERSION = '2';
+const BACKGROUND_RUN_CLASSIFIER_KEY = 'sessions_background_classifier_version';
+
+/**
+ * Adds the background-run flag and its permanent interactive promotion, and
+ * re-indexes every transcript once per classifier version.
+ *
+ * The incremental scan only reads transcripts created after its cursor, so
+ * runs that predate a classifier would otherwise never be classified. Clearing
+ * the cursor makes the next scan walk everything once; promoted rows stay
+ * promoted because `interactive_resumed` survives the rescan.
+ */
+const addSessionBackgroundRunColumns = (db: Database): void => {
+  if (!tableExists(db, 'sessions')) {
+    return;
+  }
+
+  const columnNames = getTableInfo(db, 'sessions').map((column) => column.name);
+  const columnsWereMissing = !columnNames.includes('is_background');
+  addColumnToTableIfNotExists(db, 'sessions', columnNames, 'is_background', 'INTEGER NOT NULL DEFAULT 0');
+  addColumnToTableIfNotExists(db, 'sessions', columnNames, 'interactive_resumed', 'INTEGER NOT NULL DEFAULT 0');
+
+  const stored = db
+    .prepare('SELECT value FROM app_config WHERE key = ?')
+    .get(BACKGROUND_RUN_CLASSIFIER_KEY) as { value: string } | undefined;
+  if (!columnsWereMissing && stored?.value === BACKGROUND_RUN_CLASSIFIER_VERSION) {
+    return;
+  }
+
+  console.log('Running migration: Re-indexing session transcripts for background-run classification');
+  if (tableExists(db, 'scan_state')) {
+    db.exec('DELETE FROM scan_state');
+  }
+  db.prepare(
+    'INSERT INTO app_config (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value'
+  ).run(BACKGROUND_RUN_CLASSIFIER_KEY, BACKGROUND_RUN_CLASSIFIER_VERSION);
+};
+
+/**
  * Links a native side question to the session it was asked from. Rows that
  * predate native side questions have no parent, which is what NULL says.
  */
@@ -619,13 +662,7 @@ export const runMigrations = (db: Database) => {
     addSessionRecap(db);
     addSessionIsSide(db);
     addSessionIsPrivate(db);
-    const sessionColumns = getTableInfo(db, 'sessions').map(column => column.name);
-    if (!sessionColumns.includes('is_background')) {
-      addColumnToTableIfNotExists(db, 'sessions', sessionColumns, 'is_background', 'INTEGER NOT NULL DEFAULT 0');
-      // Re-index existing rollouts once; a timestamp cursor would skip old exec runs.
-      if (tableExists(db, 'scan_state')) db.exec('DELETE FROM scan_state');
-    }
-    addColumnToTableIfNotExists(db, 'sessions', sessionColumns, 'interactive_resumed', 'INTEGER NOT NULL DEFAULT 0');
+    addSessionBackgroundRunColumns(db);
     addSessionLaunchOptions(db);
     addSessionParentSessionId(db);
     addSessionModelColumn(db);

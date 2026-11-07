@@ -240,3 +240,14 @@ test('launchOptionsKey is the same for equal sets in any key order and empty for
   assert.notEqual(launchOptionsKey({ a: true }), launchOptionsKey({ b: true }));
   assert.notEqual(launchOptionsKey({ a: true }), '');
 });
+
+test("a parent Claude Code session's entrypoint label is not handed on to agents", () => {
+  for (const label of ['cli', 'sdk-cli', 'sdk-ts']) {
+    const env = buildAgentEnv({}, { CLAUDE_CODE_ENTRYPOINT: label, PATH: '/usr/bin' });
+
+    assert.equal(env.CLAUDE_CODE_ENTRYPOINT, undefined, label);
+    assert.equal(env.PATH, '/usr/bin');
+  }
+  // A caller that means to set it still can.
+  assert.equal(buildAgentEnv({ CLAUDE_CODE_ENTRYPOINT: 'sdk-ts' }, {}).CLAUDE_CODE_ENTRYPOINT, 'sdk-ts');
+});

@@ -105,3 +105,22 @@ test('contributors see the app session id, not the provider-native one', async (
   await optionsForTurn({ sessionId: 'legacy-direct' });
   assert.equal(seen.at(-1).sessionId, 'legacy-direct', 'a legacy caller keeps its only id');
 });
+
+// The CLI keeps an inherited entrypoint label and turns `cli` into `sdk-cli`
+// without a terminal, which is how `claude -p` runs are told apart. A server
+// started from a Claude Code terminal must not hand its label to the SDK, or
+// every VibeSpace conversation would be recorded, and hidden, as one.
+test("a parent Claude Code session's entrypoint label never reaches the SDK subprocess", async () => {
+  const inherited = Object.prototype.hasOwnProperty.call(process.env, 'CLAUDE_CODE_ENTRYPOINT');
+  const previous = process.env.CLAUDE_CODE_ENTRYPOINT;
+  process.env.CLAUDE_CODE_ENTRYPOINT = 'cli';
+  try {
+    const options = await optionsForTurn({ sessionId: 'helper-env-entrypoint' });
+
+    assert.equal(options.env.CLAUDE_CODE_ENTRYPOINT, undefined);
+    assert.equal(options.env.PATH, process.env.PATH);
+  } finally {
+    if (inherited) process.env.CLAUDE_CODE_ENTRYPOINT = previous;
+    else delete process.env.CLAUDE_CODE_ENTRYPOINT;
+  }
+});

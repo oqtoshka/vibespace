@@ -20,9 +20,18 @@ type ParsedSession = {
   projectPath: string;
   sessionName?: string;
   nameSource?: SessionNameSource;
+  isBackground: boolean;
 };
 
 const PLACEHOLDER_NAME = 'Untitled Claude Session';
+
+/**
+ * The `entrypoint` the Claude CLI stamps on the entries of a print-mode
+ * (`claude -p`) run. Interactive terminal sessions carry `cli` and Agent SDK
+ * sessions, VibeSpace's own included, carry `sdk-ts`; anything else, or no
+ * value at all, stays a visible conversation.
+ */
+const HEADLESS_ENTRYPOINT = 'sdk-cli';
 
 /**
  * Title candidates the Claude CLI leaves in a transcript, best first.
@@ -76,6 +85,43 @@ const TITLE_SCAN_CACHE_LIMIT = 1000;
 export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
   private readonly provider = 'claude' as const;
   private readonly claudeHome = path.join(os.homedir(), '.claude');
+  private historyStamp = '';
+
+  /**
+   * Reads the terminal CLI's prompt journal, `~/.claude/history.jsonl`: the
+   * title fallback, and the evidence that promotes a background run.
+   *
+   * Only the interactive CLI writes to it — `claude -p` runs and SDK sessions
+   * never do — so a session id in it is one somebody typed into, which is what
+   * turns a `claude -p` run resumed in the terminal into a conversation for
+   * good. Its ids are promoted whenever the journal's fingerprint changes,
+   * which also reaches transcripts outside the incremental scan window.
+   */
+  private async readPromptHistory(): Promise<Map<string, string>> {
+    const historyPath = path.join(this.claudeHome, 'history.jsonl');
+    // Fingerprint before reading: a prompt appended mid-read then shows up as
+    // a change on the next pass instead of being recorded as already seen.
+    const stamp = await stat(historyPath)
+      .then((info) => `${info.ino}:${info.size}:${info.mtimeMs}`)
+      .catch(() => null);
+    const prompts = await buildLookupMap(historyPath, 'sessionId', 'display');
+    if (stamp && stamp !== this.historyStamp) {
+      for (const sessionId of prompts.keys()) {
+        sessionsDb.promoteBackgroundSession(sessionId);
+      }
+      this.historyStamp = stamp;
+    }
+    return prompts;
+  }
+
+  /** Records the transcript's origin on the row `createSession` returned. */
+  private indexBackground(sessionId: string, parsed: ParsedSession, prompts: Map<string, string>): void {
+    sessionsDb.setSessionBackground(sessionId, parsed.isBackground);
+    // The journal pass may have run before this row existed.
+    if (prompts.has(parsed.sessionId)) {
+      sessionsDb.promoteBackgroundSession(sessionId);
+    }
+  }
 
   /**
    * Returns true when a JSONL file is a subagent transcript or tool result
@@ -98,7 +144,7 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
    * Scans ~/.claude/projects and upserts discovered sessions into DB.
    */
   async synchronize(since?: Date): Promise<number> {
-    const nameMap = await buildLookupMap(path.join(this.claudeHome, 'history.jsonl'), 'sessionId', 'display');
+    const nameMap = await this.readPromptHistory();
     const files = await findFilesRecursivelyCreatedAfter(
       path.join(this.claudeHome, 'projects'),
       '.jsonl',
@@ -117,7 +163,7 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
       }
 
       const timestamps = await readFileTimestamps(filePath);
-      sessionsDb.createSession(
+      const sessionId = sessionsDb.createSession(
         parsed.sessionId,
         this.provider,
         parsed.projectPath,
@@ -127,6 +173,7 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
         filePath,
         parsed.nameSource
       );
+      this.indexBackground(sessionId, parsed, nameMap);
       processed += 1;
     }
 
@@ -145,7 +192,7 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
       return null;
     }
 
-    const nameMap = await buildLookupMap(path.join(this.claudeHome, 'history.jsonl'), 'sessionId', 'display');
+    const nameMap = await this.readPromptHistory();
     // Only the live watcher path may claim a waiting terminal: the bulk rescan
     // in synchronize() also walks years-old transcripts, which must never
     // attach themselves to a freshly opened empty chat.
@@ -155,7 +202,7 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
     }
 
     const timestamps = await readFileTimestamps(filePath);
-    return sessionsDb.createSession(
+    const sessionId = sessionsDb.createSession(
       parsed.sessionId,
       this.provider,
       parsed.projectPath,
@@ -165,6 +212,8 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
       filePath,
       parsed.nameSource
     );
+    this.indexBackground(sessionId, parsed, nameMap);
+    return sessionId;
   }
 
   /**
@@ -175,6 +224,9 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
     nameMap: Map<string, string>,
     options?: { claimPendingCliSession?: boolean }
   ): Promise<ParsedSession | null> {
+    // The first entry carrying the session id and cwd (a user message or an
+    // attachment, after a few bookkeeping lines) also carries the CLI's
+    // `entrypoint`, so classifying a run costs no read beyond this one.
     const parsed = await extractFirstValidJsonlData(filePath, (rawData) => {
       const data = rawData as Record<string, unknown>;
       const sessionId = typeof data.sessionId === 'string' ? data.sessionId : undefined;
@@ -187,6 +239,7 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
       return {
         sessionId,
         projectPath,
+        isBackground: data.entrypoint === HEADLESS_ENTRYPOINT,
       };
     });
 

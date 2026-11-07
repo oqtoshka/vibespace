@@ -27,6 +27,8 @@ async function withIsolatedDatabase(runTest: () => void | Promise<void>): Promis
 
   closeConnection();
   process.env.DATABASE_PATH = databasePath;
+  // An existing empty file prevents importing the installation's legacy database.
+  await writeFile(databasePath, '');
   await initializeDatabase();
 
   try {
@@ -461,6 +463,35 @@ test('Codex background classification uses exec metadata, never prompt text', { 
       }
       await synchronizer.synchronize();
       for (const [id, , expected] of fixtures) assert.equal(sessionsDb.getSessionById(id)?.is_background, expected);
+    });
+  } finally { restoreHome(); await rm(root, { recursive: true, force: true }); }
+});
+
+test('a chat started in VibeSpace stays visible though the Codex SDK ran it through exec', { concurrency: false }, async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'codex-background-app-'));
+  const restoreHome = patchHomeDir(root);
+  const sdkMeta = (id: string) => ({ type: 'session_meta', payload: { id, cwd: '/workspace/example', originator: 'codex_sdk_ts', source: 'exec' } });
+  const rolloutPath = (id: string) => path.join(root, '.codex/sessions/2026/07/07', `rollout-${id}.jsonl`);
+  try {
+    await withIsolatedDatabase(async () => {
+      const synchronizer = new CodexSessionSynchronizer();
+      // Bound before the rollout is indexed.
+      sessionsDb.createAppSession('app-chat', 'codex', '/workspace/example', false, false, 'App chat');
+      sessionsDb.assignProviderSessionId('app-chat', 'sdk-thread');
+      await writeCodexRollout(root, 'sdk-thread', [sdkMeta('sdk-thread')]);
+      assert.equal(await synchronizer.synchronizeFile(rolloutPath('sdk-thread')), 'app-chat');
+      assert.equal(sessionsDb.getSessionById('app-chat')?.is_background, 0);
+
+      // Indexed first (flagged as the exec run it looks like), then claimed by
+      // the chat that started it: the merged chat is a conversation.
+      await writeCodexRollout(root, 'sdk-thread-early', [sdkMeta('sdk-thread-early')]);
+      await synchronizer.synchronizeFile(rolloutPath('sdk-thread-early'));
+      assert.equal(sessionsDb.getSessionById('sdk-thread-early')?.is_background, 1);
+      sessionsDb.createAppSession('app-chat-early', 'codex', '/workspace/example', false, false, 'Early chat');
+      sessionsDb.assignProviderSessionId('app-chat-early', 'sdk-thread-early');
+      await synchronizer.synchronize();
+      assert.equal(sessionsDb.getSessionById('app-chat-early')?.is_background, 0);
+      assert.deepEqual(sessionsDb.getRecentSessionsPage(50, 0).sessions.map(row => row.session_id).sort(), ['app-chat', 'app-chat-early']);
     });
   } finally { restoreHome(); await rm(root, { recursive: true, force: true }); }
 });

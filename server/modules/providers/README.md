@@ -379,14 +379,34 @@ alongside the implementation.
 
 
 
-## Codex background runs
+## Background runs
 
-The synchronizer indexes `session_meta.payload.originator === "codex_exec"`
-**or** `session_meta.payload.source === "exec"` as `sessions.is_background`.
-Other or missing values stay visible; prompt wording is never a classifier.
-Existing installations reset the scan cursor once when adding this column so
-older rollouts are classified too. List requests use the stored flag and never
-open rollout files to classify a page.
+Synchronizers index a transcript's origin as `sessions.is_background`. Prompt
+wording is never a classifier; other or missing values stay visible.
+
+- **Codex**: `session_meta.payload.originator === "codex_exec"` **or**
+  `session_meta.payload.source === "exec"`.
+- **Claude**: `entrypoint === "sdk-cli"`, the label the CLI stamps on every
+  entry of a `claude -p` run. It is read from the first entry carrying
+  `sessionId` and `cwd`, the read that already identifies the session, so
+  classifying costs no extra I/O. `cli` (the interactive terminal) and
+  `sdk-ts` (Agent SDK sessions, VibeSpace's own included) stay visible, and
+  so does a transcript whose head cannot be parsed (it is not indexed at all).
+- **OpenCode** and the other providers are never flagged: nothing they store
+  tells a scripted run from a conversation (an `opencode run` session and one
+  VibeSpace starts look the same).
+
+A chat started in VibeSpace (its `session_id` differs from the provider id) is
+never flagged, whatever its transcript says: chats from the Codex SDK
+transport ran through `codex exec`, and a server started from a Claude Code
+terminal would label its own chats like `claude -p`. Agent spawns also drop an
+inherited `CLAUDE_CODE_ENTRYPOINT` (`buildAgentEnv`), so the SDK labels its
+subprocess `sdk-ts` and a CLI in the Terminal tab labels itself.
+
+Existing installations reset the scan cursor once per classifier version
+(`app_config` key `sessions_background_classifier_version`), so transcripts
+that predate a classifier are classified too. List requests use the stored
+flag and never open transcripts to classify a page.
 
 Project, Recent and Archive session lists hide background runs by default.
 **Show background runs** reveals them with a **Background run** label. The
@@ -396,12 +416,18 @@ Title/content search and command-palette search include background runs
 regardless of the toggle; direct session URLs remain resolvable.
 
 Promotion is permanent: an accepted `chat.send` or `chat.queue-add` in VibeSpace,
-or a submitted TUI prompt for the same provider session id in Codex's
-`history.jsonl`, sets `interactive_resumed` and clears `is_background`. The
-synchronizer checks the prompt journal during indexing, including when the
-rollout is outside the incremental scan window. Journal changes are cached by
-file fingerprint. Subsequent exec continuations and rescans cannot hide a
-promoted conversation. Merely opening a URL, renaming a run, or appending another
-scripted prompt does not promote it. If Codex prompt-history persistence is
-disabled or its entry was removed before indexing, a TUI resume leaves no reliable
-interaction signal; send a message from VibeSpace to promote that conversation.
+or a submitted terminal prompt for the same provider session id in the CLI's
+prompt journal (`~/.codex/history.jsonl`, `~/.claude/history.jsonl`; only the
+interactive CLIs write them), sets `interactive_resumed` and clears
+`is_background`. A terminal resume of a `claude -p` run appends `cli` entries
+to the same transcript, whose head still reads `sdk-cli`, so the journal is
+what promotes it. The synchronizers check the journal during indexing,
+including when the transcript is outside the incremental scan window. Journal
+changes are cached by file fingerprint. Subsequent scripted continuations and
+rescans cannot hide a promoted conversation. Merely opening a URL, renaming a
+run, or appending another scripted prompt does not promote it. If
+prompt-history persistence is disabled or its entry was removed before
+indexing, a terminal resume leaves no reliable interaction signal; send a
+message from VibeSpace to promote that conversation. A `claude -p` that an
+agent starts inside a VibeSpace Claude session inherits that session's
+`sdk-ts` label and stays visible.

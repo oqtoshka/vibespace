@@ -143,3 +143,26 @@ test('an accepted VibeSpace queue item promotes a Codex background run', async (
   });
   assert.equal(sessionsDb.getSessionById('background-queue')?.is_background, 0);
 });
+
+test('an accepted VibeSpace send or queue item permanently promotes a Claude claude -p run', async () => {
+  for (const id of ['headless-send', 'headless-queue']) {
+    sessionsDb.createSession(id, 'claude', '/workspace/example', 'Headless');
+    sessionsDb.setSessionBackground(id, true);
+    assert.equal(sessionsDb.getSessionById(id)?.is_background, 1);
+  }
+  const runs: string[] = [];
+  await deliver(connect(runs), {
+    type: 'chat.send', sessionId: 'headless-send', clientMsgId: 'resume_headless',
+    content: 'Continue interactively', options: {},
+  });
+  assert.deepEqual(runs, ['Continue interactively']);
+  await deliver(connect([]), {
+    type: 'chat.queue-add', sessionId: 'headless-queue', id: 'resume_headless_queued',
+    content: 'Continue interactively', options: {},
+  });
+  for (const id of ['headless-send', 'headless-queue']) {
+    sessionsDb.setSessionBackground(id, true);
+    assert.equal(sessionsDb.getSessionById(id)?.is_background, 0, id);
+    assert.ok(sessionsDb.getRecentSessionsPage(50, 0).sessions.some(row => row.session_id === id), id);
+  }
+});

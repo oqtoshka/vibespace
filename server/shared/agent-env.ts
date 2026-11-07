@@ -45,6 +45,22 @@ const SERVER_ONLY_KEYS = new Set([
 const SERVER_ONLY_PREFIXES = ['VS_OIDC_'];
 
 /**
+ * Labels a parent Claude Code process leaves in the environment of everything
+ * it starts. They describe that parent, never the process being spawned.
+ *
+ * A VibeSpace server started from inside a Claude Code session inherits
+ * CLAUDE_CODE_ENTRYPOINT. The Claude CLI keeps an inherited value instead of
+ * deriving its own, and turns `cli` into `sdk-cli` when it runs without a
+ * terminal, so every conversation VibeSpace launched would be recorded as a
+ * headless `claude -p` run: a background run to any other reader of the
+ * transcripts, and to VibeSpace itself once the chat's own row is gone (a
+ * rebuilt database). Without it the Agent SDK labels its subprocess `sdk-ts`
+ * and a CLI in the Terminal tab labels itself (`cli`, or `sdk-cli` for
+ * `claude -p`).
+ */
+const INHERITED_LAUNCHER_KEYS = new Set(['CLAUDE_CODE_ENTRYPOINT']);
+
+/**
  * Keys load-env.js injected into process.env from VibeSpace's own .env file (and
  * its own defaults). Registering them keeps this filter correct when someone adds
  * a new secret to .env without also editing the list above.
@@ -79,7 +95,7 @@ export function buildAgentEnv(
 
   for (const [key, value] of Object.entries(source)) {
     if (value === undefined) continue;
-    if (isServerOnlyEnvKey(key)) continue;
+    if (isServerOnlyEnvKey(key) || INHERITED_LAUNCHER_KEYS.has(key)) continue;
     env[key] = value;
   }
 

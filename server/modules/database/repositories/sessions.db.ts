@@ -105,17 +105,45 @@ function normalizeProjectPathForProvider(provider: string, projectPath: string):
   return normalizeProjectPath(projectPath);
 }
 
+/**
+ * Providers whose synchronizers can tell a background run from a conversation:
+ * Codex by `codex exec` rollout metadata, Claude by the `claude -p` transcript
+ * entrypoint. Rows of any other provider are never marked or promoted.
+ */
+const BACKGROUND_RUN_PROVIDERS_SQL = `('codex', 'claude')`;
+
+/**
+ * The flag a synchronizer's verdict (`@flag`) leaves on a row. A promoted row
+ * stays a conversation, and so does a chat started in VibeSpace (its
+ * `session_id` differs from the provider id) whatever its transcript says:
+ * chats from the Codex SDK transport ran through `codex exec`, and a server
+ * started from a Claude Code terminal labels its own chats like `claude -p`.
+ */
+const BACKGROUND_FLAG_SQL = `CASE WHEN interactive_resumed = 1
+    OR (provider_session_id IS NOT NULL AND session_id <> provider_session_id) THEN 0 ELSE @flag END`;
+
 export const sessionsDb = {
-  /** Providers index rollout origin here; explicit interactive promotion always wins. */
+  /**
+   * Codex and Claude synchronizers index transcript origin here; explicit
+   * interactive promotion and app-created chats always win. The watcher calls
+   * this on every transcript append, so an unchanged flag is not rewritten.
+   */
   setSessionBackground(sessionId: string, isBackground: boolean): void {
-    getConnection().prepare(`UPDATE sessions SET is_background = CASE WHEN interactive_resumed = 1 THEN 0 ELSE ? END
-      WHERE session_id = ? AND provider = 'codex'`).run(Number(isBackground), sessionId);
+    getConnection().prepare(`UPDATE sessions SET is_background = ${BACKGROUND_FLAG_SQL}
+      WHERE session_id = @sessionId AND provider IN ${BACKGROUND_RUN_PROVIDERS_SQL}
+        AND is_background <> ${BACKGROUND_FLAG_SQL}`)
+      .run({ flag: Number(isBackground), sessionId });
   },
 
-  /** Websocket sends and Codex prompt history promote a run permanently, including after rescans. */
+  /**
+   * Websocket sends and the Codex and Claude prompt journals promote a run
+   * permanently, including after rescans. An already promoted row is left
+   * untouched, so re-running a journal's promotion pass writes nothing.
+   */
   promoteBackgroundSession(sessionId: string): void {
     getConnection().prepare(`UPDATE sessions SET is_background = 0, interactive_resumed = 1
-      WHERE (session_id = ? OR provider_session_id = ?) AND provider = 'codex'`).run(sessionId, sessionId);
+      WHERE (session_id = ? OR provider_session_id = ?) AND provider IN ${BACKGROUND_RUN_PROVIDERS_SQL}
+        AND interactive_resumed = 0`).run(sessionId, sessionId);
   },
 
   /**
