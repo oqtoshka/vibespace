@@ -4,9 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { closeConnection } from '@/modules/database/connection.js';
-import { initializeDatabase } from '@/modules/database/init-db.js';
-import { sessionsDb } from '@/modules/database/repositories/sessions.db.js';
+import { closeConnection, initializeDatabase, sessionsDb } from '@/modules/database/index.js';
 import { sessionsService } from '@/modules/providers/index.js';
 import {
   CLAUDE_AUTO_COMPACT_AT_MAX,
