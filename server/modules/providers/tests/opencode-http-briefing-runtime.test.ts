@@ -50,7 +50,7 @@ for (const scenario of ['repair', 'repeat', 'missing', 'late', 'launch', 'plain'
       setTimeout(() => {
         broadcast('session.next.tool.called', { callID: 'card-' + serial, tool: 'reply', input: {} });
         broadcast('session.next.tool.success', { callID: 'card-' + serial, content: [{ type: 'text', text: 'Card accepted' }] });
-        if (serial === 1 || scenario === 'repeat') broadcast('session.next.text.delta', { assistantMessageID: 'assistant-' + serial, textID: 'text-' + serial, delta: 'FORBIDDEN_HTTP' });
+        if (serial === 1 || scenario === 'repeat') broadcast('session.next.text.delta', { assistantMessageID: 'assistant-' + serial, textID: 'text-' + serial, delta: 'FORBIDDEN_HTTP\nTwo lines of prose, more than the one closing line OpenCode may end with.' });
         broadcast('session.next.step.ended', { assistantMessageID: 'assistant-' + serial, finish: 'stop' });
       }, 25); return;
     }

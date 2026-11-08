@@ -42,4 +42,6 @@ export { codexRestartAdmissionObserver } from './services/codex-restart-admissio
 export { codexDiagnosticRuntime } from './services/codex-diagnostic-runtime.service.js';
 
 // Main briefing transport output and completion admission.
-export { BriefingOutputPolicy, BRIEFING_REPAIRS_PER_TURN, BRIEFING_REPAIR_PROMPT } from './services/briefing-output-policy.service.js';
+export { BriefingOutputPolicy, BRIEFING_FINAL_LINE_MAX, BRIEFING_FINAL_LINE_RULE, BRIEFING_REPAIRS_PER_TURN, BRIEFING_REPAIR_PROMPT } from './services/briefing-output-policy.service.js';
+// OpenCode CLI run path: stops a turn that only repeats no-op tool calls.
+export { NOOP_TOOL_LOOP_LIMIT, NoopToolLoopGuard } from './services/noop-tool-loop-guard.service.js';

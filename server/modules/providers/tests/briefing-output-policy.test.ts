@@ -2,7 +2,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import { registerTaskLedgerSource, registerAgentLaunchContributor } from '../../../shared/index.js';
-import { BriefingOutputPolicy, BRIEFING_REPAIRS_PER_TURN } from '../index.js';
+import { BriefingOutputPolicy, BRIEFING_FINAL_LINE_MAX, BRIEFING_REPAIRS_PER_TURN } from '../index.js';
+
+// Prose in every provider's terms: two lines, so OpenCode's one-line closing allowance never covers it.
+const PROSE = 'Summary of the finished work.\nEverything is reported on the card.';
 
 for (const provider of ['claude', 'opencode', 'cursor'] as const) {
   test(`${provider}: silent card completion is recorded; prose still repairs; new turns cannot reuse the receipt`, () => {
@@ -22,7 +25,7 @@ for (const provider of ['claude', 'opencode', 'cursor'] as const) {
       assert.equal(gate.state.completedTurnId, undefined);
       gate.begin('native', 'human request', true);
       assert.equal(gate.state.completedTurnId, undefined);
-      assert.equal(gate.accepts({ kind: 'text', content: 'Forbidden summary' }), false);
+      assert.equal(gate.accepts({ kind: 'text', content: PROSE }), false);
       assert.match(gate.complete().prompt!, /card is the visible output/);
       assert.equal(gate.state.completedTurnId, undefined, 'text cannot acquire a receipt');
       assert.deepEqual(gate.complete(), {});
@@ -42,21 +45,21 @@ for (const provider of ['claude', 'opencode', 'cursor'] as const) {
       const gate = new BriefingOutputPolicy(provider, {}); gate.begin('main', 'actual request');
       for (const kind of ['tool_use','tool_result','permission_request','error','status','thinking']) assert.equal(gate.accepts({kind,content:'retained'}),true);
       assert.equal(gate.accepts({kind:'text',role:'user',content:'human'}),true);
-      assert.equal(gate.accepts({kind:'text',role:'assistant',content:'forbidden'}),false);
-      assert.equal(gate.accepts({kind:'stream_delta',content:'forbidden delta'}),false);
+      assert.equal(gate.accepts({kind:'text',role:'assistant',content:PROSE}),false);
+      assert.equal(gate.accepts({kind:'stream_delta',content:PROSE}),false);
       assert.ok(gate.complete().prompt);
       for (let i = 1; i < BRIEFING_REPAIRS_PER_TURN; i++) {
         gate.begin('main', 'repair');
-        assert.equal(gate.accepts({kind:'text',role:'assistant',content:'again'}),false);
+        assert.equal(gate.accepts({kind:'text',role:'assistant',content:PROSE}),false);
         const next = gate.complete();
         assert.ok(next.prompt); assert.doesNotMatch(next.prompt!, /ends this run|AGENT_TEXT_POLICY_VIOLATION/);
       }
       gate.begin('main', 'repair');
-      assert.equal(gate.accepts({kind:'text',role:'assistant',content:'still'}),false, 'text stays dropped past the budget');
+      assert.equal(gate.accepts({kind:'text',role:'assistant',content:PROSE}),false, 'text stays dropped past the budget');
       const last = gate.complete() as Record<string, unknown>;
       assert.equal(last.failure, undefined); assert.equal(last.prompt, undefined); assert.match(String(last.exhausted), /stays open/);
       gate.resetRepairs();
-      assert.equal(gate.accepts({kind:'text',role:'assistant',content:'next turn'}),false);
+      assert.equal(gate.accepts({kind:'text',role:'assistant',content:PROSE}),false);
       assert.ok(gate.complete().prompt, 'a new turn gets a fresh repair budget');
     } finally { unregister(); }
   });
@@ -74,12 +77,12 @@ for (const provider of ['claude', 'opencode', 'cursor'] as const) {
     try {
       const gate = new BriefingOutputPolicy(provider, {});
       gate.begin('native', 'first human request');
-      assert.equal(gate.accepts({ kind: 'text', content: 'first violation' }), false);
+      assert.equal(gate.accepts({ kind: 'text', content: PROSE }), false);
       assert.ok(gate.complete().prompt);
       available = false;
-      for (let i = 1; i < BRIEFING_REPAIRS_PER_TURN; i++) { gate.begin('native', 'repair ' + i); gate.accepts({ kind: 'text', content: 'x' }); assert.ok(gate.complete().prompt); }
+      for (let i = 1; i < BRIEFING_REPAIRS_PER_TURN; i++) { gate.begin('native', 'repair ' + i); gate.accepts({ kind: 'text', content: PROSE }); assert.ok(gate.complete().prompt); }
       gate.begin('native', 'accepted steer');
-      assert.equal(gate.accepts({ kind: 'text', content: 'repeat violation' }), false);
+      assert.equal(gate.accepts({ kind: 'text', content: PROSE }), false);
       assert.ok(gate.complete().exhausted, 'a steer does not renew the turn budget');
     } finally { unregister(); }
   });
@@ -101,7 +104,7 @@ for (const provider of ['claude','opencode','cursor'] as const) {
     try {
       const gate=new BriefingOutputPolicy(provider,{launchOptions:{fixture:true},appSessionId:'host-row'});
       gate.begin(null,'human');
-      assert.equal(gate.accepts({kind:'text',content:'before hook'}),false);
+      assert.equal(gate.accepts({kind:'text',content:PROSE}),false);
       assert.ok(gate.complete().prompt);
       gate.begin('real-native','human');
       // Absent ledger still fails closed into repairs, never into a session failure.
@@ -128,4 +131,63 @@ for (const provider of ['claude','opencode','cursor'] as const) test(`${provider
  try {const gate=new BriefingOutputPolicy(provider,{});gate.begin(null,'identical');gate.begin('native','identical');const first=ids.at(-1);gate.begin('native','identical',true);assert.notEqual(ids.at(-1),first);const second=ids.at(-1);gate.begin('native','identical');assert.equal(ids.at(-1),second);
  const next=new BriefingOutputPolicy(provider,{});next.begin('native','identical');assert.notEqual(ids.at(-1),second);
  } finally{stop();}
+});
+
+test('opencode: one short final line or an empty answer after reporting ends the turn without a repair', () => {
+  const stop = registerTaskLedgerSource(c => ({ listName: 'card', guidance: '', open: [], activity: 0, agentTextPolicy: 'reject', turnComplete: { turnId: c.turnId!, activity: 0 } }));
+  try {
+    const gate = new BriefingOutputPolicy('opencode', {});
+    gate.begin('native', 'human request');
+    assert.equal(gate.accepts({ kind: 'tool_use', content: '' }), true);
+    assert.equal(gate.accepts({ kind: 'stream_delta', content: 'Reported on the card.' }), false, 'the closing line is withheld from chat');
+    assert.deepEqual(gate.complete(), {}, 'a short final line is the accepted end');
+    assert.ok(gate.state.completedTurnId, 'the turn receipt is recorded');
+    gate.begin('native', 'next request', true);
+    assert.equal(gate.accepts({ kind: 'tool_use', content: '' }), true);
+    assert.deepEqual(gate.complete(), {}, 'an empty answer is accepted too');
+    gate.begin('native', 'third request', true);
+    assert.equal(gate.accepts({ kind: 'stream_delta', content: 'x'.repeat(BRIEFING_FINAL_LINE_MAX) }), false);
+    assert.deepEqual(gate.complete(), {}, 'exactly the maximum still passes');
+  } finally { stop(); }
+});
+
+test('opencode: commentary before a tool call, a long or a multi-line closing still repairs and names the final-line rule', () => {
+  const stop = registerTaskLedgerSource(c => ({ listName: 'card', guidance: '', open: [], activity: 0, agentTextPolicy: 'reject', turnComplete: { turnId: c.turnId!, activity: 0 } }));
+  try {
+    for (const run of [
+      [{ kind: 'stream_delta', content: 'Let me check.' }, { kind: 'tool_use', content: '' }],
+      [{ kind: 'stream_delta', content: 'x'.repeat(BRIEFING_FINAL_LINE_MAX + 1) }],
+      [{ kind: 'stream_delta', content: 'Done.' }, { kind: 'stream_delta', content: '\nAnd a second line.' }],
+    ]) {
+      const gate = new BriefingOutputPolicy('opencode', {});
+      gate.begin('native', 'human request');
+      for (const message of run) gate.accepts(message);
+      const repair = gate.complete().prompt!;
+      assert.match(repair, /card is the visible output/);
+      assert.match(repair, /one short final line/);
+      assert.match(repair, /Never call a no-op tool such as `true`/);
+    }
+  } finally { stop(); }
+});
+
+test('opencode: a short final line does not stand in for a missing reporting checkpoint', () => {
+  const stop = registerTaskLedgerSource(() => ({ listName: 'card', guidance: '', open: [], activity: 0, agentTextPolicy: 'reject', completion: { turnId: 'x', prompt: 'reply the thread' } }));
+  try {
+    const gate = new BriefingOutputPolicy('opencode', {});
+    gate.begin('native', 'human request');
+    gate.accepts({ kind: 'stream_delta', content: 'Done.' });
+    assert.match(gate.complete().prompt!, /reply the thread/);
+  } finally { stop(); }
+});
+
+for (const provider of ['claude', 'cursor'] as const) test(`${provider}: a one-line final answer is still prose, and the repair does not offer a final line`, () => {
+  const stop = registerTaskLedgerSource(c => ({ listName: 'card', guidance: '', open: [], activity: 0, agentTextPolicy: 'reject', turnComplete: { turnId: c.turnId!, activity: 0 } }));
+  try {
+    const gate = new BriefingOutputPolicy(provider, {});
+    gate.begin('native', 'human request');
+    assert.equal(gate.accepts({ kind: 'text', content: 'Done.' }), false);
+    const repair = gate.complete().prompt!;
+    assert.ok(repair);
+    assert.doesNotMatch(repair, /one short final line/);
+  } finally { stop(); }
 });

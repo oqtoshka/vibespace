@@ -14,7 +14,7 @@ import { sessionsService } from './modules/providers/services/sessions.service.j
 import { providerModelsService } from './modules/providers/services/provider-models.service.js';
 import { notifyRunFailed, notifyRunStopped } from './modules/notifications/index.js';
 import { planTaskContinuation } from './modules/task-continuation/index.js';
-import { applyOpenCodeSystemInstructions, BriefingOutputPolicy, scheduleSessionRecap, broadcastSessionUpdate } from './modules/providers/index.js';
+import { applyOpenCodeSystemInstructions, BriefingOutputPolicy, NoopToolLoopGuard, scheduleSessionRecap, broadcastSessionUpdate } from './modules/providers/index.js';
 import { createCompleteMessage, createNormalizedMessage, flattenPromptForWindowsShell, prependLaunchInstructions, terminateChild, getOpenCodeHelperWorkspace, isDatabaseLockedError, stripAnsi } from './shared/utils.js';
 
 // Every `opencode` process on this machine writes to one WAL database, so a
@@ -371,6 +371,23 @@ async function spawnOpenCode(command, options = {}, ws, context = undefined) {
     // showing nothing.
     let stderrBuffer = '';
     let lockRetriesLeft = OPEN_CODE_DATABASE_LOCKED_RETRIES;
+    // A model that only repeats no-op tool calls (bash `true` after every
+    // reasoning step) never ends its turn on its own, and `--auto` disables
+    // OpenCode's doom-loop prompt. The guard stops the run; the close handler
+    // then ends the turn as completed, never as a crash or a repair.
+    const loopGuard = new NoopToolLoopGuard();
+
+    const stopNoopLoop = (reason) => {
+      if (!opencodeProcess || opencodeProcess.loopGuardStopped || opencodeProcess.aborted) return;
+      opencodeProcess.loopGuardStopped = true;
+      const stoppedSessionId = capturedSessionId || sessionId || processKey;
+      console.warn(`[OpenCode] session ${stoppedSessionId}: no-op tool loop guard stopped the turn — ${reason}`);
+      ws.send(createNormalizedMessage({
+        kind: 'status', text: 'opencode_noop_loop_stopped', content: reason,
+        sessionId: stoppedSessionId, provider: 'opencode',
+      }));
+      terminateChild(opencodeProcess);
+    };
 
     const notifyTerminalState = ({ code = null, error = null } = {}) => {
       if (terminalNotificationSent) {
@@ -465,6 +482,8 @@ async function spawnOpenCode(command, options = {}, ws, context = undefined) {
         const normalized = runtime.normalizeMessage(response, capturedSessionId || sessionId || null);
         for (const msg of normalized) {
           if (briefingPolicy.accepts(msg)) ws.send(msg);
+          const loopReason = loopGuard.observe(msg);
+          if (loopReason) stopNoopLoop(loopReason);
         }
       } catch (error) {
         const errorContent = error instanceof Error ? error.message : String(error);
@@ -565,8 +584,13 @@ async function spawnOpenCode(command, options = {}, ws, context = undefined) {
           stderrBuffer += stripAnsi(data.toString());
         });
 
-        opencodeProcess.on('close', async (code) => {
+        opencodeProcess.on('close', async (exitCode) => {
           const finalSessionId = capturedSessionId || sessionId || processKey;
+          // The loop guard's own stop is a completed turn: exit status 0, no
+          // stderr bubble, no repair and no continuation (either would re-enter
+          // the loop it just broke).
+          const stoppedByGuard = Boolean(opencodeProcess.loopGuardStopped);
+          const code = stoppedByGuard ? 0 : exitCode;
           releaseHandle(finalSessionId);
           activeOpenCodeProcesses.delete(processKey);
 
@@ -591,7 +615,7 @@ async function spawnOpenCode(command, options = {}, ws, context = undefined) {
             return;
           }
 
-          if (stderrText) {
+          if (stderrText && !stoppedByGuard) {
             sendStderr(stderrText, finalSessionId);
           }
 
@@ -627,10 +651,11 @@ async function spawnOpenCode(command, options = {}, ws, context = undefined) {
           // messages (and queues the recap) when the chain actually ends.
           // Bounds and bail-outs live in planTaskContinuation.
           // Failed runs included, as on the server transport.
-          const checkpoint = code === 0 && !opencodeProcess.aborted ? briefingPolicy.complete() : {};
+          const checkpoint = stoppedByGuard ? briefingPolicy.complete(false)
+            : code === 0 && !opencodeProcess.aborted ? briefingPolicy.complete() : {};
           // Never a failure: past the per-turn repair budget the text stays dropped and the turn ends idle.
           if (checkpoint.exhausted) ws.send(briefingPolicy.noticeMessage(checkpoint.exhausted));
-          if (!completeSent && !opencodeProcess.aborted && !options.ephemeral) {
+          if (!completeSent && !opencodeProcess.aborted && !options.ephemeral && !stoppedByGuard) {
             const continuation = checkpoint.prompt || planTaskContinuation({
               provider: 'opencode',
               sessionId: finalSessionId,
