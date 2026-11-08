@@ -2,7 +2,8 @@
 // Load environment variables before other imports execute
 import './load-env.js';
 import { deploymentConfigRouter } from './modules/deployment-config/index.js';
-import { startEventLoopHealthMonitor } from './shared/event-loop-health.js';
+import { startEventLoopHealthMonitor, logSlowRequests } from './shared/event-loop-health.js';
+import { findLastJsonlEntry } from './shared/utils.js';
 import fs, { promises as fsPromises } from 'fs';
 import path from 'path';
 import os from 'os';
@@ -261,6 +262,9 @@ app.use(express.json({
 app.use(express.urlencoded({ limit: '50mb', extended: true }));
 
 // Public health check endpoint (no authentication required)
+// First, so the timing covers static files and authentication as well.
+app.use(logSlowRequests);
+
 app.get('/health', (req, res) => {
     // Active = a turn currently processing (safe-to-restart signal for deploys).
     // Post-unification, all provider runs are tracked in the chat run registry.
@@ -2244,33 +2248,20 @@ app.get('/api/projects/:projectId/sessions/:sessionId/token-usage', authenticate
                 return res.status(404).json({ error: 'Codex session file not found', sessionId: safeSessionId });
             }
 
-            // Read and parse the Codex JSONL file
-            let fileContent;
+            // Long sessions have multi-gigabyte rollouts, so read backwards to the
+            // latest token_count event rather than loading the file.
+            let tokenBudget;
             try {
-                fileContent = await fsPromises.readFile(sessionFilePath, 'utf8');
+                tokenBudget = await findLastJsonlEntry(sessionFilePath, (entry) => (
+                    entry.type === 'event_msg' && entry.payload?.type === 'token_count' && entry.payload?.info
+                        ? buildCodexTokenBudget(entry.payload.info)
+                        : null
+                ), { contains: '"token_count"' });
             } catch (error) {
                 if (error.code === 'ENOENT') {
                     return res.status(404).json({ error: 'Session file not found', path: sessionFilePath });
                 }
                 throw error;
-            }
-            const lines = fileContent.trim().split('\n');
-            let tokenBudget = null;
-
-            // Find the latest token_count event with info (scan from end)
-            for (let i = lines.length - 1; i >= 0; i--) {
-                try {
-                    const entry = JSON.parse(lines[i]);
-
-                    // Codex stores token info in event_msg with type: "token_count"
-                    if (entry.type === 'event_msg' && entry.payload?.type === 'token_count' && entry.payload?.info) {
-                        tokenBudget = buildCodexTokenBudget(entry.payload.info);
-                        break; // Stop after finding the latest token count
-                    }
-                } catch (parseError) {
-                    // Skip lines that can't be parsed
-                    continue;
-                }
             }
 
             return res.json(tokenBudget || {
@@ -2314,17 +2305,19 @@ app.get('/api/projects/:projectId/sessions/:sessionId/token-usage', authenticate
             }
         }
 
-        // Read and parse the JSONL file
-        let fileContent;
+        // Transcripts of long sessions run to gigabytes, so read backwards to the
+        // latest assistant message that carries usage rather than loading the file.
+        let usageEntry;
         try {
-            fileContent = await fsPromises.readFile(jsonlPath, 'utf8');
+            usageEntry = await findLastJsonlEntry(jsonlPath, (entry) => (
+                entry.type === 'assistant' && entry.message?.usage ? entry : null
+            ), { contains: '"usage"' });
         } catch (error) {
             if (error.code === 'ENOENT') {
                 return res.status(404).json({ error: 'Session file not found', path: jsonlPath });
             }
             throw error; // Re-throw other errors to be caught by outer try-catch
         }
-        const lines = fileContent.trim().split('\n');
 
         let inputTokens = 0;
         let outputTokens = 0;
@@ -2332,29 +2325,15 @@ app.get('/api/projects/:projectId/sessions/:sessionId/token-usage', authenticate
         let cacheCreationTokens = 0;
         let usageModel = null;
 
-        // Find the latest assistant message with usage data (scan from end)
-        for (let i = lines.length - 1; i >= 0; i--) {
-            try {
-                const entry = JSON.parse(lines[i]);
-
-                // Only count assistant messages which have usage data
-                if (entry.type === 'assistant' && entry.message?.usage) {
-                    const usage = entry.message.usage;
-
-                    // Use token counts from latest assistant message only
-                    const directInputTokens = readUsageNumber(usage.input_tokens ?? usage.inputTokens);
-                    cacheReadTokens = readUsageNumber(usage.cache_read_input_tokens ?? usage.cacheReadInputTokens ?? usage.cacheReadTokens);
-                    cacheCreationTokens = readUsageNumber(usage.cache_creation_input_tokens ?? usage.cacheCreationInputTokens ?? usage.cacheCreationTokens);
-                    inputTokens = directInputTokens + cacheReadTokens + cacheCreationTokens;
-                    outputTokens = readUsageNumber(usage.output_tokens ?? usage.outputTokens);
-                    usageModel = typeof entry.message?.model === 'string' ? entry.message.model : null;
-
-                    break; // Stop after finding the latest assistant message
-                }
-            } catch (parseError) {
-                // Skip lines that can't be parsed
-                continue;
-            }
+        if (usageEntry) {
+            // Use token counts from latest assistant message only
+            const usage = usageEntry.message.usage;
+            const directInputTokens = readUsageNumber(usage.input_tokens ?? usage.inputTokens);
+            cacheReadTokens = readUsageNumber(usage.cache_read_input_tokens ?? usage.cacheReadInputTokens ?? usage.cacheReadTokens);
+            cacheCreationTokens = readUsageNumber(usage.cache_creation_input_tokens ?? usage.cacheCreationInputTokens ?? usage.cacheCreationTokens);
+            inputTokens = directInputTokens + cacheReadTokens + cacheCreationTokens;
+            outputTokens = readUsageNumber(usage.output_tokens ?? usage.outputTokens);
+            usageModel = typeof usageEntry.message?.model === 'string' ? usageEntry.message.model : null;
         }
 
         const totalUsed = inputTokens + outputTokens;

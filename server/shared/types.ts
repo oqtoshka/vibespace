@@ -1501,3 +1501,44 @@ export type SessionTopicAuthorityContext = {
  * saved topics or infer that an external card is empty. */
 export type SessionTopicAuthoritySource = (context: SessionTopicAuthorityContext) =>
   'primary-agent' | null | undefined | Promise<'primary-agent' | null | undefined>;
+
+// ---------------------------
+
+//----------------- CLAUDE TRANSCRIPT SCAN ------------
+
+/**
+ * Resumable progress of a worker scan over one Claude JSONL transcript.
+ * Produced by the worker and passed back unchanged on the next scan of the same
+ * file, so only appended bytes are parsed. Every field is bounded regardless of
+ * the transcript's size. Treat it as opaque outside the scan.
+ */
+export type ClaudeTranscriptScanState = {
+  /** Byte offset just past the last complete line consumed. */
+  offset: number;
+  /** Hash of the bytes before `offset`; a mismatch means the file was rewritten. */
+  fingerprint: string;
+  /** Messages with readable prose, the whole conversation rather than the tail. */
+  total: number;
+  /** Parseable user and assistant records; the unit topic cursors count in. */
+  historyTotal: number;
+  /** Newest prose messages. User text still carries any launch preamble. */
+  tail: Array<{ role: string; text: string }>;
+  /** Sparse `[rowIndex, byteOffset]` pairs, ascending, for seeking to a cursor. */
+  checkpoints: Array<[number, number]>;
+};
+
+/** One scan job as handed to the worker. All fields must be structured-cloneable. */
+export type ClaudeTranscriptScanRequest = {
+  filePath: string;
+  state: ClaudeTranscriptScanState | null;
+  /** First conversation row to return; null when the caller needs no rows. */
+  cursor: number | null;
+  /** Stop returning rows once this much user text has been collected. */
+  maxUserChars: number;
+};
+
+/** A scan's outcome. `rows` are slimmed to what topic extraction reads. */
+export type ClaudeTranscriptScanResult = {
+  state: ClaudeTranscriptScanState;
+  rows: AnyRecord[];
+};

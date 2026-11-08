@@ -1,6 +1,5 @@
-import { readFile } from 'node:fs/promises';
-
 import { sessionsDb } from '@/modules/database/index.js';
+import { findLastJsonlEntry } from '@/shared/index.js';
 import type { IProviderModels } from '@/shared/interfaces.js';
 import type {
   ProviderChangeActiveModelInput,
@@ -276,25 +275,10 @@ const readClaudeSessionModelFromJsonl = async (
   sessionId: string,
   jsonlPath: string,
 ): Promise<ProviderCurrentActiveModel | null> => {
-  const content = await readFile(jsonlPath, 'utf8');
-  const lines = content
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-
-  for (let index = lines.length - 1; index >= 0; index -= 1) {
-    try {
-      const event = JSON.parse(lines[index]) as ClaudeInitEvent;
-      const model = extractClaudeEventModel(event, sessionId);
-      if (model) {
-        return { model };
-      }
-    } catch {
-      // Skip malformed JSONL lines that can happen during concurrent writes.
-    }
-  }
-
-  return null;
+  const model = await findLastJsonlEntry(jsonlPath, (event) => (
+    extractClaudeEventModel(event as ClaudeInitEvent, sessionId)
+  ));
+  return model ? { model } : null;
 };
 
 export class ClaudeProviderModels implements IProviderModels {

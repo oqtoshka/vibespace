@@ -1,5 +1,6 @@
 // Shared contracts and helpers consumed by provider adapters and other modules.
 export type { IProviderSessions } from './interfaces.js';
+export type { ClaudeTranscriptScanRequest, ClaudeTranscriptScanResult, ClaudeTranscriptScanState } from './types.js';
 export type { AnyRecord, FetchHistoryOptions, FetchHistoryResult, NormalizedMessage, ProviderRunFunction, ProviderRuntimeWriter } from './types.js';
 export { buildCodexTokenBudget } from './codex-token-usage.js';
 // OIDC, manager registry and worker auth share the exact managed identity rules.
@@ -13,7 +14,7 @@ export {
   VIBESPACE_OPENCODE_COMPACTIONS_FIELD,
 } from './compaction.js';
 export { extractToolResultImages, parseFilesInputTag, toImageAttachments } from './image-attachments.js';
-export { createNormalizedMessage, generateMessageId, readObjectRecord, sliceTailPage } from './utils.js';
+export { createNormalizedMessage, findLastJsonlEntry, generateMessageId, readObjectRecord, sliceTailPage } from './utils.js';
 
 // Native chat shares provider identity and server-validated attachment formatting.
 export type { LLMProvider, AuthenticatedWebSocketRequest } from './types.js';

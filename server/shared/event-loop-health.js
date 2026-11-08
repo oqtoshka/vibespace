@@ -123,3 +123,35 @@ export function stopEventLoopHealthMonitor() {
     delayHistogram = null;
   }
 }
+
+const SLOW_REQUEST_MS = Number.parseInt(process.env.VS_SLOW_REQUEST_MS ?? '', 10) || 10_000;
+let requestsInFlight = 0;
+
+/**
+ * Names the requests behind an outage. A hang with a healthy event loop leaves
+ * nothing else in the logs, and the proxy only records that the client gave up.
+ * `close` also fires for a client that disconnected before any response, which
+ * is the case that matters most. The path is logged without its query string,
+ * because that is where tokens travel.
+ *
+ * Consumed by server/index.js as the first Express middleware.
+ */
+export function logSlowRequests(req, res, next) {
+  const startedAt = performance.now();
+  requestsInFlight += 1;
+  res.once('close', () => {
+    requestsInFlight -= 1;
+    const durationMs = Math.round(performance.now() - startedAt);
+    if (durationMs < SLOW_REQUEST_MS) return;
+    console.warn('[health] slow request', {
+      at: new Date().toISOString(),
+      method: req.method,
+      path: req.originalUrl.split('?')[0],
+      durationMs,
+      status: res.statusCode,
+      finished: res.writableFinished,
+      requestsInFlight,
+    });
+  });
+  next();
+}

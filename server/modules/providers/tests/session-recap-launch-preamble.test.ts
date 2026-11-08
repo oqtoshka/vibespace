@@ -33,7 +33,7 @@ test('recap tails carry the user words, not the launch preamble, of a launched f
     await writeFile(jsonl, [
       { type: 'user', message: { content: first } },
       { type: 'assistant', message: { content: [{ type: 'text', text: 'Looking.' }] } },
-    ].map(entry => JSON.stringify(entry)).join('\n'));
+    ].map(entry => `${JSON.stringify(entry)}\n`).join(''));
     const tail = await __testing.readTranscriptTail(jsonl);
     assert.deepEqual(tail.messages.map(m => m.text), ['Why does Authentik keep logging me out?', 'Looking.']);
   } finally {

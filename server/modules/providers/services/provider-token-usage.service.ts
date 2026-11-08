@@ -6,7 +6,7 @@ import path from 'node:path';
 import Database from 'better-sqlite3';
 
 import { sessionsDb } from '@/modules/database/index.js';
-import { lookupOpenCodeTokenUsage } from '@/shared/index.js';
+import { findLastJsonlEntry, lookupOpenCodeTokenUsage } from '@/shared/index.js';
 import type { AnyRecord } from '@/shared/types.js';
 import { AppError, getOpenCodeDatabasePath } from '@/shared/utils.js';
 
@@ -18,7 +18,7 @@ type ProviderTokenUsageServiceDependencies = {
   getOpenCodeDatabasePath: () => string;
   fileExists: (filePath: string) => boolean;
   readDirectory: (directoryPath: string) => Promise<Dirent[]>;
-  readTextFile: (filePath: string) => Promise<string>;
+  findLastEntry: typeof findLastJsonlEntry;
   getClaudeContextWindow: () => string | undefined;
 };
 
@@ -44,7 +44,7 @@ const defaultDependencies: ProviderTokenUsageServiceDependencies = {
   getOpenCodeDatabasePath,
   fileExists: (filePath) => fsSync.existsSync(filePath),
   readDirectory: (directoryPath) => fsp.readdir(directoryPath, { withFileTypes: true }),
-  readTextFile: (filePath) => fsp.readFile(filePath, 'utf8'),
+  findLastEntry: findLastJsonlEntry,
   getClaudeContextWindow: () => process.env.CONTEXT_WINDOW,
 };
 
@@ -85,34 +85,19 @@ async function findCodexSessionFile(
   return null;
 }
 
-function readCodexTokenUsage(fileContent: string): TokenUsageResult {
+function buildCodexTokenUsage(tokenInfo: AnyRecord | null): TokenUsageResult {
   let inputTokens = 0;
   let outputTokens = 0;
   let totalTokens = 0;
   let contextWindow = 200_000;
-  const lines = fileContent.trim().split('\n');
-
-  for (let index = lines.length - 1; index >= 0; index -= 1) {
-    try {
-      const entry = JSON.parse(lines[index]) as AnyRecord;
-      const tokenInfo = entry.type === 'event_msg' && entry.payload?.type === 'token_count'
-        ? entry.payload.info
-        : null;
-      if (!tokenInfo) {
-        continue;
-      }
-
-      if (tokenInfo.total_token_usage) {
-        inputTokens = readUsageNumber(tokenInfo.total_token_usage.input_tokens);
-        outputTokens = readUsageNumber(tokenInfo.total_token_usage.output_tokens);
-        totalTokens = readUsageNumber(tokenInfo.total_token_usage.total_tokens)
-          || inputTokens + outputTokens;
-      }
-      contextWindow = readUsageNumber(tokenInfo.model_context_window) || contextWindow;
-      break;
-    } catch {
-      // A provider may be writing the last JSONL line while this read happens.
+  if (tokenInfo) {
+    if (tokenInfo.total_token_usage) {
+      inputTokens = readUsageNumber(tokenInfo.total_token_usage.input_tokens);
+      outputTokens = readUsageNumber(tokenInfo.total_token_usage.output_tokens);
+      totalTokens = readUsageNumber(tokenInfo.total_token_usage.total_tokens)
+        || inputTokens + outputTokens;
     }
+    contextWindow = readUsageNumber(tokenInfo.model_context_window) || contextWindow;
   }
 
   return {
@@ -124,36 +109,23 @@ function readCodexTokenUsage(fileContent: string): TokenUsageResult {
   };
 }
 
-function readClaudeTokenUsage(fileContent: string, configuredContextWindow: string | undefined): TokenUsageResult {
+function buildClaudeTokenUsage(usage: AnyRecord | null, configuredContextWindow: string | undefined): TokenUsageResult {
   let inputTokens = 0;
   let outputTokens = 0;
   let cacheReadTokens = 0;
   let cacheCreationTokens = 0;
-  const lines = fileContent.trim().split('\n');
-
-  for (let index = lines.length - 1; index >= 0; index -= 1) {
-    try {
-      const entry = JSON.parse(lines[index]) as AnyRecord;
-      const usage = entry.type === 'assistant' ? entry.message?.usage : null;
-      if (!usage) {
-        continue;
-      }
-
-      const directInputTokens = readUsageNumber(usage.input_tokens ?? usage.inputTokens);
-      cacheReadTokens = readUsageNumber(
-        usage.cache_read_input_tokens ?? usage.cacheReadInputTokens ?? usage.cacheReadTokens,
-      );
-      cacheCreationTokens = readUsageNumber(
-        usage.cache_creation_input_tokens
-          ?? usage.cacheCreationInputTokens
-          ?? usage.cacheCreationTokens,
-      );
-      inputTokens = directInputTokens + cacheReadTokens + cacheCreationTokens;
-      outputTokens = readUsageNumber(usage.output_tokens ?? usage.outputTokens);
-      break;
-    } catch {
-      // Skip malformed lines without discarding usage from earlier messages.
-    }
+  if (usage) {
+    const directInputTokens = readUsageNumber(usage.input_tokens ?? usage.inputTokens);
+    cacheReadTokens = readUsageNumber(
+      usage.cache_read_input_tokens ?? usage.cacheReadInputTokens ?? usage.cacheReadTokens,
+    );
+    cacheCreationTokens = readUsageNumber(
+      usage.cache_creation_input_tokens
+        ?? usage.cacheCreationInputTokens
+        ?? usage.cacheCreationTokens,
+    );
+    inputTokens = directInputTokens + cacheReadTokens + cacheCreationTokens;
+    outputTokens = readUsageNumber(usage.output_tokens ?? usage.outputTokens);
   }
 
   const parsedContextWindow = Number.parseInt(configuredContextWindow ?? '', 10);
@@ -267,8 +239,10 @@ export function createProviderTokenUsageService(
           });
         }
 
-        const fileContent = await dependencies.readTextFile(sessionFilePath);
-        return readCodexTokenUsage(fileContent);
+        const tokenInfo = await dependencies.findLastEntry(sessionFilePath, (entry) => (
+          entry.type === 'event_msg' && entry.payload?.type === 'token_count' ? entry.payload.info as AnyRecord | null : null
+        ), { contains: '"token_count"' });
+        return buildCodexTokenUsage(tokenInfo);
       }
 
       let sessionFilePath = session.jsonl_path;
@@ -305,8 +279,10 @@ export function createProviderTokenUsageService(
         });
       }
 
-      const fileContent = await dependencies.readTextFile(sessionFilePath);
-      return readClaudeTokenUsage(fileContent, dependencies.getClaudeContextWindow());
+      const usage = await dependencies.findLastEntry(sessionFilePath, (entry) => (
+        entry.type === 'assistant' ? entry.message?.usage as AnyRecord | null : null
+      ), { contains: '"usage"' });
+      return buildClaudeTokenUsage(usage, dependencies.getClaudeContextWindow());
     },
   };
 }

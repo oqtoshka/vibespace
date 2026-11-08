@@ -23,12 +23,11 @@
  * its result is delivered whenever it arrives.
  */
 
-import { promises as fs } from 'fs';
-
 import { sessionsDb } from '@/modules/database/index.js';
 import { readSessionTopicAuthority, parseStoredLaunchOptions, stripLaunchInstructions } from '@/shared/index.js';
-import type { AnyRecord, ProviderRunFunction, SessionTopicAuthorityContext } from '@/shared/index.js';
+import type { AnyRecord, ClaudeTranscriptScanState, ProviderRunFunction, SessionTopicAuthorityContext } from '@/shared/index.js';
 
+import { scanClaudeTranscript } from './claude-transcript-scan.service.js';
 import { sessionsService } from './sessions.service.js';
 import { readTopicMemory, topicBatch, topicInstructions, mergeTopicResponse } from './session-topics.service.js';
 
@@ -88,6 +87,12 @@ type RecapInput = {
   fetchHistory?: (id: string, options: { limit: number; offset: number }) => Promise<{ messages: AnyRecord[]; total?: number }>;
   locale?: string;
 };
+/** The most user text one topic batch can consume; topicBatch clamps to this. */
+const MAX_TOPIC_BATCH_CHARS = 50_000;
+
+/** After a failure, so a transcript that cannot be read is not retried every minute. */
+const RECAP_FAILURE_BACKOFF_MS = 10 * 60_000;
+
 /** Fixed deadlines and the latest inputs to include at each deadline. */
 const pendingRecaps = new Map<string, ReturnType<typeof setTimeout>>();
 const latestRecaps = new Map<string, RecapInput>();
@@ -99,68 +104,42 @@ const inFlightRecaps = new Set<string>();
 const nextRefreshAt = new Map<string, number>();
 
 /**
- * Pulls the readable tail out of a Claude JSONL transcript.
+ * Turns a transcript scan into the readable tail of the conversation.
  *
- * Tool calls and their results are deliberately dropped: they are most of the
+ * Tool calls and their results are dropped by the scan: they are most of the
  * bytes and almost none of the meaning, and a recap built from them describes
  * the plumbing rather than the work. What is left is the user's asks and the
  * assistant's prose, which is what a recap is a summary of.
  *
- * @param {string} jsonlPath
- * @returns {Promise<{messages: Array<{role: string, text: string}>, total: number}>}
+ * `total` is the whole conversation, not the tail: it is what tells an idle
+ * session apart from one that has moved on. Comparing tail lengths would stop
+ * every session dead at RECAP_TRANSCRIPT_LINES, since past that point the tail
+ * is always exactly that long and no recap would ever refresh.
  */
-async function readTranscriptTail(jsonlPath: string) {
-  let content;
-  try {
-    content = await fs.readFile(jsonlPath, 'utf8');
-  } catch {
-    return { messages: [], total: 0 };
-  }
-
-  const messages = [];
-  for (const line of content.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-
-    let entry;
-    try {
-      entry = JSON.parse(trimmed);
-    } catch {
-      continue;
-    }
-
-    if (entry.type !== 'user' && entry.type !== 'assistant') continue;
-
-    const rawContent = entry.message?.content;
-    const blocks = Array.isArray(rawContent)
-      ? rawContent
-      : typeof rawContent === 'string'
-        ? [{ type: 'text', text: rawContent }]
-        : [];
-
-    const joined = blocks
-      .filter((block: AnyRecord) => block?.type === 'text' && typeof block.text === 'string')
-      .map((block: AnyRecord) => block.text)
-      .join('\n');
+function transcriptTail(state: ClaudeTranscriptScanState): { messages: RecapMessage[]; total: number } {
+  const messages: RecapMessage[] = [];
+  for (const entry of state.tail) {
     // Before the per-message cut: a launch preamble is longer than the cut.
-    const text = (entry.type === 'user' ? stripLaunchInstructions(joined) : joined).trim();
-
+    const text = (entry.role === 'user' ? stripLaunchInstructions(entry.text) : entry.text).trim();
     if (!text) continue;
-
     // Local commands and system reminders are host chatter, not conversation.
     if (text.startsWith('<local-command') || text.startsWith('<system-reminder')) continue;
-
     messages.push({
-      role: entry.type,
+      role: entry.role,
       text: text.length > RECAP_MESSAGE_CHARS ? `${text.slice(0, RECAP_MESSAGE_CHARS)}…` : text,
     });
   }
+  return { messages: messages.slice(-RECAP_TRANSCRIPT_LINES), total: state.total };
+}
 
-  // `total` is the whole conversation, not the tail: it is what tells an idle
-  // session apart from one that has moved on. Comparing tail lengths would
-  // stop every session dead at RECAP_TRANSCRIPT_LINES, since past that point
-  // the tail is always exactly that long and no recap would ever refresh.
-  return { messages: messages.slice(-RECAP_TRANSCRIPT_LINES), total: messages.length };
+/** Reads a transcript's tail off the main thread, whatever the file's size. */
+async function readTranscriptTail(jsonlPath: string) {
+  try {
+    const { state } = await scanClaudeTranscript(jsonlPath, { cursor: null, maxUserChars: 0 });
+    return transcriptTail(state);
+  } catch {
+    return { messages: [], total: 0 };
+  }
 }
 
 /**
@@ -435,36 +414,44 @@ export async function generateSessionRecap({
   const admitted = sessionsDb.getSessionById(session.session_id);
   if (!admitted || admitted.is_private || admitted.provider_session_id !== session.provider_session_id) return;
   const source = useIndexedHistory || !session.jsonl_path ? 'indexed' : 'claude';
+  const memory = readTopicMemory(session.topic_memory);
   // Provider totals can exclude tool results while pagination includes them. Count the actual
   // normalized history, never infer oldest-message offsets from the UI's display count.
-  let historyRows: AnyRecord[];
+  // `rowsFromCursor` starts at the topic cursor; `historyTotal` is the whole history.
+  let rowsFromCursor: AnyRecord[];
+  let historyTotal: number;
   let tail: { messages: RecapMessage[]; total: number };
   if (source === 'indexed' && externalTopics) {
-    historyRows = [];
+    rowsFromCursor = [];
+    historyTotal = 0;
     tail = await readIndexedTranscriptTail(session.session_id, fetchHistory);
   } else if (source === 'indexed') {
     const history = await (fetchHistory ?? ((id, options) => sessionsService.fetchHistory(id, options)))(
       session.session_id, { limit: 1_000_000, offset: 0 });
-    historyRows = history.messages;
+    historyTotal = history.messages.length;
+    const stale = memory.source !== source || memory.cursor > historyTotal;
+    rowsFromCursor = history.messages.slice(stale ? 0 : memory.cursor);
     tail = await readIndexedTranscriptTail(session.session_id, async () => history);
   } else {
-    const content = await fs.readFile(session.jsonl_path!, 'utf8');
-    historyRows = content.split(/\r?\n/).flatMap(line => {
-      try { const row = JSON.parse(line); return row.type === 'user' || row.type === 'assistant' ? [row] : []; }
-      catch { return []; }
-    });
-    tail = await readTranscriptTail(session.jsonl_path!);
+    const startCursor = memory.source === source ? memory.cursor : 0;
+    const maxUserChars = (memory.source === source ? memory.charOffset : 0) + MAX_TOPIC_BATCH_CHARS;
+    const cursorOption = externalTopics ? null : startCursor;
+    let scan = await scanClaudeTranscript(session.jsonl_path!, { cursor: cursorOption, maxUserChars });
+    if (cursorOption !== null && cursorOption > scan.state.historyTotal) {
+      // The transcript shrank under a saved cursor (a rewind): topics restart.
+      scan = await scanClaudeTranscript(session.jsonl_path!, { cursor: 0, maxUserChars: MAX_TOPIC_BATCH_CHARS });
+    }
+    rowsFromCursor = scan.rows;
+    historyTotal = scan.state.historyTotal;
+    tail = transcriptTail(scan.state);
   }
   const { messages, total } = tail;
   if (messages.length < 2) return;
-  const historyTotal = historyRows.length;
-  const memory = readTopicMemory(session.topic_memory);
   if (memory.source !== source || memory.cursor > historyTotal) {
     memory.cursor = 0; memory.charOffset = 0; memory.source = source;
   }
   if (session.recap && session.recap_message_count === total && (externalTopics || memory.cursor >= historyTotal)) return;
-  const rows = historyRows.slice(memory.cursor);
-  const batch = topicBatch(rows, memory, historyTotal, topicBatchChars);
+  const batch = topicBatch(rowsFromCursor, memory, historyTotal, topicBatchChars);
   const topicPrompt = externalTopics ? '' : topicInstructions(memory, batch);
   // Historical tools/progress consume no topic budget. The separate tail above still gives
   // the recap current assistant outcomes, while cumulative subjects follow actual user asks.
@@ -603,6 +590,7 @@ export function scheduleSessionRecap(input: RecapInput) {
       .then(more => { if (more && !latestRecaps.has(sessionId)) latestRecaps.set(sessionId, latest); })
       .catch((error: unknown) => {
         console.warn(`[recap] ${sessionId} failed:`, error instanceof Error ? error.message : error);
+        nextRefreshAt.set(sessionId, Date.now() + RECAP_FAILURE_BACKOFF_MS);
       })
       .finally(() => {
         inFlightRecaps.delete(sessionId);

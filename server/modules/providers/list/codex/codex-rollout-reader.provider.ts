@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
 
 /**
  * Incremental reader for append-only Codex rollout JSONL files.
@@ -18,6 +19,11 @@ import fs from 'node:fs/promises';
  * truncated, rotated or rewritten file yields what a full read yields. The one
  * blind spot is a rewrite that keeps the head and boundary bytes, changes
  * only the middle and also grows the file; Codex never does that.
+ *
+ * The parser's state lives on the JS heap, so it cannot cover a rollout of any
+ * size: one past the heap limit would crash the server. Only the newest window
+ * of a rollout is parsed, and a read that has outgrown twice the window starts a
+ * fresh one, so older turns of a multi-gigabyte session are not in the history.
  */
 
 /** The parser contract the reader drives; one instance covers one file. */
@@ -34,7 +40,9 @@ type CachedRollout<P extends RolloutLineParser> = {
   parser: P;
   dev: number;
   ino: number;
-  /** Bytes of the file already fed to the parser. */
+  /** Where parsing started: 0, or a line boundary inside a very long rollout. */
+  windowStart: number;
+  /** End offset, in the file, of the bytes already fed to the parser. */
   parsedBytes: number;
   mtimeMs: number;
   /** First bytes of the file, to notice a rewrite that kept the length. */
@@ -54,6 +62,15 @@ const FINGERPRINT_BYTES = 256;
 /** Retained-parser budget across files; the most recently used file is always kept. */
 const CACHE_BUDGET_BYTES = 384 * 1024 * 1024;
 
+/** How much of the end of a rollout is parsed; bounds this thread's heap use. */
+const DEFAULT_WINDOW_BYTES = 512 * 1024 * 1024;
+/** How long the parser may run before it hands the event loop back. */
+const PARSE_SLICE_MS = 8;
+
+function rolloutWindowBytes(): number {
+  return Number.parseInt(process.env.VS_CODEX_ROLLOUT_WINDOW_BYTES ?? '', 10) || DEFAULT_WINDOW_BYTES;
+}
+
 const cache = new Map<string, CachedRollout<RolloutLineParser>>();
 const inFlight = new Map<string, Promise<unknown>>();
 /** Global, so a re-created parser never reuses a generation a caller cached. */
@@ -68,6 +85,19 @@ async function readBytes(handle: fs.FileHandle, position: number, length: number
     filled += bytesRead;
   }
   return filled === length ? buffer : buffer.subarray(0, filled);
+}
+
+/** The offset just after the first newline at or past `position`, or `size`. */
+async function nextLineStart(handle: fs.FileHandle, position: number, size: number): Promise<number> {
+  let cursor = position;
+  while (cursor < size) {
+    const chunk = await readBytes(handle, cursor, Math.min(READ_CHUNK_BYTES, size - cursor));
+    if (chunk.length === 0) break;
+    const newline = chunk.indexOf(0x0a);
+    if (newline !== -1) return cursor + newline + 1;
+    cursor += chunk.length;
+  }
+  return size;
 }
 
 /**
@@ -85,6 +115,7 @@ async function feed<P extends RolloutLineParser>(
   let position = entry.parsedBytes;
   let carry: Buffer = Buffer.alloc(0);
   let consumedAny = false;
+  let lastYield = performance.now();
   while (position < size) {
     const chunk = await readBytes(handle, position, Math.min(READ_CHUNK_BYTES, size - position));
     if (chunk.length === 0) break;
@@ -99,6 +130,10 @@ async function feed<P extends RolloutLineParser>(
       consumedAny = true;
       lineStart = newline + 1;
       newline = data.indexOf(0x0a, lineStart);
+      if (performance.now() - lastYield >= PARSE_SLICE_MS) {
+        await yieldToEventLoop();
+        lastYield = performance.now();
+      }
     }
     // Copy the fragment: a subarray would pin the whole 8 MiB chunk.
     carry = Buffer.from(data.subarray(lineStart));
@@ -141,6 +176,10 @@ async function readRolloutUncoalesced<P extends RolloutLineParser>(
     let entry = cache.get(filePath) as CachedRollout<P> | undefined;
     if (entry) {
       let reusable = entry.dev === stat.dev && entry.ino === stat.ino && size >= entry.parsedBytes;
+      if (reusable && size - entry.windowStart > 2 * rolloutWindowBytes()) {
+        // Grown too far to keep in memory: slide the window forward.
+        reusable = false;
+      }
       if (reusable && entry.unterminatedTail && size > entry.parsedBytes) {
         // The "complete" last line kept growing: a full read joins those
         // bytes into one line, so the earlier consumption no longer holds.
@@ -162,8 +201,14 @@ async function readRolloutUncoalesced<P extends RolloutLineParser>(
       }
     }
     if (!entry) {
+      const windowStart = size > rolloutWindowBytes()
+        ? await nextLineStart(handle, size - rolloutWindowBytes(), size)
+        : 0;
+      if (windowStart > 0) {
+        console.warn(`[codex] rollout of ${size} bytes: reading only its last ${size - windowStart} bytes`, { filePath });
+      }
       entry = {
-        parser: createParser(), dev: stat.dev, ino: stat.ino, parsedBytes: 0, mtimeMs: stat.mtimeMs,
+        parser: createParser(), dev: stat.dev, ino: stat.ino, windowStart, parsedBytes: windowStart, mtimeMs: stat.mtimeMs,
         head: Buffer.alloc(0), boundary: Buffer.alloc(0), unterminatedTail: false, retainedBytes: 0,
         generation: ++generationCounter,
       };

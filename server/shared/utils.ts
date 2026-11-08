@@ -1,3 +1,4 @@
+import { open } from 'node:fs/promises';
 import zlib from 'node:zlib';
 import { run as renderDbml } from '@softwaretechnik/dbml-renderer';
 import { randomUUID } from 'node:crypto';
@@ -2037,4 +2038,105 @@ export function stripLaunchInstructions(text: string): string {
     && head.split('\n').some(line => isLegacyLaunchPreambleHeading(line.trim()));
   if (!legacy) return text;
   return separator < 0 ? '' : body.slice(separator + LAUNCH_INSTRUCTIONS_SEPARATOR.length).trimStart();
+}
+
+// ---------------------------
+
+//----------------- JSONL TAIL READING ------------
+
+const JSONL_TAIL_CHUNK_BYTES = 1024 * 1024;
+const JSONL_TAIL_MAX_LINE_BYTES = 64 * 1024 * 1024;
+const JSONL_TAIL_YIELD_MS = 8;
+
+/**
+ * Finds the newest JSONL record that `pick` accepts, reading the file backwards.
+ *
+ * Consumed by the session usage routes, the token usage service and the Claude
+ * model lookup: each wants one recent record, and transcripts of long sessions
+ * can run to gigabytes, so loading the whole file is not an option (a single
+ * string cannot even hold one past V8's limit). The read stops at the first
+ * match and yields to the event loop while it works.
+ *
+ * Malformed lines and an unterminated last line are skipped, since a provider
+ * may be writing the file. Lines over 64 MiB are skipped unparsed.
+ *
+ * @param filePath JSONL file; a missing file rejects with the usual ENOENT.
+ * @param pick Returns the value to stop on, or null/undefined to keep looking.
+ * @param options.contains Literal text a candidate line must contain, which
+ *   spares JSON.parse on every other line. Omit it when records vary in format.
+ * @returns The picked value, or null when no record matched.
+ */
+export async function findLastJsonlEntry<T>(
+  filePath: string,
+  pick: (entry: AnyRecord) => T | null | undefined,
+  options: { contains?: string } = {},
+): Promise<T | null> {
+  const needle = options.contains ? Buffer.from(options.contains) : null;
+  const handle = await open(filePath, 'r');
+  try {
+    let position = (await handle.stat()).size;
+    let carry: Buffer = Buffer.alloc(0);
+    let oversized = false;
+    let lastYield = performance.now();
+
+    const visit = (line: Buffer): { value: T } | null => {
+      if (line.length === 0 || (needle && !line.includes(needle))) return null;
+      try {
+        const value = pick(JSON.parse(line.toString('utf8')) as AnyRecord);
+        return value === null || value === undefined ? null : { value };
+      } catch {
+        return null;
+      }
+    };
+
+    while (position > 0) {
+      const length = Math.min(JSONL_TAIL_CHUNK_BYTES, position);
+      position -= length;
+      const chunk = Buffer.alloc(length);
+      let filled = 0;
+      while (filled < length) {
+        const { bytesRead } = await handle.read(chunk, filled, length - filled, position + filled);
+        if (bytesRead === 0) break;
+        filled += bytesRead;
+      }
+      const read = chunk.subarray(0, filled);
+      let newline = read.lastIndexOf(0x0a);
+      if (newline === -1) {
+        carry = oversized || carry.length + read.length > JSONL_TAIL_MAX_LINE_BYTES
+          ? Buffer.alloc(0)
+          : Buffer.concat([read, carry]);
+        oversized = oversized || (carry.length === 0 && read.length > 0);
+      } else {
+        let end = read.length;
+        let suffix: Buffer = oversized ? Buffer.alloc(0) : carry;
+        const skipFirst = oversized;
+        let first = true;
+        while (newline !== -1) {
+          const segment = read.subarray(newline + 1, end);
+          if (!(first && skipFirst)) {
+            const found = visit(suffix.length ? Buffer.concat([segment, suffix]) : segment);
+            if (found) return found.value;
+          }
+          first = false;
+          suffix = Buffer.alloc(0);
+          end = newline;
+          newline = newline === 0 ? -1 : read.lastIndexOf(0x0a, newline - 1);
+          if (performance.now() - lastYield >= JSONL_TAIL_YIELD_MS) {
+            await new Promise<void>(resolve => { setImmediate(resolve); });
+            lastYield = performance.now();
+          }
+        }
+        // A copy: a subarray would pin the whole chunk for one line's start.
+        carry = Buffer.from(read.subarray(0, end));
+        oversized = false;
+      }
+      if (performance.now() - lastYield >= JSONL_TAIL_YIELD_MS) {
+        await new Promise<void>(resolve => { setImmediate(resolve); });
+        lastYield = performance.now();
+      }
+    }
+    return oversized ? null : (visit(carry)?.value ?? null);
+  } finally {
+    await handle.close();
+  }
 }
