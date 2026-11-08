@@ -137,6 +137,9 @@ CREATE TABLE IF NOT EXISTS sessions (
     model TEXT,
     effort TEXT,
     permission_mode TEXT,
+    -- Context size, in tokens, at which this (Claude) session auto-compacts,
+    -- set by the operator per session. NULL uses the server-wide default.
+    auto_compact_at INTEGER,
     isArchived BOOLEAN DEFAULT 0,
     -- 1 while this session only backs a \`/btw\` side question. Such a session is
     -- real and resumable but stays out of the session lists; "branching out"

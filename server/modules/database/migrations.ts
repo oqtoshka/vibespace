@@ -602,6 +602,19 @@ const addSessionPermissionModeColumn = (db: Database): void => {
   addColumnToTableIfNotExists(db, 'sessions', columnNames, 'permission_mode', 'TEXT');
 };
 
+/**
+ * Adds the per-session auto-compact trigger. Existing rows stay NULL and keep
+ * compacting at the server-wide default.
+ */
+const addSessionAutoCompactAtColumn = (db: Database): void => {
+  if (!tableExists(db, 'sessions')) {
+    return;
+  }
+
+  const columnNames = getTableInfo(db, 'sessions').map((column) => column.name);
+  addColumnToTableIfNotExists(db, 'sessions', columnNames, 'auto_compact_at', 'INTEGER');
+};
+
 const ensureProjectsForSessionPaths = (db: Database): void => {
   if (!tableExists(db, 'sessions')) {
     return;
@@ -668,6 +681,7 @@ export const runMigrations = (db: Database) => {
     addSessionModelColumn(db);
     addSessionEffortColumn(db);
     addSessionPermissionModeColumn(db);
+    addSessionAutoCompactAtColumn(db);
     ensureProjectsForSessionPaths(db);
     db.exec(SESSION_SEARCH_SCHEMA_SQL);
 

@@ -441,6 +441,72 @@ test('a mid-session reasoning effort change is applied to the live session on re
   }
 });
 
+test('a session-level auto-compact trigger sets the spawn window and switches a live session in place', async () => {
+  const sessionId = 'auto-compact-session-1';
+  const flagSettingsCalls = [];
+  const spawnSettings = [];
+  const fakeQuery = ({ prompt, options }) => {
+    spawnSettings.push(options?.settings);
+    const reader = prompt[Symbol.asyncIterator]();
+    const gen = (async function* () {
+      for (const text of ['one', 'two', 'three', 'four']) {
+        await reader.next();
+        yield assistantText(text, sessionId);
+        yield resultMsg(sessionId);
+      }
+    })();
+    gen.interrupt = async () => {};
+    gen.setModel = async () => {};
+    gen.setPermissionMode = async () => {};
+    gen.applyFlagSettings = async (settings) => { flagSettingsCalls.push(settings); };
+    return gen;
+  };
+  __setClaudeQueryImpl(fakeQuery);
+  const writer = makeRecordingWriter();
+
+  try {
+    await queryClaudeSDK('first', { sessionId, autoCompactAt: 200000 }, writer);
+    assert.deepEqual(spawnSettings, [{ autoCompactWindow: 233000 }], 'trigger + 33k reserve at spawn');
+
+    await queryClaudeSDK('same', { sessionId, autoCompactAt: 200000 }, writer);
+    assert.deepEqual(flagSettingsCalls, [], 'an unchanged trigger touches nothing');
+
+    await queryClaudeSDK('lower', { sessionId, autoCompactAt: 120000 }, writer);
+    assert.deepEqual(flagSettingsCalls, [{ autoCompactWindow: 153000 }], 'the live session adopts the new window');
+
+    await queryClaudeSDK('default', { sessionId, autoCompactAt: null }, writer);
+    assert.deepEqual(flagSettingsCalls.at(-1), { autoCompactWindow: 193000 }, 'null returns to the server default (160k trigger)');
+    assert.equal(spawnSettings.length, 1, 'switching never relaunched the process');
+  } finally {
+    await abortClaudeSDKSession(sessionId).catch(() => {});
+    __setClaudeQueryImpl(null);
+  }
+});
+
+test('without a session trigger a spawn keeps the server default window', async () => {
+  const sessionId = 'auto-compact-session-2';
+  const spawnSettings = [];
+  const fakeQuery = ({ prompt, options }) => {
+    spawnSettings.push(options?.settings);
+    const reader = prompt[Symbol.asyncIterator]();
+    const gen = (async function* () {
+      await reader.next();
+      yield assistantText('hi', sessionId);
+      yield resultMsg(sessionId);
+    })();
+    gen.interrupt = async () => {};
+    return gen;
+  };
+  __setClaudeQueryImpl(fakeQuery);
+  try {
+    await queryClaudeSDK('first', { sessionId, autoCompactAt: 5 }, makeRecordingWriter());
+    assert.deepEqual(spawnSettings, [{ autoCompactWindow: 193000 }], 'an invalid trigger falls back to the default');
+  } finally {
+    await abortClaudeSDKSession(sessionId).catch(() => {});
+    __setClaudeQueryImpl(null);
+  }
+});
+
 test('isClaudeSDKSessionActive reflects an in-flight turn, not mere liveness', async () => {
   const sessionId = 'active-session-1';
   // A query whose first turn never produces a result until we close input.

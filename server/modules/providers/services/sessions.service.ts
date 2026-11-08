@@ -15,7 +15,12 @@ import type {
   NormalizedMessage,
   RewindResult,
 } from '@/shared/types.js';
-import { AppError, sessionAvatarUrl } from '@/shared/utils.js';
+import {
+  AppError,
+  CLAUDE_AUTO_COMPACT_AT_MAX,
+  CLAUDE_AUTO_COMPACT_AT_MIN,
+  sessionAvatarUrl,
+} from '@/shared/utils.js';
 import {
   launchOptionsKey,
   parseStoredLaunchOptions,
@@ -625,6 +630,57 @@ export const sessionsService = {
     // The sidebar marker and the chat banner follow the row.
     broadcastSessionUpdate(sessionId);
     return { sessionId, launchOptions: next, changed: true };
+  },
+
+  /**
+   * Sets the context size (tokens) at which one Claude session auto-compacts,
+   * or returns it to the server-wide default with `null`. Consumers: the
+   * providers routes (PATCH /sessions/:id/auto-compact).
+   *
+   * The value is the trigger, not the CLI's window setting; the runtime adds
+   * the CLI's fixed reserve. The CLI still caps it at the model's real window
+   * minus that reserve. Applies from the next turn: a live session is switched
+   * in place through the SDK's flag-settings layer, without a relaunch, so it
+   * may be changed while a turn runs.
+   */
+  setAutoCompactAt(sessionId: string, value: unknown): {
+    sessionId: string;
+    autoCompactAt: number | null;
+    changed: boolean;
+  } {
+    const session = sessionsDb.getSessionById(sessionId);
+    if (!session) {
+      throw new AppError(`Session "${sessionId}" was not found.`, {
+        code: 'SESSION_NOT_FOUND',
+        statusCode: 404,
+      });
+    }
+    if (session.provider !== 'claude') {
+      throw new AppError('A per-session auto-compact threshold is supported only for Claude sessions.', {
+        code: 'AUTO_COMPACT_UNSUPPORTED',
+        statusCode: 409,
+      });
+    }
+    let next: number | null;
+    if (value === null || value === 'default' || value === 'auto') {
+      next = null;
+    } else if (
+      typeof value === 'number'
+      && Number.isInteger(value)
+      && value >= CLAUDE_AUTO_COMPACT_AT_MIN
+      && value <= CLAUDE_AUTO_COMPACT_AT_MAX
+    ) {
+      next = value;
+    } else {
+      throw new AppError(
+        `autoCompactAt must be an integer token count from ${CLAUDE_AUTO_COMPACT_AT_MIN} to ${CLAUDE_AUTO_COMPACT_AT_MAX}, or null for the default.`,
+        { code: 'INVALID_AUTO_COMPACT_AT', statusCode: 400 },
+      );
+    }
+    const current = sessionsDb.getSessionAutoCompactAt(sessionId);
+    if (current === next) return { sessionId, autoCompactAt: current, changed: false };
+    sessionsDb.setSessionAutoCompactAt(sessionId, next);
+    return { sessionId, autoCompactAt: next, changed: true };
   },
 
   /**

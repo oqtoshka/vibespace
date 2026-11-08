@@ -601,6 +601,51 @@ export const readStringRecord = (value: unknown): Record<string, string> | undef
 };
 
 // ---------------------------
+//----------------- CLAUDE AUTO-COMPACT THRESHOLD UTILITIES ------------
+/**
+ * Tokens between the Claude CLI's auto-compact WINDOW setting and the context
+ * size at which it actually compacts. The CLI compacts at
+ *   min(realWindow, autoCompactWindow) - min(maxOutputTokens, 20000) - 13000
+ * and every current large model reserves the full 20k of output headroom, so
+ * the trigger lands 33k below the configured window. Consumers: claude-sdk.js
+ * (spawn and live switch), sessions.service (validating a per-session value).
+ */
+export const CLAUDE_AUTO_COMPACT_RESERVE = 33_000;
+
+/**
+ * Inclusive bounds for a compaction trigger, in tokens. The CLI clamps the
+ * window to [100_000, 1_000_000], so a trigger outside these bounds would be
+ * silently moved; we refuse it instead. A trigger above the model's real
+ * window minus the reserve is capped by the CLI to that ceiling (on a 200k
+ * model nothing compacts later than 167k). Consumers: sessions.service.
+ */
+export const CLAUDE_AUTO_COMPACT_AT_MIN = 100_000 - CLAUDE_AUTO_COMPACT_RESERVE;
+export const CLAUDE_AUTO_COMPACT_AT_MAX = 1_000_000 - CLAUDE_AUTO_COMPACT_RESERVE;
+
+/**
+ * Reads a stored or requested per-session compaction trigger: a positive
+ * integer token count inside the bounds above, or `null` (use the server-wide
+ * default). Anything else — strings, fractions, out-of-range numbers — also
+ * reads as `null`, so a malformed cell never reaches the CLI. Consumers:
+ * claude-sdk.js (row value at launch), sessions.service (after its own
+ * stricter validation has already rejected bad input with a 400).
+ */
+export function readClaudeAutoCompactAt(value: unknown): number | null {
+  if (typeof value !== 'number' || !Number.isInteger(value)) return null;
+  if (value < CLAUDE_AUTO_COMPACT_AT_MIN || value > CLAUDE_AUTO_COMPACT_AT_MAX) return null;
+  return value;
+}
+
+/**
+ * The `autoCompactWindow` setting that makes the Claude CLI compact at
+ * `autoCompactAt` tokens (see CLAUDE_AUTO_COMPACT_RESERVE). Consumers:
+ * claude-sdk.js.
+ */
+export function claudeAutoCompactWindowFor(autoCompactAt: number): number {
+  return autoCompactAt + CLAUDE_AUTO_COMPACT_RESERVE;
+}
+
+// ---------------------------
 //----------------- PROVIDER MODEL LOOKUP UTILITIES ------------
 /**
  * Builds the standard "default current model" result used when a provider

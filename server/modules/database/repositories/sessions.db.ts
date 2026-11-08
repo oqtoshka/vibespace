@@ -461,6 +461,30 @@ export const sessionsDb = {
   },
 
   /**
+   * Records the context size (tokens) at which one session auto-compacts;
+   * `null` returns it to the server-wide default. Validation is the caller's
+   * (sessionsService.setAutoCompactAt). Returns whether a row was updated.
+   */
+  setSessionAutoCompactAt(sessionId: string, autoCompactAt: number | null): boolean {
+    const result = getConnection()
+      .prepare('UPDATE sessions SET auto_compact_at = ? WHERE session_id = ?')
+      .run(autoCompactAt, sessionId);
+    return result.changes > 0;
+  },
+
+  /**
+   * Reads one session's auto-compact trigger, or `null` for the default. A
+   * narrow accessor, like getSessionPermissionMode, so the general row shape
+   * stays what provider indexers and legacy test databases model.
+   */
+  getSessionAutoCompactAt(sessionId: string): number | null {
+    const row = getConnection()
+      .prepare('SELECT auto_compact_at FROM sessions WHERE session_id = ?')
+      .get(sessionId) as { auto_compact_at: number | null } | undefined;
+    return row?.auto_compact_at ?? null;
+  },
+
+  /**
    * Stores a session name with its provenance. A rename (`'user'`) always
    * lands; any automatic source is refused when the row already carries a
    * user-chosen name, whatever the caller read earlier — a recap or title

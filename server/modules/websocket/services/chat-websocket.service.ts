@@ -348,6 +348,9 @@ function buildRuntimeOptions(
     // add env, instructions and tool servers to the harness process (see
     // collectAgentLaunchExtras); the client cannot ask for them per turn.
     launchOptions: parseStoredLaunchOptions(session.launch_options),
+    // The operator's per-session auto-compact trigger (null: server default),
+    // likewise the row's. Only the Claude runtime reads it.
+    autoCompactAt: provider === 'claude' ? sessionsDb.getSessionAutoCompactAt(appSessionId) : null,
     // OpenCode can only accept `delivery: "steer"` while the conversation is
     // running through its server engine. Interactive websocket turns opt into
     // that transport; internal one-shot helpers keep using the lighter CLI.

@@ -796,6 +796,28 @@ router.patch(
   }),
 );
 
+/**
+ * Sets the context size at which one Claude session auto-compacts. Body:
+ * `{ autoCompactAt: <tokens> }`, or `{ autoCompactAt: null }` for the
+ * server-wide default. Applies from the next turn; a live session switches in
+ * place without a relaunch.
+ */
+router.patch(
+  '/sessions/:sessionId/auto-compact',
+  asyncHandler(async (req: Request, res: Response) => {
+    const sessionId = parseSessionId(req.params.sessionId);
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    if (!Object.hasOwn(body, 'autoCompactAt')) {
+      throw new AppError('Body must carry autoCompactAt (tokens, or null for the default).', {
+        code: 'INVALID_AUTO_COMPACT_AT',
+        statusCode: 400,
+      });
+    }
+    const result = sessionsService.setAutoCompactAt(sessionId, body.autoCompactAt);
+    res.json(createApiSuccessResponse({ ...result, appliesAt: 'next-turn' }));
+  }),
+);
+
 // Status-only, same existing authenticated Providers mount. Never starts a native client.
 router.get(
   '/sessions/restart-admission',

@@ -35,7 +35,7 @@ import { describeAssistantActivity } from './services/activity-status.js';
 import { sessionsService } from './modules/providers/services/sessions.service.js';
 import { sessionsDb } from './modules/database/index.js';
 import { providerAuthService } from './modules/providers/services/provider-auth.service.js';
-import { createCompleteMessage, createNormalizedMessage, resolveConfiguredContextWindow } from './shared/utils.js';
+import { CLAUDE_AUTO_COMPACT_RESERVE, claudeAutoCompactWindowFor, createCompleteMessage, createNormalizedMessage, readClaudeAutoCompactAt, resolveConfiguredContextWindow } from './shared/utils.js';
 import { rememberContextUsage } from './shared/context-usage-cache.js';
 import { readOpenClaudeTasks } from './shared/claude-task-ledger.js';
 import { readExternalTaskLedger } from './shared/task-ledger-sources.js';
@@ -132,13 +132,45 @@ const TASK_NUDGE_ENABLED = !['0', 'false', 'off'].includes((process.env.VIBESPAC
 // what makes a session compact at 160k, which is the number the context gauge
 // and /context report. Change the default through AUTO_COMPACT_AT so the two
 // stay tied together.
-const AUTO_COMPACT_RESERVE = 33000;
+//
+// A session can carry its own trigger (sessions.auto_compact_at, set through
+// PATCH /api/providers/sessions/:id/auto-compact); it outranks this default and
+// is applied to a live session in place (see resolveAutoCompactWindow).
+const AUTO_COMPACT_RESERVE = CLAUDE_AUTO_COMPACT_RESERVE;
 const AUTO_COMPACT_AT = 160000;
 const AUTO_COMPACT_WINDOW = (() => {
   const raw = (process.env.VIBESPACE_CLAUDE_AUTO_COMPACT_WINDOW || '').trim().toLowerCase();
   if (raw === 'auto' || raw === '0' || raw === 'off') return null;
   return parseInt(raw, 10) || (AUTO_COMPACT_AT + AUTO_COMPACT_RESERVE);
 })();
+
+/**
+ * The autoCompactWindow a turn should run with: the session's own trigger
+ * when the turn carries a valid one, else the server-wide default (null: the
+ * CLI's own "auto"). Consumers: mapCliOptionsToSDK (spawn), reuseSession
+ * (live switch).
+ */
+function resolveAutoCompactWindow(options = {}) {
+  const sessionAt = readClaudeAutoCompactAt(statedAutoCompactAt(options));
+  return sessionAt !== null ? claudeAutoCompactWindowFor(sessionAt) : AUTO_COMPACT_WINDOW;
+}
+
+/**
+ * The session's own auto-compact trigger as this turn knows it: what the chat
+ * gateway passed, else the session row (server-initiated turns — boot restore,
+ * background-job resume, nudges — carry no composer options), else
+ * `undefined` when there is no app session to ask. Consumers:
+ * resolveAutoCompactWindow, reuseSession.
+ */
+function statedAutoCompactAt(options = {}) {
+  if (Object.hasOwn(options, 'autoCompactAt')) return options.autoCompactAt;
+  if (!options.appSessionId) return undefined;
+  try {
+    return sessionsDb.getSessionAutoCompactAt(options.appSessionId);
+  } catch {
+    return undefined;
+  }
+}
 
 function createRequestId() {
   if (typeof crypto.randomUUID === 'function') {
@@ -519,9 +551,11 @@ function mapCliOptionsToSDK(options = {}) {
   // This loads CLAUDE.md from project, user (~/.config/claude/CLAUDE.md), and local directories
   sdkOptions.settingSources = ['project', 'user', 'local'];
 
-  // Compact earlier than the model-tuned "auto" window (see AUTO_COMPACT_WINDOW).
-  if (AUTO_COMPACT_WINDOW) {
-    sdkOptions.settings = { autoCompactWindow: AUTO_COMPACT_WINDOW };
+  // Compact earlier than the model-tuned "auto" window (see AUTO_COMPACT_WINDOW),
+  // or wherever this session's own trigger says.
+  const autoCompactWindow = resolveAutoCompactWindow(options);
+  if (autoCompactWindow) {
+    sdkOptions.settings = { autoCompactWindow };
   }
 
   // Helper calls (commit messages, agent REST one-shots, the title/recap
@@ -2632,6 +2666,26 @@ async function reuseSession(session, command, options, ws) {
     }
   } catch (err) {
     console.warn(`effort switch during reuse for ${session.sessionId} failed:`, err?.message || err);
+  }
+
+  // Apply a mid-session auto-compact threshold switch. Only a turn that knows
+  // the session's trigger counts (the chat gateway passes it, null for the
+  // default; others are looked up by app id); legacy callers with neither keep
+  // whatever is live.
+  if (options && statedAutoCompactAt(options) !== undefined && session.sdkOptions) {
+    try {
+      const wantedWindow = resolveAutoCompactWindow(options);
+      const liveWindow = session.sdkOptions.settings?.autoCompactWindow ?? null;
+      if (wantedWindow !== liveWindow) {
+        session.sdkOptions.settings = { ...(session.sdkOptions.settings || {}), autoCompactWindow: wantedWindow ?? undefined };
+        if (session.instance?.applyFlagSettings) {
+          // null clears the flag layer so the CLI's own window applies again.
+          await session.instance.applyFlagSettings({ autoCompactWindow: wantedWindow ?? null });
+        }
+      }
+    } catch (err) {
+      console.warn(`auto-compact switch during reuse for ${session.sessionId} failed:`, err?.message || err);
+    }
   }
 
   // Apply a mid-session permission mode switch. The mode rides on every user
