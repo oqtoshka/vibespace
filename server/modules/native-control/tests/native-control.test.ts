@@ -68,14 +68,22 @@ test('federation credentials, idempotent creation, registered projects and sessi
         body: Buffer.from('malformed') });
       assert.equal(malformed.status, 200); await malformed.arrayBuffer();
       assert.equal(routeTranscribe.mock.calls.at(-1)!.arguments[1], undefined);
-      const searchResponse = await fetch(`http://127.0.0.1:${port}/native/search/sessions?q=legacy&archived=all&matchType=phrase&limit=7`, {
+      const searchResponse = await fetch(`http://127.0.0.1:${port}/native/search/sessions?q=legacy&sessionId=selected-session&archived=all&matchType=phrase&limit=7`, {
         headers: { 'x-vibespace-federation-token': 'x'.repeat(40) },
       });
       assert.equal(searchResponse.status, 200);
       assert.deepEqual(routeSearch.mock.calls[0].arguments[0], {
-        query: 'legacy', projectId: undefined, provider: undefined, archived: 'all',
+        query: 'legacy', sessionId: 'selected-session', projectId: undefined, provider: undefined, archived: 'all',
         from: undefined, to: undefined, matchType: 'phrase', limit: 7, cursor: undefined,
       });
+      for (const restriction of ['sessionId=', 'sessionId=one&sessionId=two', 'sessionId[id]=one', `sessionId=${'x'.repeat(201)}`]) {
+        const invalid = await fetch(`http://127.0.0.1:${port}/native/search/sessions?q=legacy&${restriction}`, {
+          headers: { 'x-vibespace-federation-token': 'x'.repeat(40) },
+        });
+        assert.equal(invalid.status, 400);
+        await invalid.arrayBuffer();
+      }
+      assert.equal(routeSearch.mock.calls.length, 1, 'invalid scope must never reach all-session search');
       const refused = await fetch(`http://127.0.0.1:${port}/native/search/sessions?q=legacy`, {
         headers: { 'x-vibespace-federation-token': 'y'.repeat(40) },
       });

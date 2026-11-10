@@ -44,8 +44,13 @@ router.post('/sessions', route(async (req, res) => { res.json(await nativeContro
 router.get('/search/sessions', route(async (req, res) => {
   const rawLimit = one(req.query.limit);
   const limit = rawLimit === undefined ? undefined : Number(rawLimit);
+  const sessionId = req.query.sessionId;
+  if (sessionId !== undefined && (typeof sessionId !== 'string' || !sessionId.trim() || sessionId.length > 200)) {
+    throw new Error('Invalid session restriction');
+  }
   res.json(await nativeControlService.search({
     query: one(req.query.q) ?? '',
+    sessionId,
     projectId: one(req.query.projectId),
     provider: one(req.query.provider),
     archived: one(req.query.archived) as 'all' | 'active' | 'archived' | undefined,

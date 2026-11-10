@@ -23,6 +23,122 @@ const message = (id: string, text: string, timestamp: string) => ({
   payload: { type: 'message', id, role: 'assistant', content: [{ type: 'output_text', text }] },
 });
 
+test('exact source scope and signed continuation never broaden or substitute a page', { concurrency: false }, async t => {
+  const previous = process.env.DATABASE_PATH;
+  const directory = await mkdtemp(path.join(tmpdir(), 'session-search-scope-'));
+  closeConnection();
+  process.env.DATABASE_PATH = path.join(directory, 'scope.db');
+  try {
+    await initializeDatabase();
+    userDb.createUser('scope-operator', 'unused');
+    const project = projectsDb.createProjectPath(directory, 'Scope fixture').project!;
+    for (const id of ['selected-session', 'stronger-session']) {
+      const transcript = path.join(directory, `${id}.jsonl`);
+      await writeFile(transcript, Array.from({ length: 16 }, (_, index) => JSON.stringify(
+        message(`${id}-${index}`, `Alpha beta retained occurrence ${index}`, '2026-01-01T00:00:00.000Z'),
+      )).join('\n') + '\n');
+      sessionsDb.createSession(id, 'codex', directory,
+        id === 'selected-session' ? 'Selected conversation' : 'Alpha beta alpha beta', undefined, undefined, transcript);
+    }
+    sessionsDb.createAppSession('private-scope', 'codex', directory, false, true, 'Alpha beta private');
+    const input = { query: 'alpha beta', sessionId: 'selected-session', limit: 3, projectId: project.project_id };
+    const first = await sessionSearchIndexService.search(input);
+    assert.ok(first.nextCursor);
+    const cursor = first.nextCursor;
+    const generation = first.index.generation;
+
+    await t.test('session restriction precedes count, ranking and both phrase and ordinary paging', async () => {
+      assert.equal(first.total, 16);
+      assert.equal(first.results.length, 3);
+      assert.ok(first.results.every(row => row.sessionId === input.sessionId));
+      const second = await sessionSearchIndexService.search({ ...input, cursor });
+      assert.equal(new Set([...first.results, ...second.results].map(row => row.messageId)).size, 6);
+      assert.ok(second.results.every(row => row.sessionId === input.sessionId));
+      const phrase = await sessionSearchIndexService.search({ ...input, matchType: 'phrase' });
+      assert.equal(phrase.total, 16);
+      assert.ok(phrase.results.every(row => row.sessionId === input.sessionId));
+      const global = await sessionSearchIndexService.search({ query: input.query });
+      assert.ok(global.total > first.total);
+      assert.equal(global.results[0]?.sessionId, 'stronger-session');
+      for (const sessionId of ['missing-session', 'private-scope']) {
+        const missing = await sessionSearchIndexService.search({ ...input, sessionId });
+        assert.equal(missing.total, 0);
+        assert.deepEqual(missing.results, []);
+        assert.equal(missing.nextCursor, null);
+      }
+      assert.equal((await sessionSearchIndexService.search({ ...input, projectId: 'another-project' })).total, 0);
+      assert.equal((await sessionSearchIndexService.search({ ...input, archived: 'archived' })).total, 0);
+    });
+
+    const changes: Array<[string, Partial<Parameters<typeof sessionSearchIndexService.search>[0]>]> = [
+      ['query', { query: 'retained' }], ['session', { sessionId: 'stronger-session' }],
+      ['all-session scope', { sessionId: undefined }], ['project', { projectId: undefined }],
+      ['provider', { provider: 'codex' }], ['archive filter', { archived: 'active' }],
+      ['start date', { from: '2025-01-01T00:00:00Z' }], ['end date', { to: '2027-01-01T00:00:00Z' }],
+      ['match type', { matchType: 'phrase' }], ['page size', { limit: 4 }],
+    ];
+    for (const [name, change] of changes) await t.test(`continuation rejects changed ${name}`, async () => {
+      await assert.rejects(sessionSearchIndexService.search({ ...input, ...change, cursor }), /invalid or stale/);
+    });
+
+    await t.test('blank and malformed session restrictions fail rather than widening the query', async () => {
+      for (const sessionId of ['', ' ', 'x'.repeat(201), ['selected-session'], 1]) {
+        await assert.rejects(sessionSearchIndexService.search({ ...input, sessionId: sessionId as string }), /Invalid session restriction/);
+      }
+    });
+    await t.test('position and signature tampering, legacy cursors and oversized tokens are refused', async () => {
+      const [payload, signature] = cursor.split('.');
+      const changed = JSON.parse(Buffer.from(payload, 'base64url').toString());
+      changed.offset = 10;
+      const forged = `${Buffer.from(JSON.stringify(changed)).toString('base64url')}.${signature}`;
+      for (const token of ['', forged, `${payload}.${'0'.repeat(64)}`, `${cursor}.extra`, 'x'.repeat(4097),
+        Buffer.from(JSON.stringify({ offset: 3, generation })).toString('base64url')]) {
+        await assert.rejects(sessionSearchIndexService.search({ ...input, cursor: token }), /invalid or stale/);
+      }
+    });
+    await t.test('cursor expires and refuses clocks moving behind its issuance', async () => {
+      const issued = Date.now();
+      const clock = mock.method(Date, 'now', () => issued + 10 * 60 * 1000 + 1000);
+      try {
+        await assert.rejects(sessionSearchIndexService.search({ ...input, cursor }), /invalid or stale/);
+        clock.mock.mockImplementation(() => issued - 60_000);
+        await assert.rejects(sessionSearchIndexService.search({ ...input, cursor }), /invalid or stale/);
+      } finally { clock.mock.restore(); }
+    });
+    await t.test('cursor binds the active operator even when the source generation stays identical', async () => {
+      const user = userDb.getSingleActiveUser()!;
+      const account = mock.method(userDb, 'getSingleActiveUser', () => ({ ...user, id: Number(user.id) + 1 }));
+      const sync = mock.method(sessionSearchIndexService, 'sync', async () => ({ generation, indexed: 0 }));
+      try { await assert.rejects(sessionSearchIndexService.search({ ...input, cursor }), /invalid or stale/); }
+      finally { account.mock.restore(); sync.mock.restore(); }
+    });
+    await t.test('operator change during provider refresh returns no rows, even on a first page', async () => {
+      const user = userDb.getSingleActiveUser()!;
+      let reads = 0;
+      const account = mock.method(userDb, 'getSingleActiveUser', () => reads++ === 0 ? user : { ...user, id: Number(user.id) + 1 });
+      const sync = mock.method(sessionSearchIndexService, 'sync', async () => ({ generation, indexed: 0 }));
+      try { await assert.rejects(sessionSearchIndexService.search(input), /Operator changed during search/); }
+      finally { account.mock.restore(); sync.mock.restore(); }
+    });
+    await t.test('a new source process refuses continuation signed by the previous process', async () => {
+      const restarted = await import(new URL('../services/session-search-index.service.ts?restart-fixture', import.meta.url).href);
+      await assert.rejects(restarted.sessionSearchIndexService.search({ ...input, cursor }), /invalid or stale/);
+    });
+    await t.test('archive changes invalidate old pages and preserve exact scope on a new page', async () => {
+      sessionsDb.updateSessionIsArchived(input.sessionId, true);
+      await assert.rejects(sessionSearchIndexService.search({ ...input, cursor }), /invalid or stale/);
+      assert.equal((await sessionSearchIndexService.search({ ...input, archived: 'active' })).total, 0);
+      const archived = await sessionSearchIndexService.search({ ...input, archived: 'archived' });
+      assert.equal(archived.total, 16);
+      assert.ok(archived.results.every(row => row.sessionId === input.sessionId && row.archived));
+    });
+  } finally {
+    closeConnection();
+    if (previous === undefined) delete process.env.DATABASE_PATH; else process.env.DATABASE_PATH = previous;
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test('indexed search covers old pages, archives and titles without duplicates or private leakage', { concurrency: false }, async () => {
   const previous = process.env.DATABASE_PATH;
   const directory = await mkdtemp(path.join(tmpdir(), 'session-search-index-'));

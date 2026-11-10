@@ -1,9 +1,9 @@
-import { createHash } from 'node:crypto';
+import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { stat } from 'node:fs/promises';
 import { deflateRawSync, inflateRawSync } from 'node:zlib';
 
 import { getConnection, projectsDb, sessionsDb, userDb } from '@/modules/database/index.js';
-import type { NormalizedMessage } from '@/shared/types.js';
+import type { NormalizedMessage } from '@/shared/index.js';
 
 import { sessionsService } from './sessions.service.js';
 
@@ -12,6 +12,7 @@ type MatchType = 'all' | 'phrase' | 'prefix' | 'title' | 'content';
 
 type SearchInput = {
   query: string;
+  sessionId?: string;
   projectId?: string;
   provider?: string;
   archived?: ArchiveFilter;
@@ -44,6 +45,10 @@ type SearchRow = {
 
 const MATCH_TYPES = new Set<MatchType>(['all', 'phrase', 'prefix', 'title', 'content']);
 const ARCHIVE_FILTERS = new Set<ArchiveFilter>(['all', 'active', 'archived']);
+// Continuations are local to this process. Restarting refuses old pages rather
+// than silently resuming against a different source/authentication lifecycle.
+const CURSOR_SECRET = randomBytes(32);
+const CURSOR_TTL_MS = 10 * 60 * 1000;
 // Tool results can contain megabytes of duplicated JSON, images or command
 // output. Keep useful leading context and terminal errors without letting a
 // single message turn the local FTS database into another transcript store.
@@ -197,11 +202,26 @@ function searchGeneration(): string {
   return createHash('sha256').update(JSON.stringify(rows)).digest('hex').slice(0, 20);
 }
 
-function cursorOffset(cursor: string | undefined, generation: string): number {
-  if (!cursor) return 0;
+function nextCursor(offset: number, generation: string, binding: string): string {
+  const payload = Buffer.from(JSON.stringify({ version: 1, offset, generation, binding, issuedAt: Date.now() })).toString('base64url');
+  return `${payload}.${createHmac('sha256', CURSOR_SECRET).update(payload).digest('hex')}`;
+}
+
+function cursorOffset(cursor: string | undefined, generation: string, binding: string): number {
+  if (cursor === undefined) return 0;
   try {
-    const decoded = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8')) as { offset?: unknown; generation?: unknown };
-    if (decoded.generation !== generation || !Number.isSafeInteger(decoded.offset) || Number(decoded.offset) < 0) {
+    if (typeof cursor !== 'string' || cursor.length > 4096) throw new Error();
+    const [payload, signature, extra] = cursor.split('.');
+    if (!payload || !signature || extra !== undefined || !/^[a-f0-9]{64}$/.test(signature)) throw new Error();
+    const expected = createHmac('sha256', CURSOR_SECRET).update(payload).digest();
+    if (!timingSafeEqual(Buffer.from(signature, 'hex'), expected)) throw new Error();
+    const decoded = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as {
+      version?: unknown; offset?: unknown; generation?: unknown; binding?: unknown; issuedAt?: unknown;
+    };
+    const age = Date.now() - Number(decoded.issuedAt);
+    if (decoded.version !== 1 || decoded.generation !== generation || decoded.binding !== binding
+      || !Number.isSafeInteger(decoded.offset) || Number(decoded.offset) < 0
+      || !Number.isSafeInteger(decoded.issuedAt) || age < 0 || age >= CURSOR_TTL_MS) {
       throw new Error();
     }
     return Number(decoded.offset);
@@ -316,13 +336,26 @@ export const sessionSearchIndexService = {
     const from = isoDate(input.from, 'from');
     const to = isoDate(input.to, 'to');
     if (from && to && from > to) throw new Error('Search date range is reversed');
+    if (input.sessionId !== undefined && (typeof input.sessionId !== 'string'
+      || !input.sessionId.trim() || input.sessionId.length > 200)) throw new Error('Invalid session restriction');
+    const sessionId = input.sessionId?.trim();
     const user = userDb.getSingleActiveUser();
     if (!user) throw new Error('Operator is unavailable');
     const synced = await this.sync();
-    const offset = cursorOffset(input.cursor, synced.generation);
+    // Refresh awaits provider I/O. Never return the old operator's rows if the
+    // active account changed while that work was in flight.
+    if (Number(userDb.getSingleActiveUser()?.id) !== Number(user.id)) {
+      throw new Error('Operator changed during search; restart from the first page');
+    }
+    const binding = createHash('sha256').update(JSON.stringify([
+      Number(user.id), input.query.normalize('NFKC').trim(), sessionId ?? null,
+      input.projectId ?? null, input.provider ?? null, archived, from ?? null, to ?? null, matchType, limit,
+    ])).digest('hex');
+    const offset = cursorOffset(input.cursor, synced.generation, binding);
 
     const clauses = ['session_search_fts MATCH ?', 'documents.user_id = ?'];
     const args: unknown[] = [ftsExpression(input.query, matchType), Number(user.id)];
+    if (sessionId) { clauses.push('documents.session_id = ?'); args.push(sessionId); }
     if (input.projectId) { clauses.push('documents.project_id = ?'); args.push(input.projectId); }
     if (input.provider) { clauses.push('documents.provider = ?'); args.push(input.provider); }
     if (archived !== 'all') { clauses.push('documents.archived = ?'); args.push(archived === 'archived' ? 1 : 0); }
@@ -396,7 +429,7 @@ export const sessionSearchIndexService = {
       total,
       results,
       nextCursor: nextOffset < total
-        ? Buffer.from(JSON.stringify({ offset: nextOffset, generation: synced.generation })).toString('base64url')
+        ? nextCursor(nextOffset, synced.generation, binding)
         : null,
     };
   },
