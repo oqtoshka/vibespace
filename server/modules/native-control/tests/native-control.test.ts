@@ -23,6 +23,8 @@ test('federation credentials, idempotent creation, registered projects and sessi
   closeConnection(); process.env.DATABASE_PATH = path.join(directory, 'auth.db');
   const cleanup: string[] = [];
   try {
+    // Start empty rather than importing a legacy database left by another test.
+    await writeFile(process.env.DATABASE_PATH!, '');
     await initializeDatabase();
     assert.equal(authenticateNativeControl('x'), false);
     userDb.createUser('operator', 'unused');

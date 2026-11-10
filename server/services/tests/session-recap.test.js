@@ -25,7 +25,9 @@ const jsonl = (entries) => entries.map((entry) => JSON.stringify(entry)).join('\
 async function writeTranscript(lines) {
   const dir = await mkdtemp(path.join(tmpdir(), 'recap-'));
   const file = path.join(dir, 'session.jsonl');
-  await writeFile(file, lines, 'utf8');
+  // The live scanner consumes newline-terminated records; a writer's trailing
+  // fragment is intentionally deferred until its next append.
+  await writeFile(file, `${lines}\n`, 'utf8');
   return file;
 }
 
