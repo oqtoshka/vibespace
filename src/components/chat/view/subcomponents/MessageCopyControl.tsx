@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
+
 import { copyTextToClipboard } from '../../../../utils/clipboard';
 
 const COPY_SUCCESS_TIMEOUT_MS = 2000;
@@ -95,13 +96,6 @@ const MessageCopyControl = ({
     ? t('copyMessage.markdownShort', { defaultValue: 'MD' })
     : t('copyMessage.textShort', { defaultValue: 'TXT' });
 
-  const copyPayload = useMemo(() => {
-    if (selectedFormat === 'markdown') {
-      return content;
-    }
-    return convertMarkdownToPlainText(content);
-  }, [content, selectedFormat]);
-
   useEffect(() => {
     setSelectedFormat(defaultFormat);
     setIsDropdownOpen(false);
@@ -141,7 +135,11 @@ const MessageCopyControl = ({
     };
   }, []);
 
-  const handleCopyClick = async () => {
+  const handleCopyClick = async (format: CopyFormat) => {
+    // User messages are literal text; only assistant Markdown needs conversion.
+    const copyPayload = messageType === 'user' || format === 'markdown'
+      ? content
+      : convertMarkdownToPlainText(content);
     if (!copyPayload.trim()) return;
     const didCopy = await copyTextToClipboard(copyPayload);
     if (!didCopy) return;
@@ -158,6 +156,9 @@ const MessageCopyControl = ({
   const handleFormatChange = (format: CopyFormat) => {
     setSelectedFormat(format);
     setIsDropdownOpen(false);
+    // Copy in this click's user activation, using the chosen format directly
+    // rather than waiting for React to update selectedFormat.
+    void handleCopyClick(format);
   };
 
   const toneClass = messageType === 'user'
@@ -172,7 +173,7 @@ const MessageCopyControl = ({
     <div ref={dropdownRef} className={rootClassName}>
       <button
         type="button"
-        onClick={handleCopyClick}
+        onClick={() => void handleCopyClick(selectedFormat)}
         title={copyTitle}
         aria-label={copyTitle}
         className={`inline-flex items-center gap-1 rounded px-1 py-0.5 transition-colors ${toneClass}`}
