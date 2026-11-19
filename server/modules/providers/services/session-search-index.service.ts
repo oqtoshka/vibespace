@@ -49,6 +49,28 @@ const ARCHIVE_FILTERS = new Set<ArchiveFilter>(['all', 'active', 'archived']);
 // than silently resuming against a different source/authentication lifecycle.
 const CURSOR_SECRET = randomBytes(32);
 const CURSOR_TTL_MS = 10 * 60 * 1000;
+type ScopedPageSnapshot = {
+  connection: ReturnType<typeof getConnection>;
+  createdAt: number;
+  token: string;
+  rows: Array<Pick<SearchRow, 'rowid' | 'rank'>>;
+};
+// Keep only compact row identities/scores, never transcript buffers. Unrelated
+// FTS updates can change BM25 statistics even when this session did not change.
+const scopedSnapshots = new Map<string, ScopedPageSnapshot>();
+const MAX_SCOPED_SNAPSHOTS = 32;
+const MAX_SCOPED_SNAPSHOT_ROWS = 250_000;
+function pruneScopedSnapshots(now: number): void {
+  for (const [key, snapshot] of scopedSnapshots) {
+    if (now - snapshot.createdAt >= CURSOR_TTL_MS || now < snapshot.createdAt) scopedSnapshots.delete(key);
+  }
+  let count = Array.from(scopedSnapshots.values()).reduce((sum, snapshot) => sum + snapshot.rows.length, 0);
+  for (const [key, snapshot] of scopedSnapshots) {
+    if (scopedSnapshots.size <= MAX_SCOPED_SNAPSHOTS && count <= MAX_SCOPED_SNAPSHOT_ROWS) break;
+    scopedSnapshots.delete(key);
+    count -= snapshot.rows.length;
+  }
+}
 // Tool results can contain megabytes of duplicated JSON, images or command
 // output. Keep useful leading context and terminal errors without letting a
 // single message turn the local FTS database into another transcript store.
@@ -195,10 +217,11 @@ async function sourceFingerprint(session: IndexedSession, userId: number): Promi
   ])).digest('hex');
 }
 
-function searchGeneration(): string {
+function searchGeneration(sessionId?: string): string {
   const rows = getConnection().prepare(
-    'SELECT session_id, source_fingerprint FROM session_search_state ORDER BY session_id',
-  ).all() as Array<{ session_id: string; source_fingerprint: string }>;
+    `SELECT session_id, source_fingerprint FROM session_search_state
+     ${sessionId ? 'WHERE session_id = ?' : ''} ORDER BY session_id`,
+  ).all(...(sessionId ? [sessionId] : [])) as Array<{ session_id: string; source_fingerprint: string }>;
   return createHash('sha256').update(JSON.stringify(rows)).digest('hex').slice(0, 20);
 }
 
@@ -351,7 +374,8 @@ export const sessionSearchIndexService = {
       Number(user.id), input.query.normalize('NFKC').trim(), sessionId ?? null,
       input.projectId ?? null, input.provider ?? null, archived, from ?? null, to ?? null, matchType, limit,
     ])).digest('hex');
-    const offset = cursorOffset(input.cursor, synced.generation, binding);
+    let generation = sessionId ? searchGeneration(sessionId) : synced.generation;
+    let offset = sessionId ? 0 : cursorOffset(input.cursor, generation, binding);
 
     const clauses = ['session_search_fts MATCH ?', 'documents.user_id = ?'];
     const args: unknown[] = [ftsExpression(input.query, matchType), Number(user.id)];
@@ -371,7 +395,42 @@ export const sessionSearchIndexService = {
       ORDER BY rank ASC, datetime(documents.occurred_at) DESC, documents.session_id ASC, documents.rowid ASC`;
     let total: number;
     let rows: SearchRow[];
-    if (matchType === 'phrase') {
+    if (sessionId) {
+      const key = `${binding}:${generation}`;
+      pruneScopedSnapshots(Date.now());
+      let snapshot = scopedSnapshots.get(key);
+      if (snapshot?.connection !== db) snapshot = undefined;
+      if (!snapshot) {
+        // A missing/evicted snapshot must never be replaced under an old offset.
+        if (input.cursor !== undefined) throw new Error('Search cursor is invalid or stale; restart from the first page');
+        let ranked: Array<Pick<SearchRow, 'rowid' | 'rank'>>;
+        if (matchType === 'phrase') {
+          ranked = (db.prepare(select).all(input.query.trim(), ...args) as SearchRow[]).filter(row =>
+            fieldMatches(uncompressed(row.compressed_content), input.query, matchType)
+            || (row.kind === 'metadata' && (fieldMatches(row.display_title, input.query, matchType)
+              || fieldMatches(row.display_summary, input.query, matchType))))
+            .map(({ rowid, rank }) => ({ rowid, rank }));
+        } else {
+          ranked = db.prepare(select.replace('documents.*', 'documents.rowid'))
+            .all(input.query.trim(), ...args) as Array<Pick<SearchRow, 'rowid' | 'rank'>>;
+        }
+        snapshot = { connection: db, createdAt: Date.now(), token: randomBytes(12).toString('hex'), rows: ranked };
+        scopedSnapshots.set(key, snapshot);
+        pruneScopedSnapshots(Date.now());
+        if (!scopedSnapshots.has(key)) throw new Error('Search result exceeds the continuation snapshot limit; narrow the query');
+      }
+      // A fresh first page after eviction gets a new identity: an older cursor
+      // cannot silently resume against its replacement under the same source hash.
+      generation = createHash('sha256').update(`${generation}:${snapshot.token}`).digest('hex').slice(0, 20);
+      offset = cursorOffset(input.cursor, generation, binding);
+      total = snapshot.rows.length;
+      const getRow = db.prepare('SELECT * FROM session_search_documents WHERE rowid = ? AND user_id = ? AND session_id = ?');
+      rows = snapshot.rows.slice(offset, offset + limit).map(({ rowid, rank }) => {
+        const row = getRow.get(rowid, Number(user.id), sessionId) as SearchRow | undefined;
+        if (!row) throw new Error('Search cursor is invalid or stale; restart from the first page');
+        return { ...row, rank };
+      });
+    } else if (matchType === 'phrase') {
       const candidates = db.prepare(select).all(input.query.trim(), ...args) as SearchRow[];
       const phraseMatches = candidates.filter(row => {
         const contentMatches = fieldMatches(uncompressed(row.compressed_content), input.query, matchType);
@@ -425,11 +484,11 @@ export const sessionSearchIndexService = {
     return {
       query: input.query.trim(),
       engine: { lexical: 'sqlite-fts5', semantic: 'unavailable', mode: 'lexical' },
-      index: { generation: synced.generation, updatedSessions: synced.indexed },
+      index: { generation, updatedSessions: synced.indexed },
       total,
       results,
       nextCursor: nextOffset < total
-        ? nextCursor(nextOffset, synced.generation, binding)
+        ? nextCursor(nextOffset, generation, binding)
         : null,
     };
   },

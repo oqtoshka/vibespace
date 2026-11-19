@@ -70,6 +70,27 @@ test('exact source scope and signed continuation never broaden or substitute a p
       assert.equal((await sessionSearchIndexService.search({ ...input, archived: 'archived' })).total, 0);
     });
 
+    await t.test('unrelated live updates preserve scoped order, scores and continuation', async () => {
+      for (const matchType of ['all', 'phrase', 'content', 'prefix'] as const) {
+        const scoped = { ...input, matchType };
+        const expected = await sessionSearchIndexService.search({ ...scoped, limit: 100 });
+        const page = await sessionSearchIndexService.search(scoped);
+        assert.ok(page.nextCursor);
+        const globalBefore = await sessionSearchIndexService.sync();
+        sessionsDb.updateSessionCustomName('stronger-session', `Unrelated active ${matchType}`);
+        await writeFile(path.join(directory, 'stronger-session.jsonl'), Array.from({ length: 40 }, (_, index) =>
+          JSON.stringify(message(`updated-${index}`, `${'alpha '.repeat(index + 1)}beta unrelated live update`,
+            '2026-01-02T00:00:00.000Z'))).join('\n') + '\n');
+        const globalAfter = await sessionSearchIndexService.sync();
+        assert.notEqual(globalAfter.generation, globalBefore.generation);
+        const continued = await sessionSearchIndexService.search({ ...scoped, cursor: page.nextCursor });
+        assert.equal(continued.index.generation, page.index.generation);
+        assert.equal(continued.total, page.total);
+        assert.deepEqual([...page.results, ...continued.results].map(row => [row.messageId, row.score]),
+          expected.results.slice(0, 6).map(row => [row.messageId, row.score]));
+      }
+    });
+
     const changes: Array<[string, Partial<Parameters<typeof sessionSearchIndexService.search>[0]>]> = [
       ['query', { query: 'retained' }], ['session', { sessionId: 'stronger-session' }],
       ['all-session scope', { sessionId: undefined }], ['project', { projectId: undefined }],
@@ -124,6 +145,20 @@ test('exact source scope and signed continuation never broaden or substitute a p
       const restarted = await import(new URL('../services/session-search-index.service.ts?restart-fixture', import.meta.url).href);
       await assert.rejects(restarted.sessionSearchIndexService.search({ ...input, cursor }), /invalid or stale/);
     });
+    await t.test('eviction and a replacement first page never substitute an old cursor snapshot', async () => {
+      const page = await sessionSearchIndexService.search({ ...input, limit: 1 });
+      assert.ok(page.nextCursor);
+      for (let index = 1; index <= 33; index++) {
+        await sessionSearchIndexService.search({ ...input, query: `${'alpha '.repeat(index)}beta`, limit: 2 });
+      }
+      await assert.rejects(sessionSearchIndexService.search({ ...input, limit: 1, cursor: page.nextCursor }), /invalid or stale/);
+      const replacement = await sessionSearchIndexService.search({ ...input, limit: 1 });
+      assert.notEqual(replacement.index.generation, page.index.generation);
+      await assert.rejects(sessionSearchIndexService.search({ ...input, limit: 1, cursor: page.nextCursor }), /invalid or stale/);
+      const continued = await sessionSearchIndexService.search({ ...input, limit: 1, cursor: replacement.nextCursor! });
+      assert.notEqual(continued.results[0]?.messageId, replacement.results[0]?.messageId);
+    });
+
     await t.test('archive changes invalidate old pages and preserve exact scope on a new page', async () => {
       sessionsDb.updateSessionIsArchived(input.sessionId, true);
       await assert.rejects(sessionSearchIndexService.search({ ...input, cursor }), /invalid or stale/);

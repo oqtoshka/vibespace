@@ -431,3 +431,19 @@ indexing, a terminal resume leaves no reliable interaction signal; send a
 message from VibeSpace to promote that conversation. A `claude -p` that an
 agent starts inside a VibeSpace Claude session inherits that session's
 `sdk-ts` label and stays visible.
+
+## Indexed search continuation
+
+Search applies the selected session restriction before counting, ranking and paging.
+Signed continuation tokens bind the active operator, normalized query, filters and page
+size and expire after ten minutes; a process restart rejects previous tokens.
+
+Global search invalidates continuation when any indexed source changes. A search restricted
+to one session invalidates when that session changes (including title, archive state,
+project metadata or transcript), is deleted or becomes private. Updates in other sessions
+do not invalidate its pages. Scoped continuations retain the original ordered row identities
+and scores because unrelated FTS updates can change global BM25 statistics. Ordinary scoped searches read transcript
+buffers only for the requested page; phrase search also reads candidates to validate the phrase. These process-local snapshots expire after
+ten minutes and retain at most 32 searches / 250,000 combined row identities; eviction
+returns the explicit stale-cursor error rather than substituting a newly ranked page.
+A single scope exceeding that row budget asks the caller to narrow the query.
